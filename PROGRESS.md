@@ -1,6 +1,6 @@
 # 進捗と再開手順
 
-最終更新: 2026-10-04（M1 完了。M2 はテストの先行作成中）
+最終更新: 2026-10-04（M1・M2 完了。次は M3）
 
 ## 完了したこと
 
@@ -14,22 +14,37 @@
   - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` すべて通過
 - CI（fmt・clippy・test）、`README.md`、`CLAUDE.md`、claude-sandbox 用コンテナ
 
-## M2 の状況
+## M2 の状況（完了）
 
-- 設計書 `spec/design/m2.md` は作成済み。実装は未着手。
-- テスト `tests/slt/m2/dml/` に 6 ファイル（delete_basic, update_basic, update_constraints, update_errors, update_expr, update_halloween）。`catalog`・`ddl`・`psql`・`txn`・`types` は空。
-- M2 のテストはまだ yuzhu に対して実行していない（UPDATE / DELETE が未実装のため）。
+到達点: 8KB ページ、バッファプール、ヒープ、リレーションごとのファイル、カタログのテーブル化、UPDATE / DELETE、initdb、
+xmin/xmax とコミットログによる ROLLBACK、停止チェックポイント、SIGTERM での正常停止、psql `\l` 用の pg_database 周り。
+レビュー修正（checkpoint の毒状態拒否、snapshot_any、セッションの poison 再確認、smgr create の後始末、psql 互換の差異 7 件）を反映済み。
+
+確認結果（2026-10-04）:
+
+- `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test`: すべて通過（yuzhu-core の単体テスト 466 件ほか、失敗 0）
+- `tests/run.sh --target yuzhu tests/slt/m1 tests/slt/m2`: 61 ファイル中 61 通過
+- `tests/run.sh --target yuzhu --restart`: 15 通過（m3 のシナリオは対象外）
+- `tests/run.sh --target pg tests/slt/m1 tests/slt/m2`（PostgreSQL 17）: 61 中 61 通過。`--restart` は 15 通過
+
+未解決事項:
+
+- `cargo build --release` で `storage/buffer/track.rs` の `LatchRec` の `tag` / `mode` が未読という警告が 1 件ある（clippy -D warnings は通る）。
+- 名前付き CHECK 制約の重複エラーの文言が PG と違う（`analyzer/ddl.rs`）。
+- slt の一部（`m2/catalog/pg_attribute`・`constraint_attrdef`・`m2/ddl/drop_cleanup`）は末尾でテーブルを消さないため、使用済みの DB に流すと「already exists」で失敗する（新しい DB では通る）。
+- poison の競合を再現する session レベルの回帰テストと、シグナル登録順の修正のテストは未追加。
+- `tests/run.sh --target yuzhu` を引数なしで流すと m3 の slt も対象になり、未実装機能で 7 ファイルが失敗する（M3 の対象）。
+- 実物の psql 17 で `\l` を流す確認は未実施（同等の SELECT を統合テストで確認）。
 
 ## 残課題
 
-- M2 のテストの残りを作成し、PostgreSQL 17 で通ることを確認する。
-- M2 の実装（8KB ページ、バッファプール、ヒープ、リレーションごとのファイル、カタログのテーブル化、UPDATE / DELETE、initdb）。
-- M3 以降は設計書 `spec/design/m3.md` と調査 `spec/research/` を参照。
+- M3（コミットログ・REDO のみの WAL・チェックポイント・full page write・クラッシュリカバリ）。設計書 `spec/design/m3.md` を参照。
+- 上の未解決事項。
 
 ## 再開手順
 
 1. `QUESTIONS.md` を読む（仮決め事項の一覧）。
-2. `spec/design/m2.md` に沿って M2 のテスト作成と実装を並列に進める。
+2. `spec/design/m3.md` に沿って M3 のテスト作成と実装を並列に進める。
 3. 各段階で `tests/run.sh --target yuzhu` と `--target pg` の両方を確認する。
 
 ## 環境メモ

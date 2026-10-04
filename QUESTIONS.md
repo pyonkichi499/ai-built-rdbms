@@ -41,3 +41,9 @@
 - **M2-Q8 psql の対応範囲**: M2 では `\l` まで動かします。`\dt` は M4 です。`!~`（正規表現）を手書きするか `regex` クレートを使うかは、M4 で決めます。
 - **M2-Q11 TOAST なし**: 1 行が約 8KB を超えるとエラーになります。
 - **M2-Q20 データディレクトリの互換性**: M5 までは、マイルストーンをまたいだデータディレクトリの互換を保証しません（形式が変われば initdb のやり直し）。
+
+## M2 の完了時に追加した確認事項
+
+- **M2-Q22 slt の後始末**: `m2/catalog/pg_attribute`・`constraint_attrdef`・`m2/ddl/drop_cleanup` が末尾でテーブルを消さず、同じ DB への再実行が失敗する。テスト側に DROP を足すのが推奨（M3 のテスト整備時に対応）。
+- **M2-Q23 CHECK 制約の重複エラー文言**: PG は `check constraint "c" already exists`、yuzhu は `constraint "c" for relation "v" already exists`。PG にそろえるのが推奨（位置の有無は PG で要確認）。
+- **M2-Q24 `finish_pending_unlinks` の残骸**: 失敗して再起動後に残った 0 バイトのファイルは、OID 採番時の `storage_exists` 確認で避ける（m2.md の D13）。回収は M5 の VACUUM か起動時掃除で検討。
