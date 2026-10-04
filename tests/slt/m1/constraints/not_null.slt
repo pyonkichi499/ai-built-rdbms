@@ -1,0 +1,65 @@
+# NOT NULL 制約（23502）
+
+statement ok
+CREATE TABLE con_nn_t (a int NOT NULL, b text NOT NULL DEFAULT 'dflt', c int)
+
+statement count 1
+INSERT INTO con_nn_t VALUES (1, 'x', NULL)
+
+statement error (23502)
+INSERT INTO con_nn_t VALUES (NULL, 'x', 1)
+
+# 省略した列が NOT NULL で DEFAULT がない: 23502
+statement error (23502)
+INSERT INTO con_nn_t (b) VALUES ('y')
+
+# 省略した列は DEFAULT で埋まるので通る
+statement count 1
+INSERT INTO con_nn_t (a) VALUES (2)
+
+# DEFAULT キーワードも同じ
+statement count 1
+INSERT INTO con_nn_t VALUES (3, DEFAULT, DEFAULT)
+
+# 明示した NULL は DEFAULT ではなく NULL として検査される
+statement error (23502)
+INSERT INTO con_nn_t VALUES (4, NULL, 4)
+
+# DEFAULT VALUES でも検査される（a に DEFAULT がない）
+statement error (23502)
+INSERT INTO con_nn_t DEFAULT VALUES
+
+# 式の結果が NULL になる場合も同じ
+statement error (23502)
+INSERT INTO con_nn_t VALUES (1 + NULL, 'z', 0)
+
+statement error (23502)
+INSERT INTO con_nn_t SELECT NULL, 'z', 0
+
+query ITI
+SELECT a, b, c FROM con_nn_t ORDER BY a
+----
+1 x NULL
+2 dflt NULL
+3 dflt NULL
+
+# DEFAULT NULL を持つ NOT NULL 列
+statement ok
+CREATE TABLE con_nn_dnull (a int NOT NULL DEFAULT NULL)
+
+statement error (23502)
+INSERT INTO con_nn_dnull DEFAULT VALUES
+
+# NULL と NOT NULL を同時に指定すると矛盾（42601）
+statement error (42601)
+CREATE TABLE con_nn_conflict (a int NULL NOT NULL)
+
+# 名前付きの NOT NULL 制約
+statement ok
+CREATE TABLE con_nn_named (a int CONSTRAINT a_required NOT NULL)
+
+statement error (23502)
+INSERT INTO con_nn_named VALUES (NULL)
+
+statement ok
+DROP TABLE con_nn_t, con_nn_dnull, con_nn_named

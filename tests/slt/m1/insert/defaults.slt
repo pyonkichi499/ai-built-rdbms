@@ -1,0 +1,97 @@
+# DEFAULT 式、DEFAULT キーワード、DEFAULT VALUES
+
+statement ok
+CREATE TABLE ins_d_t (
+    id int DEFAULT 0,
+    name text DEFAULT 'anon',
+    score int DEFAULT 10 * 5,
+    note text
+)
+
+# 列リストで省略した列には DEFAULT が入る
+statement count 1
+INSERT INTO ins_d_t (id) VALUES (1)
+
+# DEFAULT キーワード
+statement count 1
+INSERT INTO ins_d_t VALUES (2, DEFAULT, DEFAULT, 'kw')
+
+# 複数行の中の DEFAULT
+statement count 2
+INSERT INTO ins_d_t (id, name) VALUES (3, DEFAULT), (4, 'bob')
+
+# DEFAULT のない列に DEFAULT を指定すると NULL
+statement count 1
+INSERT INTO ins_d_t VALUES (5, 'carol', 1, DEFAULT)
+
+# DEFAULT VALUES
+statement count 1
+INSERT INTO ins_d_t DEFAULT VALUES
+
+# 明示した NULL は DEFAULT を上書きする
+statement count 1
+INSERT INTO ins_d_t VALUES (6, NULL, NULL, NULL)
+
+query ITIT
+SELECT id, name, score, note FROM ins_d_t ORDER BY id, name
+----
+0 anon 50 NULL
+1 anon 50 NULL
+2 anon 50 kw
+3 anon 50 NULL
+4 bob 50 NULL
+5 carol 1 NULL
+6 NULL NULL NULL
+
+# DEFAULT は式の中では使えない
+statement error (42601)
+INSERT INTO ins_d_t VALUES (DEFAULT + 1)
+
+# DEFAULT は SELECT の中でも使えない
+statement error (42601)
+SELECT DEFAULT
+
+# DEFAULT 式は列の型に代入キャストされる
+statement ok
+CREATE TABLE ins_d_cast (a int DEFAULT '42', b text DEFAULT 7, c float8 DEFAULT 1, d varchar(3) DEFAULT 'xy')
+
+statement ok
+INSERT INTO ins_d_cast DEFAULT VALUES
+
+query ITRT
+SELECT a, b, c, d FROM ins_d_cast
+----
+42 7 1 xy
+
+# DEFAULT 式が列の型に変換できない場合は CREATE TABLE の時点でエラー
+statement error (22P02)
+CREATE TABLE ins_d_bad (a int DEFAULT 'abc')
+
+statement error (42804)
+CREATE TABLE ins_d_bad (a int DEFAULT true)
+
+# DEFAULT 式に列参照は書けない（0A000）
+statement error (0A000)
+CREATE TABLE ins_d_bad (a int, b int DEFAULT a)
+
+# DEFAULT が長すぎる varchar は挿入時に 22001
+statement ok
+CREATE TABLE ins_d_long (v varchar(2) DEFAULT 'abc')
+
+statement error (22001)
+INSERT INTO ins_d_long DEFAULT VALUES
+
+# DEFAULT 式は行ごとに評価される（関数呼び出しを含む式）
+statement ok
+CREATE TABLE ins_d_fn (u text DEFAULT current_user, d text DEFAULT upper('x'))
+
+statement ok
+INSERT INTO ins_d_fn DEFAULT VALUES
+
+query TT
+SELECT u, d FROM ins_d_fn
+----
+postgres X
+
+statement ok
+DROP TABLE ins_d_t, ins_d_cast, ins_d_long, ins_d_fn

@@ -1,0 +1,89 @@
+# SET とトランザクション
+
+# ROLLBACK すると、ブロック内の SET も取り消される
+statement ok
+BEGIN
+
+statement ok
+SET application_name = 'in_txn'
+
+query T
+SHOW application_name
+----
+in_txn
+
+statement ok
+ROLLBACK
+
+query T
+SHOW application_name
+----
+(empty)
+
+# COMMIT すれば残る
+statement ok
+BEGIN
+
+statement ok
+SET application_name = 'committed'
+
+statement ok
+COMMIT
+
+query T
+SHOW application_name
+----
+committed
+
+statement ok
+RESET application_name
+
+# SET LOCAL はトランザクションの終わりに元へ戻る
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL extra_float_digits = 0
+
+query T
+SHOW extra_float_digits
+----
+0
+
+statement ok
+COMMIT
+
+query T
+SHOW extra_float_digits
+----
+1
+
+# ブロック外の SET LOCAL は警告だけで効果がない
+statement ok
+SET LOCAL extra_float_digits = 0
+
+query T
+SHOW extra_float_digits
+----
+1
+
+# 失敗したブロックの中の SET は 25P02
+statement ok
+BEGIN
+
+statement error (22012)
+SELECT 1 / 0
+
+statement error (25P02)
+SET search_path = public
+
+statement error (25P02)
+SHOW search_path
+
+statement ok
+ROLLBACK
+
+query T
+SHOW search_path
+----
+"$user", public

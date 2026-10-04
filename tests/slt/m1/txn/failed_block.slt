@@ -1,0 +1,125 @@
+# トランザクションブロック内のエラー（25P02）
+
+statement ok
+CREATE TABLE txn_fb_t (n int NOT NULL)
+
+statement ok
+INSERT INTO txn_fb_t VALUES (1)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_fb_t VALUES (2)
+
+statement error (23502)
+INSERT INTO txn_fb_t VALUES (NULL)
+
+# 以降は ROLLBACK まで、どの文も 25P02
+statement error (25P02)
+SELECT n FROM txn_fb_t
+
+statement error (25P02)
+SELECT 1
+
+statement error (25P02)
+INSERT INTO txn_fb_t VALUES (3)
+
+statement error (25P02)
+CREATE TABLE txn_fb_other (x int)
+
+statement error (25P02)
+SET application_name = 'x'
+
+statement error (25P02)
+BEGIN
+
+statement ok
+ROLLBACK
+
+# エラーの前に入れた行も消えている
+query I
+SELECT n FROM txn_fb_t
+----
+1
+
+# 失敗したブロックでの COMMIT は ROLLBACK として扱われる（文自体は成功する）
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_fb_t VALUES (4)
+
+statement error (42P01)
+SELECT * FROM txn_fb_nosuch
+
+statement ok
+COMMIT
+
+query I
+SELECT n FROM txn_fb_t
+----
+1
+
+statement error (42P01)
+SELECT * FROM txn_fb_other
+
+# 構文エラーでもブロックは失敗状態になる
+statement ok
+BEGIN
+
+statement error (42601)
+SELEC 1
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ABORT
+
+# 失敗状態からの END も ROLLBACK 扱い
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_fb_t VALUES (5)
+
+statement error (22012)
+SELECT 1 / 0
+
+statement ok
+END
+
+query I
+SELECT n FROM txn_fb_t
+----
+1
+
+# ブロックが終われば普通に使える
+statement ok
+INSERT INTO txn_fb_t VALUES (6)
+
+query I
+SELECT n FROM txn_fb_t ORDER BY n
+----
+1
+6
+
+# 1 つの Query の中で: BEGIN の後のエラーでブロックは失敗状態のまま残る
+statement error (22012)
+BEGIN; INSERT INTO txn_fb_t VALUES (7); SELECT 1 / 0
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM txn_fb_t ORDER BY n
+----
+1
+6
+
+statement ok
+DROP TABLE txn_fb_t

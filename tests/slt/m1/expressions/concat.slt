@@ -1,0 +1,77 @@
+# 文字列の連結 ||
+
+query T
+SELECT 'a' || 'b'
+----
+ab
+
+query T
+SELECT 'a' || 'b' || 'c'
+----
+abc
+
+query T
+SELECT 'a' || ''
+----
+a
+
+# NULL との連結は NULL
+query TT
+SELECT 'a' || NULL, NULL || 'b'
+----
+NULL NULL
+
+# 文字列でない値との連結（text || anynonarray）
+query TTTT
+SELECT 'v' || 1, 1 || 'v', 'x' || true, 'f' || '1.5'::float8
+----
+v1 1v xtrue f1.5
+
+query T
+SELECT 'big' || 9223372036854775807
+----
+big9223372036854775807
+
+query T
+SELECT 'a' || NULL::int
+----
+NULL
+
+# 両方とも文字列でない場合は演算子がない（42883）
+statement error (42883)
+SELECT 1 || 2
+
+# varchar と text
+query T
+SELECT 'ab'::varchar(2) || 'cd'::varchar(2)
+----
+abcd
+
+# 多バイト文字
+query T
+SELECT 'あ' || 'い'
+----
+あい
+
+statement ok
+CREATE TABLE expr_cat_t (a text, b int, c varchar(5))
+
+statement ok
+INSERT INTO expr_cat_t VALUES ('x', 1, 'p'), ('y', NULL, 'q'), (NULL, 3, 'r')
+
+query T
+SELECT a || '-' || b || '-' || c FROM expr_cat_t ORDER BY c
+----
+x-1-p
+NULL
+NULL
+
+query T
+SELECT c || b FROM expr_cat_t ORDER BY c
+----
+p1
+NULL
+r3
+
+statement ok
+DROP TABLE expr_cat_t

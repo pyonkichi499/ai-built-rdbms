@@ -1,0 +1,61 @@
+# DROP TABLE、IF EXISTS、複数テーブル
+
+statement ok
+CREATE TABLE ddl_dt_a (x int)
+
+statement ok
+CREATE TABLE ddl_dt_b (x int)
+
+statement ok
+CREATE TABLE ddl_dt_c (x int)
+
+statement ok
+DROP TABLE ddl_dt_a
+
+statement error (42P01)
+SELECT * FROM ddl_dt_a
+
+statement error (42P01)
+INSERT INTO ddl_dt_a VALUES (1)
+
+# 存在しないテーブルの DROP は 42P01
+statement error (42P01)
+DROP TABLE ddl_dt_a
+
+# IF EXISTS なら成功（NOTICE のみ）
+statement ok
+DROP TABLE IF EXISTS ddl_dt_a
+
+# 複数指定のうち 1 つでも存在しなければ全体が失敗し、何も消えない
+statement error (42P01)
+DROP TABLE ddl_dt_b, ddl_dt_nosuch
+
+statement ok
+SELECT * FROM ddl_dt_b
+
+# IF EXISTS 付きなら、存在するものだけ消す
+statement ok
+DROP TABLE IF EXISTS ddl_dt_b, ddl_dt_nosuch
+
+statement error (42P01)
+SELECT * FROM ddl_dt_b
+
+# 消したテーブルと同じ名前で作り直せる（中身は空）
+statement ok
+CREATE TABLE ddl_dt_c2 (x int)
+
+statement ok
+INSERT INTO ddl_dt_c2 VALUES (1)
+
+statement ok
+DROP TABLE ddl_dt_c2
+
+statement ok
+CREATE TABLE ddl_dt_c2 (y text)
+
+query T
+SELECT * FROM ddl_dt_c2
+----
+
+statement ok
+DROP TABLE ddl_dt_c, ddl_dt_c2

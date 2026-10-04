@@ -1,0 +1,97 @@
+# 演算子の優先順位と結合性（PostgreSQL の gram.y と同じ）
+
+query IIII
+SELECT 2 + 3 * 4, (2 + 3) * 4, 2 * 3 + 4, 2 * (3 + 4)
+----
+14 20 10 14
+
+# 同じ優先順位は左結合
+query IIII
+SELECT 10 - 3 - 2, 100 / 10 / 5, 2 * 7 % 4, 17 % 5 * 3
+----
+5 2 2 6
+
+# 単項マイナスは乗除より強い
+query II
+SELECT -2 * 3, - 2 + 3
+----
+-6 1
+
+# :: は単項マイナスより強い: -2147483648::int4 は -(2147483648::int4) なので範囲外
+statement error (22003)
+SELECT -2147483648::int4
+
+query I
+SELECT (-2147483648)::int4
+----
+-2147483648
+
+# :: は乗除より強い
+query R
+SELECT 1 / 2::float8
+----
+0.5
+
+# 算術は比較より強い
+query ??
+SELECT 1 + 1 = 2, 2 * 3 > 5
+----
+t t
+
+# 比較は NOT より強い
+query ?
+SELECT NOT 1 = 2
+----
+t
+
+# NOT は AND より強い、AND は OR より強い
+query ???
+SELECT NOT false AND false, true OR true AND false, (true OR true) AND false
+----
+f t f
+
+query ?
+SELECT false AND false OR true
+----
+t
+
+# || は比較より強く、+ - より弱い
+query T
+SELECT 'a' || 1 + 2
+----
+a3
+
+query ?
+SELECT 'ab' || 'c' = 'abc'
+----
+t
+
+# IS は比較より弱い
+query ?
+SELECT 1 = 1 IS TRUE
+----
+t
+
+query ?
+SELECT NULL = 1 IS NULL
+----
+t
+
+# BETWEEN の項には算術を書ける
+query ?
+SELECT 5 BETWEEN 1 + 1 AND 2 * 3
+----
+t
+
+# 比較演算子は非結合: a < b < c は構文エラー
+statement error (42601)
+SELECT 1 < 2 < 3
+
+statement error (42601)
+SELECT 1 = 1 = true
+
+# 括弧があれば書ける
+query ?
+SELECT (1 < 2) = true
+----
+t

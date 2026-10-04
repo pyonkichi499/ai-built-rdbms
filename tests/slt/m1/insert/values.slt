@@ -1,0 +1,114 @@
+# INSERT ... VALUES: 列リスト、複数行、値の個数
+
+statement ok
+CREATE TABLE ins_v_t (a int, b text, c int)
+
+statement count 1
+INSERT INTO ins_v_t VALUES (1, 'one', 10)
+
+# 複数行
+statement count 3
+INSERT INTO ins_v_t VALUES (2, 'two', 20), (3, 'three', 30), (4, 'four', 40)
+
+# 列リスト（順序を入れ替え）
+statement count 1
+INSERT INTO ins_v_t (c, a, b) VALUES (50, 5, 'five')
+
+# 列リストで省略した列は NULL（DEFAULT がないので）
+statement count 1
+INSERT INTO ins_v_t (a) VALUES (6)
+
+# 列リストなしで値が少ない場合、後ろの列は DEFAULT（ここでは NULL）
+statement count 1
+INSERT INTO ins_v_t VALUES (7, 'seven')
+
+query ITI
+SELECT a, b, c FROM ins_v_t ORDER BY a
+----
+1 one 10
+2 two 20
+3 three 30
+4 four 40
+5 five 50
+6 NULL NULL
+7 seven NULL
+
+# 値が多すぎる（列リストなし）: 42601
+statement error (42601)
+INSERT INTO ins_v_t VALUES (8, 'x', 80, 800)
+
+# 値が多すぎる（列リストあり）: 42601
+statement error (42601)
+INSERT INTO ins_v_t (a, b) VALUES (8, 'x', 80)
+
+# 値が少なすぎる（列リストあり）: 42601
+statement error (42601)
+INSERT INTO ins_v_t (a, b, c) VALUES (8, 'x')
+
+# 複数行の長さが揃っていない: 42601
+statement error (42601)
+INSERT INTO ins_v_t VALUES (8, 'x'), (9)
+
+# 列リストの重複: 42701
+statement error (42701)
+INSERT INTO ins_v_t (a, a) VALUES (8, 9)
+
+# 列リストに存在しない列: 42703
+statement error (42703)
+INSERT INTO ins_v_t (a, nosuch) VALUES (8, 9)
+
+# 存在しないテーブル: 42P01
+statement error (42P01)
+INSERT INTO ins_v_nosuch VALUES (1)
+
+# 失敗した INSERT は何も追加しない
+query ITI
+SELECT a, b, c FROM ins_v_t WHERE a >= 8
+----
+
+# 値に式を書ける
+statement count 1
+INSERT INTO ins_v_t VALUES (1 + 7, 'e' || 'ight', 8 * 10)
+
+# 値の型変換（代入）: 文字列リテラルは列の型として解釈される
+statement count 1
+INSERT INTO ins_v_t VALUES ('9', 'nine', '90')
+
+# 整数を text 列へ（代入キャスト）
+statement count 1
+INSERT INTO ins_v_t VALUES (10, 100, NULL)
+
+query ITI
+SELECT a, b, c FROM ins_v_t WHERE a >= 8 ORDER BY a
+----
+8 eight 80
+9 nine 90
+10 100 NULL
+
+# 不正な文字列は 22P02
+statement error (22P02)
+INSERT INTO ins_v_t VALUES ('x', 'bad', 0)
+
+# text 型の式は int 列に代入できない（代入キャストがない）: 42804
+statement error (42804)
+INSERT INTO ins_v_t (a) VALUES ('1'::text)
+
+# float8 から int への代入は丸める
+statement count 1
+INSERT INTO ins_v_t (a, b) VALUES ('11.5'::float8, 'rounded')
+
+query IT
+SELECT a, b FROM ins_v_t WHERE b = 'rounded'
+----
+12 rounded
+
+# bigint から int への代入で範囲外は 22003
+statement error (22003)
+INSERT INTO ins_v_t (a) VALUES (3000000000)
+
+# bool は int 列に代入できない: 42804
+statement error (42804)
+INSERT INTO ins_v_t (a) VALUES (true)
+
+statement ok
+DROP TABLE ins_v_t

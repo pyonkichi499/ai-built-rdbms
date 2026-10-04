@@ -1,0 +1,51 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1r s2r s1w s2w s1c s2c s3check
+step s1r: SELECT count(*) AS on_call FROM doctors WHERE on_call;
+on_call
+-------
+      2
+(1 row)
+
+step s2r: SELECT count(*) AS on_call FROM doctors WHERE on_call;
+on_call
+-------
+      2
+(1 row)
+
+step s1w: UPDATE doctors SET on_call = false WHERE name = 'alice';
+step s2w: UPDATE doctors SET on_call = false WHERE name = 'bob';
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3check: SELECT name, on_call FROM doctors ORDER BY name;
+name |on_call
+-----+-------
+alice|f      
+bob  |f      
+(2 rows)
+
+
+starting permutation: s1r s1w s2r s2w s1c s2c s3check
+step s1r: SELECT count(*) AS on_call FROM doctors WHERE on_call;
+on_call
+-------
+      2
+(1 row)
+
+step s1w: UPDATE doctors SET on_call = false WHERE name = 'alice';
+step s2r: SELECT count(*) AS on_call FROM doctors WHERE on_call;
+on_call
+-------
+      2
+(1 row)
+
+step s2w: UPDATE doctors SET on_call = false WHERE name = 'bob';
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3check: SELECT name, on_call FROM doctors ORDER BY name;
+name |on_call
+-----+-------
+alice|f      
+bob  |f      
+(2 rows)
+

@@ -1,0 +1,15 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Local data / logs
+*.log
+/data/
+.env

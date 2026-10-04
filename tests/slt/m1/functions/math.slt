@@ -1,0 +1,69 @@
+# abs
+
+query IIII
+SELECT abs(-5), abs(5), abs(0), abs(-5::int8)
+----
+5 5 0 5
+
+query I
+SELECT abs(-32767::int2)
+----
+32767
+
+query RR
+SELECT abs('-2.5'::float8), abs('-0.5'::float4)
+----
+2.5 0.5
+
+query R
+SELECT abs('-0'::float8)
+----
+0
+
+query I
+SELECT abs(NULL::int)
+----
+NULL
+
+# unknown の引数は数値カテゴリの優先型（float8）として解釈される
+query R
+SELECT abs('-1.5')
+----
+1.5
+
+statement error (22P02)
+SELECT abs('abc')
+
+# 文字列型の値は渡せない（42883）
+statement error (42883)
+SELECT abs('1'::text)
+
+statement error (42883)
+SELECT abs(true)
+
+# 範囲外
+statement error (22003)
+SELECT abs((-32767)::int2 - 1::int2)
+
+statement error (22003)
+SELECT abs(-9223372036854775807 - 1)
+
+statement ok
+CREATE TABLE fn_math_t (i int, f float8)
+
+statement ok
+INSERT INTO fn_math_t VALUES (-3, '-1.25'), (4, '2'), (NULL, NULL)
+
+query IR
+SELECT abs(i), abs(f) FROM fn_math_t ORDER BY i
+----
+3 1.25
+4 2
+NULL NULL
+
+statement ok
+DROP TABLE fn_math_t
+
+# 存在しない関数: 42883
+statement error (42883)
+SELECT no_such_function(1)

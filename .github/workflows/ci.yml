@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt / clippy / test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: impl/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+
+  # 共有 sqllogictest スイートの期待値が、本物の PostgreSQL 17 で正しいことを確かめる。
+  slt-pg:
+    name: SLT on PostgreSQL 17 (expected values)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache sqllogictest-bin
+        id: slt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqllogictest
+          key: sqllogictest-bin-0.29.1-${{ runner.os }}
+      - name: Install sqllogictest-bin 0.29.1
+        if: steps.slt-cache.outputs.cache-hit != 'true'
+        # --locked は必須（tokio-postgres 0.7.12 を使うため。spec/research/research-slt.md 参照）
+        run: cargo install sqllogictest-bin --locked --version 0.29.1
+      - name: Run tests/slt against PostgreSQL
+        run: tests/run.sh --target pg --host 127.0.0.1 --port 55432
+
+  # yuzhu-server に対して共有スイートを流す。
+  slt-yuzhu:
+    name: SLT on yuzhu-server
+    runs-on: ubuntu-latest
+    # TODO: M1 の実装が揃ってスイートが通るようになったら continue-on-error を外す。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: Cache sqllogictest-bin
+        id: slt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqllogictest
+          key: sqllogictest-bin-0.29.1-${{ runner.os }}
+      - name: Install sqllogictest-bin 0.29.1
+        if: steps.slt-cache.outputs.cache-hit != 'true'
+        run: cargo install sqllogictest-bin --locked --version 0.29.1
+      - name: Build yuzhu-server
+        working-directory: impl/rust
+        run: cargo build --release -p yuzhu-server
+      - name: Start yuzhu-server
+        run: |
+          impl/rust/target/release/yuzhu-server --listen 127.0.0.1 --port 5433 > yuzhu-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/5433) 2>/dev/null; then echo "yuzhu-server is up"; exit 0; fi
+            sleep 0.5
+          done
+          echo "yuzhu-server did not start" >&2
+          cat yuzhu-server.log >&2
+          exit 1
+      - name: Run tests/slt against yuzhu-server
+        run: tests/run.sh --target yuzhu --host 127.0.0.1 --port 5433
+      - name: Show yuzhu-server log
+        if: always()
+        run: cat yuzhu-server.log || true
+
+  # Docker イメージがビルドでき、起動して 5432 を listen することを確かめる（push はしない）。
+  docker:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: yuzhu:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (TCP listen)
+        run: |
+          docker run -d --name yuzhu-smoke -p 55432:5432 yuzhu:ci
+          for _ in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/55432) 2>/dev/null; then echo "yuzhu-server is up"; docker rm -f yuzhu-smoke; exit 0; fi
+            sleep 0.5
+          done
+          echo "yuzhu-server did not start" >&2
+          docker logs yuzhu-smoke >&2
+          docker rm -f yuzhu-smoke
+          exit 1

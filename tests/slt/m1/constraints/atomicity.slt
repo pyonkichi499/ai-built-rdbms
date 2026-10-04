@@ -1,0 +1,82 @@
+# 文の原子性: 文の途中で失敗したら、その文の変更はすべて取り消される
+
+statement ok
+CREATE TABLE con_at_t (a int NOT NULL CHECK (a < 100), v varchar(3))
+
+statement ok
+INSERT INTO con_at_t VALUES (1, 'x')
+
+# 複数行の途中で NOT NULL 違反
+statement error (23502)
+INSERT INTO con_at_t VALUES (2, 'a'), (3, 'b'), (NULL, 'c'), (4, 'd')
+
+# 複数行の途中で CHECK 違反
+statement error (23514)
+INSERT INTO con_at_t VALUES (5, 'a'), (500, 'b')
+
+# 複数行の途中で長さ超過
+statement error (22001)
+INSERT INTO con_at_t VALUES (6, 'a'), (7, 'long')
+
+# 複数行の途中で型変換エラー
+statement error (22P02)
+INSERT INTO con_at_t VALUES (8, 'a'), ('x', 'b')
+
+# 複数行の途中でゼロ除算
+statement error (22012)
+INSERT INTO con_at_t VALUES (9, 'a'), (1 / 0, 'b')
+
+query IT
+SELECT a, v FROM con_at_t
+----
+1 x
+
+# INSERT ... SELECT の途中で失敗
+statement ok
+CREATE TABLE con_at_src (n int)
+
+statement ok
+INSERT INTO con_at_src VALUES (10), (20), (300), (30)
+
+statement error (23514)
+INSERT INTO con_at_t (a) SELECT n FROM con_at_src
+
+query IT
+SELECT a, v FROM con_at_t
+----
+1 x
+
+# 自分自身への INSERT ... SELECT の途中で失敗
+statement ok
+INSERT INTO con_at_t VALUES (50, 'y'), (2, 'z')
+
+statement error (23514)
+INSERT INTO con_at_t SELECT a * 2, v FROM con_at_t
+
+query IT rowsort
+SELECT a, v FROM con_at_t
+----
+1 x
+2 z
+50 y
+
+# 1 つの Query メッセージに複数の文がある場合（暗黙のトランザクション）:
+# 途中でエラーになると、それより前の文の変更も取り消される
+statement error (23502)
+INSERT INTO con_at_t VALUES (60, 'p'); INSERT INTO con_at_t VALUES (NULL, 'q')
+
+query IT rowsort
+SELECT a, v FROM con_at_t
+----
+1 x
+2 z
+50 y
+
+statement error (42P01)
+CREATE TABLE con_at_tmp (x int); INSERT INTO con_at_tmp VALUES (1); SELECT * FROM con_at_nosuch
+
+statement error (42P01)
+SELECT * FROM con_at_tmp
+
+statement ok
+DROP TABLE con_at_t, con_at_src

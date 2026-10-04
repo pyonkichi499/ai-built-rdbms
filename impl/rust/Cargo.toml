@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/yuzhu-core", "crates/yuzhu-server", "crates/yuzhu-numeric", "crates/yuzhu-datetime"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/pyonkichi499/ai-built-rdbms"
+publish = false
+
+[workspace.dependencies]
+yuzhu-core = { path = "crates/yuzhu-core" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+postgres = "0.19"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stderr = "warn"
+undocumented_unsafe_blocks = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

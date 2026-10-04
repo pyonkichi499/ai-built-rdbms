@@ -1,0 +1,218 @@
+# BEGIN / COMMIT / ROLLBACK
+
+statement ok
+CREATE TABLE txn_cr_t (n int)
+
+# COMMIT した変更は残る
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_cr_t VALUES (1)
+
+query I
+SELECT n FROM txn_cr_t
+----
+1
+
+statement ok
+COMMIT
+
+query I
+SELECT n FROM txn_cr_t
+----
+1
+
+# ROLLBACK した変更は消える
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_cr_t VALUES (2), (3)
+
+statement ok
+INSERT INTO txn_cr_t SELECT n * 10 FROM txn_cr_t
+
+query I
+SELECT n FROM txn_cr_t ORDER BY n
+----
+1
+2
+3
+10
+20
+30
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM txn_cr_t ORDER BY n
+----
+1
+
+# CREATE TABLE の ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE txn_cr_new (x int)
+
+statement ok
+INSERT INTO txn_cr_new VALUES (1)
+
+query I
+SELECT x FROM txn_cr_new
+----
+1
+
+statement ok
+ROLLBACK
+
+statement error (42P01)
+SELECT x FROM txn_cr_new
+
+# ロールバックした名前で作り直せる
+statement ok
+CREATE TABLE txn_cr_new (y text)
+
+statement ok
+DROP TABLE txn_cr_new
+
+# DROP TABLE の ROLLBACK: テーブルも中身も戻る
+statement ok
+BEGIN
+
+statement ok
+DROP TABLE txn_cr_t
+
+statement error (42P01)
+SELECT n FROM txn_cr_t
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM txn_cr_t
+----
+1
+
+# CREATE TABLE の COMMIT
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE txn_cr_kept (z int)
+
+statement ok
+INSERT INTO txn_cr_kept VALUES (5)
+
+statement ok
+COMMIT
+
+query I
+SELECT z FROM txn_cr_kept
+----
+5
+
+# 別の書き方: START TRANSACTION / END、BEGIN WORK / COMMIT WORK、BEGIN TRANSACTION / ROLLBACK WORK、ABORT
+statement ok
+START TRANSACTION
+
+statement ok
+INSERT INTO txn_cr_t VALUES (100)
+
+statement ok
+END
+
+statement ok
+BEGIN WORK
+
+statement ok
+INSERT INTO txn_cr_t VALUES (101)
+
+statement ok
+COMMIT WORK
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+INSERT INTO txn_cr_t VALUES (102)
+
+statement ok
+COMMIT TRANSACTION
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_cr_t VALUES (900)
+
+statement ok
+ROLLBACK WORK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_cr_t VALUES (901)
+
+statement ok
+ROLLBACK TRANSACTION
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_cr_t VALUES (902)
+
+statement ok
+ABORT
+
+query I
+SELECT n FROM txn_cr_t ORDER BY n
+----
+1
+100
+101
+102
+
+# ブロック外の COMMIT / ROLLBACK は警告だけで成功する
+statement ok
+COMMIT
+
+statement ok
+ROLLBACK
+
+# ブロック内の BEGIN も警告だけで成功する（ブロックは続く）
+statement ok
+BEGIN
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO txn_cr_t VALUES (200)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM txn_cr_t WHERE n >= 200
+----
+
+# 1 つの Query の中の BEGIN / COMMIT
+statement ok
+BEGIN; INSERT INTO txn_cr_t VALUES (300); COMMIT
+
+statement ok
+BEGIN; INSERT INTO txn_cr_t VALUES (301); ROLLBACK
+
+query I
+SELECT n FROM txn_cr_t WHERE n >= 300
+----
+300
+
+statement ok
+DROP TABLE txn_cr_t, txn_cr_kept

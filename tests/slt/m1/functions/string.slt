@@ -1,0 +1,79 @@
+# 文字列関数: length、lower、upper
+
+query IIII
+SELECT length('abc'), length(''), length('  a  '), length('あいう')
+----
+3 0 5 3
+
+query I
+SELECT length(NULL)
+----
+NULL
+
+query I
+SELECT length('abc'::varchar(5))
+----
+3
+
+# length に整数は渡せない（暗黙の型変換がない）: 42883
+statement error (42883)
+SELECT length(123)
+
+query TT
+SELECT lower('ABC def'), upper('ABC def')
+----
+abc def ABC DEF
+
+query TT
+SELECT lower(NULL), upper('')
+----
+NULL (empty)
+
+# C ロケールでは ASCII 以外の文字は変換されない
+query TT
+SELECT upper('é'), lower('Ä')
+----
+é Ä
+
+query T
+SELECT upper('aéb')
+----
+AéB
+
+statement error (42883)
+SELECT lower(1)
+
+# 関数名は大文字小文字を区別しない
+query TI
+SELECT UPPER('x'), LENGTH('xy')
+----
+X 2
+
+# 引数の数が違う: 42883
+statement error (42883)
+SELECT length()
+
+statement error (42883)
+SELECT upper()
+
+# 入れ子
+query T
+SELECT upper(lower('MiXeD'))
+----
+MIXED
+
+statement ok
+CREATE TABLE fn_str_t (s text, v varchar(10))
+
+statement ok
+INSERT INTO fn_str_t VALUES ('Hello', 'World'), (NULL, 'x'), ('', NULL)
+
+query TTI
+SELECT upper(s), lower(v), length(s) FROM fn_str_t ORDER BY v
+----
+HELLO world 5
+NULL x NULL
+(empty) NULL 0
+
+statement ok
+DROP TABLE fn_str_t

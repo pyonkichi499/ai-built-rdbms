@@ -1,0 +1,64 @@
+# bool の入出力
+
+query ??
+SELECT true, false
+----
+t f
+
+query ??
+SELECT TRUE, FALSE
+----
+t f
+
+statement ok
+CREATE TABLE typ_bool_t (b boolean)
+
+statement ok
+INSERT INTO typ_bool_t VALUES (true), ('f'), ('yes'), ('OFF'), (NULL), ('1')
+
+query ? rowsort
+SELECT b FROM typ_bool_t
+----
+NULL
+f
+f
+t
+t
+t
+
+statement error (22P02)
+INSERT INTO typ_bool_t VALUES ('2')
+
+# 整数リテラルは bool 列に代入できない（int4 → bool は明示キャストのみ）
+statement error (42804)
+INSERT INTO typ_bool_t VALUES (1)
+
+query ? rowsort
+SELECT b FROM typ_bool_t WHERE b
+----
+t
+t
+t
+
+query ? rowsort
+SELECT NOT b FROM typ_bool_t
+----
+NULL
+f
+f
+f
+t
+t
+
+query ?
+SELECT b FROM typ_bool_t ORDER BY b NULLS FIRST
+----
+NULL
+f
+f
+t
+t
+t
+
+statement ok
+DROP TABLE typ_bool_t

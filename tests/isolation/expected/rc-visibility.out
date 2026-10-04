@@ -1,0 +1,55 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s1r s2b s2u s2i s2r s1r s2c s1r s1c
+step s1b: BEGIN;
+step s1r: SELECT id, val FROM rcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+(1 row)
+
+step s2b: BEGIN;
+step s2u: UPDATE rcv SET val = 20 WHERE id = 1;
+step s2i: INSERT INTO rcv VALUES (2, 30);
+step s2r: SELECT id, val FROM rcv ORDER BY id;
+id|val
+--+---
+ 1| 20
+ 2| 30
+(2 rows)
+
+step s1r: SELECT id, val FROM rcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+(1 row)
+
+step s2c: COMMIT;
+step s1r: SELECT id, val FROM rcv ORDER BY id;
+id|val
+--+---
+ 1| 20
+ 2| 30
+(2 rows)
+
+step s1c: COMMIT;
+
+starting permutation: s1b s2b s2u s2i s1r s2a s1r s1c
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s2u: UPDATE rcv SET val = 20 WHERE id = 1;
+step s2i: INSERT INTO rcv VALUES (2, 30);
+step s1r: SELECT id, val FROM rcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+(1 row)
+
+step s2a: ROLLBACK;
+step s1r: SELECT id, val FROM rcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+(1 row)
+
+step s1c: COMMIT;

@@ -1,0 +1,113 @@
+# LIMIT / OFFSET
+
+statement ok
+CREATE TABLE sel_l_t (n int)
+
+statement ok
+INSERT INTO sel_l_t VALUES (5), (3), (1), (4), (2)
+
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT 2
+----
+1
+2
+
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT 2 OFFSET 1
+----
+2
+3
+
+# OFFSET を先に書いてもよい
+query I
+SELECT n FROM sel_l_t ORDER BY n OFFSET 1 LIMIT 2
+----
+2
+3
+
+query I
+SELECT n FROM sel_l_t ORDER BY n OFFSET 3
+----
+4
+5
+
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT 0
+----
+
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT 10
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT n FROM sel_l_t ORDER BY n OFFSET 10
+----
+
+# LIMIT ALL と LIMIT NULL は制限なし
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT ALL
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT NULL OFFSET 4
+----
+5
+
+# OFFSET NULL は 0 と同じ
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT 1 OFFSET NULL
+----
+1
+
+# 式を書ける
+query I
+SELECT n FROM sel_l_t ORDER BY n LIMIT 1 + 1 OFFSET 2 * 1
+----
+3
+4
+
+# 負の LIMIT は 2201W、負の OFFSET は 2201X
+statement error (2201W)
+SELECT n FROM sel_l_t LIMIT -1
+
+statement error (2201X)
+SELECT n FROM sel_l_t OFFSET -1
+
+# 型が合わない
+statement error (22P02)
+SELECT n FROM sel_l_t LIMIT 'abc'
+
+# FROM なしの SELECT にも LIMIT を書ける
+query I
+SELECT 1 LIMIT 1
+----
+1
+
+query I
+SELECT 1 LIMIT 0
+----
+
+query I
+SELECT 1 OFFSET 1
+----
+
+# 降順と組み合わせ
+query I
+SELECT n FROM sel_l_t ORDER BY n DESC LIMIT 3 OFFSET 1
+----
+4
+3
+2
+
+statement ok
+DROP TABLE sel_l_t

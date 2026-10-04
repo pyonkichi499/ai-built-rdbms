@@ -1,0 +1,121 @@
+# SELECT の基本: FROM なし、*、t.*、別名
+
+query I
+SELECT 1
+----
+1
+
+query ITI?
+SELECT 1, 'two', 1 + 2, true
+----
+1 two 3 t
+
+query T
+SELECT NULL
+----
+NULL
+
+query T
+SELECT ''
+----
+(empty)
+
+statement ok
+CREATE TABLE sel_b_t (id int, name text, score int)
+
+statement ok
+INSERT INTO sel_b_t VALUES (1, 'alice', 90), (2, 'bob', NULL), (3, 'carol', 75)
+
+query ITI rowsort
+SELECT * FROM sel_b_t
+----
+1 alice 90
+2 bob NULL
+3 carol 75
+
+query ITI rowsort
+SELECT sel_b_t.* FROM sel_b_t
+----
+1 alice 90
+2 bob NULL
+3 carol 75
+
+# テーブルの別名
+query ITI rowsort
+SELECT x.* FROM sel_b_t AS x
+----
+1 alice 90
+2 bob NULL
+3 carol 75
+
+query IT rowsort
+SELECT x.id, x.name FROM sel_b_t x
+----
+1 alice
+2 bob
+3 carol
+
+# 別名を付けたら元の名前では参照できない（42P01）
+statement error (42P01)
+SELECT sel_b_t.id FROM sel_b_t AS x
+
+# * と他の列の組み合わせ、* の複数回
+query TITII rowsort
+SELECT name, *, id FROM sel_b_t
+----
+alice 1 alice 90 1
+bob 2 bob NULL 2
+carol 3 carol 75 3
+
+query IITIIIT rowsort
+SELECT id * 10, sel_b_t.*, id, *
+FROM sel_b_t WHERE id = 1
+----
+10 1 alice 90 1 1 alice 90
+
+# 列の別名（AS あり・なし）
+query IT rowsort
+SELECT id AS ident, name n FROM sel_b_t
+----
+1 alice
+2 bob
+3 carol
+
+# 式
+query IT rowsort
+SELECT id + score, upper(name) FROM sel_b_t
+----
+78 CAROL
+91 ALICE
+NULL BOB
+
+# 修飾された列名
+query I rowsort
+SELECT sel_b_t.id FROM sel_b_t
+----
+1
+2
+3
+
+# 定数だけの列（FROM あり）は行数分返る
+query T rowsort
+SELECT 'k' FROM sel_b_t
+----
+k
+k
+k
+
+# 0 行のテーブル
+statement ok
+CREATE TABLE sel_b_empty (a int)
+
+query I
+SELECT * FROM sel_b_empty
+----
+
+query I
+SELECT 1 FROM sel_b_empty
+----
+
+statement ok
+DROP TABLE sel_b_t, sel_b_empty

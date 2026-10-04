@@ -1,0 +1,128 @@
+# 比較演算子
+
+query ??????
+SELECT 1 = 1, 1 <> 2, 1 != 2, 1 < 2, 2 <= 2, 3 > 2
+----
+t t t t t t
+
+query ??????
+SELECT 1 = 2, 1 <> 1, 1 != 1, 2 < 1, 3 <= 2, 2 > 3
+----
+f f f f f f
+
+query ?
+SELECT 2 >= 3
+----
+f
+
+# NULL との比較は NULL
+query ???
+SELECT 1 = NULL, NULL <> NULL, NULL < 1
+----
+NULL NULL NULL
+
+# 異なる整数型の比較
+query ???
+SELECT 1::int2 = 1::int8, 32767::int2 < 2147483648, 5::int8 > 4::int2
+----
+t t t
+
+# 整数と float の比較
+query ???
+SELECT 1 = '1'::float8, 1 < '1.5'::float8, '0.1'::float4 = '0.1'::float8
+----
+t t f
+
+# NaN は他のどの値よりも大きく、NaN 同士は等しい（PostgreSQL 独自の規則）
+query ????
+SELECT 'NaN'::float8 = 'NaN'::float8, 'NaN'::float8 > 'Infinity'::float8, 'NaN'::float8 <> 'NaN'::float8, '1'::float8 < 'NaN'::float8
+----
+t t f t
+
+# -0 と 0 は等しい
+query ?
+SELECT '-0'::float8 = '0'::float8
+----
+t
+
+# 文字列の比較はバイト順（C 照合順序）
+query ?????
+SELECT 'a' < 'b', 'B' < 'a', 'abc' < 'abd', 'ab' < 'abc', '' < 'a'
+----
+t t t t t
+
+query ??
+SELECT 'Z' < 'a', 'a' = 'A'
+----
+t f
+
+# 後ろの空白は text では意味を持つ
+query ?
+SELECT 'a ' = 'a'
+----
+f
+
+# 多バイト文字のバイト順
+query ?
+SELECT 'あ' < 'い'
+----
+t
+
+# varchar と text の比較
+query ??
+SELECT 'abc'::varchar(5) = 'abc'::text, 'abc'::varchar < 'abd'
+----
+t t
+
+# bool の比較: false < true
+query ???
+SELECT false < true, true = true, true > NULL
+----
+t t NULL
+
+# unknown 同士の比較は text として比較する
+query ?
+SELECT 'abc' = 'abc'
+----
+t
+
+# 型が合わない比較
+statement error (42883)
+SELECT 1 = true
+
+statement error (42883)
+SELECT 1 = 'a'::text
+
+# 文字列リテラルは相手の型として解釈される
+query ??
+SELECT 1 = '1', true = 't'
+----
+t t
+
+statement error (22P02)
+SELECT 1 = 'a'
+
+# 表の列の比較
+statement ok
+CREATE TABLE expr_cmp_t (i int, f float8, s text, b bool)
+
+statement ok
+INSERT INTO expr_cmp_t VALUES (1, '1.0', 'x', true), (2, '1.5', 'y', false)
+
+query I rowsort
+SELECT i FROM expr_cmp_t WHERE i = f
+----
+1
+
+query I rowsort
+SELECT i FROM expr_cmp_t WHERE s >= 'y'
+----
+2
+
+query I rowsort
+SELECT i FROM expr_cmp_t WHERE b = false
+----
+2
+
+statement ok
+DROP TABLE expr_cmp_t

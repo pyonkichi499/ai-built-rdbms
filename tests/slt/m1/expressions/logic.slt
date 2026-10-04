@@ -1,0 +1,103 @@
+# 三値論理と IS 述語
+
+# AND
+query ?????????
+SELECT true AND true, true AND false, true AND NULL, false AND true, false AND false, false AND NULL, NULL AND true, NULL AND false, NULL AND NULL
+----
+t f NULL f f f NULL f NULL
+
+# OR
+query ?????????
+SELECT true OR true, true OR false, true OR NULL, false OR true, false OR false, false OR NULL, NULL OR true, NULL OR false, NULL OR NULL
+----
+t t t t f NULL t NULL NULL
+
+# NOT
+query ???
+SELECT NOT true, NOT false, NOT NULL::bool
+----
+f t NULL
+
+# IS [NOT] NULL
+query ????
+SELECT NULL IS NULL, 1 IS NULL, NULL IS NOT NULL, 1 IS NOT NULL
+----
+t f f t
+
+query ??
+SELECT '' IS NULL, 'x' IS NOT NULL
+----
+f t
+
+# IS [NOT] TRUE / FALSE は NULL を返さない
+query ???
+SELECT true IS TRUE, false IS TRUE, NULL IS TRUE
+----
+t f f
+
+query ???
+SELECT true IS NOT TRUE, false IS NOT TRUE, NULL IS NOT TRUE
+----
+f t t
+
+query ???
+SELECT true IS FALSE, false IS FALSE, NULL IS FALSE
+----
+f t f
+
+query ???
+SELECT true IS NOT FALSE, false IS NOT FALSE, NULL IS NOT FALSE
+----
+t f t
+
+query ??
+SELECT (1 = NULL) IS NULL, (1 = NULL) IS NOT TRUE
+----
+t t
+
+# IS TRUE の引数は bool でなければならない
+statement error (42804)
+SELECT 1 IS TRUE
+
+# AND/OR の引数は bool でなければならない
+statement error (42804)
+SELECT 1 AND true
+
+statement error (42804)
+SELECT NOT 1
+
+# 文字列リテラルは bool として解釈される
+query ??
+SELECT 't' AND true, 'no' OR false
+----
+t f
+
+# 表の値に対する三値論理
+statement ok
+CREATE TABLE expr_logic_t (id int, p bool, q bool)
+
+statement ok
+INSERT INTO expr_logic_t VALUES (1, true, NULL), (2, false, NULL), (3, NULL, NULL), (4, true, true)
+
+query I??
+SELECT id, p AND q, p OR q FROM expr_logic_t ORDER BY id
+----
+1 NULL t
+2 f NULL
+3 NULL NULL
+4 t t
+
+query I rowsort
+SELECT id FROM expr_logic_t WHERE p IS NOT FALSE
+----
+1
+3
+4
+
+query I rowsort
+SELECT id FROM expr_logic_t WHERE NOT (p AND q)
+----
+2
+
+statement ok
+DROP TABLE expr_logic_t

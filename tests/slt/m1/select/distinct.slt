@@ -1,0 +1,73 @@
+# SELECT DISTINCT
+
+statement ok
+CREATE TABLE sel_d_t (a int, b text)
+
+statement ok
+INSERT INTO sel_d_t VALUES (1, 'x'), (1, 'x'), (1, 'y'), (2, 'x'), (NULL, 'x'), (NULL, 'x'), (NULL, NULL), (NULL, NULL)
+
+query I
+SELECT DISTINCT a FROM sel_d_t ORDER BY a
+----
+1
+2
+NULL
+
+# NULL 同士は DISTINCT では同じ値として扱う
+query IT
+SELECT DISTINCT a, b FROM sel_d_t ORDER BY a, b
+----
+1 x
+1 y
+2 x
+NULL x
+NULL NULL
+
+query T rowsort
+SELECT DISTINCT b FROM sel_d_t
+----
+NULL
+x
+y
+
+# 式の DISTINCT
+query I
+SELECT DISTINCT a % 2 FROM sel_d_t WHERE a IS NOT NULL ORDER BY 1
+----
+0
+1
+
+# 定数の DISTINCT
+query T
+SELECT DISTINCT 'c' FROM sel_d_t
+----
+c
+
+# DISTINCT と ORDER BY: ORDER BY の式は出力列に含まれていなければならない（42P10）
+statement error (42P10)
+SELECT DISTINCT b FROM sel_d_t ORDER BY a
+
+query T
+SELECT DISTINCT b AS bb FROM sel_d_t ORDER BY bb DESC
+----
+NULL
+y
+x
+
+# DISTINCT と LIMIT
+query I
+SELECT DISTINCT a FROM sel_d_t ORDER BY a LIMIT 2
+----
+1
+2
+
+# SELECT ALL は通常の SELECT と同じ（重複を残す）
+query I rowsort
+SELECT ALL a FROM sel_d_t WHERE a = 1
+----
+1
+1
+1
+
+statement ok
+DROP TABLE sel_d_t

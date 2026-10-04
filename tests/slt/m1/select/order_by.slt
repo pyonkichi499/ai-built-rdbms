@@ -1,0 +1,223 @@
+# ORDER BY: ASC/DESC、NULLS FIRST/LAST、出力列番号、別名、式
+
+statement ok
+CREATE TABLE sel_o_t (a int, b text, c float8)
+
+statement ok
+INSERT INTO sel_o_t VALUES
+    (3, 'banana', '1.5'),
+    (1, 'Apple', NULL),
+    (NULL, 'cherry', '-2'),
+    (2, 'apple', '0'),
+    (5, NULL, 'NaN'),
+    (4, 'Banana', 'Infinity')
+
+# 既定は昇順、NULL は最後
+query IT
+SELECT a, b FROM sel_o_t ORDER BY a
+----
+1 Apple
+2 apple
+3 banana
+4 Banana
+5 NULL
+NULL cherry
+
+query IT
+SELECT a, b FROM sel_o_t ORDER BY a ASC
+----
+1 Apple
+2 apple
+3 banana
+4 Banana
+5 NULL
+NULL cherry
+
+# 降順では NULL が最初
+query IT
+SELECT a, b FROM sel_o_t ORDER BY a DESC
+----
+NULL cherry
+5 NULL
+4 Banana
+3 banana
+2 apple
+1 Apple
+
+query I
+SELECT a FROM sel_o_t ORDER BY a NULLS FIRST
+----
+NULL
+1
+2
+3
+4
+5
+
+query I
+SELECT a FROM sel_o_t ORDER BY a DESC NULLS LAST
+----
+5
+4
+3
+2
+1
+NULL
+
+query I
+SELECT a FROM sel_o_t ORDER BY a ASC NULLS LAST
+----
+1
+2
+3
+4
+5
+NULL
+
+query I
+SELECT a FROM sel_o_t ORDER BY a DESC NULLS FIRST
+----
+NULL
+5
+4
+3
+2
+1
+
+# 文字列はバイト順（C 照合順序）: 大文字が小文字より前
+query T
+SELECT b FROM sel_o_t ORDER BY b
+----
+Apple
+Banana
+apple
+banana
+cherry
+NULL
+
+# float8: NaN は最大、Infinity より大きい
+query R
+SELECT c FROM sel_o_t ORDER BY c
+----
+-2
+0
+1.5
+Infinity
+NaN
+NULL
+
+query R
+SELECT c FROM sel_o_t ORDER BY c DESC
+----
+NULL
+NaN
+Infinity
+1.5
+0
+-2
+
+# 出力列の番号
+query TI
+SELECT b, a FROM sel_o_t ORDER BY 2 DESC NULLS LAST
+----
+NULL 5
+Banana 4
+banana 3
+apple 2
+Apple 1
+cherry NULL
+
+# 出力列の別名
+query I
+SELECT a * -1 AS neg FROM sel_o_t ORDER BY neg NULLS FIRST
+----
+NULL
+-5
+-4
+-3
+-2
+-1
+
+# 出力に含まれない列での並べ替え
+query T
+SELECT b FROM sel_o_t ORDER BY a NULLS FIRST
+----
+cherry
+Apple
+apple
+banana
+Banana
+NULL
+
+# 式での並べ替え
+query I
+SELECT a FROM sel_o_t WHERE a IS NOT NULL ORDER BY a % 3, a
+----
+3
+1
+4
+2
+5
+
+# 複数キー
+statement ok
+CREATE TABLE sel_o_multi (g int, v text)
+
+statement ok
+INSERT INTO sel_o_multi VALUES (1, 'b'), (2, 'a'), (1, 'a'), (2, 'c'), (1, NULL)
+
+query IT
+SELECT g, v FROM sel_o_multi ORDER BY g DESC, v
+----
+2 a
+2 c
+1 a
+1 b
+1 NULL
+
+query IT
+SELECT g, v FROM sel_o_multi ORDER BY 1, 2 DESC
+----
+1 NULL
+1 b
+1 a
+2 c
+2 a
+
+# 番号が範囲外: 42P10
+statement error (42P10)
+SELECT a FROM sel_o_t ORDER BY 2
+
+statement error (42P10)
+SELECT a FROM sel_o_t ORDER BY 0
+
+# 別名は式の中では参照できない（入力列として探すので 42703）
+statement error (42703)
+SELECT a AS aa FROM sel_o_t ORDER BY aa + 1
+
+# 別名と入力列の名前が同じなら、単純な名前は出力列（別名）を優先する
+query I
+SELECT -a AS a FROM sel_o_t WHERE a IS NOT NULL ORDER BY a
+----
+-5
+-4
+-3
+-2
+-1
+
+# 式の中の名前は入力列として解決される
+query I
+SELECT -a AS a FROM sel_o_t WHERE a IS NOT NULL ORDER BY a + 0
+----
+-1
+-2
+-3
+-4
+-5
+
+# 同じ別名が 2 つあると曖昧（42702）
+statement error (42702)
+SELECT a AS x, b AS x FROM sel_o_t ORDER BY x
+
+statement ok
+DROP TABLE sel_o_t, sel_o_multi

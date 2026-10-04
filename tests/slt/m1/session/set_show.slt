@@ -1,0 +1,269 @@
+# SET / SHOW / RESET
+
+# search_path
+query T
+SHOW search_path
+----
+"$user", public
+
+statement ok
+SET search_path TO public
+
+query T
+SHOW search_path
+----
+public
+
+statement ok
+SET search_path = myschema, public
+
+query T
+SHOW search_path
+----
+myschema, public
+
+statement ok
+SET search_path TO DEFAULT
+
+query T
+SHOW search_path
+----
+"$user", public
+
+statement ok
+SET search_path = 'public'
+
+statement ok
+RESET search_path
+
+query T
+SHOW search_path
+----
+"$user", public
+
+# extra_float_digits
+query T
+SHOW extra_float_digits
+----
+1
+
+statement ok
+SET extra_float_digits = 0
+
+query T
+SHOW extra_float_digits
+----
+0
+
+# extra_float_digits <= 0 では、従来の %.(15+n)g 形式で出力する
+query RR
+SELECT '0.1'::float8 + '0.2'::float8, '1'::float8 / '3'::float8
+----
+0.3 0.333333333333333
+
+query R
+SELECT '0.1'::float4::float8
+----
+0.100000001490116
+
+query R
+SELECT '1'::float4 / '3'::float4
+----
+0.333333
+
+statement ok
+SET extra_float_digits TO 3
+
+query R
+SELECT '0.1'::float8 + '0.2'::float8
+----
+0.30000000000000004
+
+statement ok
+SET extra_float_digits = -15
+
+query R
+SELECT '3.14159'::float8
+----
+3
+
+# 範囲外の値は 22023
+statement error (22023)
+SET extra_float_digits = 4
+
+statement error (22023)
+SET extra_float_digits = -16
+
+# 数値でない値は 22023
+statement error (22023)
+SET extra_float_digits = 'abc'
+
+statement ok
+RESET extra_float_digits
+
+query T
+SHOW extra_float_digits
+----
+1
+
+query R
+SELECT '0.1'::float8 + '0.2'::float8
+----
+0.30000000000000004
+
+# application_name（tests/run.sh の接続では設定しないので空）
+query T
+SHOW application_name
+----
+(empty)
+
+statement ok
+SET application_name = 'yuzhu_test'
+
+query T
+SHOW application_name
+----
+yuzhu_test
+
+statement ok
+SET application_name TO 'with space'
+
+query T
+SHOW application_name
+----
+with space
+
+statement ok
+RESET application_name
+
+query T
+SHOW application_name
+----
+(empty)
+
+# timezone（SET TIME ZONE 構文もある）
+statement ok
+SET timezone = 'UTC'
+
+query T
+SHOW timezone
+----
+UTC
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SHOW TIME ZONE
+----
+UTC
+
+statement ok
+SET SESSION timezone TO 'UTC'
+
+statement ok
+RESET timezone
+
+# 名前は大文字小文字を区別しない
+statement ok
+SET APPLICATION_NAME = 'upper'
+
+query T
+SHOW Application_Name
+----
+upper
+
+statement ok
+RESET application_name
+
+# 読み取り専用・固定の項目
+query T
+SHOW transaction_isolation
+----
+read committed
+
+query T
+SHOW standard_conforming_strings
+----
+on
+
+query T
+SHOW client_encoding
+----
+UTF8
+
+query T
+SHOW server_encoding
+----
+UTF8
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+query T
+SHOW integer_datetimes
+----
+on
+
+query T
+SHOW max_identifier_length
+----
+63
+
+# 知らない設定名は 42704
+statement error (42704)
+SHOW no_such_parameter
+
+statement error (42704)
+SET no_such_parameter = 1
+
+statement error (42704)
+RESET no_such_parameter
+
+# "." を含む名前（独自パラメータ）は受け付ける
+statement ok
+SET yuzhu_test.my_param = 'hello'
+
+query T
+SHOW yuzhu_test.my_param
+----
+hello
+
+statement ok
+RESET yuzhu_test.my_param
+
+query T
+SHOW yuzhu_test.my_param
+----
+(empty)
+
+# 設定していない独自パラメータの SHOW は 42704
+statement error (42704)
+SHOW yuzhu_test.never_set
+
+# RESET ALL
+statement ok
+SET application_name = 'a'
+
+statement ok
+SET extra_float_digits = 2
+
+statement ok
+RESET ALL
+
+query T
+SHOW application_name
+----
+(empty)
+
+query T
+SHOW extra_float_digits
+----
+1

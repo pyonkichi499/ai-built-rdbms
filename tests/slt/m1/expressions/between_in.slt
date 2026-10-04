@@ -1,0 +1,115 @@
+# BETWEEN と IN
+
+query ????
+SELECT 2 BETWEEN 1 AND 3, 1 BETWEEN 1 AND 3, 3 BETWEEN 1 AND 3, 4 BETWEEN 1 AND 3
+----
+t t t f
+
+# 上下が逆なら常に偽（SYMMETRIC ではない）
+query ?
+SELECT 2 BETWEEN 3 AND 1
+----
+f
+
+query ??
+SELECT 2 NOT BETWEEN 1 AND 3, 5 NOT BETWEEN 1 AND 3
+----
+f t
+
+# NULL を含む BETWEEN（a >= x AND a <= y と同じ）
+query ????
+SELECT NULL BETWEEN 1 AND 3, 2 BETWEEN NULL AND 3, 5 BETWEEN NULL AND 3, 0 NOT BETWEEN 1 AND NULL
+----
+NULL NULL f t
+
+query ??
+SELECT 'b' BETWEEN 'a' AND 'c', '1.5'::float8 BETWEEN 1 AND 2
+----
+t t
+
+# IN
+query ???
+SELECT 1 IN (1, 2, 3), 4 IN (1, 2, 3), 2 IN (2)
+----
+t f t
+
+query ??
+SELECT 1 NOT IN (1, 2), 4 NOT IN (1, 2)
+----
+f t
+
+# NULL を含む IN（= の OR と同じ）
+query ????
+SELECT 1 IN (1, NULL), 3 IN (1, NULL), NULL IN (1, 2), NULL IN (NULL)
+----
+t NULL NULL NULL
+
+# NOT IN にリストの NULL があると、一致しない場合は NULL
+query ??
+SELECT 3 NOT IN (1, NULL), 1 NOT IN (1, NULL)
+----
+NULL f
+
+# 文字列
+query ??
+SELECT 'b' IN ('a', 'b'), 'B' IN ('a', 'b')
+----
+t f
+
+# 型の混在: リストと左辺の共通の型で比較する
+query ???
+SELECT 1 IN (1::int8, 2), '1.0'::float8 IN (1, 2), 2 IN ('1', '2')
+----
+t t t
+
+statement error (22P02)
+SELECT 1 IN (1, 'a')
+
+statement error (42883)
+SELECT 1 IN ('a'::text)
+
+# 表の列に対する BETWEEN / IN
+statement ok
+CREATE TABLE expr_bi_t (n int, s text)
+
+statement ok
+INSERT INTO expr_bi_t VALUES (1, 'a'), (5, 'e'), (10, 'j'), (NULL, NULL)
+
+query I rowsort
+SELECT n FROM expr_bi_t WHERE n BETWEEN 2 AND 10
+----
+10
+5
+
+query I rowsort
+SELECT n FROM expr_bi_t WHERE n NOT BETWEEN 2 AND 9
+----
+1
+10
+
+query I rowsort
+SELECT n FROM expr_bi_t WHERE n IN (1, 10, NULL)
+----
+1
+10
+
+query I rowsort
+SELECT n FROM expr_bi_t WHERE n NOT IN (1, 10)
+----
+5
+
+query T rowsort
+SELECT s FROM expr_bi_t WHERE s IN ('a', 'j')
+----
+a
+j
+
+# IN のリストに式や列を書ける
+query I rowsort
+SELECT n FROM expr_bi_t WHERE 10 IN (n, n * 2)
+----
+10
+5
+
+statement ok
+DROP TABLE expr_bi_t

@@ -1,0 +1,102 @@
+# LIKE / NOT LIKE（大文字小文字を区別する。既定のエスケープ文字は \）
+
+query ????
+SELECT 'abc' LIKE 'abc', 'abc' LIKE 'a%', 'abc' LIKE '%c', 'abc' LIKE '%b%'
+----
+t t t t
+
+query ????
+SELECT 'abc' LIKE 'a_c', 'abc' LIKE 'a_', 'abc' LIKE '___', 'abc' LIKE '____'
+----
+t f t f
+
+query ???
+SELECT 'abc' LIKE 'ABC', 'abc' LIKE 'b%', 'abc' LIKE ''
+----
+f f f
+
+query ???
+SELECT '' LIKE '', '' LIKE '%', '' LIKE '_'
+----
+t t f
+
+query ??
+SELECT 'abc' NOT LIKE 'a%', 'abc' NOT LIKE 'x%'
+----
+f t
+
+# % は 0 文字以上、複数の % も可
+query ???
+SELECT 'abc' LIKE '%%', 'abc' LIKE 'a%b%c', 'abc' LIKE '%a%%c%'
+----
+t t t
+
+# エスケープ: \% と \_ は文字そのもの（standard_conforming_strings = on なので '\' はそのまま）
+query ????
+SELECT 'a%c' LIKE 'a\%c', 'abc' LIKE 'a\%c', 'a_c' LIKE 'a\_c', 'abc' LIKE 'a\_c'
+----
+t f t f
+
+query ?
+SELECT 'a\c' LIKE 'a\\c'
+----
+t
+
+# NULL
+query ???
+SELECT NULL LIKE 'a', 'a' LIKE NULL, NULL NOT LIKE 'a'
+----
+NULL NULL NULL
+
+# _ は 1 文字（バイトではない）
+query ???
+SELECT 'あいう' LIKE '_い_', 'あいう' LIKE '___', 'あいう' LIKE 'あ%'
+----
+t t t
+
+# 正規表現の特殊文字は特別な意味を持たない
+query ???
+SELECT 'a.c' LIKE 'a.c', 'abc' LIKE 'a.c', 'a*' LIKE 'a*'
+----
+t f t
+
+# 表の列に対する LIKE
+statement ok
+CREATE TABLE expr_like_t (s text, v varchar(10))
+
+statement ok
+INSERT INTO expr_like_t VALUES ('apple', 'Apple'), ('banana', 'band'), ('grape', NULL), ('100%', '50_50')
+
+query T rowsort
+SELECT s FROM expr_like_t WHERE s LIKE '%an%'
+----
+banana
+
+query T rowsort
+SELECT s FROM expr_like_t WHERE s NOT LIKE '%a%'
+----
+100%
+
+query T rowsort
+SELECT v FROM expr_like_t WHERE v LIKE 'A%'
+----
+Apple
+
+query T rowsort
+SELECT s FROM expr_like_t WHERE s LIKE '%\%'
+----
+100%
+
+query T rowsort
+SELECT v FROM expr_like_t WHERE v LIKE '%\_%'
+----
+50_50
+
+# パターンに列を使う
+query T rowsort
+SELECT s FROM expr_like_t WHERE 'bandana' LIKE v || '%'
+----
+banana
+
+statement ok
+DROP TABLE expr_like_t

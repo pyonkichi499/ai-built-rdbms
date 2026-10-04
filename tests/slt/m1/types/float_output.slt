@@ -1,0 +1,129 @@
+# 浮動小数点のテキスト出力（extra_float_digits = 1 の既定: 往復可能な最短表現）
+# 指数表記になる条件: float8 は指数が -4 未満か 15 以上、float4 は -4 未満か 6 以上
+
+query RRRR
+SELECT '0'::float8, '1'::float8, '-1'::float8, '100'::float8
+----
+0 1 -1 100
+
+query RRR
+SELECT '0.1'::float8, '0.5'::float8, '123.456'::float8
+----
+0.1 0.5 123.456
+
+query RR
+SELECT '0.0001'::float8, '0.00001'::float8
+----
+0.0001 1e-05
+
+query RR
+SELECT '0.000123'::float8, '1.5e-7'::float8
+----
+0.000123 1.5e-07
+
+query RRR
+SELECT '123456789012345'::float8, '999999999999999'::float8, '1000000000000000'::float8
+----
+123456789012345 999999999999999 1e+15
+
+query RRR
+SELECT '1e16'::float8, '1e20'::float8, '1.5e300'::float8
+----
+1e+16 1e+20 1.5e+300
+
+query R
+SELECT '123456789012345678'::float8
+----
+1.2345678901234568e+17
+
+query R
+SELECT '1e-300'::float8
+----
+1e-300
+
+query R
+SELECT '1.7976931348623157e308'::float8
+----
+1.7976931348623157e+308
+
+query R
+SELECT '5e-324'::float8
+----
+5e-324
+
+query R
+SELECT '2.2250738585072014e-308'::float8
+----
+2.2250738585072014e-308
+
+query RR
+SELECT '-0'::float8, '-0.0'::float8
+----
+-0 -0
+
+query RRR
+SELECT 'NaN'::float8, 'Infinity'::float8, '-Infinity'::float8
+----
+NaN Infinity -Infinity
+
+query RR
+SELECT '0.30000000000000004'::float8, '3.141592653589793'::float8
+----
+0.30000000000000004 3.141592653589793
+
+# 整数から変換した値（2^53 + 1 は表せないので丸められる）
+query RR
+SELECT 1234567::float8, 9007199254740993::float8
+----
+1234567 9.007199254740992e+15
+
+# float4
+query RRRR
+SELECT '0.1'::float4, '1.5'::float4, '100000'::float4, '1000000'::float4
+----
+0.1 1.5 100000 1e+06
+
+query RRR
+SELECT '123456'::float4, '1234567'::float4, '0.0001'::float4
+----
+123456 1.234567e+06 0.0001
+
+query RRR
+SELECT '0.00001'::float4, '3.4028235e38'::float4, '1e-45'::float4
+----
+1e-05 3.4028235e+38 1e-45
+
+query RRR
+SELECT '-0'::float4, 'NaN'::float4, '-inf'::float4
+----
+-0 NaN -Infinity
+
+query R
+SELECT '3.14159265358979'::float4
+----
+3.1415927
+
+# float4 を float8 に広げると、float4 で表せない誤差が見える
+query RR
+SELECT '0.1'::float4::float8, '1.5'::float4::float8
+----
+0.10000000149011612 1.5
+
+# 表に入れた値も同じ形式
+statement ok
+CREATE TABLE typ_fo_t (f4 real, f8 double precision)
+
+statement ok
+INSERT INTO typ_fo_t VALUES ('0.1', '0.1'), ('1e20', '1e20'), ('-0', '-0'), ('NaN', 'Infinity'), (1, 2)
+
+query RR rowsort
+SELECT f4, f8 FROM typ_fo_t
+----
+-0 -0
+0.1 0.1
+1 2
+1e+20 1e+20
+NaN Infinity
+
+statement ok
+DROP TABLE typ_fo_t

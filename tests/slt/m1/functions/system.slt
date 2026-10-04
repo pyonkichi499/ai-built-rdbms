@@ -1,0 +1,58 @@
+# システム情報関数
+# 前提: postgres ユーザーで postgres データベースに接続している（tests/run.sh の既定）
+
+query T
+SELECT current_database()
+----
+postgres
+
+query T
+SELECT current_schema()
+----
+public
+
+query T
+SELECT current_user
+----
+postgres
+
+query T
+SELECT CURRENT_USER
+----
+postgres
+
+# current_user は括弧なしのキーワード。括弧を付けると構文エラー
+statement error (42601)
+SELECT current_user()
+
+# version() は "PostgreSQL" で始まる。yuzhu は "PostgreSQL 16.0 (yuzhu ...)" を返す
+query ?
+SELECT version() LIKE 'PostgreSQL %'
+----
+t
+
+# 式の中で使える
+query T
+SELECT upper(current_database()) || '/' || current_user
+----
+POSTGRES/postgres
+
+query ?
+SELECT current_schema() = 'public'
+----
+t
+
+# 関数の結果を表に保存できる
+statement ok
+CREATE TABLE fn_sys_t (db text, usr text)
+
+statement ok
+INSERT INTO fn_sys_t VALUES (current_database(), current_user)
+
+query TT
+SELECT db, usr FROM fn_sys_t
+----
+postgres postgres
+
+statement ok
+DROP TABLE fn_sys_t

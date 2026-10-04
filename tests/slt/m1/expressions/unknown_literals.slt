@@ -1,0 +1,119 @@
+# 型が決まっていない文字列リテラル（unknown）の解決
+
+# 相手の型として解釈される
+query I
+SELECT '1' + 1
+----
+2
+
+query I
+SELECT 1 + '1'
+----
+2
+
+query I
+SELECT '10' * 2::int8
+----
+20
+
+query R
+SELECT '1.5' + '1'::float8
+----
+2.5
+
+query ?
+SELECT '1' = 1
+----
+t
+
+# 相手の型として解釈できなければ 22P02
+statement error (22P02)
+SELECT '1.5' + 1
+
+statement error (22P02)
+SELECT 'abc' + 1
+
+# 相手の型の範囲外は 22003
+statement error (22003)
+SELECT '99999999999' + 1
+
+statement error (22003)
+SELECT '40000' + 1::int2
+
+# unknown 同士の算術は演算子が決まらない（42725）
+statement error (42725)
+SELECT '1' + '2'
+
+# 出力に残った unknown は text として扱う
+query T
+SELECT 'hello'
+----
+hello
+
+query T
+SELECT 'O''Reilly'
+----
+O'Reilly
+
+query I
+SELECT length('hello')
+----
+5
+
+# unknown 同士の比較・連結は text として行う
+query ??
+SELECT 'a' = 'a', 'a' < 'b'
+----
+t t
+
+query T
+SELECT 'a' || 'b'
+----
+ab
+
+# 文字列定数の連結（改行をはさんだ隣接リテラル）
+query T
+SELECT 'foo'
+'bar'
+----
+foobar
+
+# NULL リテラルも unknown
+query I
+SELECT NULL + 1
+----
+NULL
+
+query T
+SELECT NULL || 'a'
+----
+NULL
+
+# INSERT の値としての unknown は列の型に変換される
+statement ok
+CREATE TABLE expr_unk_t (i int, f float8, b bool, s text)
+
+statement ok
+INSERT INTO expr_unk_t VALUES ('7', '0.25', 'on', 'str')
+
+query IR?T
+SELECT i, f, b, s FROM expr_unk_t
+----
+7 0.25 t str
+
+# WHERE の列との比較でも同じ
+query I
+SELECT i FROM expr_unk_t WHERE i = '7'
+----
+7
+
+statement error (22P02)
+SELECT i FROM expr_unk_t WHERE i = 'seven'
+
+query I
+SELECT i FROM expr_unk_t WHERE f < '1'
+----
+7
+
+statement ok
+DROP TABLE expr_unk_t

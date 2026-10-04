@@ -1,0 +1,205 @@
+# CAST(x AS t) と x::t
+
+query II
+SELECT CAST('12' AS int), '12'::int
+----
+12 12
+
+query I
+SELECT CAST(CAST('7' AS int) AS bigint)
+----
+7
+
+# text → 整数: 前後の空白は許される
+query III
+SELECT ' 12 '::int, '+5'::int, '-0'::int
+----
+12 5 0
+
+# PostgreSQL 16 以降: 16 進・8 進・2 進の接頭辞と、桁区切りの _
+query IIII
+SELECT '0x1F'::int, '0o17'::int, '0b101'::int, '1_000'::int
+----
+31 15 5 1000
+
+# 不正な入力は 22P02
+statement error (22P02)
+SELECT 'abc'::int
+
+statement error (22P02)
+SELECT ''::int
+
+statement error (22P02)
+SELECT '   '::int
+
+statement error (22P02)
+SELECT '12.5'::int
+
+statement error (22P02)
+SELECT '1 2'::int
+
+statement error (22P02)
+SELECT '12abc'::int
+
+statement error (22P02)
+SELECT CAST('x' AS bigint)
+
+statement error (22P02)
+SELECT 'x'::smallint
+
+# 範囲外は 22003
+statement error (22003)
+SELECT '2147483648'::int
+
+statement error (22003)
+SELECT '32768'::int2
+
+statement error (22003)
+SELECT '9223372036854775808'::int8
+
+query III
+SELECT '-2147483648'::int4, '-32768'::int2, '-9223372036854775808'::int8
+----
+-2147483648 -32768 -9223372036854775808
+
+# 整数の型同士
+query II
+SELECT 100::int2::int8, 3000000000::int8::text::int8
+----
+100 3000000000
+
+statement error (22003)
+SELECT 3000000000::int8::int4
+
+statement error (22003)
+SELECT 40000::int2
+
+# float → 整数は最も近い整数に丸める（ちょうど .5 は偶数へ）
+query IIIIII
+SELECT '2.5'::float8::int, '3.5'::float8::int, '-2.5'::float8::int, '2.4999'::float8::int, '2.5001'::float8::int, '-3.5'::float8::int8
+----
+2 4 -2 2 3 -4
+
+query I
+SELECT '1.5'::float4::int2
+----
+2
+
+statement error (22003)
+SELECT '1e10'::float8::int
+
+statement error (22003)
+SELECT 'NaN'::float8::int
+
+statement error (22003)
+SELECT 'Infinity'::float8::int8
+
+statement error (22003)
+SELECT '40000'::float8::int2
+
+# 整数 → float
+query RR
+SELECT 1::float8, 16777217::float4
+----
+1 1.6777216e+07
+
+# text → float
+query RRRR
+SELECT ' 1.5 '::float8, '1e3'::float8, '-.5'::float8, '5.'::float8
+----
+1.5 1000 -0.5 5
+
+query RRRRR
+SELECT 'NaN'::float8, 'inf'::float8, '-inf'::float8, 'infinity'::float8, '-Infinity'::float8
+----
+NaN Infinity -Infinity Infinity -Infinity
+
+statement error (22P02)
+SELECT 'abc'::float8
+
+statement error (22P02)
+SELECT ''::float8
+
+statement error (22003)
+SELECT '1e400'::float8
+
+statement error (22003)
+SELECT '1e-400'::float8
+
+statement error (22003)
+SELECT '1e39'::float4
+
+# float8 → float4 の範囲外
+statement error (22003)
+SELECT '1e300'::float8::float4
+
+# 数値 → text
+query TTTT
+SELECT 123::text, (-5)::text, '0.1'::float8::text, 'NaN'::float8::text
+----
+123 -5 0.1 NaN
+
+# bool のキャスト
+query ????????
+SELECT 'true'::bool, 'yes'::bool, 'on'::bool, '1'::bool, 't'::bool, 'y'::bool, ' TRUE '::bool, 'Yes'::bool
+----
+t t t t t t t t
+
+query ??????
+SELECT 'false'::bool, 'no'::bool, 'off'::bool, '0'::bool, 'f'::bool, 'n'::bool
+----
+f f f f f f
+
+# 'o' は on と off のどちらか決まらないので不正
+statement error (22P02)
+SELECT 'o'::bool
+
+statement error (22P02)
+SELECT 'maybe'::bool
+
+statement error (22P02)
+SELECT ''::bool
+
+# bool と int4 の相互変換（明示キャストのみ）
+query ????
+SELECT 1::bool, 0::bool, 5::bool, (-1)::bool
+----
+t f t t
+
+query II
+SELECT true::int, false::int
+----
+1 0
+
+# bool → text は 'true' / 'false'（出力の t / f とは違う）
+query TT
+SELECT true::text, false::text
+----
+true false
+
+# int2 / int8 と bool の間にはキャストがない（42846）
+statement error (42846)
+SELECT 1::int2::bool
+
+statement error (42846)
+SELECT true::int8
+
+# float と bool の間にもない
+statement error (42846)
+SELECT '1'::float8::bool
+
+# CAST を入れ子にする
+query T
+SELECT CAST(CAST(CAST('42' AS int) AS text) AS varchar(1))
+----
+4
+
+# NULL のキャストは NULL
+query I?T
+SELECT NULL::int, CAST(NULL AS bool), NULL::text
+----
+NULL NULL NULL
+
+# 存在しない型へのキャスト（42704）
+statement error (42704)
+SELECT 1::nosuchtype

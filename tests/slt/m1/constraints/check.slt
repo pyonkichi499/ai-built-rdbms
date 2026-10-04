@@ -1,0 +1,135 @@
+# CHECK 制約（23514）
+
+statement ok
+CREATE TABLE con_ck_t (
+    a int CHECK (a > 0),
+    b int,
+    c text CONSTRAINT c_not_empty CHECK (c <> ''),
+    CHECK (b < 100),
+    CONSTRAINT a_lt_b CHECK (a < b)
+)
+
+statement count 1
+INSERT INTO con_ck_t VALUES (1, 2, 'x')
+
+# 列制約の違反
+statement error (23514)
+INSERT INTO con_ck_t VALUES (0, 2, 'x')
+
+# 名前付きの列制約
+statement error (23514)
+INSERT INTO con_ck_t VALUES (1, 2, '')
+
+# 表制約
+statement error (23514)
+INSERT INTO con_ck_t VALUES (1, 100, 'x')
+
+# 名前付きの表制約（複数列を参照）
+statement error (23514)
+INSERT INTO con_ck_t VALUES (5, 3, 'x')
+
+# 違反メッセージには制約名が入る（既定の名前は <table>_<column>_check）
+statement error violates check constraint "con_ck_t_a_check"
+INSERT INTO con_ck_t VALUES (-1, 2, 'x')
+
+statement error violates check constraint "c_not_empty"
+INSERT INTO con_ck_t VALUES (1, 2, '')
+
+statement error violates check constraint "a_lt_b"
+INSERT INTO con_ck_t VALUES (5, 3, 'x')
+
+statement error violates check constraint "con_ck_t_b_check"
+INSERT INTO con_ck_t VALUES (1, 200, 'x')
+
+# 結果が NULL の CHECK は通る
+statement count 1
+INSERT INTO con_ck_t VALUES (NULL, NULL, NULL)
+
+statement count 1
+INSERT INTO con_ck_t VALUES (NULL, 50, 'y')
+
+statement count 1
+INSERT INTO con_ck_t VALUES (7, NULL, 'z')
+
+query IIT
+SELECT a, b, c FROM con_ck_t ORDER BY a NULLS FIRST, b NULLS FIRST
+----
+NULL NULL NULL
+NULL 50 y
+1 2 x
+7 NULL z
+
+# 列制約の CHECK から他の列を参照できる
+statement ok
+CREATE TABLE con_ck_cross (lo int, hi int CHECK (hi >= lo))
+
+statement count 1
+INSERT INTO con_ck_cross VALUES (1, 1)
+
+statement error (23514)
+INSERT INTO con_ck_cross VALUES (2, 1)
+
+# CHECK と DEFAULT の組み合わせ: DEFAULT の値も検査される
+statement ok
+CREATE TABLE con_ck_default (a int DEFAULT -5 CHECK (a >= 0), b int DEFAULT 1)
+
+statement error (23514)
+INSERT INTO con_ck_default (b) VALUES (2)
+
+statement count 1
+INSERT INTO con_ck_default VALUES (0, 2)
+
+# 複雑な式（CASE、COALESCE、IN、LIKE、BETWEEN）
+statement ok
+CREATE TABLE con_ck_expr (
+    s text CHECK (s LIKE 'k%'),
+    n int CHECK (n BETWEEN 1 AND 10),
+    m int CHECK (m IN (1, 2, 3)),
+    p int CHECK (COALESCE(p, 0) >= 0),
+    q int CHECK (CASE WHEN q > 5 THEN q % 2 = 0 ELSE true END)
+)
+
+statement count 1
+INSERT INTO con_ck_expr VALUES ('key', 1, 1, NULL, 6)
+
+statement error (23514)
+INSERT INTO con_ck_expr VALUES ('lock', 1, 1, 1, 1)
+
+statement error (23514)
+INSERT INTO con_ck_expr VALUES ('key', 11, 1, 1, 1)
+
+statement error (23514)
+INSERT INTO con_ck_expr VALUES ('key', 1, 4, 1, 1)
+
+statement error (23514)
+INSERT INTO con_ck_expr VALUES ('key', 1, 1, -1, 1)
+
+statement error (23514)
+INSERT INTO con_ck_expr VALUES ('key', 1, 1, 1, 7)
+
+# CHECK 式は bool でなければならない（42804）
+statement error (42804)
+CREATE TABLE con_ck_bad (a int CHECK (a + 1))
+
+# CHECK 式に存在しない列（42703）
+statement error (42703)
+CREATE TABLE con_ck_bad (a int CHECK (nosuch > 0))
+
+statement error (42P01)
+SELECT * FROM con_ck_bad
+
+# CHECK 式の評価でのエラー（ゼロ除算）はそのまま返る
+statement ok
+CREATE TABLE con_ck_div (a int CHECK (10 / a > 1))
+
+statement error (22012)
+INSERT INTO con_ck_div VALUES (0)
+
+statement error (23514)
+INSERT INTO con_ck_div VALUES (10)
+
+statement count 1
+INSERT INTO con_ck_div VALUES (2)
+
+statement ok
+DROP TABLE con_ck_t, con_ck_cross, con_ck_default, con_ck_expr, con_ck_div

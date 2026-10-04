@@ -1,0 +1,131 @@
+# varchar(n): 代入時の長さ検査（22001）と明示キャストでの切り詰め
+
+statement ok
+CREATE TABLE typ_vc_t (v varchar(3), t text)
+
+statement ok
+INSERT INTO typ_vc_t VALUES ('abc', 'ok')
+
+statement ok
+INSERT INTO typ_vc_t VALUES ('', 'empty')
+
+# 長すぎる値の代入は 22001
+statement error (22001)
+INSERT INTO typ_vc_t VALUES ('abcd', 'too long')
+
+# 長さは文字数で数える（バイト数ではない）
+statement ok
+INSERT INTO typ_vc_t VALUES ('あいう', 'mb')
+
+statement error (22001)
+INSERT INTO typ_vc_t VALUES ('あいうえ', 'mb too long')
+
+# 超過分がすべて空白なら、エラーにせず切り詰める（SQL 標準の規則）
+statement ok
+INSERT INTO typ_vc_t VALUES ('xy    ', 'trailing spaces')
+
+query TI
+SELECT v, length(v) FROM typ_vc_t WHERE t = 'trailing spaces'
+----
+xy 3
+
+statement error (22001)
+INSERT INTO typ_vc_t VALUES ('ab  c', 'space then char')
+
+# text 型の値の代入でも同じ
+statement error (22001)
+INSERT INTO typ_vc_t SELECT t, t FROM typ_vc_t WHERE t = 'trailing spaces'
+
+# 整数を varchar(3) 列に代入: 文字列に変換してから長さを検査する
+statement ok
+INSERT INTO typ_vc_t VALUES (123, 'int')
+
+statement error (22001)
+INSERT INTO typ_vc_t VALUES (1234, 'int too long')
+
+query TT
+SELECT v, t FROM typ_vc_t ORDER BY t
+----
+(empty) empty
+123 int
+あいう mb
+abc ok
+xy  trailing spaces
+
+# 明示キャストは黙って切り詰める
+query T
+SELECT 'abcdef'::varchar(3)
+----
+abc
+
+query T
+SELECT CAST('abcdef' AS varchar(3))
+----
+abc
+
+query T
+SELECT CAST('abcdef' AS character varying(2))
+----
+ab
+
+query T
+SELECT 'あいうえ'::varchar(2)
+----
+あい
+
+query T
+SELECT 12345::varchar(2)
+----
+12
+
+# 長さ指定のない varchar は制限なし
+query T
+SELECT 'abcdef'::varchar
+----
+abcdef
+
+# 明示キャストしてから代入すれば、切り詰めた値が入る
+statement ok
+INSERT INTO typ_vc_t VALUES ('wxyz'::varchar(3), 'cast')
+
+query T
+SELECT v FROM typ_vc_t WHERE t = 'cast'
+----
+wxy
+
+# 長いほうの varchar への代入はそのまま
+statement ok
+CREATE TABLE typ_vc_long (v varchar(10))
+
+statement ok
+INSERT INTO typ_vc_long SELECT v FROM typ_vc_t WHERE v IS NOT NULL
+
+query T
+SELECT v FROM typ_vc_long ORDER BY v
+----
+(empty)
+123
+abc
+wxy
+xy
+あいう
+
+# varchar(10) から varchar(2) への代入は長さ検査される
+statement ok
+CREATE TABLE typ_vc_short (v varchar(2))
+
+statement error (22001)
+INSERT INTO typ_vc_short SELECT v FROM typ_vc_long
+
+query T
+SELECT v FROM typ_vc_short
+----
+
+# 比較では後ろの空白も意味を持つ（varchar は text と同じ）
+query ?
+SELECT 'a '::varchar(5) = 'a'::varchar(5)
+----
+f
+
+statement ok
+DROP TABLE typ_vc_t, typ_vc_long, typ_vc_short

@@ -1,0 +1,11 @@
+# ビルドコンテキストは impl/rust のソースのみで十分
+**/target/
+.git/
+.github/
+spec/
+tests/
+**/*.rs.bk
+**/*.log
+.idea/
+.vscode/
+*.swp

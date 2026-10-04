@@ -1,0 +1,154 @@
+# CREATE TABLE の基本、型名の別名、IF NOT EXISTS、重複エラー
+
+statement ok
+CREATE TABLE ddl_ct_basic (a int, b text)
+
+statement ok
+INSERT INTO ddl_ct_basic VALUES (1, 'x')
+
+query IT
+SELECT a, b FROM ddl_ct_basic
+----
+1 x
+
+# 同じ名前のテーブルをもう一度作ると 42P07
+statement error (42P07)
+CREATE TABLE ddl_ct_basic (z int)
+
+# IF NOT EXISTS なら成功（NOTICE のみ）し、既存のテーブルは変わらない
+statement ok
+CREATE TABLE IF NOT EXISTS ddl_ct_basic (z int)
+
+query IT
+SELECT * FROM ddl_ct_basic
+----
+1 x
+
+# 列名の重複は 42701
+statement error (42701)
+CREATE TABLE ddl_ct_dup (a int, a text)
+
+# 大文字小文字だけが違う列名も、畳み込み後は同じ名前なので重複
+statement error (42701)
+CREATE TABLE ddl_ct_dup (a int, A text)
+
+# 失敗した CREATE TABLE はテーブルを残さない
+statement error (42P01)
+SELECT * FROM ddl_ct_dup
+
+# 存在しない型は 42704
+statement error (42704)
+CREATE TABLE ddl_ct_badtype (a nosuchtype)
+
+statement error (42P01)
+SELECT * FROM ddl_ct_badtype
+
+# M1 の全型と別名
+statement ok
+CREATE TABLE ddl_ct_types (
+    c_bool boolean,
+    c_bool2 bool,
+    c_i2 smallint,
+    c_i2b int2,
+    c_i4 integer,
+    c_i4b int,
+    c_i4c int4,
+    c_i8 bigint,
+    c_i8b int8,
+    c_f4 real,
+    c_f4b float4,
+    c_f8 double precision,
+    c_f8b float8,
+    c_f8c float,
+    c_fp24 float(24),
+    c_fp25 float(25),
+    c_text text,
+    c_vc varchar(5),
+    c_cvc character varying(5),
+    c_vcn varchar
+)
+
+statement ok
+INSERT INTO ddl_ct_types VALUES (
+    true, 'f', 1, 2, 3, 4, 5, 6, 7,
+    '0.1', '0.1', '0.1', '0.1', '0.1', '0.1', '0.1',
+    'text', 'abc', 'abcde', 'no limit on this varchar'
+)
+
+query ??IIIIIII
+SELECT c_bool, c_bool2, c_i2, c_i2b, c_i4, c_i4b, c_i4c, c_i8, c_i8b FROM ddl_ct_types
+----
+t f 1 2 3 4 5 6 7
+
+# real / float4 / float(p<=24) は単精度。float8 に広げると誤差が見える
+query RRRRRRR
+SELECT c_f4::float8, c_f4b::float8, c_f8, c_f8b, c_f8c, c_fp24::float8, c_fp25 FROM ddl_ct_types
+----
+0.10000000149011612 0.10000000149011612 0.1 0.1 0.1 0.10000000149011612 0.1
+
+query TTTT
+SELECT c_text, c_vc, c_cvc, c_vcn FROM ddl_ct_types
+----
+text abc abcde no limit on this varchar
+
+# smallint の範囲は列の型で決まる
+statement error (22003)
+INSERT INTO ddl_ct_types (c_i2) VALUES (32768)
+
+statement error (22003)
+INSERT INTO ddl_ct_types (c_i4) VALUES (2147483648)
+
+# character varying(5) の長さ制限
+statement error (22001)
+INSERT INTO ddl_ct_types (c_cvc) VALUES ('abcdef')
+
+# varchar(0) は作れない（22023）
+statement error (22023)
+CREATE TABLE ddl_ct_vc0 (a varchar(0))
+
+# NULL 制約（明示的に NULL 可）
+statement ok
+CREATE TABLE ddl_ct_nullable (a int NULL, b text NULL)
+
+statement ok
+INSERT INTO ddl_ct_nullable VALUES (NULL, NULL)
+
+query IT
+SELECT a, b FROM ddl_ct_nullable
+----
+NULL NULL
+
+# 予約語は引用符なしでは列名にできない
+statement error (42601)
+CREATE TABLE ddl_ct_reserved (select int)
+
+# 非予約語は列名として使える
+statement ok
+CREATE TABLE ddl_ct_nonreserved (name text, value int, type int, key int, text text)
+
+statement ok
+INSERT INTO ddl_ct_nonreserved VALUES ('n', 1, 2, 3, 't')
+
+query TIIIT
+SELECT name, value, type, key, text FROM ddl_ct_nonreserved
+----
+n 1 2 3 t
+
+# 引用符付きなら予約語も使える
+statement ok
+CREATE TABLE ddl_ct_quoted_kw ("select" int, "from" text)
+
+statement ok
+INSERT INTO ddl_ct_quoted_kw VALUES (1, 'f')
+
+query IT
+SELECT "select", "from" FROM ddl_ct_quoted_kw
+----
+1 f
+
+# 末尾のカンマは構文エラー
+statement error (42601)
+CREATE TABLE ddl_ct_trailing (a int,)
+
+statement ok
+DROP TABLE ddl_ct_basic, ddl_ct_types, ddl_ct_nullable, ddl_ct_nonreserved, ddl_ct_quoted_kw

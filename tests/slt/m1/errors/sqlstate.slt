@@ -1,0 +1,165 @@
+# 代表的なエラーの SQLSTATE
+
+statement ok
+CREATE TABLE err_t (a int, b text)
+
+statement ok
+INSERT INTO err_t VALUES (1, 'x')
+
+# 42601 syntax_error
+statement error (42601)
+SELEC 1
+
+statement error (42601)
+SELECT 1 +
+
+statement error (42601)
+SELECT (1
+
+statement error (42601)
+SELECT 1)
+
+statement error (42601)
+SELECT * FROM
+
+statement error (42601)
+INSERT INTO err_t VALUES
+
+statement error (42601)
+CREATE TABLE err_bad (a int
+
+statement error (42601)
+SELECT 'unterminated
+
+statement error (42601)
+SELECT a b c FROM err_t
+
+statement error (42601)
+SELECT 1 FROM err_t WHERE
+
+statement error (42601)
+SELECT 1 ORDER BY
+
+statement error (42601)
+DROP TABLE
+
+# 構文エラーのメッセージ（部分一致）
+statement error syntax error at or near "SELEC"
+SELEC 1
+
+statement error syntax error at end of input
+SELECT 1 +
+
+# 42P01 undefined_table
+statement error (42P01)
+SELECT * FROM err_nosuch
+
+statement error (42P01)
+SELECT a FROM err_nosuch WHERE a = 1
+
+statement error relation "err_nosuch" does not exist
+SELECT * FROM err_nosuch
+
+# 修飾子に FROM にない表を使う
+statement error (42P01)
+SELECT err_other.a FROM err_t
+
+statement error (42P01)
+SELECT err_other.* FROM err_t
+
+# 42703 undefined_column
+statement error (42703)
+SELECT nosuch FROM err_t
+
+statement error (42703)
+SELECT err_t.nosuch FROM err_t
+
+statement error (42703)
+SELECT a FROM err_t WHERE nosuch = 1
+
+statement error (42703)
+SELECT a FROM err_t ORDER BY nosuch
+
+statement error column "nosuch" does not exist
+SELECT nosuch FROM err_t
+
+# FROM がないのに列を参照する
+statement error (42703)
+SELECT a
+
+# 42702 ambiguous_column（M1 の単一テーブルでは ORDER BY の別名の重複で起きる）
+statement error (42702)
+SELECT a AS k, b AS k FROM err_t ORDER BY k
+
+# 42883 undefined_function
+statement error (42883)
+SELECT nosuchfunc()
+
+statement error (42883)
+SELECT 'a'::text + 1
+
+statement error (42883)
+SELECT - 'a'::text
+
+# 42804 datatype_mismatch
+statement error (42804)
+SELECT 1 WHERE 'a'::text
+
+# 42P07 duplicate_table
+statement error (42P07)
+CREATE TABLE err_t (z int)
+
+# 42701 duplicate_column
+statement error (42701)
+CREATE TABLE err_dupcol (x int, x int)
+
+# 42704 undefined_object
+statement error (42704)
+CREATE TABLE err_badtype (x notatype)
+
+# 22P02 invalid_text_representation
+statement error (22P02)
+SELECT 'x'::int
+
+# 22003 numeric_value_out_of_range
+statement error (22003)
+SELECT 2147483647 + 1
+
+# 22012 division_by_zero
+statement error (22012)
+SELECT 1 / 0
+
+# 22001 string_data_right_truncation
+statement ok
+CREATE TABLE err_vc (v varchar(1))
+
+statement error (22001)
+INSERT INTO err_vc VALUES ('ab')
+
+# エラーの後も接続は使える
+query IT
+SELECT a, b FROM err_t
+----
+1 x
+
+# コメントだけ・空白だけの文は成功する（EmptyQueryResponse）
+statement ok
+-- only a comment
+
+# 複数の文: エラーより後ろの文は実行されない
+statement error (22012)
+SELECT 1 / 0; INSERT INTO err_t VALUES (2, 'never')
+
+query IT
+SELECT a, b FROM err_t
+----
+1 x
+
+# コメントの書き方
+query I
+SELECT /* block /* nested */ comment */ 1 -- line comment
+----
+1
+
+statement ok
+DROP TABLE err_t, err_vc

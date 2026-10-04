@@ -1,0 +1,94 @@
+# 単体の VALUES
+
+query IT
+VALUES (1, 'one'), (2, 'two'), (3, 'three')
+----
+1 one
+2 two
+3 three
+
+query I
+VALUES (1)
+----
+1
+
+# VALUES にも ORDER BY / LIMIT / OFFSET を付けられる
+query IT
+VALUES (2, 'b'), (1, 'a'), (3, 'c') ORDER BY 1
+----
+1 a
+2 b
+3 c
+
+query IT
+VALUES (2, 'b'), (1, 'a'), (3, 'c') ORDER BY 2 DESC LIMIT 2
+----
+3 c
+2 b
+
+query I
+VALUES (1), (2), (3) OFFSET 2
+----
+3
+
+# 列の名前は column1, column2, ...
+query I
+VALUES (3), (1), (2) ORDER BY column1
+----
+1
+2
+3
+
+# NULL を含む
+query IT
+VALUES (1, NULL), (NULL, 'x')
+----
+1 NULL
+NULL x
+
+# 列ごとに共通の型を決める: int と unknown は int
+query I
+VALUES (1), ('2')
+----
+1
+2
+
+# int と float8 は float8
+query R
+VALUES (1), ('2.5'::float8)
+----
+1
+2.5
+
+# int と bigint は bigint
+query I
+VALUES (1), (10000000000)
+----
+1
+10000000000
+
+# int と変換できない unknown は 22P02
+statement error (22P02)
+VALUES (1), ('abc')
+
+# int と text は共通の型がない（42804）
+statement error (42804)
+VALUES (1), ('a'::text)
+
+# 長さが揃わない（42601）
+statement error (42601)
+VALUES (1, 2), (3)
+
+# 式
+query II
+VALUES (1 + 1, 2 * 3), (10 / 3, 10 % 3)
+----
+2 6
+3 1
+
+# unknown だけの列は text になる
+query T
+VALUES ('b'), ('a') ORDER BY 1
+----
+a
+b

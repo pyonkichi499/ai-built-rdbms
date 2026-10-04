@@ -1,0 +1,97 @@
+# WHERE 句
+
+statement ok
+CREATE TABLE sel_w_t (a int, b text, f bool)
+
+statement ok
+INSERT INTO sel_w_t VALUES (1, 'x', true), (2, 'y', false), (3, NULL, NULL), (NULL, 'z', true)
+
+query IT rowsort
+SELECT a, b FROM sel_w_t WHERE a > 1
+----
+2 y
+3 NULL
+
+query IT rowsort
+SELECT a, b FROM sel_w_t WHERE a = 1 OR b = 'z'
+----
+1 x
+NULL z
+
+# NULL との比較は NULL なので、どちらの条件でも行は出ない
+query I rowsort
+SELECT a FROM sel_w_t WHERE b = NULL
+----
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE NOT (b = NULL)
+----
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE b IS NULL
+----
+3
+
+# bool 列そのものを条件に使う
+query I rowsort
+SELECT a FROM sel_w_t WHERE f
+----
+1
+NULL
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE NOT f
+----
+2
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE f IS NOT TRUE
+----
+2
+3
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE true
+----
+1
+2
+3
+NULL
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE false
+----
+
+query I rowsort
+SELECT a FROM sel_w_t WHERE NULL
+----
+
+# WHERE の結果が bool でない: 42804
+statement error (42804)
+SELECT a FROM sel_w_t WHERE a
+
+statement error (42804)
+SELECT a FROM sel_w_t WHERE 1
+
+# 文字列リテラルは bool として解釈される
+query I rowsort
+SELECT a FROM sel_w_t WHERE 'true'
+----
+1
+2
+3
+NULL
+
+statement error (22P02)
+SELECT a FROM sel_w_t WHERE 'notbool'
+
+# 列の別名は WHERE では使えない（42703）
+statement error (42703)
+SELECT a AS aa FROM sel_w_t WHERE aa = 1
+
+# WHERE でのゼロ除算は、評価された行で起きる
+statement error (22012)
+SELECT a FROM sel_w_t WHERE 10 / (a - 2) > 0
+
+statement ok
+DROP TABLE sel_w_t

@@ -1,0 +1,85 @@
+# 識別子: 引用符なしは小文字に畳み込む。引用符付きはそのまま
+
+statement ok
+CREATE TABLE DDL_ID_Upper (ColA int, "ColB" int)
+
+# 引用符なしで作った名前は小文字になっているので、どの書き方でも参照できる
+statement ok
+INSERT INTO ddl_id_upper VALUES (1, 2)
+
+query II
+SELECT cola, "ColB" FROM DDL_ID_UPPER
+----
+1 2
+
+query I
+SELECT COLA FROM "ddl_id_upper"
+----
+1
+
+# 引用符付きの大文字は畳み込まれないので、引用符なしでは見つからない
+statement error (42P01)
+SELECT * FROM "DDL_ID_Upper"
+
+statement error (42703)
+SELECT colb FROM ddl_id_upper
+
+statement error (42703)
+SELECT "COLA" FROM ddl_id_upper
+
+# 引用符付きの名前で作ったテーブル
+statement ok
+CREATE TABLE "DDL_ID_Mixed" ("Value" int, "my col" text, "a""b" int)
+
+statement ok
+INSERT INTO "DDL_ID_Mixed" VALUES (10, 'sp', 3)
+
+query ITI
+SELECT "Value", "my col", "a""b" FROM "DDL_ID_Mixed"
+----
+10 sp 3
+
+statement error (42P01)
+SELECT * FROM DDL_ID_Mixed
+
+statement error (42P01)
+SELECT * FROM ddl_id_mixed
+
+# 大文字小文字だけが違う、別のテーブルを作れる
+statement ok
+CREATE TABLE ddl_id_mixed (v int)
+
+statement ok
+INSERT INTO ddl_id_mixed VALUES (99)
+
+query I
+SELECT * FROM DDL_ID_MIXED
+----
+99
+
+query I
+SELECT "Value" FROM "DDL_ID_Mixed"
+----
+10
+
+# 列の別名も同じ規則（ORDER BY で別名を参照して確かめる）
+query I
+SELECT v AS "Big" FROM ddl_id_mixed ORDER BY "Big"
+----
+99
+
+statement error (42703)
+SELECT v AS "Big" FROM ddl_id_mixed ORDER BY big + 0
+
+# 引用符付きの空の識別子は構文エラー
+statement error (42601)
+SELECT 1 AS ""
+
+# スキーマ修飾（public）
+query I
+SELECT v FROM public.ddl_id_mixed
+----
+99
+
+statement ok
+DROP TABLE ddl_id_upper, "DDL_ID_Mixed", ddl_id_mixed

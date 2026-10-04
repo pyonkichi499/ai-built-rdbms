@@ -1,0 +1,12 @@
+[package]
+name = "yuzhu-datetime"
+description = "PostgreSQL-compatible date/time types (date, timestamp, timestamptz, interval) for yuzhu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

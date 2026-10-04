@@ -1,0 +1,171 @@
+# CASE、COALESCE、NULLIF
+
+# 検索 CASE
+query T
+SELECT CASE WHEN 1 > 2 THEN 'a' WHEN 2 > 1 THEN 'b' ELSE 'c' END
+----
+b
+
+# どれにも当てはまらず ELSE がなければ NULL
+query T
+SELECT CASE WHEN false THEN 'a' END
+----
+NULL
+
+# 条件が NULL のときは当てはまらない扱い
+query T
+SELECT CASE WHEN NULL THEN 'a' ELSE 'b' END
+----
+b
+
+# 単純 CASE
+query T
+SELECT CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END
+----
+two
+
+# 単純 CASE で NULL は NULL と一致しない
+query T
+SELECT CASE NULL WHEN NULL THEN 'match' ELSE 'nomatch' END
+----
+nomatch
+
+# 結果の型は共通の型: int と float8 なら float8
+query R
+SELECT CASE WHEN true THEN 1 ELSE '2.5'::float8 END
+----
+1
+
+# unknown は他の枝の型として解釈される
+query I
+SELECT CASE WHEN true THEN 1 ELSE '2' END
+----
+1
+
+# 解釈できない unknown は、その枝が実行されなくてもエラー
+statement error (22P02)
+SELECT CASE WHEN true THEN 1 ELSE 'abc' END
+
+# 共通の型がない（42804）
+statement error (42804)
+SELECT CASE WHEN true THEN 1 ELSE 'x'::text END
+
+# 条件は bool でなければならない（42804）
+statement error (42804)
+SELECT CASE WHEN 1 THEN 'a' END
+
+# 表の値に対する CASE。実行されない枝は評価しない
+statement ok
+CREATE TABLE expr_cond_t (id int, n int, s text)
+
+statement ok
+INSERT INTO expr_cond_t VALUES (1, 0, 'x'), (2, 5, NULL), (3, NULL, 'z')
+
+query II
+SELECT id, CASE WHEN n = 0 THEN -1 ELSE 10 / n END FROM expr_cond_t ORDER BY id
+----
+1 -1
+2 2
+3 NULL
+
+query IT
+SELECT id, CASE n WHEN 0 THEN 'zero' WHEN 5 THEN 'five' END FROM expr_cond_t ORDER BY id
+----
+1 zero
+2 five
+3 NULL
+
+query IT
+SELECT id, CASE WHEN s IS NULL THEN 'none' ELSE s END FROM expr_cond_t ORDER BY id
+----
+1 x
+2 none
+3 z
+
+# 入れ子の CASE
+query T
+SELECT CASE WHEN true THEN CASE 1 WHEN 1 THEN 'inner' END ELSE 'outer' END
+----
+inner
+
+# COALESCE
+query III
+SELECT COALESCE(NULL, 1, 2), COALESCE(3, NULL), COALESCE(NULL, NULL, 7)
+----
+1 3 7
+
+query T
+SELECT COALESCE(NULL, NULL)
+----
+NULL
+
+query T
+SELECT COALESCE(NULL, 'a')
+----
+a
+
+# 最初の非 NULL の後の引数は評価しない
+query I
+SELECT COALESCE(1, 1 / 0)
+----
+1
+
+# 結果の型は共通の型
+query R
+SELECT COALESCE(NULL, 1, '2.5'::float8)
+----
+1
+
+statement error (22P02)
+SELECT COALESCE(1, 'abc')
+
+statement error (42804)
+SELECT COALESCE(1, 'abc'::text)
+
+query IT
+SELECT id, COALESCE(s, 'dflt') FROM expr_cond_t ORDER BY id
+----
+1 x
+2 dflt
+3 z
+
+query II
+SELECT id, COALESCE(n, id * 100) FROM expr_cond_t ORDER BY id
+----
+1 0
+2 5
+3 300
+
+# NULLIF
+query III
+SELECT NULLIF(1, 1), NULLIF(1, 2), NULLIF(NULL::int, 1)
+----
+NULL 1 NULL
+
+query T
+SELECT NULLIF('a', 'a')
+----
+NULL
+
+query T
+SELECT NULLIF('a', 'b')
+----
+a
+
+query II
+SELECT id, NULLIF(n, 0) FROM expr_cond_t ORDER BY id
+----
+1 NULL
+2 5
+3 NULL
+
+# NULLIF を使ったゼロ除算の回避
+query II
+SELECT id, 10 / NULLIF(n, 0) FROM expr_cond_t ORDER BY id
+----
+1 NULL
+2 2
+3 NULL
+
+statement ok
+DROP TABLE expr_cond_t
