@@ -1,0 +1,30 @@
+# フェーズ 2: 再起動後も、ROLLBACK した変更は見えない（コミットログが永続化されている）。
+
+query IT
+SELECT id, v FROM rs2_t ORDER BY id
+----
+1 a
+2 committed
+3 c
+4 d
+
+# 中断した版の上に、再起動後の変更を積む
+statement count 4
+UPDATE rs2_t SET v = v || '!'
+
+query IT
+SELECT id, v FROM rs2_t ORDER BY id
+----
+1 a!
+2 committed!
+3 c!
+4 d!
+
+statement ok
+BEGIN
+
+statement count 4
+DELETE FROM rs2_t
+
+statement ok
+ROLLBACK

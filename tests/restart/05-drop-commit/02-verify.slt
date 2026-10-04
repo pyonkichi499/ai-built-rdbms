@@ -1,0 +1,37 @@
+# フェーズ 2: 再起動後も、削除したテーブルはなく、別のテーブルは残っている。
+
+statement error (42P01)
+SELECT * FROM rs5_dropped
+
+query T
+SELECT relname FROM pg_class WHERE relname IN ('rs5_dropped', 'rs5_kept') ORDER BY relname
+----
+rs5_kept
+
+query T
+SELECT attname FROM pg_attribute WHERE attname = 'rs5_marker'
+----
+
+query T
+SELECT conname FROM pg_constraint WHERE conname LIKE 'rs5%'
+----
+
+query I
+SELECT a FROM rs5_kept ORDER BY a
+----
+10
+20
+
+# 同じ名前で作り直すと、古い行は戻ってこない
+statement ok
+CREATE TABLE rs5_dropped (z int)
+
+query I
+SELECT z FROM rs5_dropped
+----
+
+statement ok
+DROP TABLE rs5_dropped
+
+statement ok
+DROP TABLE rs5_kept

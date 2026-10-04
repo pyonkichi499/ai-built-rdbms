@@ -1,0 +1,137 @@
+# pg_proc / pg_operator / pg_cast: OID を指定した組み込みの行
+# （pg_cast の oid 列は PostgreSQL と一致しないので比べない）
+
+query TIIII
+SELECT proname, pronargs, prorettype, proargtypes, pronamespace FROM pg_proc WHERE oid IN (42, 43, 65, 66, 141, 147, 154, 177, 181, 870, 871, 1257, 1397) ORDER BY oid
+----
+int4in 1 23 2275 11
+int4out 1 2275 23 11
+int4eq 2 16 23 23 11
+int4lt 2 16 23 23 11
+int4mul 2 23 23 23 11
+int4gt 2 16 23 23 11
+int4div 2 23 23 23 11
+int4pl 2 23 23 23 11
+int4mi 2 23 23 23 11
+lower 1 25 25 11
+upper 1 25 25 11
+textlen 1 23 25 11
+abs 1 23 23 11
+
+query TT??T
+SELECT proname, prokind, proisstrict, proretset, provolatile FROM pg_proc WHERE oid IN (42, 43, 65, 177, 870, 871, 1257, 1397) ORDER BY oid
+----
+int4in f t f i
+int4out f t f i
+int4eq f t f i
+int4pl f t f i
+lower f t f i
+upper f t f i
+textlen f t f i
+abs f t f i
+
+query TT
+SELECT proname, prosrc FROM pg_proc WHERE oid IN (65, 66, 141, 147, 154, 177, 181) ORDER BY oid
+----
+int4eq int4eq
+int4lt int4lt
+int4mul int4mul
+int4gt int4gt
+int4div int4div
+int4pl int4pl
+int4mi int4mi
+
+# catalog 関数
+query TIII
+SELECT proname, pronargs, prorettype, proargtypes FROM pg_proc WHERE oid IN (1081, 1597, 1642, 1716, 2079) ORDER BY oid
+----
+format_type 2 25 26 23
+pg_encoding_to_char 1 19 23
+pg_get_userbyid 1 19 26
+pg_get_expr 2 25 194 26
+pg_table_is_visible 1 16 26
+
+# 演算子
+query ITIIIII
+SELECT oid, oprname, oprleft, oprright, oprresult, oprkind, oprnamespace FROM pg_operator WHERE oid IN (15, 96, 97, 98, 416, 514, 518, 521, 528, 551, 555, 654) ORDER BY oid
+----
+15 = 23 20 16 b 11
+96 = 23 23 16 b 11
+97 < 23 23 16 b 11
+98 = 25 25 16 b 11
+416 = 20 23 16 b 11
+514 * 23 23 23 b 11
+518 <> 23 23 16 b 11
+521 > 23 23 16 b 11
+528 / 23 23 23 b 11
+551 + 23 23 23 b 11
+555 - 23 23 23 b 11
+654 || 25 25 25 b 11
+
+query ITT
+SELECT oid, oprname, oprcode FROM pg_operator WHERE oid IN (96, 97, 98, 514, 518, 521, 528, 551, 555, 654) ORDER BY oid
+----
+96 = int4eq
+97 < int4lt
+98 = texteq
+514 * int4mul
+518 <> int4ne
+521 > int4gt
+528 / int4div
+551 + int4pl
+555 - int4mi
+654 || textcat
+
+# キャスト
+query IITT
+SELECT castsource, casttarget, castcontext, castmethod FROM pg_cast WHERE castsource = 23 AND casttarget IN (20, 21, 26, 24, 700, 701) ORDER BY casttarget
+----
+23 20 i f
+23 21 a f
+23 24 i b
+23 26 i b
+23 700 i f
+23 701 i f
+
+query IIITT
+SELECT castsource, casttarget, castfunc, castcontext, castmethod FROM pg_cast WHERE castsource = 23 AND casttarget IN (20, 21, 700, 701) ORDER BY casttarget
+----
+23 20 481 i f
+23 21 314 a f
+23 700 318 i f
+23 701 316 i f
+
+query IITT
+SELECT castsource, casttarget, castcontext, castmethod FROM pg_cast WHERE castsource = 26 AND casttarget IN (20, 23, 24) ORDER BY casttarget
+----
+26 20 a f
+26 23 a b
+26 24 i b
+
+query IIITT
+SELECT castsource, casttarget, castfunc, castcontext, castmethod FROM pg_cast WHERE castsource = 20 AND casttarget IN (21, 23, 26, 700, 701) ORDER BY casttarget
+----
+20 21 714 a f
+20 23 480 a f
+20 26 1287 i f
+20 700 652 i f
+20 701 482 i f
+
+query IITT
+SELECT castsource, casttarget, castcontext, castmethod FROM pg_cast WHERE castsource = 1043 AND casttarget = 25
+----
+1043 25 i b
+
+query IITT
+SELECT castsource, casttarget, castcontext, castmethod FROM pg_cast WHERE castsource = 25 AND casttarget = 1043
+----
+25 1043 i b
+
+# 型変換に暗黙・代入・明示の 3 種類がある
+query IIT
+SELECT castsource, casttarget, castcontext FROM pg_cast WHERE castsource = 701 AND casttarget IN (20, 23, 21, 700) ORDER BY casttarget
+----
+701 20 a
+701 21 a
+701 23 a
+701 700 a

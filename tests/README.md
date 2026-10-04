@@ -9,10 +9,13 @@
 
 ```
 tests/
-├── run.sh            スイートの実行スクリプト
-├── pg.sh             検証用の PostgreSQL 17 コンテナを起動・停止する
-└── slt/
-    └── m1/<機能>/*.slt   M1 の範囲のテスト（ddl, insert, constraints, select, expressions, types, functions, txn, session, errors）
+├── run.sh            スイートの実行スクリプト（--restart で再起動テスト）
+├── pg.sh             検証用の PostgreSQL 17 コンテナを起動・停止・再起動する
+├── yuzhu.sh          yuzhu-server をテスト用に起動・停止・再起動する
+├── slt/
+│   ├── m1/<機能>/*.slt   M1 の範囲のテスト（ddl, insert, constraints, select, expressions, types, functions, txn, session, errors）
+│   └── m2/<機能>/*.slt   M2 の範囲のテスト（dml, txn, ddl, catalog, types, psql）
+└── restart/<シナリオ>/NN-*.slt   再起動をまたぐテスト（フェーズごとにサーバを再起動する）
 ```
 
 ## 準備
@@ -30,8 +33,9 @@ cargo install sqllogictest-bin --locked --version 0.29.1
 
 ```sh
 tests/pg.sh start                 # postgres:17 を 127.0.0.1:55432 で起動（コンテナ名 yuzhu-test-pg、trust 認証、C ロケール）
-tests/run.sh --target pg          # tests/slt/m1 以下をすべて実行
+tests/run.sh --target pg          # tests/slt 以下（m1 と m2）をすべて実行
 tests/pg.sh stop                  # コンテナを削除
+# claude-sandbox のコンテナ内（docker なし）では tests/pg.sh の代わりに sandbox/pg.sh start|stop|restart|status を使う
 ```
 
 `tests/pg.sh status` で状態を確認できます。ポートは `--port N` か環境変数 `PG_PORT` で変えられます。
@@ -54,13 +58,73 @@ tests/run.sh --target pg|yuzhu [--host H] [--port N] [--user U] [--db D] [files 
 | `--host` | `127.0.0.1` |
 | `--port` | pg なら `55432`、yuzhu なら `5432` |
 | `--user` / `--db` | `postgres` / `postgres` |
-| ファイル・ディレクトリ | `tests/slt/m1`（ディレクトリを渡すと、その下の `*.slt` をすべて実行） |
+| ファイル・ディレクトリ | `tests/slt`（m1 と m2。ディレクトリを渡すと、その下の `*.slt` をすべて実行） |
+| `--restart` | 再起動テストを流す（下記）。ファイル・ディレクトリの既定は `tests/restart` |
 
 - 例: `tests/run.sh --target yuzhu tests/slt/m1/select tests/slt/m1/ddl/create_table.slt`
 - `--engine postgres`（Simple Query のみ）で実行し、`--label pg` または `--label yuzhu` を付けます。
 - 環境変数 `SLT_BIN` でランナーのパスを、`SLT_EXTRA_ARGS` で追加の引数（例: `--fail-fast`）を渡せます。
 - テストが途中で失敗すると、そのファイルのテーブルが残ることがあります。次の実行が `42P07` で失敗したら、
   PostgreSQL は `tests/pg.sh stop && tests/pg.sh start` で作り直し、yuzhu（M1 はメモリ上）は再起動してください。
+
+
+
+### yuzhu の起動（M2 以降）
+
+`tests/yuzhu.sh` が `yuzhu-initdb -U postgres --no-sync` と `yuzhu-server -D` をまとめて扱います（`pg.sh` と同じ形）。
+バイナリは `impl/rust/target/release`（または `$CARGO_TARGET_DIR/release`、`$YUZHU_BIN_DIR`）から探します。
+
+```sh
+(cd impl/rust && cargo build --release -p yuzhu-server)
+tests/yuzhu.sh start [--port 5432] [--data DIR] [--shared-buffers 1MB]   # データがなければ initdb してから起動
+tests/yuzhu.sh restart                                                   # fast shutdown して同じオプションで起動し直す
+tests/yuzhu.sh stop [smart|fast|immediate]                               # データは残す
+tests/yuzhu.sh clean                                                     # 止めて、データごと消す
+tests/run.sh --target yuzhu                                              # m1 と m2
+```
+
+状態（データ、ログ、pid）は `$YUZHU_STATE`（既定 `/tmp/yuzhu-test`）に置きます。
+
+### 再起動をまたぐテスト（`tests/restart/`）
+
+```sh
+tests/run.sh --target pg --restart                          # tests/restart の全シナリオ
+tests/run.sh --target yuzhu --restart tests/restart/02-rollback
+```
+
+- 1 つのシナリオは `tests/restart/<シナリオ>/NN-<名前>.slt` の列です。1 ファイルが 1 フェーズで、**フェーズごとにランナーのプロセスを起動し直し**、
+  フェーズの間でサーバを再起動します（最後のフェーズのあとは再起動しません）。各フェーズは自分で接続するので、再起動後の再接続をランナーに頼りません。
+- 再起動: `pg` は `tests/pg.sh restart`（docker があるとき。smart shutdown）、コンテナ内では `sandbox/pg.sh restart`。
+  環境変数 `PG_RESTART_CMD` で差し替えられます。`yuzhu` は `tests/yuzhu.sh restart`（SIGINT の fast shutdown → 同じデータディレクトリで起動）。
+- シナリオのディレクトリに `yuzhu.args` があれば、yuzhu ではそのシナリオの前にその内容でサーバを起動し直し（例: `--shared-buffers 1MB`）、
+  終わったら既定のオプションに戻します。`03-steal-rollback` はバッファプールより大きいテーブルを作るために使います。
+- フェーズの最後にコミットしていない変更を残したい場合は `connection other` を使います（ランナーが終わると接続が閉じ、その後に再起動されます）。
+- テーブル名はシナリオごとに一意な接頭辞（`rs1_`〜`rs6_`）を付け、最後のフェーズで DROP します。
+
+| シナリオ | 内容 |
+|---|---|
+| `01-committed-dml` | CREATE / INSERT / UPDATE / DELETE をコミット → 再起動 → 値が残っている（2 回再起動） |
+| `02-rollback` | ROLLBACK した UPDATE / DELETE / INSERT → 再起動 → 元の値（コミットログの永続化） |
+| `03-steal-rollback` | プールより大きいテーブルで全行 UPDATE → ROLLBACK → 再起動 → 元の値（steal されたページの未コミットの版が見えない） |
+| `04-create-rollback` | BEGIN → CREATE TABLE → ROLLBACK → 再起動 → テーブルがない |
+| `05-drop-commit` | DROP TABLE をコミット → 再起動 → テーブルもカタログの行もない |
+| `06-uncommitted-at-stop` | 別の接続にコミットしていない変更を残して停止 → 再起動 → その変更はない |
+
+### M2 のテスト（`tests/slt/m2/`）の書き方
+
+M1 の規則に加えて:
+
+- **システム列の値（`xmin`、`ctid` など）は PostgreSQL と一致しない**ので比べません。`ORDER BY xmin::text::int8` のような大小関係と、
+  新しいテーブルに順に INSERT したときの `ctid::text`（`(0,1)`、`(0,2)`、…）だけを使います（`dml/system_columns.slt`）。
+- カタログのテストは、`attrelid` を名前から引く手段（`regclass`、サブクエリ）が M2 にないので、`attrelid > 16383`（ユーザーテーブルは OID 16384 以上）で絞ります。
+  このため、**カタログを調べるファイルは、他のユーザーテーブルが存在しない状態**（前のファイルが DROP 済み）で流します。
+  toast テーブルの列が混ざらないよう、そのファイルでは `text` 型の列を使いません（`varchar(n)` で行の最大長が約 2KB に収まれば toast テーブルは作られません）。
+- 集約（`count(*)` など）、JOIN、サブクエリは M4 なので使いません。行数は `statement count N`、空の結果は `query T` + 空の期待値で確かめます。
+- PostgreSQL が成功して yuzhu が `0A000` を返す機能（`RETURNING`、`UPDATE ... FROM`、`DELETE ... USING`）は、`onlyif yuzhu` を付けて yuzhu だけで確かめます。
+- `statement error` は SQLSTATE（`(23514)`）で照合します。`--override` は `db error: ...` の形で書き出すので、**override したあとは必ず SQLSTATE の形に直します**。
+- `--override` は空の結果を `statement count 0` に書き換えます。`query T` + 空の期待値に戻します。
+- カタログの `oid` 以外の列で比べる行は、yuzhu が持つものに限ります（`pg_am` なら `oid IN (2, 403)`、`pg_type` なら yuzhu が持つ型の OID）。
+- カタログへの DML の拒否（`42501`）は PostgreSQL のスーパーユーザーでは成功するので、slt には入れません（Rust の結合テストで確かめる）。
 
 ### isolation テスト（ブロックする交互実行）
 
@@ -117,7 +181,7 @@ tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-dete
   yuzhu の `version()` は `PostgreSQL 16.0 (yuzhu ...)` で始まる文字列を返します。
 - `timezone` の既定値は環境によって違う（docker の postgres では `Etc/UTC`、yuzhu では `UTC`）ので、既定値は SHOW しません。
 - `application_name` はランナーが設定しないので、既定値は空です。
-- M1 の範囲外の機能（JOIN、集約、サブクエリ、UPDATE / DELETE、PRIMARY KEY / UNIQUE、numeric・日付型など）は使いません。
+- M1 の範囲外の機能（JOIN、集約、サブクエリ、UPDATE / DELETE（`tests/slt/m2` では使う）、PRIMARY KEY / UNIQUE、numeric・日付型など）は使いません。
 
 ### onlyif / skipif
 

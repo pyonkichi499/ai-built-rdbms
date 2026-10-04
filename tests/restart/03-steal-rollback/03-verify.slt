@@ -1,0 +1,41 @@
+# フェーズ 3: 再起動後も元の値。steal されたページにある未コミットの版が見えない。
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1
+----
+0
+
+query I
+SELECT a FROM rs3_t WHERE a >= 100000 LIMIT 1
+----
+
+query I
+SELECT a FROM rs3_t ORDER BY a DESC LIMIT 1
+----
+4095
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1 OFFSET 4095
+----
+4095
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1 OFFSET 4096
+----
+
+# 再起動後に全行を更新してコミットできる
+statement count 4096
+UPDATE rs3_t SET a = a + 1
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1
+----
+1
+
+query I
+SELECT a FROM rs3_t ORDER BY a DESC LIMIT 1
+----
+4096
+
+statement ok
+DROP TABLE rs3_t

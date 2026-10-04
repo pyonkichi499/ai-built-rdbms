@@ -1,0 +1,290 @@
+# M2 で値を扱う型: oid, "char", name, regproc, xid, tid
+
+# --- oid の入力と範囲 ---
+query I
+SELECT '4294967295'::oid
+----
+4294967295
+
+query I
+SELECT '-1'::oid
+----
+4294967295
+
+query I
+SELECT '-5'::oid
+----
+4294967291
+
+query I
+SELECT '16384'::oid
+----
+16384
+
+query I
+SELECT 16384::oid
+----
+16384
+
+statement error (22003)
+SELECT '4294967296'::oid
+
+statement error db error: ERROR: OID out of range
+SELECT 4294967296::oid
+
+statement error db error: ERROR: OID out of range
+SELECT (-4294967296)::oid
+
+statement error (22P02)
+SELECT 'abc'::oid
+
+statement error (22P02)
+SELECT ''::oid
+
+statement error (22P02)
+SELECT '1.5'::oid
+
+# int4 <-> oid のキャストはビットの読み替えで、範囲を検査しない
+query I
+SELECT (-1)::oid
+----
+4294967295
+
+query I
+SELECT 4294967295::oid::int4
+----
+-1
+
+query I
+SELECT 4294967295::oid::int8
+----
+4294967295
+
+query I
+SELECT '12'::oid::int4
+----
+12
+
+query I
+SELECT 12::int4::oid
+----
+12
+
+# oid の比較
+query ?
+SELECT 5::oid = 5::oid
+----
+t
+
+query ?
+SELECT 5::oid < 6::oid
+----
+t
+
+query ?
+SELECT 5::oid <> 5::oid
+----
+f
+
+query ?
+SELECT 7::oid >= 6::oid AND 7::oid > 6::oid AND 6::oid <= 7::oid
+----
+t
+
+query ?
+SELECT '4294967295'::oid > '1'::oid
+----
+t
+
+# 値が NULL
+query ?
+SELECT NULL::oid IS NULL
+----
+t
+
+# --- "char" ---
+query T
+SELECT 'r'::"char"
+----
+r
+
+query T
+SELECT 'abc'::"char"
+----
+a
+
+query T
+SELECT ''::"char"
+----
+(empty)
+
+query ?
+SELECT 'b'::"char" > 'a'::"char"
+----
+t
+
+query ?
+SELECT 'a'::"char" = 'a'::"char"
+----
+t
+
+query ?
+SELECT 'a'::"char" <> 'a'::"char"
+----
+f
+
+query I
+SELECT 'A'::"char"::int4
+----
+65
+
+query T
+SELECT 65::"char"
+----
+A
+
+query T
+SELECT 'r'::"char"::text
+----
+r
+
+query T
+SELECT 'x'::text::"char"
+----
+x
+
+# --- name ---
+query T
+SELECT 'abc'::name
+----
+abc
+
+query ?
+SELECT 'abc'::name = 'abc'::name
+----
+t
+
+query ?
+SELECT 'abc'::name < 'abd'::name
+----
+t
+
+query ?
+SELECT 'abc'::name = 'abc'::text
+----
+t
+
+query ?
+SELECT 'abc'::text = 'abc'::name
+----
+t
+
+query ?
+SELECT 'abc'::name >= 'abc'::name AND 'abd'::name > 'abc'::name AND 'abc'::name <> 'abd'::name
+----
+t
+
+query T
+SELECT 'abc'::name::text
+----
+abc
+
+query T
+SELECT 'abc'::text::name
+----
+abc
+
+query I
+SELECT length('abc'::name)
+----
+3
+
+# 63 バイトを超えると切り詰められる
+query I
+SELECT length(repeat('x', 70)::name::text)
+----
+63
+
+query T
+SELECT 'abc'::varchar::name
+----
+abc
+
+query T
+SELECT 'abc'::name::varchar
+----
+abc
+
+# --- regproc（M2 では数値だけを受け付ける） ---
+query T
+SELECT '42'::regproc
+----
+int4in
+
+query T
+SELECT '0'::regproc
+----
+-
+
+query T
+SELECT 42::oid::regproc
+----
+int4in
+
+query I
+SELECT 42::regproc::oid
+----
+42
+
+query I
+SELECT 42::oid::regproc::oid
+----
+42
+
+# --- xid / tid / cid（値は比べない） ---
+query ?
+SELECT '10'::xid = '10'::xid
+----
+t
+
+query ?
+SELECT '10'::xid <> '11'::xid
+----
+t
+
+query T
+SELECT '(0,1)'::tid
+----
+(0,1)
+
+query T
+SELECT '(3,7)'::tid::text
+----
+(3,7)
+
+query ?
+SELECT '(0,1)'::tid = '(0,1)'::tid
+----
+t
+
+query ?
+SELECT '(0,1)'::tid < '(0,2)'::tid
+----
+t
+
+query ?
+SELECT '(1,0)'::tid > '(0,2)'::tid
+----
+t
+
+# 他の型との組み合わせ
+query ?
+SELECT 5::oid = 5
+----
+t
+
+# CASE や COALESCE の中でも使える
+query I
+SELECT COALESCE(NULL::oid, 7::oid)
+----
+7

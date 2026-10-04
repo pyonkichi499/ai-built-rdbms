@@ -1,0 +1,40 @@
+# フェーズ 2: 再起動後も、コミットした変更が残っている。
+
+query ITI
+SELECT id, v, n FROM rs1_t ORDER BY id
+----
+1 A 10
+2 B 20
+3 cc 7
+4 d 7
+6 f 60
+
+# 削除した行は戻ってこない
+query I
+SELECT id FROM rs1_t WHERE id = 5
+----
+
+# カタログも残っている
+query TI
+SELECT relname, relnatts FROM pg_class WHERE relname = 'rs1_t'
+----
+rs1_t 3
+
+# 再起動後に更新を続けられる
+statement count 5
+UPDATE rs1_t SET n = n + 1
+
+statement count 1
+DELETE FROM rs1_t WHERE id = 6
+
+statement ok
+INSERT INTO rs1_t VALUES (7, 'g', 70)
+
+query ITI
+SELECT id, v, n FROM rs1_t ORDER BY id
+----
+1 A 11
+2 B 21
+3 cc 8
+4 d 8
+7 g 70

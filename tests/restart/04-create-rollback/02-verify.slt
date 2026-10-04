@@ -1,0 +1,35 @@
+# フェーズ 2: 再起動後もテーブルがなく、カタログに行もない。
+
+statement error (42P01)
+SELECT b FROM rs4_gone
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'rs4_gone'
+----
+
+query T
+SELECT attname FROM pg_attribute WHERE attname = 'rs4_marker'
+----
+
+query I
+SELECT a FROM rs4_keep ORDER BY a
+----
+1
+
+# 同じ名前で別の定義のテーブルを作れる
+statement ok
+CREATE TABLE rs4_gone (c text)
+
+statement ok
+INSERT INTO rs4_gone VALUES ('new')
+
+query T
+SELECT c FROM rs4_gone
+----
+new
+
+statement ok
+DROP TABLE rs4_gone
+
+statement ok
+DROP TABLE rs4_keep

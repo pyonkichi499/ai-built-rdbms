@@ -1,0 +1,35 @@
+# フェーズ 1: CREATE / INSERT / UPDATE / DELETE をコミットする。このあとサーバを再起動する。
+
+statement ok
+CREATE TABLE rs1_t (id int NOT NULL, v text, n int DEFAULT 7)
+
+statement count 5
+INSERT INTO rs1_t (id, v) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')
+
+statement count 2
+UPDATE rs1_t SET v = upper(v), n = id * 10 WHERE id <= 2
+
+statement count 1
+DELETE FROM rs1_t WHERE id = 5
+
+# トランザクションでまとめてコミット
+statement ok
+BEGIN
+
+statement count 1
+UPDATE rs1_t SET v = 'cc' WHERE id = 3
+
+statement ok
+INSERT INTO rs1_t VALUES (6, 'f', 60)
+
+statement ok
+COMMIT
+
+query ITI
+SELECT id, v, n FROM rs1_t ORDER BY id
+----
+1 A 10
+2 B 20
+3 cc 7
+4 d 7
+6 f 60

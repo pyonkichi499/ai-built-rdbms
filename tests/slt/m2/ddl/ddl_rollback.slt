@@ -1,0 +1,185 @@
+# DDL もトランザクションに従う: ROLLBACK で CREATE TABLE / DROP TABLE が取り消される
+
+# CREATE TABLE を ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ddlr_a (a int, ddlr_marker text)
+
+statement ok
+INSERT INTO ddlr_a VALUES (1, 'x')
+
+query IT
+SELECT a, ddlr_marker FROM ddlr_a
+----
+1 x
+
+statement ok
+ROLLBACK
+
+statement error (42P01)
+SELECT a FROM ddlr_a
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'ddlr_a'
+----
+
+query T
+SELECT attname FROM pg_attribute WHERE attname = 'ddlr_marker'
+----
+
+# ROLLBACK したあとに同じ名前で作り直せる
+statement ok
+CREATE TABLE ddlr_a (c int)
+
+statement ok
+INSERT INTO ddlr_a VALUES (7)
+
+query I
+SELECT c FROM ddlr_a
+----
+7
+
+statement error (42703)
+SELECT a FROM ddlr_a
+
+# DROP TABLE を ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+DROP TABLE ddlr_a
+
+statement error (42P01)
+SELECT c FROM ddlr_a
+
+statement ok
+ROLLBACK
+
+query I
+SELECT c FROM ddlr_a
+----
+7
+
+statement ok
+INSERT INTO ddlr_a VALUES (8)
+
+query I
+SELECT c FROM ddlr_a ORDER BY c
+----
+7
+8
+
+# DROP TABLE を COMMIT
+statement ok
+BEGIN
+
+statement ok
+DROP TABLE ddlr_a
+
+statement ok
+COMMIT
+
+statement error (42P01)
+SELECT c FROM ddlr_a
+
+# 同じトランザクションで CREATE -> DROP -> COMMIT
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ddlr_b (a int)
+
+statement ok
+INSERT INTO ddlr_b VALUES (1)
+
+statement ok
+DROP TABLE ddlr_b
+
+statement ok
+COMMIT
+
+statement error (42P01)
+SELECT a FROM ddlr_b
+
+# 同じトランザクションで DROP -> CREATE（同名）-> COMMIT
+statement ok
+CREATE TABLE ddlr_c (old_col int)
+
+statement ok
+INSERT INTO ddlr_c VALUES (1)
+
+statement ok
+BEGIN
+
+statement ok
+DROP TABLE ddlr_c
+
+statement ok
+CREATE TABLE ddlr_c (new_col text)
+
+statement ok
+INSERT INTO ddlr_c VALUES ('n')
+
+statement ok
+COMMIT
+
+query T
+SELECT new_col FROM ddlr_c
+----
+n
+
+statement error (42703)
+SELECT old_col FROM ddlr_c
+
+# 同じトランザクションで DROP -> CREATE（同名）-> ROLLBACK で元に戻る
+statement ok
+BEGIN
+
+statement ok
+DROP TABLE ddlr_c
+
+statement ok
+CREATE TABLE ddlr_c (other int)
+
+statement ok
+ROLLBACK
+
+query T
+SELECT new_col FROM ddlr_c
+----
+n
+
+# 失敗したブロックでの CREATE TABLE は残らない
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ddlr_d (a int)
+
+statement error (42P07)
+CREATE TABLE ddlr_d (a int)
+
+statement ok
+ROLLBACK
+
+statement error (42P01)
+SELECT a FROM ddlr_d
+
+# 失敗した CREATE TABLE（列の重複）は何も残さない
+statement error (42701)
+CREATE TABLE ddlr_e (a int, a int)
+
+statement error (42P01)
+SELECT a FROM ddlr_e
+
+# 存在しないテーブルの DROP
+statement error (42P01)
+DROP TABLE ddlr_nonexistent
+
+statement ok
+DROP TABLE IF EXISTS ddlr_nonexistent
+
+statement ok
+DROP TABLE ddlr_c

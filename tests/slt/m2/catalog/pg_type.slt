@@ -1,0 +1,112 @@
+# pg_type: yuzhu が持つ型の行
+
+query TITI?TTTT
+SELECT typname, typnamespace, typowner, typlen, typbyval, typtype, typcategory, typalign, typstorage FROM pg_type WHERE oid IN (16, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 194, 700, 701, 705, 1043) ORDER BY oid
+----
+bool 11 10 1 t b B c p
+char 11 10 1 t b Z c p
+name 11 10 64 f b S c p
+int8 11 10 8 t b N d p
+int2 11 10 2 t b N s p
+int4 11 10 4 t b N i p
+regproc 11 10 4 t b N i p
+text 11 10 -1 f b S i x
+oid 11 10 4 t b N i p
+tid 11 10 6 f b U s p
+xid 11 10 4 t b U i p
+cid 11 10 4 t b U i p
+oidvector 11 10 -1 f b A i p
+pg_node_tree 11 10 -1 f b Z i x
+float4 11 10 4 t b N i p
+float8 11 10 8 t b N d p
+unknown 11 10 -2 f p X c p
+varchar 11 10 -1 f b S i x
+
+query TIII?
+SELECT typname, typelem, typrelid, typcollation, typisdefined FROM pg_type WHERE oid IN (16, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30, 194, 700, 701, 705, 1043) ORDER BY oid
+----
+bool 0 0 0 t
+char 0 0 0 t
+name 18 0 950 t
+int8 0 0 0 t
+int2 0 0 0 t
+int4 0 0 0 t
+regproc 0 0 0 t
+text 0 0 100 t
+oid 0 0 0 t
+tid 0 0 0 t
+xid 0 0 0 t
+cid 0 0 0 t
+oidvector 26 0 0 t
+pg_node_tree 0 0 100 t
+float4 0 0 0 t
+float8 0 0 0 t
+unknown 0 0 0 t
+varchar 0 0 100 t
+
+query T?TT?III
+SELECT typname, typispreferred, typdelim, typnotnull, typndims, typbasetype, typtypmod FROM pg_type WHERE oid IN (16, 23, 25, 1043, 701) ORDER BY oid
+----
+bool t , f 0 0 -1
+int4 f , f 0 0 -1
+text t , f 0 0 -1
+float8 t , f 0 0 -1
+varchar f , f 0 0 -1
+
+# 配列型を持つ型（typarray）と、配列型の行
+query TI
+SELECT typname, typarray FROM pg_type WHERE oid IN (18, 19, 24, 26, 27, 28, 29, 30) ORDER BY oid
+----
+char 1002
+name 1003
+regproc 1008
+oid 1028
+tid 1010
+xid 1011
+cid 1012
+oidvector 1013
+
+query TITITTTT
+SELECT typname, typlen, typelem, typcategory, typalign, typstorage, typtype, typdelim FROM pg_type WHERE oid IN (1002, 1003, 1008, 1010, 1011, 1012, 1013, 1028) ORDER BY oid
+----
+_char -1 18 A i x b ,
+_name -1 19 A i x b ,
+_regproc -1 24 A i x b ,
+_tid -1 27 A i x b ,
+_xid -1 28 A i x b ,
+_cid -1 29 A i x b ,
+_oidvector -1 30 A i x b ,
+_oid -1 26 A i x b ,
+
+# 疑似型
+query TTTI
+SELECT typname, typtype, typcategory, typlen FROM pg_type WHERE oid IN (705, 2275, 2281, 2249, 2277) ORDER BY oid
+----
+unknown p X -2
+record p P -1
+cstring p P -2
+anyarray p P -1
+internal p P 8
+
+# 型の入出力関数は regproc として読める
+query TTT
+SELECT typname, typinput, typoutput FROM pg_type WHERE oid IN (16, 18, 19, 20, 21, 23, 25, 26, 1043) ORDER BY oid
+----
+bool boolin boolout
+char charin charout
+name namein nameout
+int8 int8in int8out
+int2 int2in int2out
+int4 int4in int4out
+text textin textout
+oid oidin oidout
+varchar varcharin varcharout
+
+# カタログの複合型
+query TTITT
+SELECT typname, typtype, typrelid, typcategory, typinput FROM pg_type WHERE oid IN (71, 75, 81, 83) ORDER BY oid
+----
+pg_type c 1247 C record_in
+pg_attribute c 1249 C record_in
+pg_proc c 1255 C record_in
+pg_class c 1259 C record_in

@@ -2,7 +2,7 @@
 # claude-sandbox のコンテナ内で、検証用の PostgreSQL 17（C ロケール、trust 認証）を起動・停止する。
 # コンテナ内では docker が使えないので、tests/pg.sh の代わりにこちらを使う。
 #
-#   sandbox/pg.sh start|stop|status [--port N]
+#   sandbox/pg.sh start|stop|restart|status [--port N]
 #
 # 環境変数でも指定できる: PG_PORT（既定 55432）、PG_DATA（既定 /tmp/yuzhu-pg17）。
 # tests/pg.sh と同じく、stop でデータを消す（start のたびに initdb し直す）。
@@ -67,6 +67,13 @@ EOF
             || { tail -n 50 "$DATA/server.log" >&2 || true; exit 1; }
         psql -h 127.0.0.1 -p "$PORT" -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null
         echo "PostgreSQL is ready on 127.0.0.1:$PORT (data $DATA)"
+        ;;
+    restart)
+        # データを残したまま再起動する（smart shutdown。tests/run.sh --restart が使う）。
+        running || { echo "PostgreSQL is not running" >&2; exit 1; }
+        with_user pg_ctl -D "$DATA" -m smart -l "$DATA/server.log" -o "-p $PORT" -w -t 60 restart >/dev/null
+        psql -h 127.0.0.1 -p "$PORT" -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null
+        echo "PostgreSQL restarted on 127.0.0.1:$PORT (data $DATA)"
         ;;
     stop)
         if running; then with_user pg_ctl -D "$DATA" -m fast -w stop >/dev/null; fi

@@ -1,0 +1,250 @@
+# ROLLBACK した UPDATE / DELETE は元に戻る。自分の変更はトランザクション内で見える
+
+statement ok
+CREATE TABLE rb_t (id int, v text)
+
+statement ok
+INSERT INTO rb_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+# UPDATE を ROLLBACK
+statement ok
+BEGIN
+
+statement count 2
+UPDATE rb_t SET v = v || v WHERE id <= 2
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 aa
+2 bb
+3 c
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+# DELETE を ROLLBACK
+statement ok
+BEGIN
+
+statement count 3
+DELETE FROM rb_t
+
+query IT
+SELECT id, v FROM rb_t
+----
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+# 同じ行を 2 回更新して ROLLBACK
+statement ok
+BEGIN
+
+statement count 1
+UPDATE rb_t SET v = 'x' WHERE id = 1
+
+statement count 1
+UPDATE rb_t SET v = 'y' WHERE id = 1
+
+query T
+SELECT v FROM rb_t WHERE id = 1
+----
+y
+
+statement ok
+ROLLBACK
+
+query T
+SELECT v FROM rb_t WHERE id = 1
+----
+a
+
+# 同じ行を 2 回更新して COMMIT
+statement ok
+BEGIN
+
+statement count 1
+UPDATE rb_t SET v = 'x' WHERE id = 1
+
+statement count 1
+UPDATE rb_t SET v = 'y' WHERE id = 1
+
+statement ok
+COMMIT
+
+query T
+SELECT v FROM rb_t WHERE id = 1
+----
+y
+
+statement count 1
+UPDATE rb_t SET v = 'a' WHERE id = 1
+
+# 同じトランザクションで INSERT -> UPDATE -> DELETE -> ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO rb_t VALUES (4, 'd')
+
+statement count 1
+UPDATE rb_t SET v = 'dd' WHERE id = 4
+
+query IT
+SELECT id, v FROM rb_t WHERE id = 4
+----
+4 dd
+
+statement count 1
+DELETE FROM rb_t WHERE id = 4
+
+query IT
+SELECT id, v FROM rb_t WHERE id = 4
+----
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+# 同じトランザクションで INSERT -> UPDATE -> DELETE -> COMMIT
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO rb_t VALUES (4, 'd')
+
+statement count 1
+UPDATE rb_t SET v = 'dd' WHERE id = 4
+
+statement count 1
+DELETE FROM rb_t WHERE id = 4
+
+statement ok
+COMMIT
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+# INSERT -> UPDATE -> COMMIT
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO rb_t VALUES (5, 'e')
+
+statement count 1
+UPDATE rb_t SET v = 'ee' WHERE id = 5
+
+statement ok
+COMMIT
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+5 ee
+
+# 既存の行を UPDATE -> DELETE -> ROLLBACK
+statement ok
+BEGIN
+
+statement count 1
+UPDATE rb_t SET v = 'zz' WHERE id = 2
+
+statement count 1
+DELETE FROM rb_t WHERE id = 2
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+5 ee
+
+# DELETE -> 再 INSERT -> ROLLBACK
+statement ok
+BEGIN
+
+statement count 4
+DELETE FROM rb_t
+
+statement ok
+INSERT INTO rb_t VALUES (9, 'z')
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 a
+2 b
+3 c
+5 ee
+
+# ROLLBACK したあとに続けて更新できる（ロックが解放されている）
+statement count 4
+UPDATE rb_t SET v = 'ok'
+
+query IT
+SELECT id, v FROM rb_t ORDER BY id
+----
+1 ok
+2 ok
+3 ok
+5 ok
+
+# ROLLBACK で消えた版の上に新しい行を積む
+statement ok
+BEGIN
+
+statement count 4
+UPDATE rb_t SET id = id + 100
+
+statement ok
+ROLLBACK
+
+statement count 4
+UPDATE rb_t SET id = id + 10
+
+query I
+SELECT id FROM rb_t ORDER BY id
+----
+11
+12
+13
+15
+
+statement ok
+DROP TABLE rb_t

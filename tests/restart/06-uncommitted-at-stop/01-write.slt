@@ -1,0 +1,36 @@
+# フェーズ 1: 別の接続に、コミットしていない変更を残したまま終わる。
+# （ランナーのプロセスが終わると接続が閉じ、サーバはそのあとで再起動される）
+
+statement ok
+CREATE TABLE rs6_t (id int, v text)
+
+statement ok
+INSERT INTO rs6_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+connection other
+statement ok
+BEGIN
+
+connection other
+statement ok
+INSERT INTO rs6_t VALUES (4, 'uncommitted')
+
+connection other
+statement count 1
+UPDATE rs6_t SET v = 'uncommitted' WHERE id = 1
+
+connection other
+statement count 1
+DELETE FROM rs6_t WHERE id = 2
+
+connection other
+statement ok
+CREATE TABLE rs6_ghost (g int)
+
+connection other
+query IT
+SELECT id, v FROM rs6_t ORDER BY id
+----
+1 uncommitted
+3 c
+4 uncommitted

@@ -1,0 +1,20 @@
+# psql 17 の \l（listAllDbs）が送るクエリから、Access privileges 列だけを外したもの。
+# Access privileges は PostgreSQL では template0 / template1 で非 NULL、yuzhu では NULL なので比べない。
+# 3 つのデータベース（postgres, template0, template1）だけがある前提。
+
+query TTTTTTTT
+SELECT
+  d.datname as "Name",
+  pg_catalog.pg_get_userbyid(d.datdba) as "Owner",
+  pg_catalog.pg_encoding_to_char(d.encoding) as "Encoding",
+  CASE d.datlocprovider WHEN 'b' THEN 'builtin' WHEN 'c' THEN 'libc' WHEN 'i' THEN 'icu' END AS "Locale Provider",
+  d.datcollate as "Collate",
+  d.datctype as "Ctype",
+  d.datlocale as "Locale",
+  d.daticurules as "ICU Rules"
+FROM pg_catalog.pg_database d
+ORDER BY 1
+----
+postgres postgres UTF8 libc C C NULL NULL
+template0 postgres UTF8 libc C C NULL NULL
+template1 postgres UTF8 libc C C NULL NULL

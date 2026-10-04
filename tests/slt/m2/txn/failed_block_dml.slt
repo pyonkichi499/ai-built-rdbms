@@ -1,0 +1,108 @@
+# トランザクションブロック内の UPDATE / DELETE の失敗
+
+statement ok
+CREATE TABLE fb_t (id int, a int CHECK (a >= 0))
+
+statement ok
+INSERT INTO fb_t VALUES (1, 10), (2, 20)
+
+# UPDATE が CHECK 違反 -> 25P02 -> ROLLBACK -> 変更が残っていない
+statement ok
+BEGIN
+
+statement count 1
+UPDATE fb_t SET a = 11 WHERE id = 1
+
+statement error (23514)
+UPDATE fb_t SET a = -1 WHERE id = 2
+
+statement error (25P02)
+SELECT * FROM fb_t
+
+statement error (25P02)
+UPDATE fb_t SET a = 12 WHERE id = 1
+
+statement error (25P02)
+DELETE FROM fb_t
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, a FROM fb_t ORDER BY id
+----
+1 10
+2 20
+
+# 失敗したブロックを COMMIT しても ROLLBACK 扱い
+statement ok
+BEGIN
+
+statement count 2
+DELETE FROM fb_t
+
+statement error (23514)
+INSERT INTO fb_t VALUES (7, -1)
+
+statement ok
+COMMIT
+
+query II
+SELECT id, a FROM fb_t ORDER BY id
+----
+1 10
+2 20
+
+# 文の途中で失敗した UPDATE（2 行目で違反）の前に行った変更も消える
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO fb_t VALUES (3, 30)
+
+statement error (23514)
+UPDATE fb_t SET a = CASE WHEN id = 2 THEN -1 ELSE a + 1 END
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, a FROM fb_t ORDER BY id
+----
+1 10
+2 20
+
+# ブロックの外で失敗した UPDATE は次の文に影響しない
+statement error (23514)
+UPDATE fb_t SET a = -1 WHERE id = 1
+
+statement count 1
+UPDATE fb_t SET a = 15 WHERE id = 1
+
+query II
+SELECT id, a FROM fb_t ORDER BY id
+----
+1 15
+2 20
+
+# DELETE 後の存在しない列で失敗
+statement ok
+BEGIN
+
+statement count 1
+DELETE FROM fb_t WHERE id = 1
+
+statement error (42703)
+UPDATE fb_t SET zzz = 1
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, a FROM fb_t ORDER BY id
+----
+1 15
+2 20
+
+statement ok
+DROP TABLE fb_t

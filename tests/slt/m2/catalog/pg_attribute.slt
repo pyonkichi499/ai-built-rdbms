@@ -1,0 +1,87 @@
+# pg_attribute: ユーザー列とシステム列
+# attrelid を名前から引く手段（regclass、サブクエリ）が M2 にはないので、
+# このファイルが作るテーブル 1 つだけが OID 16384 以上に存在する前提で、attrelid > 16383 で絞る。
+# toast テーブルの列が混ざらないよう、text 型の列は使わない（varchar(n) は toast テーブルを持たない）。
+
+statement ok
+CREATE TABLE cat_a_t (a int NOT NULL, b varchar(10) DEFAULT 'x', c float8, d bool, e smallint, f bigint, g real)
+
+query TIII??I
+SELECT attname, atttypid, attnum, attlen, attnotnull, atthasdef, atttypmod FROM pg_attribute WHERE attrelid > 16383 AND attnum > 0 ORDER BY attnum
+----
+a 23 1 4 t f -1
+b 1043 2 -1 f t 14
+c 701 3 8 f f -1
+d 16 4 1 f f -1
+e 21 5 2 f f -1
+f 20 6 8 f f -1
+g 700 7 4 f f -1
+
+# システム列（attnum < 0）
+query TIII??I
+SELECT attname, atttypid, attnum, attlen, attnotnull, atthasdef, atttypmod FROM pg_attribute WHERE attrelid > 16383 AND attnum < 0 ORDER BY attnum
+----
+tableoid 26 -6 4 t f -1
+cmax 29 -5 4 t f -1
+xmax 28 -4 4 t f -1
+cmin 29 -3 4 t f -1
+xmin 28 -2 4 t f -1
+ctid 27 -1 6 t f -1
+
+# その他の列
+query T?TT???I
+SELECT attname, attbyval, attalign, attstorage, attisdropped, attislocal, atthasmissing, attcollation FROM pg_attribute WHERE attrelid > 16383 AND attnum > 0 ORDER BY attnum
+----
+a t i p f t f 0
+b f i x f t f 100
+c t d p f t f 0
+d t c p f t f 0
+e t s p f t f 0
+f t d p f t f 0
+g t i p f t f 0
+
+query TIII
+SELECT attname, attndims, attinhcount, attcollation FROM pg_attribute WHERE attrelid > 16383 AND attnum < 0 ORDER BY attnum
+----
+tableoid 0 0 0
+cmax 0 0 0
+xmax 0 0 0
+cmin 0 0 0
+xmin 0 0 0
+ctid 0 0 0
+
+# 列のないテーブル
+statement ok
+DROP TABLE cat_a_t
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid > 16383
+----
+
+# varchar(n) の atttypmod は n + 4
+statement ok
+CREATE TABLE cat_a_v (v1 varchar(1), v2 varchar(100), v3 varchar(200))
+
+query TI
+SELECT attname, atttypmod FROM pg_attribute WHERE attrelid > 16383 AND attnum > 0 ORDER BY attnum
+----
+v1 5
+v2 104
+v3 204
+
+statement ok
+DROP TABLE cat_a_v
+
+# ROLLBACK した CREATE TABLE の列は残らない
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE cat_a_r (r1 int)
+
+statement ok
+ROLLBACK
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid > 16383
+----

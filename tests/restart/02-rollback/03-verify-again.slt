@@ -1,0 +1,12 @@
+# フェーズ 3: もう一度再起動したあとも同じ。
+
+query IT
+SELECT id, v FROM rs2_t ORDER BY id
+----
+1 a!
+2 committed!
+3 c!
+4 d!
+
+statement ok
+DROP TABLE rs2_t

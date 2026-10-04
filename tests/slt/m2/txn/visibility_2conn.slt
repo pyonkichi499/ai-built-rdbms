@@ -1,0 +1,218 @@
+# 2 接続: 未コミットの変更は他の接続から見えず、コミット後に見える。
+# 書き込みは接続 con_w だけで行う（もう一方が書くとライターロックで止まるため）。
+
+statement ok
+CREATE TABLE vis_t (id int, v text)
+
+statement ok
+INSERT INTO vis_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+# --- INSERT ---
+connection con_w
+statement ok
+BEGIN
+
+connection con_w
+statement ok
+INSERT INTO vis_t VALUES (4, 'd')
+
+connection con_w
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 a
+2 b
+3 c
+4 d
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+connection con_w
+statement ok
+COMMIT
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 a
+2 b
+3 c
+4 d
+
+# --- UPDATE ---
+connection con_w
+statement ok
+BEGIN
+
+connection con_w
+statement count 2
+UPDATE vis_t SET v = upper(v) WHERE id <= 2
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 a
+2 b
+3 c
+4 d
+
+connection con_w
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+3 c
+4 d
+
+connection con_w
+statement ok
+COMMIT
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+3 c
+4 d
+
+# --- DELETE ---
+connection con_w
+statement ok
+BEGIN
+
+connection con_w
+statement count 2
+DELETE FROM vis_t WHERE id >= 3
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+3 c
+4 d
+
+connection con_w
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+
+connection con_w
+statement ok
+COMMIT
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+
+# --- ROLLBACK は他の接続から見えないまま ---
+connection con_w
+statement ok
+BEGIN
+
+connection con_w
+statement ok
+INSERT INTO vis_t VALUES (9, 'z')
+
+connection con_w
+statement count 2
+UPDATE vis_t SET v = 'x' WHERE id <= 2
+
+connection con_w
+statement count 1
+DELETE FROM vis_t WHERE id = 1
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+
+connection con_w
+statement ok
+ROLLBACK
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+
+# --- Read Committed: リーダーのトランザクション内でも、文ごとに新しいコミットが見える ---
+connection con_r
+statement ok
+BEGIN
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 B
+
+connection con_w
+statement ok
+UPDATE vis_t SET v = 'new' WHERE id = 2
+
+connection con_r
+query IT
+SELECT id, v FROM vis_t ORDER BY id
+----
+1 A
+2 new
+
+connection con_r
+statement ok
+COMMIT
+
+# --- CREATE TABLE / DROP TABLE の可視性 ---
+connection con_w
+statement ok
+BEGIN
+
+connection con_w
+statement ok
+CREATE TABLE vis_t2 (a int)
+
+connection con_w
+statement ok
+INSERT INTO vis_t2 VALUES (1)
+
+connection con_r
+statement error (42P01)
+SELECT a FROM vis_t2
+
+connection con_w
+statement ok
+COMMIT
+
+connection con_r
+query I
+SELECT a FROM vis_t2
+----
+1
+
+statement ok
+DROP TABLE vis_t2
+
+statement ok
+DROP TABLE vis_t

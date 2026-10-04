@@ -1,0 +1,72 @@
+# pg_constraint と pg_attrdef
+# adbin / conbin の中身と conkey は PostgreSQL と形式が違うので比べない。
+
+statement ok
+CREATE TABLE cat_k_t (a int NOT NULL DEFAULT 1 CHECK (a > 0), b varchar(10) DEFAULT 'x', c int, CONSTRAINT cat_k_named CHECK (c IS NULL OR c < 100), CHECK (a < b::int + 1000))
+
+query TT???
+SELECT conname, contype, convalidated, condeferrable, condeferred FROM pg_constraint WHERE conrelid > 16383 ORDER BY conname
+----
+cat_k_named c t f f
+cat_k_t_a_check c t f f
+cat_k_t_check c t f f
+
+query TIII?
+SELECT conname, connamespace, contypid, conparentid, conislocal FROM pg_constraint WHERE conrelid > 16383 ORDER BY conname
+----
+cat_k_named 2200 0 0 t
+cat_k_t_a_check 2200 0 0 t
+cat_k_t_check 2200 0 0 t
+
+query II
+SELECT adnum, adrelid > 16383 FROM pg_attrdef WHERE adrelid > 16383 ORDER BY adnum
+----
+1 t
+2 t
+
+# 制約を持つテーブルの relchecks
+query TI
+SELECT relname, relchecks FROM pg_class WHERE relname = 'cat_k_t'
+----
+cat_k_t 3
+
+# DROP TABLE で従属する行も消える
+statement ok
+DROP TABLE cat_k_t
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid > 16383
+----
+
+query T
+SELECT adnum FROM pg_attrdef WHERE adrelid > 16383
+----
+
+# ROLLBACK した CREATE TABLE の制約と既定値は残らない
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE cat_k_r (a int DEFAULT 5 CHECK (a > 0))
+
+statement ok
+ROLLBACK
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid > 16383
+----
+
+query T
+SELECT adnum FROM pg_attrdef WHERE adrelid > 16383
+----
+
+# 列が NOT NULL だけで CHECK も DEFAULT もないテーブルには行が出ない
+statement ok
+CREATE TABLE cat_k_n (a int NOT NULL)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid > 16383
+----
+
+statement ok
+DROP TABLE cat_k_n

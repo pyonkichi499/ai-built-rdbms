@@ -40,7 +40,7 @@ statement error (42804)
 UPDATE upd_x_t SET a = true
 
 statement error (42804)
-UPDATE upd_x_t SET b = 1
+UPDATE upd_x_t SET a = b
 
 statement error (42804)
 UPDATE upd_x_t SET a = 1 WHERE b
@@ -59,10 +59,12 @@ UPDATE upd_x_nonexistent SET a = 1
 statement error (42P01)
 DELETE FROM upd_x_nonexistent
 
-# 0A000: M2 で対応しない構文
+# 0A000: M2 で対応しない構文（PostgreSQL では成功するので yuzhu だけで確かめる）
+onlyif yuzhu
 statement error (0A000)
 UPDATE upd_x_t SET a = 2 RETURNING a
 
+onlyif yuzhu
 statement error (0A000)
 DELETE FROM upd_x_t RETURNING a
 
@@ -78,6 +80,21 @@ query IT
 SELECT a, b FROM upd_x_t
 ----
 1 x
+
+# UPDATE ... FROM / DELETE ... USING は M2 の範囲外（PostgreSQL では成功するので yuzhu だけで確かめる）
+statement ok
+CREATE TABLE upd_x_u (a int)
+
+onlyif yuzhu
+statement error (0A000)
+UPDATE upd_x_t SET a = upd_x_u.a FROM upd_x_u
+
+onlyif yuzhu
+statement error (0A000)
+DELETE FROM upd_x_t USING upd_x_u WHERE upd_x_t.a = upd_x_u.a
+
+statement ok
+DROP TABLE upd_x_u
 
 statement ok
 DROP TABLE upd_x_t

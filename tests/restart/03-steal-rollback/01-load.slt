@@ -1,0 +1,60 @@
+# フェーズ 1: バッファプールより大きいテーブルを作る。
+# yuzhu はこのシナリオの間 --shared-buffers 1MB（128 ページ）で動く（yuzhu.args）。
+# 1 行は約 520 バイトなので、4096 行はおよそ 270 ページになる。
+
+statement ok
+CREATE TABLE rs3_t (a int NOT NULL, pad text)
+
+statement ok
+INSERT INTO rs3_t VALUES (0, repeat('x', 500))
+
+statement count 1
+INSERT INTO rs3_t SELECT a + 1, pad FROM rs3_t
+
+statement count 2
+INSERT INTO rs3_t SELECT a + 2, pad FROM rs3_t
+
+statement count 4
+INSERT INTO rs3_t SELECT a + 4, pad FROM rs3_t
+
+statement count 8
+INSERT INTO rs3_t SELECT a + 8, pad FROM rs3_t
+
+statement count 16
+INSERT INTO rs3_t SELECT a + 16, pad FROM rs3_t
+
+statement count 32
+INSERT INTO rs3_t SELECT a + 32, pad FROM rs3_t
+
+statement count 64
+INSERT INTO rs3_t SELECT a + 64, pad FROM rs3_t
+
+statement count 128
+INSERT INTO rs3_t SELECT a + 128, pad FROM rs3_t
+
+statement count 256
+INSERT INTO rs3_t SELECT a + 256, pad FROM rs3_t
+
+statement count 512
+INSERT INTO rs3_t SELECT a + 512, pad FROM rs3_t
+
+statement count 1024
+INSERT INTO rs3_t SELECT a + 1024, pad FROM rs3_t
+
+statement count 2048
+INSERT INTO rs3_t SELECT a + 2048, pad FROM rs3_t
+
+# 0..4095 の 4096 行
+query I
+SELECT a FROM rs3_t ORDER BY a DESC LIMIT 1
+----
+4095
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1 OFFSET 4095
+----
+4095
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1 OFFSET 4096
+----

@@ -1,0 +1,133 @@
+# DROP TABLE の後始末: カタログの行がすべて消え、同じ名前で作り直せる
+# （attrelid > 16383 で絞るので、このファイルが作るテーブル 1 つだけが存在する前提。text 列は使わない）
+
+statement ok
+CREATE TABLE dc_t (dc_a int NOT NULL DEFAULT 1 CHECK (dc_a > 0), dc_b varchar(5) DEFAULT 'x')
+
+statement ok
+INSERT INTO dc_t VALUES (1, 'a'), (2, 'b')
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'dc_t'
+----
+dc_t
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid > 16383 AND attnum > 0 ORDER BY attnum
+----
+dc_a
+dc_b
+
+query I
+SELECT adnum FROM pg_attrdef WHERE adrelid > 16383 ORDER BY adnum
+----
+1
+2
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid > 16383
+----
+dc_t_dc_a_check
+
+statement ok
+DROP TABLE dc_t
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'dc_t'
+----
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid > 16383
+----
+
+query I
+SELECT adnum FROM pg_attrdef WHERE adrelid > 16383
+----
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid > 16383
+----
+
+statement error (42P01)
+SELECT * FROM dc_t
+
+statement error (42P01)
+INSERT INTO dc_t VALUES (1, 'a')
+
+statement error (42P01)
+UPDATE dc_t SET dc_a = 1
+
+statement error (42P01)
+DELETE FROM dc_t
+
+# 同じ名前で、別の定義で作り直せる。古い行は戻ってこない
+statement ok
+CREATE TABLE dc_t (dc_c int)
+
+query I
+SELECT * FROM dc_t
+----
+
+statement ok
+INSERT INTO dc_t VALUES (10)
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid > 16383 AND attnum > 0 ORDER BY attnum
+----
+dc_c
+
+query I
+SELECT adnum FROM pg_attrdef WHERE adrelid > 16383
+----
+
+statement ok
+DROP TABLE dc_t
+
+# 作って消すことを繰り返す
+statement ok
+CREATE TABLE dc_t (n int)
+
+statement ok
+INSERT INTO dc_t VALUES (1)
+
+statement ok
+DROP TABLE dc_t
+
+statement ok
+CREATE TABLE dc_t (n int)
+
+query I
+SELECT n FROM dc_t
+----
+
+statement ok
+DROP TABLE dc_t
+
+# 複数のテーブルのうち 1 つだけを消す
+statement ok
+CREATE TABLE dc_x (x int)
+
+statement ok
+CREATE TABLE dc_y (y int)
+
+statement ok
+INSERT INTO dc_x VALUES (1)
+
+statement ok
+INSERT INTO dc_y VALUES (2)
+
+statement ok
+DROP TABLE dc_x
+
+query I
+SELECT y FROM dc_y
+----
+2
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid > 16383 AND attnum > 0
+----
+y
+
+statement ok
+DROP TABLE dc_y

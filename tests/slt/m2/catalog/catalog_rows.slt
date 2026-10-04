@@ -1,0 +1,62 @@
+# 13 個のカタログの pg_class の行（共有カタログの行も各データベースにある）。relhasindex は M4 まで違うので比べない
+
+query ITI?ITTII
+SELECT oid, relname, relnamespace, relisshared, relnatts, relkind, relpersistence, reltablespace, (relfilenode = 0) FROM pg_class WHERE oid IN (1259, 1249, 1247, 1255, 2615, 2617, 2605, 2601, 2604, 2606, 1262, 1260, 1213) ORDER BY 1
+----
+1213 pg_tablespace 11 t 5 r p 1664 t
+1247 pg_type 11 f 32 r p 0 t
+1249 pg_attribute 11 f 26 r p 0 t
+1255 pg_proc 11 f 30 r p 0 t
+1259 pg_class 11 f 33 r p 0 t
+1260 pg_authid 11 t 12 r p 1664 t
+1262 pg_database 11 t 18 r p 1664 t
+2601 pg_am 11 f 4 r p 0 f
+2604 pg_attrdef 11 f 4 r p 0 f
+2605 pg_cast 11 f 6 r p 0 f
+2606 pg_constraint 11 f 26 r p 0 f
+2615 pg_namespace 11 f 4 r p 0 f
+2617 pg_operator 11 f 15 r p 0 f
+
+query ITIII
+SELECT oid, relname, reltype, relam, relowner FROM pg_class WHERE oid IN (1259, 1249, 1247, 1255, 1262, 1260) ORDER BY 1
+----
+1247 pg_type 71 2 10
+1249 pg_attribute 75 2 10
+1255 pg_proc 81 2 10
+1259 pg_class 83 2 10
+1260 pg_authid 2842 2 10
+1262 pg_database 1248 2 10
+
+query ITT???
+SELECT oid, relname, relreplident, relhasrules, relhastriggers, relispopulated FROM pg_class WHERE oid IN (1259, 1249, 1247, 1255, 2615, 2617, 2605, 2601, 2604, 2606, 1262, 1260, 1213) ORDER BY 1
+----
+1213 pg_tablespace n f f t
+1247 pg_type n f f t
+1249 pg_attribute n f f t
+1255 pg_proc n f f t
+1259 pg_class n f f t
+1260 pg_authid n f f t
+1262 pg_database n f f t
+2601 pg_am n f f t
+2604 pg_attrdef n f f t
+2605 pg_cast n f f t
+2606 pg_constraint n f f t
+2615 pg_namespace n f f t
+2617 pg_operator n f f t
+
+# 各カタログのシステム列（attnum < 0）は 6 つ
+query IITI
+SELECT attrelid, attnum, attname, atttypid FROM pg_attribute WHERE attrelid IN (1259, 1213) AND attnum < 0 ORDER BY 1, 2
+----
+1213 -6 tableoid 26
+1213 -5 cmax 29
+1213 -4 xmax 28
+1213 -3 cmin 29
+1213 -2 xmin 28
+1213 -1 ctid 27
+1259 -6 tableoid 26
+1259 -5 cmax 29
+1259 -4 xmax 28
+1259 -3 cmin 29
+1259 -2 xmin 28
+1259 -1 ctid 27

@@ -1,0 +1,236 @@
+# カタログ関連の関数
+
+# format_type
+query T
+SELECT format_type(16, NULL)
+----
+boolean
+
+query T
+SELECT format_type(23, NULL)
+----
+integer
+
+query T
+SELECT format_type(20, NULL)
+----
+bigint
+
+query T
+SELECT format_type(21, NULL)
+----
+smallint
+
+query T
+SELECT format_type(25, NULL)
+----
+text
+
+query T
+SELECT format_type(18, NULL)
+----
+"char"
+
+query T
+SELECT format_type(19, NULL)
+----
+name
+
+query T
+SELECT format_type(26, NULL)
+----
+oid
+
+query T
+SELECT format_type(700, NULL)
+----
+real
+
+query T
+SELECT format_type(701, NULL)
+----
+double precision
+
+query T
+SELECT format_type(1043, NULL)
+----
+character varying
+
+query T
+SELECT format_type(1043, 14)
+----
+character varying(10)
+
+query T
+SELECT format_type(1043, 5)
+----
+character varying(1)
+
+query T
+SELECT format_type(1043, -1)
+----
+character varying
+
+query T
+SELECT format_type(99999, NULL)
+----
+???
+
+query T
+SELECT format_type(NULL, NULL)
+----
+NULL
+
+# NULL でも typemod 付きで呼べる（strict ではない）
+query T
+SELECT format_type(NULL, 14)
+----
+NULL
+
+# pg_table_is_visible: 自分で作ったテーブルと pg_class
+statement ok
+CREATE TABLE cat_f_t (a int)
+
+query ?
+SELECT pg_table_is_visible(oid) FROM pg_class WHERE relname = 'cat_f_t'
+----
+t
+
+query ?
+SELECT pg_table_is_visible(oid) FROM pg_class WHERE relname = 'pg_class'
+----
+t
+
+query ?
+SELECT pg_table_is_visible(99999)
+----
+NULL
+
+query ?
+SELECT pg_table_is_visible(NULL)
+----
+NULL
+
+statement ok
+DROP TABLE cat_f_t
+
+# pg_get_userbyid（initdb の -U postgres が前提）
+query T
+SELECT pg_get_userbyid(10)
+----
+postgres
+
+query T
+SELECT pg_get_userbyid(6171)
+----
+pg_database_owner
+
+query T
+SELECT pg_get_userbyid(99999)
+----
+unknown (OID=99999)
+
+query T
+SELECT pg_get_userbyid(NULL)
+----
+NULL
+
+# pg_encoding_to_char
+query T
+SELECT pg_encoding_to_char(0)
+----
+SQL_ASCII
+
+query T
+SELECT pg_encoding_to_char(6)
+----
+UTF8
+
+query T
+SELECT pg_encoding_to_char(1)
+----
+EUC_JP
+
+query T
+SELECT pg_encoding_to_char(8)
+----
+LATIN1
+
+query T
+SELECT pg_encoding_to_char(99)
+----
+(empty)
+
+query T
+SELECT pg_encoding_to_char(-1)
+----
+(empty)
+
+query T
+SELECT pg_encoding_to_char(NULL)
+----
+NULL
+
+# スキーマ修飾した関数名とテーブル名
+query T
+SELECT pg_catalog.upper('abc')
+----
+ABC
+
+query T
+SELECT pg_catalog.pg_get_userbyid(10)
+----
+postgres
+
+query T
+SELECT relname FROM pg_catalog.pg_class WHERE oid = 1259
+----
+pg_class
+
+query T
+SELECT pg_class.relname FROM pg_catalog.pg_class WHERE oid = 1259
+----
+pg_class
+
+query T
+SELECT c.relname FROM pg_catalog.pg_class AS c WHERE c.oid = 1259
+----
+pg_class
+
+statement error (42883)
+SELECT public.upper('abc')
+
+statement error (3F000)
+SELECT nosuchschema.upper('abc')
+
+# current_schema()
+query T
+SELECT current_schema()
+----
+public
+
+# E'...' 文字列
+query T
+SELECT E'a\\b'
+----
+a\b
+
+query I
+SELECT length(E'a\tb\nc')
+----
+5
+
+query T
+SELECT E'it\'s'
+----
+it's
+
+query T
+SELECT E'\x41\102'
+----
+AB
+
+query T
+SELECT E'\\x'
+----
+\x

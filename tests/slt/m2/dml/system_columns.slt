@@ -1,0 +1,197 @@
+# システム列 ctid / xmin / cmin / xmax / cmax / tableoid
+# 値そのものは PostgreSQL と一致しないので、形と大小関係だけを確かめる。
+
+statement ok
+CREATE TABLE sys_t (id int, v text)
+
+# 別々のトランザクションで挿入した行は xmin が増えていく
+statement ok
+INSERT INTO sys_t VALUES (1, 'a')
+
+statement ok
+INSERT INTO sys_t VALUES (2, 'b')
+
+statement ok
+INSERT INTO sys_t VALUES (3, 'c')
+
+query I
+SELECT id FROM sys_t ORDER BY xmin::text::int8
+----
+1
+2
+3
+
+# 同じ文で挿入した行は xmin が同じ
+statement ok
+INSERT INTO sys_t VALUES (4, 'd'), (5, 'e')
+
+query I
+SELECT id FROM sys_t ORDER BY xmin::text::int8 DESC, id
+----
+4
+5
+3
+2
+1
+
+query I
+SELECT id FROM sys_t WHERE xmin::text::int8 > 0 ORDER BY id
+----
+1
+2
+3
+4
+5
+
+# 生きている行の xmax は 0
+query I
+SELECT id FROM sys_t WHERE xmax::text = '0' ORDER BY id
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT id FROM sys_t WHERE ctid IS NOT NULL ORDER BY id
+----
+1
+2
+3
+4
+5
+
+# 更新した行は新しい xmin を持つ（最後のトランザクションの行になる）
+statement count 1
+UPDATE sys_t SET v = 'bb' WHERE id = 2
+
+query I
+SELECT id FROM sys_t ORDER BY xmin::text::int8 DESC, id LIMIT 1
+----
+2
+
+query IT
+SELECT id, v FROM sys_t WHERE xmax::text = '0' ORDER BY xmin::text::int8, id
+----
+1 a
+3 c
+4 d
+5 e
+2 bb
+
+# 更新で行の位置（ctid）が変わる
+query T
+SELECT ctid::text FROM sys_t WHERE id = 1
+----
+(0,1)
+
+query T
+SELECT ctid::text FROM sys_t WHERE id = 5
+----
+(0,5)
+
+query T
+SELECT ctid::text FROM sys_t WHERE id = 2
+----
+(0,6)
+
+# ctid は ORDER BY に使える
+query I
+SELECT id FROM sys_t ORDER BY ctid
+----
+1
+3
+4
+5
+2
+
+# ctid とユーザー列を同時に参照
+query IT
+SELECT id, ctid::text FROM sys_t WHERE id <= 2 ORDER BY id
+----
+1 (0,1)
+2 (0,6)
+
+# tableoid はテーブルを表す oid（0 でない）
+query I
+SELECT id FROM sys_t WHERE tableoid::int8 > 16383 ORDER BY id LIMIT 1
+----
+1
+
+# 全行が同じ tableoid
+query I
+SELECT id FROM sys_t ORDER BY tableoid::int8, id LIMIT 1
+----
+1
+
+# 同じトランザクション内の cmin はコマンドごとに増える
+statement ok
+CREATE TABLE sys_c (id int)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO sys_c VALUES (1)
+
+statement ok
+INSERT INTO sys_c VALUES (2)
+
+statement ok
+INSERT INTO sys_c VALUES (3)
+
+query I
+SELECT id FROM sys_c ORDER BY cmin::text::int8 DESC
+----
+3
+2
+1
+
+# 同じトランザクションの行は xmin が同じ
+query I
+SELECT id FROM sys_c ORDER BY xmin::text::int8, id
+----
+1
+2
+3
+
+statement ok
+COMMIT
+
+# SELECT * にはシステム列が出ない
+query IT
+SELECT * FROM sys_t WHERE id = 1
+----
+1 a
+
+# 別名を付けても取れる
+query ?
+SELECT ctid IS NOT NULL AS has_ctid FROM sys_t WHERE id = 1
+----
+t
+
+# DELETE を ROLLBACK すると、行はまた見える（xmax には中断したトランザクションの XID が残るので、値は比べない）
+statement ok
+BEGIN
+
+statement count 1
+DELETE FROM sys_t WHERE id = 1
+
+query I
+SELECT id FROM sys_t WHERE id = 1
+----
+
+statement ok
+ROLLBACK
+
+query I
+SELECT id FROM sys_t WHERE id = 1
+----
+1
+
+statement ok
+DROP TABLE sys_t
+
+statement ok
+DROP TABLE sys_c

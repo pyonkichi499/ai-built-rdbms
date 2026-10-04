@@ -1,0 +1,28 @@
+# フェーズ 2: 再起動後、コミットしていなかった変更はなく、書き込みもブロックされない。
+
+query IT
+SELECT id, v FROM rs6_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+statement error (42P01)
+SELECT g FROM rs6_ghost
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'rs6_ghost'
+----
+
+statement count 3
+UPDATE rs6_t SET v = v || v
+
+query IT
+SELECT id, v FROM rs6_t ORDER BY id
+----
+1 aa
+2 bb
+3 cc
+
+statement ok
+DROP TABLE rs6_t

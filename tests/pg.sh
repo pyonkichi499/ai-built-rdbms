@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 本物の PostgreSQL 17（C ロケール、trust 認証）を docker で起動・停止する補助スクリプト。
 #
-#   tests/pg.sh start|stop|status [--port N] [--name NAME] [--image IMAGE]
+#   tests/pg.sh start|stop|restart|status [--port N] [--name NAME] [--image IMAGE]
 #
+# restart はデータを残したまま再起動する。
 # 環境変数でも指定できる: PG_PORT（既定 55432）、PG_CONTAINER（既定 yuzhu-test-pg）、
 # PG_IMAGE（既定 postgres:17）。
 set -euo pipefail
@@ -12,7 +13,7 @@ NAME="${PG_CONTAINER:-yuzhu-test-pg}"
 IMAGE="${PG_IMAGE:-postgres:17}"
 
 usage() {
-    sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -59,6 +60,12 @@ case "$CMD" in
                 -p "127.0.0.1:${PORT}:5432" \
                 "$IMAGE" >/dev/null
         fi
+        wait_ready
+        ;;
+    restart)
+        # データを残したまま PostgreSQL を再起動する（docker restart。コンテナ内で smart shutdown して起動し直す）。
+        if ! exists; then echo "container $NAME does not exist" >&2; exit 1; fi
+        docker restart -t 60 "$NAME" >/dev/null
         wait_ready
         ;;
     stop)

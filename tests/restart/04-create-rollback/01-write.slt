@@ -1,0 +1,30 @@
+# フェーズ 1: BEGIN -> CREATE TABLE -> INSERT -> ROLLBACK。
+
+statement ok
+CREATE TABLE rs4_keep (a int)
+
+statement ok
+INSERT INTO rs4_keep VALUES (1)
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE rs4_gone (b int, rs4_marker varchar(5))
+
+statement ok
+INSERT INTO rs4_gone VALUES (1, 'x')
+
+statement ok
+INSERT INTO rs4_keep VALUES (2)
+
+statement ok
+ROLLBACK
+
+statement error (42P01)
+SELECT b FROM rs4_gone
+
+query I
+SELECT a FROM rs4_keep ORDER BY a
+----
+1

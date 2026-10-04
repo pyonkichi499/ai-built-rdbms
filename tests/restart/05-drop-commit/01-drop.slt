@@ -1,0 +1,25 @@
+# フェーズ 1: DROP TABLE をコミットする。
+
+statement ok
+CREATE TABLE rs5_dropped (rs5_marker int NOT NULL DEFAULT 1 CHECK (rs5_marker > 0))
+
+statement ok
+CREATE TABLE rs5_kept (a int)
+
+statement ok
+INSERT INTO rs5_dropped VALUES (1), (2)
+
+statement ok
+INSERT INTO rs5_kept VALUES (10), (20)
+
+query T
+SELECT relname FROM pg_class WHERE relname IN ('rs5_dropped', 'rs5_kept') ORDER BY relname
+----
+rs5_dropped
+rs5_kept
+
+statement ok
+DROP TABLE rs5_dropped
+
+statement error (42P01)
+SELECT * FROM rs5_dropped

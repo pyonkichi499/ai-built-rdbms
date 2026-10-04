@@ -1,0 +1,13 @@
+# フェーズ 3: もう一度再起動したあとも、フェーズ 2 の変更が残っている。
+
+query ITI
+SELECT id, v, n FROM rs1_t ORDER BY id
+----
+1 A 11
+2 B 21
+3 cc 8
+4 d 8
+7 g 70
+
+statement ok
+DROP TABLE rs1_t

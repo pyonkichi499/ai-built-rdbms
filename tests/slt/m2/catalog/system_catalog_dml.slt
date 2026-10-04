@@ -1,0 +1,24 @@
+# システムカタログは DROP できない（42501）
+# 注: カタログへの DML は PostgreSQL のスーパーユーザーでは成功するので、ここでは確かめない（Rust の結合テストで確かめる）。
+
+statement error (42501)
+DROP TABLE pg_class
+
+statement error (42501)
+DROP TABLE pg_catalog.pg_class
+
+statement error (42501)
+DROP TABLE pg_attribute
+
+statement error is a system catalog
+DROP TABLE pg_type
+
+# IF EXISTS を付けても同じ
+statement error (42501)
+DROP TABLE IF EXISTS pg_class
+
+# 失敗したあとも pg_class は読める
+query T
+SELECT relname FROM pg_class WHERE oid = 1259
+----
+pg_class

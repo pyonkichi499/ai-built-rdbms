@@ -1,0 +1,57 @@
+# pg_namespace と pg_database
+
+query ITI
+SELECT oid, nspname, nspowner FROM pg_namespace WHERE oid IN (11, 99, 2200) ORDER BY oid
+----
+11 pg_catalog 10
+99 pg_toast 10
+2200 public 6171
+
+query T
+SELECT nspname FROM pg_namespace WHERE nspname IN ('pg_catalog', 'pg_toast', 'public') ORDER BY nspname
+----
+pg_catalog
+pg_toast
+public
+
+query T??ITT
+SELECT datname, datistemplate, datallowconn, encoding, datcollate, datctype FROM pg_database WHERE datname IN ('template0', 'template1', 'postgres') ORDER BY datname
+----
+postgres f t 6 C C
+template0 t f 6 C C
+template1 t t 6 C C
+
+query TITIT
+SELECT datname, datdba, datconnlimit, dattablespace, datlocprovider FROM pg_database WHERE datname IN ('template0', 'template1', 'postgres') ORDER BY datname
+----
+postgres 10 -1 1663 c
+template0 10 -1 1663 c
+template1 10 -1 1663 c
+
+query TI
+SELECT datname, encoding FROM pg_database WHERE datname = 'postgres'
+----
+postgres 6
+
+# pg_authid / pg_tablespace
+query T???????I
+SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin, rolreplication, rolbypassrls, rolconnlimit FROM pg_authid WHERE oid = 10
+----
+postgres t t t t t t t -1
+
+query IT???I
+SELECT oid, rolname, rolsuper, rolinherit, rolcanlogin, rolconnlimit FROM pg_authid WHERE oid = 6171
+----
+6171 pg_database_owner f t f -1
+
+query ITI
+SELECT oid, spcname, spcowner FROM pg_tablespace ORDER BY oid
+----
+1663 pg_default 10
+1664 pg_global 10
+
+query ITI
+SELECT oid, amname, amtype FROM pg_am WHERE oid IN (2, 403) ORDER BY oid
+----
+2 heap t
+403 btree i

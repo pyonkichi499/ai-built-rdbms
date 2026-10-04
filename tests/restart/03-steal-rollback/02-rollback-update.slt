@@ -1,0 +1,52 @@
+# フェーズ 2: 全行を UPDATE して ROLLBACK する。
+# 更新した版はプールに収まらないので、未コミットの版を持つページがディスクに書き出される（steal）。
+
+statement ok
+BEGIN
+
+statement count 4096
+UPDATE rs3_t SET a = a + 100000
+
+# 自分の変更は見える
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1
+----
+100000
+
+query I
+SELECT a FROM rs3_t ORDER BY a DESC LIMIT 1
+----
+104095
+
+statement ok
+ROLLBACK
+
+# ROLLBACK 後は元の値
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1
+----
+0
+
+query I
+SELECT a FROM rs3_t WHERE a >= 100000 LIMIT 1
+----
+
+query I
+SELECT a FROM rs3_t ORDER BY a DESC LIMIT 1
+----
+4095
+
+# 全行の DELETE も ROLLBACK
+statement ok
+BEGIN
+
+statement count 4096
+DELETE FROM rs3_t
+
+statement ok
+ROLLBACK
+
+query I
+SELECT a FROM rs3_t ORDER BY a LIMIT 1 OFFSET 4095
+----
+4095

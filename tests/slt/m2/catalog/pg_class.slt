@@ -1,0 +1,75 @@
+# pg_class: CREATE TABLE 後の行
+
+statement ok
+CREATE TABLE cat_c_t1 (a int NOT NULL, b varchar(10) DEFAULT 'x', c float8, d bool, CONSTRAINT cat_c_ck CHECK (a > 0), CHECK (c < 5))
+
+statement ok
+CREATE TABLE cat_c_t2 (x int)
+
+query TTIIT?
+SELECT relname, relkind, relnatts, relchecks, relpersistence, relhasindex FROM pg_class WHERE relname = 'cat_c_t1'
+----
+cat_c_t1 r 4 2 p f
+
+query TTIIT?
+SELECT relname, relkind, relnatts, relchecks, relpersistence, relhasindex FROM pg_class WHERE relname = 'cat_c_t2'
+----
+cat_c_t2 r 1 0 p f
+
+# 名前空間、所有者、アクセスメソッド、テーブルスペース
+query TIIII
+SELECT relname, relnamespace, relowner, relam, reltablespace FROM pg_class WHERE relname = 'cat_c_t1'
+----
+cat_c_t1 2200 10 2 0
+
+query T??T?
+SELECT relname, relisshared, relhasrules, relreplident, relispartition FROM pg_class WHERE relname = 'cat_c_t1'
+----
+cat_c_t1 f f d f
+
+# テーブルを 2 つ作ったので OID は別、relfilenode は OID と同じ
+query T?
+SELECT relname, relfilenode = oid FROM pg_class WHERE relname IN ('cat_c_t1', 'cat_c_t2') ORDER BY relname
+----
+cat_c_t1 t
+cat_c_t2 t
+
+query T?
+SELECT relname, oid >= 16384 FROM pg_class WHERE relname IN ('cat_c_t1', 'cat_c_t2') ORDER BY relname
+----
+cat_c_t1 t
+cat_c_t2 t
+
+# DROP すると行が消える
+statement ok
+DROP TABLE cat_c_t2
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'cat_c_t2'
+----
+
+# ROLLBACK した CREATE TABLE の行は見えない
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE cat_c_t3 (a int)
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'cat_c_t3'
+----
+cat_c_t3
+
+statement ok
+ROLLBACK
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'cat_c_t3'
+----
+
+statement ok
+DROP TABLE cat_c_t1
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'cat_c_t1'
+----
