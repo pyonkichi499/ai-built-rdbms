@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::control::{ControlFileHandle, DbState};
 use crate::datadir::OidAllocator;
-use crate::error::Result;
+use crate::error::{Error, Result, Severity, sqlstate};
 use crate::storage::buffer::BufferPool;
 use crate::storage::smgr::StorageManager;
 use crate::txn::TxnManager;
@@ -50,6 +50,25 @@ pub enum CheckpointKind {
 pub fn run(parts: &CheckpointParts<'_>, kind: CheckpointKind) -> Result<()> {
     let _serial = lock(parts.checkpoint_lock)?;
 
+    // After a failed write or fsync the dirty/pending sets were already
+    // discarded, so a retry would find nothing to write and look durable.
+    // Refuse (also for Shutdown, so the state never becomes ShutDown).
+    if parts.pool.is_poisoned() || parts.smgr.is_broken() {
+        return Err(Error::new(
+            sqlstate::IO_ERROR,
+            "refusing to checkpoint: a previous write or fsync failed",
+        )
+        .with_severity(Severity::Panic));
+    }
+    run_locked(parts, kind).inspect_err(|e| {
+        if e.severity == Severity::Panic {
+            parts.pool.poison_flag().set();
+        }
+    })
+}
+
+#[allow(clippy::similar_names)]
+fn run_locked(parts: &CheckpointParts<'_>, kind: CheckpointKind) -> Result<()> {
     // 1-3. Write the pages that are dirty now. The shared barrier keeps a
     // DROP cleanup from removing files under the flush.
     {
@@ -327,5 +346,69 @@ mod tests {
         let e = run(&r.parts(), CheckpointKind::Shutdown).unwrap_err();
         assert_eq!(e.severity, Severity::Panic);
         assert_eq!(r.control.get(), before);
+    }
+
+    #[test]
+    fn checkpoint_is_refused_after_a_failed_clog_flush() {
+        use crate::error::Severity;
+        use crate::storage::vfs::{FaultEffect, FaultOp, FaultPlan, FaultRule};
+        let r = Rig::new();
+        let (x, g) = r.txn.begin_write(1, None).unwrap();
+        r.txn.commit(x).unwrap();
+        drop(g);
+        r.sim.set_faults(FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::Sync,
+                path_prefix: Some("pg_xact".into()),
+                nth: None,
+                probability: None,
+                effect: FaultEffect::Error(std::io::ErrorKind::Other),
+            }],
+        });
+        assert!(run(&r.parts(), CheckpointKind::Explicit).is_err());
+        r.sim.set_faults(FaultPlan::default());
+        let before = r.control.get();
+        let e = run(&r.parts(), CheckpointKind::Shutdown).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        assert_eq!(r.control.get(), before);
+        assert_ne!(r.control.get().state, DbState::ShutDown);
+    }
+
+    #[test]
+    fn checkpoint_is_refused_after_a_failed_data_fsync() {
+        use crate::error::Severity;
+        use crate::storage::smgr::{
+            BufferTag, DEFAULTTABLESPACE_OID, ForkNumber, RelFileLocator, RelFileNumber,
+        };
+        use crate::storage::vfs::{FaultEffect, FaultOp, FaultPlan, FaultRule};
+        let r = Rig::new();
+        let rel = RelFileLocator {
+            spc_oid: DEFAULTTABLESPACE_OID,
+            db_oid: 5,
+            rel_number: RelFileNumber(16384),
+        };
+        r.smgr.create(rel, ForkNumber::Main).unwrap();
+        r.smgr.extend(rel, ForkNumber::Main).unwrap();
+        let tag = BufferTag {
+            rel,
+            fork: ForkNumber::Main,
+            block: 0,
+        };
+        r.smgr.write_block(tag, &[1u8; 8192]).unwrap();
+        r.sim.set_faults(FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::Sync,
+                path_prefix: Some("base".into()),
+                nth: None,
+                probability: None,
+                effect: FaultEffect::Error(std::io::ErrorKind::Other),
+            }],
+        });
+        assert!(run(&r.parts(), CheckpointKind::Explicit).is_err());
+        r.sim.set_faults(FaultPlan::default());
+        assert!(r.smgr.is_broken());
+        let e = run(&r.parts(), CheckpointKind::Shutdown).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        assert_ne!(r.control.get().state, DbState::ShutDown);
     }
 }

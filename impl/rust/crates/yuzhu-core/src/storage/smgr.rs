@@ -354,7 +354,12 @@ impl StorageManager {
             .vfs
             .open(&path, OpenMode::CreateNew)
             .map_err(|e| io_error(&e, "could not create file", &path))?;
-        self.sync_parent(&path)?;
+        if let Err(e) = self.sync_parent(&path) {
+            // The caller never learns of the file, so nothing else would remove it.
+            drop(file);
+            let _ = self.vfs.remove_file(&path);
+            return Err(e);
+        }
         let entry = Arc::new(RelEntry {
             nblocks: AtomicU32::new(0),
             segs: Mutex::new(vec![file]),
@@ -1004,6 +1009,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn create_removes_the_file_when_the_parent_sync_fails() {
+        let (vfs, mgr) = setup(DEFAULT_SEG);
+        let r = rel(20);
+        mgr.create(rel(19), ForkNumber::Main).unwrap();
+        vfs.set_faults(fault(
+            FaultOp::SyncDir,
+            1,
+            FaultEffect::Error(io::ErrorKind::Other),
+        ));
+        assert!(mgr.create(r, ForkNumber::Main).is_err());
+        assert!(!vfs.exists(Path::new("base/5/20")).unwrap());
+        vfs.set_faults(FaultPlan::default());
+        mgr.create(r, ForkNumber::Main).unwrap();
+    }
     #[test]
     fn write_error_is_58030_and_keeps_the_manager_usable() {
         let (vfs, mgr) = setup(DEFAULT_SEG);

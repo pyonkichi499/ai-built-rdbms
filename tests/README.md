@@ -14,11 +14,13 @@ tests/
 ├── yuzhu.sh          yuzhu-server をテスト用に起動・停止・再起動（crash で kill -9）する
 ├── slt/
 │   ├── m1/<機能>/*.slt   M1 の範囲のテスト（ddl, insert, constraints, select, expressions, types, functions, txn, session, errors）
-│   └── m2/<機能>/*.slt   M2 の範囲のテスト（dml, txn, ddl, catalog, types, psql）
+│   ├── m2/<機能>/*.slt   M2 の範囲のテスト（dml, txn, ddl, catalog, types, psql）
 │   └── m3/<機能>/*.slt   M3 の範囲のテスト（txn, session, functions, checkpoint）
-├── restart/m3/<シナリオ>/NN-*.slt   クラッシュ（kill -9）をまたぐテスト（--crash）
-├── isolation/{specs,expected}   isolationtester 形式の spec と期待値
-└── restart/<シナリオ>/NN-*.slt   再起動をまたぐテスト（フェーズごとにサーバを再起動する）
+├── restart/
+│   ├── <シナリオ>/NN-*.slt      再起動をまたぐテスト（--restart。フェーズごとにサーバを再起動する）
+│   └── m3/<シナリオ>/NN-*.slt   クラッシュ（kill -9）をまたぐテスト（--crash。yuzhu.only / yuzhu.args / NN-*.after.sh を置ける）
+├── isolation/{specs,expected}    isolationtester 形式の spec と期待値
+└── tools/isolation/              spec のランナー（yuzhu-isolation）
 ```
 
 ## 準備
@@ -36,7 +38,7 @@ cargo install sqllogictest-bin --locked --version 0.29.1
 
 ```sh
 tests/pg.sh start                 # postgres:17 を 127.0.0.1:55432 で起動（コンテナ名 yuzhu-test-pg、trust 認証、C ロケール）
-tests/run.sh --target pg          # tests/slt 以下（m1 と m2）をすべて実行
+tests/run.sh --target pg          # tests/slt 以下（m1〜m3）をすべて実行
 tests/pg.sh stop                  # コンテナを削除
 # claude-sandbox のコンテナ内（docker なし）では tests/pg.sh の代わりに sandbox/pg.sh start|stop|restart|status を使う
 ```
@@ -61,7 +63,7 @@ tests/run.sh --target pg|yuzhu [--host H] [--port N] [--user U] [--db D] [files 
 | `--host` | `127.0.0.1` |
 | `--port` | pg なら `55432`、yuzhu なら `5432` |
 | `--user` / `--db` | `postgres` / `postgres` |
-| ファイル・ディレクトリ | `tests/slt`（m1 と m2。ディレクトリを渡すと、その下の `*.slt` をすべて実行） |
+| ファイル・ディレクトリ | `tests/slt`（m1〜m3。ディレクトリを渡すと、その下の `*.slt` をすべて実行） |
 | `--restart` | 再起動テストを流す（下記）。ファイル・ディレクトリの既定は `tests/restart` |
 
 - 例: `tests/run.sh --target yuzhu tests/slt/m1/select tests/slt/m1/ddl/create_table.slt`
@@ -84,7 +86,7 @@ tests/yuzhu.sh crash                                                     # kill 
 tests/yuzhu.sh restart                                                   # fast shutdown して同じオプションで起動し直す
 tests/yuzhu.sh stop [smart|fast|immediate]                               # データは残す
 tests/yuzhu.sh clean                                                     # 止めて、データごと消す
-tests/run.sh --target yuzhu                                              # m1 と m2
+tests/run.sh --target yuzhu                                              # m1〜m3
 ```
 
 状態（データ、ログ、pid）は `$YUZHU_STATE`（既定 `/tmp/yuzhu-test`）に置きます。
@@ -167,8 +169,8 @@ M1 の規則に加えて:
 
 ```sh
 cargo build --release --manifest-path tests/tools/isolation/Cargo.toml
-tests/tools/isolation/target/release/yuzhu-isolation --port 55432 tests/isolation/specs              # PostgreSQL
-tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-detection timeout tests/isolation/specs  # yuzhu
+${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 55432 tests/isolation/specs              # PostgreSQL
+${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 5432 --blocking-detection timeout tests/isolation/specs  # yuzhu
 ```
 
 ### CI
@@ -247,8 +249,8 @@ tests/run.sh --target yuzhu --restart --crash tests/restart/m3
 
 # 3. 分離性テスト
 cargo build --release --manifest-path tests/tools/isolation/Cargo.toml
-tests/tools/isolation/target/release/yuzhu-isolation --port 55432 tests/isolation/specs
-tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-detection timeout tests/isolation/specs
+${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 55432 tests/isolation/specs
+${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 5432 --blocking-detection timeout tests/isolation/specs
 
 # 4. クラッシュ試験 層 1（SimVfs。サーバ不要）
 (cd impl/rust && cargo test --release -p yuzhu-core --test crash_sim)
@@ -257,4 +259,9 @@ tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-dete
 ```
 
 - `--crash` は `--restart` と併用し、フェーズ間の再起動を `tests/yuzhu.sh crash` / `tests/pg.sh crash`（kill -9 → 起動 → 待つ）に置き換えます。
-- PostgreSQL 側のクラッシュは claude-sandbox では `sandbox/pg.sh` 経由で `PG_RESTART_CMD` を差し替えて行います。
+- PostgreSQL 側のクラッシュは `PG_CRASH_CMD`（なければ `tests/pg.sh crash`。docker なしなら `sandbox/pg.sh` で起動した PG を kill -9 して `pg_ctl start`）です。
+- `tests/restart/m3/10-checksum-corrupt` は `yuzhu.only`（PG では飛ばす）です。`10-*.after.sh` が `$YUZHU_DATA` のヒープを壊します。
+- **注意**: `$CARGO_TARGET_DIR` が設定されている環境では、isolation ランナーは `$CARGO_TARGET_DIR/release/` に出ます。
+  古い `tests/tools/isolation/target/release/yuzhu-isolation` が残っていると `-- @cancel` 拡張が無く `cancel-wait` が 30 秒で失敗するので、必ずビルドし直します。
+- PG にテーブルが残っていると `m2/catalog/*` や `m2/ddl/drop_cleanup` が失敗します。slt の前に PG をクリーンにします（`sandbox/pg.sh stop && sandbox/pg.sh start`）。
+- 注意: `tests/pg.sh crash`（docker なし）は kill -9 を使うので、同じ PG を他のエージェントが使っている最中に流さないこと。

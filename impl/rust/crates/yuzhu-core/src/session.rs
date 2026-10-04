@@ -384,6 +384,10 @@ impl Session {
         let (Some(cluster), Some(xid)) = (self.cluster.as_ref(), txn.xid) else {
             return Ok(());
         };
+        if let Err(e) = Self::check_not_poisoned(cluster) {
+            txn.writer = None;
+            return Err(e);
+        }
         let mgr = cluster.txn_manager();
         // 1. clog + running list. The cache is invalidated only after this.
         mgr.commit(xid)?;
@@ -473,13 +477,7 @@ impl Session {
             .ok_or_else(|| Error::not_supported("this session has no cluster"))
     }
 
-    /// SELECT / VALUES / INSERT / UPDATE / DELETE / CREATE TABLE / DROP TABLE
-    /// (`m2.md` §5.2).
-    fn exec_data_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<String> {
-        let cluster = self.cluster()?;
-        let Some(db) = self.db.clone() else {
-            return Err(Error::internal("session has a cluster but no database"));
-        };
+    fn check_not_poisoned(cluster: &Cluster) -> Result<()> {
         if cluster.is_poisoned() {
             return Err(Error::new(
                 sqlstate::ADMIN_SHUTDOWN,
@@ -487,6 +485,17 @@ impl Session {
             )
             .with_severity(Severity::Fatal));
         }
+        Ok(())
+    }
+
+    /// SELECT / VALUES / INSERT / UPDATE / DELETE / CREATE TABLE / DROP TABLE
+    /// (`m2.md` §5.2).
+    fn exec_data_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<String> {
+        let cluster = self.cluster()?;
+        let Some(db) = self.db.clone() else {
+            return Err(Error::internal("session has a cluster but no database"));
+        };
+        Self::check_not_poisoned(&cluster)?;
         // 1. The writer lock comes before the snapshot, so that no other
         // writer's commit lands between the snapshot and our first write.
         let is_write = matches!(
@@ -502,9 +511,15 @@ impl Session {
             let (xid, guard) = mgr.begin_write(self.id, self.settings.lock_timeout())?;
             self.txn.xid = Some(xid);
             self.txn.writer = Some(guard);
+            // The cluster may have been poisoned while we waited for the lock.
+            Self::check_not_poisoned(&cluster)?;
         }
         // 2. The shared storage barrier for the duration of the statement.
         let barrier = mgr.statement_barrier()?;
+        if let Err(e) = Self::check_not_poisoned(&cluster) {
+            drop(barrier);
+            return Err(e);
+        }
         buffer::track::barrier_acquired();
         let result = self.run_under_barrier(stmt, &cluster, &db, out);
         buffer::track::barrier_released();

@@ -19,8 +19,7 @@ const EXIT_PANIC: i32 = 3;
 
 /// Receives SIGTERM (smart), SIGINT (fast) and SIGQUIT (immediate) on a
 /// dedicated thread and forwards them to the shutdown coordinator.
-fn spawn_signal_thread(handle: ShutdownHandle) -> std::io::Result<()> {
-    let mut signals = Signals::new([SIGTERM, SIGINT, SIGQUIT])?;
+fn spawn_signal_thread(mut signals: Signals, handle: ShutdownHandle) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("signals".into())
         .spawn(move || {
@@ -59,6 +58,15 @@ fn main() -> ExitCode {
         shared_buffers_frames = config.shared_buffers,
         "starting yuzhu-server"
     );
+    // Register before opening the cluster (which marks it InProduction):
+    // signals arriving during startup are queued until the thread runs.
+    let signals = match Signals::new([SIGTERM, SIGINT, SIGQUIT]) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "cannot install signal handlers");
+            return ExitCode::FAILURE;
+        }
+    };
     let server = match Server::bind(&config) {
         Ok(s) => s,
         Err(e) => {
@@ -66,7 +74,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = spawn_signal_thread(server.shutdown_handle()) {
+    if let Err(e) = spawn_signal_thread(signals, server.shutdown_handle()) {
         tracing::error!(error = %e, "cannot install signal handlers");
         return ExitCode::FAILURE;
     }

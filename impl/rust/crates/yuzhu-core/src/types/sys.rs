@@ -185,17 +185,23 @@ fn type_name(type_oid: Oid) -> &'static str {
 /// trailing whitespace allowed. Negative inputs down to -2^31 wrap to
 /// their two's complement.
 pub fn uint32_in(s: &str, type_oid: Oid) -> Result<u32> {
+    let (value, end) = uint32_in_subr(s, type_oid)?;
+    if s.as_bytes()[end..].iter().any(|c| !is_space(*c)) {
+        return Err(syntax_error(type_name(type_oid), s));
+    }
+    Ok(value)
+}
+
+/// `uint32in_subr`: parses a number at the start of `s` and returns it with
+/// the byte offset where parsing stopped (the caller checks the rest).
+fn uint32_in_subr(s: &str, type_oid: Oid) -> Result<(u32, usize)> {
     let name = type_name(type_oid);
-    let b = s.as_bytes();
-    let r = strtoul(b, 0);
+    let r = strtoul(s.as_bytes(), 0);
     if r.end == 0 {
         return Err(syntax_error(name, s));
     }
     if r.overflow {
         return Err(range_error(name, s));
-    }
-    if b[r.end..].iter().any(|c| !is_space(*c)) {
-        return Err(syntax_error(name, s));
     }
     // Accept the value if it survives truncation to 32 bits after either
     // unsigned or signed extension (a leading minus sign is allowed).
@@ -204,7 +210,7 @@ pub fn uint32_in(s: &str, type_oid: Oid) -> Result<u32> {
     if r.value != u64::from(low) && !signed_ok {
         return Err(range_error(name, s));
     }
-    Ok(low)
+    Ok((low, r.end))
 }
 
 /// `regprocin` for M2: a number, or `-` for 0. Names are not resolved at
@@ -265,12 +271,15 @@ fn tid_in(s: &str) -> Result<Tid> {
     Ok(Tid { block, offset })
 }
 
-/// `oidvectorin`: whitespace-separated OIDs.
+/// `oidvectorin`: whitespace-separated OIDs. As in PostgreSQL, each element
+/// is parsed from the rest of the input, so errors quote that rest.
 fn oidvector_in(s: &str) -> Result<Vec<u32>> {
     let mut out = Vec::new();
-    for word in s.split(|c: char| c.is_ascii() && is_space(c as u8)) {
-        if word.is_empty() {
-            continue;
+    let mut rest = s;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_ascii() && is_space(c as u8));
+        if rest.is_empty() {
+            return Ok(out);
         }
         if out.len() >= OIDVECTOR_MAX {
             return Err(Error::new(
@@ -278,9 +287,10 @@ fn oidvector_in(s: &str) -> Result<Vec<u32>> {
                 "oidvector has too many elements",
             ));
         }
-        out.push(uint32_in(word, oid::OID)?);
+        let (value, end) = uint32_in_subr(rest, oid::OID)?;
+        out.push(value);
+        rest = &rest[end..];
     }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -430,7 +440,18 @@ mod tests {
         assert_eq!(v("-1").unwrap(), Datum::OidVector(vec![u32::MAX]));
         let e = v("1 a").unwrap_err();
         assert_eq!(e.message, "invalid input syntax for type oid: \"a\"");
-        assert!(v("1,2").is_err());
+        assert_eq!(
+            v("1,2").unwrap_err().message,
+            "invalid input syntax for type oid: \",2\""
+        );
+        assert_eq!(
+            v("1 2x 3").unwrap_err().message,
+            "invalid input syntax for type oid: \"x 3\""
+        );
+        assert_eq!(
+            v("1 4294967296 3").unwrap_err().message,
+            "value \"4294967296 3\" is out of range for type oid"
+        );
         let many = vec!["1"; OIDVECTOR_MAX + 1].join(" ");
         assert!(v(&many).is_err());
         assert!(v(&many[..many.len() - 2]).is_ok());

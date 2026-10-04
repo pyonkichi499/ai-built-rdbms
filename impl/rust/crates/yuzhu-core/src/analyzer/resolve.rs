@@ -255,6 +255,9 @@ impl Analyzer<'_> {
             let span = e.span;
             return self.coerce_explicit(e, SqlType::TEXT, span);
         }
+        if declared == oid::ANYARRAY {
+            return Ok(e);
+        }
         let (src, span) = (e.ty.oid, e.span);
         self.coerce_type(e, declared, CoercionContext::Implicit)?
             .ok_or_else(|| {

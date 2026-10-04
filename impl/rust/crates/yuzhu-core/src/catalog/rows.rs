@@ -479,14 +479,15 @@ fn operator_rows() -> Vec<Row> {
     ops.into_iter()
         .map(|o| {
             let meta = builtin::operator_meta(o.oid).expect("every operator has OPERATOR_META");
+            let (can_merge, can_hash) = builtin::operator_merge_hash(o.oid);
             RowBuilder::new(oids::PG_OPERATOR)
                 .set("oid", Datum::Oid(o.oid))
                 .set("oprname", text(o.name))
                 .set("oprnamespace", Datum::Oid(oids::NAMESPACE_PG_CATALOG))
                 .set("oprowner", Datum::Oid(oids::BOOTSTRAP_SUPERUSER))
                 .set("oprkind", ch(o.kind()))
-                .set("oprcanmerge", Datum::Bool(false))
-                .set("oprcanhash", Datum::Bool(false))
+                .set("oprcanmerge", Datum::Bool(can_merge))
+                .set("oprcanhash", Datum::Bool(can_hash))
                 .set("oprleft", Datum::Oid(o.left.unwrap_or(0)))
                 .set("oprright", Datum::Oid(o.right))
                 .set("oprresult", Datum::Oid(o.result))

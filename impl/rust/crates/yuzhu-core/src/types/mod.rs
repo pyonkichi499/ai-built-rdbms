@@ -129,7 +129,7 @@ pub fn type_display_name(oid: Oid) -> String {
         oid::FLOAT8 => "double precision".into(),
         oid::UNKNOWN => "unknown".into(),
         oid::VARCHAR => "character varying".into(),
-        other => format!("oid {other}"),
+        other => crate::catalog::builtin::format_type_name(other, None),
     }
 }
 

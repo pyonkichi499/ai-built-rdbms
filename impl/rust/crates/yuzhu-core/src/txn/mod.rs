@@ -47,6 +47,14 @@ pub struct Snapshot {
     pub own_xid: Option<Xid>,
 }
 
+impl Snapshot {
+    /// The `SnapshotAny` convention (`xmin == xmax == INVALID`): every tuple
+    /// version is visible, committed or not.
+    pub fn is_any(&self) -> bool {
+        self.xmin == Xid::INVALID && self.xmax == Xid::INVALID
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,6 +23,9 @@ pub fn committed_in_snapshot(clog: &Clog, x: Xid, snap: &Snapshot) -> Result<boo
 
 /// `HeapTupleSatisfiesMVCC` without hint bits, locks and subtransactions.
 pub fn visible(clog: &Clog, t: &TupleHeader, snap: &Snapshot) -> Result<bool> {
+    if snap.is_any() {
+        return Ok(true);
+    }
     if Some(t.xmin) == snap.own_xid {
         if t.cmin >= snap.curcid {
             return Ok(false);
@@ -148,6 +151,22 @@ mod tests {
             infomask: if xmax == 0 { HEAP_XMAX_INVALID } else { 0 },
             hoff: 40,
         }
+    }
+
+    #[test]
+    fn snapshot_any_sees_every_version() {
+        let c = clog();
+        let any = Snapshot {
+            xmin: Xid::INVALID,
+            xmax: Xid::INVALID,
+            xip: Vec::new(),
+            curcid: u32::MAX,
+            own_xid: None,
+        };
+        assert!(visible(&c, &tup(5, 0, 0, 0), &any).unwrap());
+        assert!(visible(&c, &tup(6, 0, 0, 0), &any).unwrap());
+        assert!(visible(&c, &tup(11, 0, 0, 0), &any).unwrap());
+        assert!(visible(&c, &tup(5, 8, 0, 0), &any).unwrap());
     }
 
     #[test]

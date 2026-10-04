@@ -236,8 +236,7 @@ impl Analyzer<'_> {
             return Err(Error::new(
                 sqlstate::DUPLICATE_TABLE,
                 format!("relation \"{name}\" already exists"),
-            )
-            .with_span(ct.name.span));
+            ));
         }
 
         // Pass 1: columns and constraints.
@@ -252,8 +251,7 @@ impl Analyzer<'_> {
                         return Err(Error::new(
                             sqlstate::DUPLICATE_COLUMN,
                             format!("column \"{cname}\" specified more than once"),
-                        )
-                        .with_span(cd.name.span));
+                        ));
                     }
                     if crate::catalog::schema::SYSTEM_COLUMNS
                         .iter()
@@ -262,8 +260,7 @@ impl Analyzer<'_> {
                         return Err(Error::new(
                             sqlstate::DUPLICATE_COLUMN,
                             format!("column name \"{cname}\" conflicts with a system column name"),
-                        )
-                        .with_span(cd.name.span));
+                        ));
                     }
                     let ty = self.resolve_type_name(&cd.type_name)?;
                     let (mut saw_null, mut saw_not_null) = (false, false);
@@ -373,6 +370,7 @@ impl Analyzer<'_> {
 
         // Pass 3: CHECK constraints over the new columns, and their names.
         let scope = Scope::with_rel(ScopeRel {
+            hidden_name: None,
             refname: name.clone(),
             schema: Some(schema.clone()),
             table_oid: 0,
@@ -460,8 +458,7 @@ impl Analyzer<'_> {
                         return Err(Error::new(
                             sqlstate::UNDEFINED_TABLE,
                             format!("table \"{}\" does not exist", n.name().value),
-                        )
-                        .with_span(n.span));
+                        ));
                     }
                 }
                 Err(e) => return Err(e),

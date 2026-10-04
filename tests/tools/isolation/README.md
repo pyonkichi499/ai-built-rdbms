@@ -25,7 +25,7 @@ tests/
 
 ```sh
 cd tests/tools/isolation
-cargo build --release          # target/release/yuzhu-isolation
+cargo build --release          # ${CARGO_TARGET_DIR:-target}/release/yuzhu-isolation
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
@@ -34,10 +34,10 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```sh
 # 本物の PostgreSQL に対して（期待ファイルの検証）
 tests/pg.sh start
-tests/tools/isolation/target/release/yuzhu-isolation --port 55432 tests/isolation/specs
+${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 55432 tests/isolation/specs
 
 # yuzhu に対して（pg_isolation_test_session_is_blocked() が未実装の間は timeout 判定を使う）
-tests/tools/isolation/target/release/yuzhu-isolation --port 5432 \
+${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 5432 \
     --blocking-detection timeout tests/isolation/specs
 ```
 
@@ -133,7 +133,7 @@ tests/tools/isolation/validate-pg-suite.sh --port 55432 eval-plan-qual      # �
 2. 本物の PostgreSQL 17 に対して `--accept` で期待ファイルを作り、中身をレビューする。
    ```sh
    tests/pg.sh start
-   tests/tools/isolation/target/release/yuzhu-isolation --port 55432 --accept tests/isolation/specs/<name>.spec
+   ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 55432 --accept tests/isolation/specs/<name>.spec
    ```
 3. yuzhu の段階的な制約で結果が違うもの（M3 の REPEATABLE READ 拒否など）は、PostgreSQL の期待ファイルを
    書き換えず、`--variant yuzhu-m3 --accept` で `expected/<name>.yuzhu-m3.out` を別に持つ（`m3-tx-semantics.md` §12.2）。

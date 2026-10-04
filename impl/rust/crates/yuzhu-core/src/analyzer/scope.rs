@@ -21,6 +21,8 @@ pub(super) struct ScopeColumn {
 pub(super) struct ScopeRel {
     /// The reference name: alias if given, else the table name.
     pub(super) refname: String,
+    /// The table name hidden by an alias (for the "invalid reference" error).
+    pub(super) hidden_name: Option<String>,
     /// Schema of the table when referenced without an alias (allows
     /// `schema.table.column`).
     pub(super) schema: Option<String>,
@@ -94,8 +96,22 @@ impl Scope {
         }
     }
 
-    fn missing_from(qual: &[Ident], span: Span) -> Error {
+    fn missing_from(rel: Option<&ScopeRel>, qual: &[Ident], span: Span) -> Error {
         let t = qual.last().map_or("", |i| i.value.as_str());
+        if let [q] = qual
+            && let Some(rel) = rel
+            && rel.hidden_name.as_deref() == Some(q.value.as_str())
+        {
+            return Error::new(
+                sqlstate::UNDEFINED_TABLE,
+                format!("invalid reference to FROM-clause entry for table \"{t}\""),
+            )
+            .with_hint(format!(
+                "Perhaps you meant to reference the table alias \"{}\".",
+                rel.refname
+            ))
+            .with_span(span);
+        }
         Error::new(
             sqlstate::UNDEFINED_TABLE,
             format!("missing FROM-clause entry for table \"{t}\""),
@@ -125,7 +141,7 @@ impl Scope {
         if !qual.is_empty() {
             match &self.rel {
                 Some(rel) if Self::qualifier_matches(rel, qual) => {}
-                _ => return Err(Self::missing_from(qual, span)),
+                _ => return Err(Self::missing_from(self.rel.as_ref(), qual, span)),
             }
         }
         let found = self.rel.as_ref().and_then(|rel| {
@@ -165,7 +181,7 @@ impl Scope {
                 Some(rel) if Self::qualifier_matches(rel, q) => {
                     Ok(rel.columns.iter().enumerate().collect())
                 }
-                _ => Err(Self::missing_from(q, span)),
+                _ => Err(Self::missing_from(self.rel.as_ref(), q, span)),
             },
             (None, Some(rel)) => Ok(rel.columns.iter().enumerate().collect()),
         }

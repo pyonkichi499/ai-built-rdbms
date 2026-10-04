@@ -54,6 +54,7 @@ pub(super) fn table_scope(table: &TableDef, alias: Option<&TableAlias>) -> Resul
         }
     }
     Ok(Scope::with_rel(ScopeRel {
+        hidden_name: alias.map(|_| table.name.clone()),
         refname: alias.map_or_else(|| table.name.clone(), |a| a.name.value.clone()),
         schema: if alias.is_none() {
             Some(table.schema.clone())
@@ -323,6 +324,7 @@ impl Analyzer<'_> {
     ) -> Result<BoundSelect> {
         let names: Vec<String> = (1..=types.len()).map(|i| format!("column{i}")).collect();
         let scope = Scope::with_rel(ScopeRel {
+            hidden_name: None,
             refname: "*VALUES*".to_owned(),
             schema: None,
             table_oid: 0,

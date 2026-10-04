@@ -758,6 +758,76 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(385, "=", oid::CID, oid::CID, oid::BOOL, ops::cmp_eq),
 ];
 
+/// `(oid, oprcanmerge, oprcanhash)` for the operators of PostgreSQL 17 where
+/// either is true; every other operator has both false.
+static OPERATOR_MERGE_HASH: &[(Oid, bool, bool)] = &[
+    (15, true, true),
+    (91, true, true),
+    (92, true, true),
+    (93, true, true),
+    (94, true, true),
+    (96, true, true),
+    (98, true, true),
+    (254, true, true),
+    (260, true, true),
+    (352, false, true),
+    (385, false, true),
+    (387, true, true),
+    (410, true, true),
+    (416, true, true),
+    (532, true, true),
+    (533, true, true),
+    (607, true, true),
+    (620, true, true),
+    (649, true, true),
+    (670, true, true),
+    (900, true, false),
+    (974, false, true),
+    (1054, true, true),
+    (1070, true, true),
+    (1093, true, true),
+    (1108, true, true),
+    (1120, true, true),
+    (1130, true, true),
+    (1201, true, true),
+    (1220, true, true),
+    (1320, true, true),
+    (1330, true, true),
+    (1550, true, true),
+    (1752, true, true),
+    (1784, true, false),
+    (1804, true, false),
+    (1862, true, true),
+    (1868, true, true),
+    (1955, true, true),
+    (2060, true, true),
+    (2347, true, false),
+    (2360, true, false),
+    (2373, true, false),
+    (2386, true, false),
+    (2536, true, false),
+    (2542, true, false),
+    (2860, true, true),
+    (2972, true, true),
+    (2988, true, true),
+    (3188, true, false),
+    (3222, true, true),
+    (3240, true, true),
+    (3362, true, true),
+    (3516, true, true),
+    (3629, true, false),
+    (3676, true, false),
+    (3882, true, true),
+    (5068, true, true),
+];
+
+/// `(oprcanmerge, oprcanhash)` of the operator `oid`.
+pub fn operator_merge_hash(oid: Oid) -> (bool, bool) {
+    OPERATOR_MERGE_HASH
+        .iter()
+        .find(|e| e.0 == oid)
+        .map_or((false, false), |e| (e.1, e.2))
+}
 /// `oprcode`, `oprcom` and `oprnegate` of every operator (PostgreSQL 17
 /// values), ordered by operator OID.
 #[rustfmt::skip]
@@ -1534,6 +1604,8 @@ pub fn format_type_name(type_oid: Oid, typmod: Option<i32>) -> String {
                 name
             }
         }
+        // These are special-cased by PostgreSQL and never print a modifier.
+        oid::BOOL | oid::INT2 | oid::INT4 | oid::INT8 | oid::FLOAT4 | oid::FLOAT8 => name,
         _ => format!("{name}({m})"),
     }
 }
@@ -1846,6 +1918,12 @@ mod tests {
         assert_eq!(f(1028, None), "oid[]");
         assert_eq!(f(30, None), "oidvector");
         assert_eq!(f(25, Some(5)), "text(5)");
+        assert_eq!(f(23, Some(5)), "integer");
+        assert_eq!(f(701, Some(5)), "double precision");
+        assert_eq!(f(20, Some(3)), "bigint");
+        assert_eq!(f(16, Some(5)), "boolean");
+        assert_eq!(f(21, Some(5)), "smallint");
+        assert_eq!(f(700, Some(5)), "real");
         assert_eq!(f(NUMERIC, Some(655_366)), "numeric(10,2)");
         assert_eq!(f(2249, None), "record");
         assert_eq!(f(83, None), "pg_class");

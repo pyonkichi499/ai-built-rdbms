@@ -100,6 +100,9 @@ impl Analyzer<'_> {
         if input == target || builtin::is_polymorphic(target) {
             return true;
         }
+        if target == oid::ANYARRAY && self.category(input) == 'A' {
+            return true;
+        }
         if input == oid::UNKNOWN {
             return true;
         }
