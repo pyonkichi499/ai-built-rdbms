@@ -511,6 +511,20 @@ pub fn textlen(args: &[Datum]) -> Result<Datum> {
     Ok(Datum::Int4(i32::try_from(n).unwrap_or(i32::MAX)))
 }
 
+/// `repeat(text, int4)`: the text repeated `n` times (empty for `n <= 0`).
+pub fn repeat(args: &[Datum]) -> Result<Datum> {
+    const MAX_LEN: usize = 1 << 30;
+    let s = text_arg(args, 0)?;
+    let n = usize::try_from(int_arg(args, 1)?).unwrap_or(0);
+    if s.len().checked_mul(n).is_none_or(|l| l > MAX_LEN) {
+        return Err(Error::new(
+            sqlstate::PROGRAM_LIMIT_EXCEEDED,
+            "requested length too large",
+        ));
+    }
+    Ok(Datum::Text(s.repeat(n)))
+}
+
 /// `lower(text)` in the C locale (ASCII only).
 pub fn lower(args: &[Datum]) -> Result<Datum> {
     Ok(Datum::Text(text_arg(args, 0)?.to_ascii_lowercase()))
@@ -524,7 +538,7 @@ pub fn upper(args: &[Datum]) -> Result<Datum> {
 /// The string returned by `version()`.
 pub fn version_string() -> String {
     format!(
-        "PostgreSQL 16.0 (yuzhu {}) on {}-pc-linux-gnu, compiled by rustc, 64-bit",
+        "PostgreSQL 17.0 (yuzhu {}) on {}-pc-linux-gnu, compiled by rustc, 64-bit",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH
     )
@@ -657,6 +671,187 @@ fn like_impl(args: &[Datum], ci: bool) -> Result<bool> {
         _ => Some('\\'),
     };
     like_match_escape(s, p, esc, ci)
+}
+
+// ---------------------------------------------------------------------------
+// System types: oid, "char", xid (`m2.md` §6.8.5). The Datum variants differ
+// (`Int4` vs `Oid`), so the PostgreSQL binary-coercible casts are functions
+// here that reinterpret the bits.
+// ---------------------------------------------------------------------------
+
+fn oid_arg(args: &[Datum]) -> Result<u32> {
+    match args.first() {
+        Some(Datum::Oid(v)) => Ok(*v),
+        _ => Err(bad_arg("oid function")),
+    }
+}
+
+/// `int2`/`int4` to `oid` / `regproc`: the bits are reinterpreted, a negative
+/// value becomes 2^32 + value, no range check.
+pub fn int_to_oid(args: &[Datum]) -> Result<Datum> {
+    let v = int_arg(args, 0)?;
+    let low = i32::try_from(v)
+        .map_err(|_| bad_arg("int_to_oid"))
+        .map(i32::cast_unsigned)?;
+    Ok(Datum::Oid(low))
+}
+
+/// `oid(int8)`: `22003 OID out of range` outside 0..=4294967295.
+pub fn int8_to_oid(args: &[Datum]) -> Result<Datum> {
+    let v = int_arg(args, 0)?;
+    u32::try_from(v)
+        .map(Datum::Oid)
+        .map_err(|_| Error::new(sqlstate::NUMERIC_VALUE_OUT_OF_RANGE, "OID out of range"))
+}
+
+/// `int4(oid)`: reinterprets the bits (4294967295 becomes -1).
+pub fn oid_to_int4(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Int4(oid_arg(args)?.cast_signed()))
+}
+
+/// `int8(oid)`.
+pub fn oid_to_int8(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Int8(i64::from(oid_arg(args)?)))
+}
+
+/// `int4(char)`: `"char"` is a signed byte (0xC3 gives -61).
+pub fn char_to_int4(args: &[Datum]) -> Result<Datum> {
+    match args.first() {
+        Some(Datum::Char(c)) => Ok(Datum::Int4(i32::from(c.cast_signed()))),
+        _ => Err(bad_arg("char function")),
+    }
+}
+
+/// `char(int4)`: `22003 "char" out of range` outside -128..=127.
+pub fn int4_to_char(args: &[Datum]) -> Result<Datum> {
+    let v = int_arg(args, 0)?;
+    i8::try_from(v)
+        .map(|b| Datum::Char(b.cast_unsigned()))
+        .map_err(|_| {
+            Error::new(
+                sqlstate::NUMERIC_VALUE_OUT_OF_RANGE,
+                "\"char\" out of range",
+            )
+        })
+}
+
+/// `text("char")`: an empty string for 0. A byte of 0x80 and above is not a
+/// complete UTF-8 character, which a `String` cannot hold: `22021`.
+pub fn char_to_text(args: &[Datum]) -> Result<Datum> {
+    match args.first() {
+        Some(Datum::Char(0)) => Ok(Datum::Text(String::new())),
+        Some(Datum::Char(c)) if c.is_ascii() => Ok(Datum::Text(char::from(*c).to_string())),
+        Some(Datum::Char(_)) => Err(Error::new(
+            sqlstate::CHARACTER_NOT_IN_REPERTOIRE,
+            "invalid byte sequence for encoding \"UTF8\"",
+        )),
+        _ => Err(bad_arg("char function")),
+    }
+}
+
+/// `char(text)`: the first byte (0 for an empty string).
+pub fn text_to_char(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Char(
+        text_arg(args, 0)?.as_bytes().first().copied().unwrap_or(0),
+    ))
+}
+
+/// `xid = int4` / `xid <> int4`: the int4 is read as an unsigned 32-bit
+/// value (`xideqint4`).
+fn xid_int4(args: &[Datum], eq: bool) -> Result<Datum> {
+    match args {
+        [Datum::Xid(x), other] | [other, Datum::Xid(x)] => {
+            let v = other.as_i64().ok_or_else(|| bad_arg("xid comparison"))?;
+            let v = i32::try_from(v).map_err(|_| bad_arg("xid comparison"))?;
+            Ok(Datum::Bool((*x == v.cast_unsigned()) == eq))
+        }
+        _ => Err(bad_arg("xid comparison")),
+    }
+}
+
+pub fn xid_eq_int4(args: &[Datum]) -> Result<Datum> {
+    xid_int4(args, true)
+}
+
+pub fn xid_ne_int4(args: &[Datum]) -> Result<Datum> {
+    xid_int4(args, false)
+}
+
+// ---------------------------------------------------------------------------
+// Catalog helper functions
+// ---------------------------------------------------------------------------
+
+/// `pg_enc2name_tbl` (`PG:src/common/encnames.c`), indexed by encoding ID.
+const ENCODING_NAMES: [&str; 42] = [
+    "SQL_ASCII",
+    "EUC_JP",
+    "EUC_CN",
+    "EUC_KR",
+    "EUC_TW",
+    "EUC_JIS_2004",
+    "UTF8",
+    "MULE_INTERNAL",
+    "LATIN1",
+    "LATIN2",
+    "LATIN3",
+    "LATIN4",
+    "LATIN5",
+    "LATIN6",
+    "LATIN7",
+    "LATIN8",
+    "LATIN9",
+    "LATIN10",
+    "WIN1256",
+    "WIN1258",
+    "WIN866",
+    "WIN874",
+    "KOI8R",
+    "WIN1251",
+    "WIN1252",
+    "ISO_8859_5",
+    "ISO_8859_6",
+    "ISO_8859_7",
+    "ISO_8859_8",
+    "WIN1250",
+    "WIN1253",
+    "WIN1254",
+    "WIN1255",
+    "WIN1257",
+    "KOI8U",
+    "SJIS",
+    "BIG5",
+    "GBK",
+    "UHC",
+    "GB18030",
+    "JOHAB",
+    "SHIFT_JIS_2004",
+];
+
+/// The name of an encoding ID, or `""` when out of range.
+pub fn encoding_name(id: i64) -> &'static str {
+    usize::try_from(id)
+        .ok()
+        .and_then(|i| ENCODING_NAMES.get(i))
+        .copied()
+        .unwrap_or("")
+}
+
+/// `pg_encoding_to_char(int4) -> name`.
+pub fn pg_encoding_to_char(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Text(encoding_name(int_arg(args, 0)?).to_owned()))
+}
+
+/// `pg_get_expr(pg_node_tree, oid) -> text`: the stored text as it is
+/// (`m2.md` §6.8.4).
+pub fn pg_get_expr(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Text(text_arg(args, 0)?.to_owned()))
+}
+
+/// Body of `array_length` / `array_to_string`: arrays do not exist in M2 and
+/// their arguments are always NULL, so a call that gets here is a bug in the
+/// caller or an unsupported value.
+pub fn array_unsupported(_args: &[Datum]) -> Result<Datum> {
+    Err(Error::not_supported("arrays are not supported yet"))
 }
 
 /// Placeholder body for catalog entries of types yuzhu does not implement
@@ -857,5 +1052,80 @@ mod tests {
             textnlike(&[Text("abc".into()), Text("x%".into())]).unwrap(),
             Bool(true)
         );
+    }
+
+    #[test]
+    fn oid_casts_reinterpret_bits() {
+        assert_eq!(int_to_oid(&[Int4(-1)]).unwrap(), Oid(u32::MAX));
+        assert_eq!(int_to_oid(&[Int2(-1)]).unwrap(), Oid(u32::MAX));
+        assert_eq!(int_to_oid(&[Int4(12)]).unwrap(), Oid(12));
+        assert_eq!(oid_to_int4(&[Oid(u32::MAX)]).unwrap(), Int4(-1));
+        assert_eq!(oid_to_int4(&[Oid(7)]).unwrap(), Int4(7));
+        assert_eq!(oid_to_int8(&[Oid(u32::MAX)]).unwrap(), Int8(4_294_967_295));
+        assert_eq!(int8_to_oid(&[Int8(4_294_967_295)]).unwrap(), Oid(u32::MAX));
+        assert_eq!(int8_to_oid(&[Int8(0)]).unwrap(), Oid(0));
+        for bad in [-1i64, 4_294_967_296, i64::MIN] {
+            let e = int8_to_oid(&[Int8(bad)]).unwrap_err();
+            assert_eq!(e.sqlstate, sqlstate::NUMERIC_VALUE_OUT_OF_RANGE);
+            assert_eq!(e.message, "OID out of range");
+        }
+    }
+
+    #[test]
+    fn char_casts() {
+        assert_eq!(char_to_int4(&[Char(b'A')]).unwrap(), Int4(65));
+        assert_eq!(char_to_int4(&[Char(0xc3)]).unwrap(), Int4(-61));
+        assert_eq!(int4_to_char(&[Int4(65)]).unwrap(), Char(b'A'));
+        assert_eq!(int4_to_char(&[Int4(-128)]).unwrap(), Char(0x80));
+        assert_eq!(int4_to_char(&[Int4(127)]).unwrap(), Char(127));
+        for bad in [128, 255, -129] {
+            let e = int4_to_char(&[Int4(bad)]).unwrap_err();
+            assert_eq!(e.message, "\"char\" out of range");
+            assert_eq!(e.sqlstate, sqlstate::NUMERIC_VALUE_OUT_OF_RANGE);
+        }
+        assert_eq!(char_to_text(&[Char(b'r')]).unwrap(), Text("r".into()));
+        assert_eq!(char_to_text(&[Char(0)]).unwrap(), Text(String::new()));
+        assert_eq!(code(char_to_text(&[Char(0xc3)])), "22021");
+        assert_eq!(text_to_char(&[Text("xyz".into())]).unwrap(), Char(b'x'));
+        assert_eq!(text_to_char(&[Text(String::new())]).unwrap(), Char(0));
+        assert_eq!(text_to_char(&[Text("é".into())]).unwrap(), Char(0xc3));
+    }
+
+    #[test]
+    fn xid_int4_comparison() {
+        assert_eq!(xid_eq_int4(&[Xid(5), Int4(5)]).unwrap(), Bool(true));
+        assert_eq!(xid_eq_int4(&[Xid(5), Int4(6)]).unwrap(), Bool(false));
+        assert_eq!(xid_ne_int4(&[Xid(5), Int4(6)]).unwrap(), Bool(true));
+        assert_eq!(xid_eq_int4(&[Int4(5), Xid(5)]).unwrap(), Bool(true));
+        assert_eq!(xid_eq_int4(&[Xid(u32::MAX), Int4(-1)]).unwrap(), Bool(true));
+    }
+
+    #[test]
+    fn comparisons_of_system_types() {
+        assert_eq!(cmp_lt(&[Oid(5), Oid(u32::MAX)]).unwrap(), Bool(true));
+        assert_eq!(cmp_eq(&[Char(b'a'), Char(b'a')]).unwrap(), Bool(true));
+        assert_eq!(cmp_gt(&[Char(0xc3), Char(b'a')]).unwrap(), Bool(true));
+        let t = |block, offset| Tid(crate::types::Tid { block, offset });
+        assert_eq!(cmp_lt(&[t(0, 2), t(1, 0)]).unwrap(), Bool(true));
+        assert_eq!(cmp_eq(&[Xid(3), Xid(3)]).unwrap(), Bool(true));
+        assert_eq!(cmp_eq(&[Cid(3), Cid(4)]).unwrap(), Bool(false));
+    }
+
+    #[test]
+    fn catalog_helpers() {
+        assert_eq!(encoding_name(0), "SQL_ASCII");
+        assert_eq!(encoding_name(6), "UTF8");
+        assert_eq!(encoding_name(41), "SHIFT_JIS_2004");
+        assert_eq!(encoding_name(42), "");
+        assert_eq!(encoding_name(-1), "");
+        assert_eq!(
+            pg_encoding_to_char(&[Int4(8)]).unwrap(),
+            Text("LATIN1".into())
+        );
+        assert_eq!(
+            pg_get_expr(&[Text("a > 0".into()), Oid(1)]).unwrap(),
+            Text("a > 0".into())
+        );
+        assert_eq!(code(array_unsupported(&[])), "0A000");
     }
 }

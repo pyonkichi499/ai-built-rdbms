@@ -1,0 +1,71 @@
+# フェーズ 1: チェックポイントの前後でコミットとロールバックを行い、
+# チェックポイントをまたぐ未コミットのトランザクションを残して kill -9 される。
+
+statement ok
+CREATE TABLE cr8_t (id int NOT NULL, v text)
+
+statement count 3
+INSERT INTO cr8_t VALUES (1, 'before1'), (2, 'before2'), (3, 'before3')
+
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO cr8_t VALUES (50, 'rolled back before checkpoint')
+
+statement ok
+ROLLBACK
+
+statement ok
+CHECKPOINT
+
+# チェックポイントの後の変更（REDO 点の後の最初の変更なので、ページ全体の画像が WAL に載る）
+statement count 1
+UPDATE cr8_t SET v = 'after-ckpt' WHERE id = 1
+
+statement count 1
+DELETE FROM cr8_t WHERE id = 2
+
+statement count 2
+INSERT INTO cr8_t VALUES (4, 'after4'), (5, 'after5')
+
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO cr8_t VALUES (60, 'rolled back after checkpoint')
+
+statement ok
+ROLLBACK
+
+# 新しいテーブルをチェックポイントの後に作る（リレーションの作成が REDO で再現される）
+statement ok
+CREATE TABLE cr8_late (a int)
+
+statement count 2
+INSERT INTO cr8_late VALUES (7), (8)
+
+# チェックポイントをまたぐ未コミットのトランザクション
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 1
+INSERT INTO cr8_late VALUES (999)
+
+statement ok
+CHECKPOINT
+
+connection other
+statement count 1
+INSERT INTO cr8_late VALUES (1000)
+
+connection other
+query I
+SELECT a FROM cr8_late ORDER BY a
+----
+7
+8
+999
+1000

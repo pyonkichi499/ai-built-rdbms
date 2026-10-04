@@ -17,7 +17,7 @@ mod select;
 #[cfg(test)]
 mod tests;
 
-use super::ast::{Expr, Ident, ObjectName, Statement};
+use super::ast::{Checkpoint, Expr, Ident, ObjectName, Statement};
 use super::lexer::tokenize;
 use super::stack::{check_stack_depth, stack_depth_error};
 use super::token::{KeywordCategory, Token, TokenKind, keyword_category};
@@ -389,12 +389,17 @@ impl<'a> Parser<'a> {
                 "show" => self.parse_show().map(Statement::Show),
                 "reset" => self.parse_reset().map(Statement::Reset),
                 "explain" => self.parse_explain().map(Statement::Explain),
+                "checkpoint" => {
+                    let span = self.advance().span;
+                    Ok(Statement::Checkpoint(Checkpoint { span }))
+                }
                 "savepoint" | "release" | "prepare" | "alter" | "truncate" | "grant" | "revoke"
                 | "copy" | "execute" | "deallocate" | "discard" | "listen" | "notify"
                 | "unlisten" | "vacuum" | "analyze" | "analyse" | "lock" | "declare" | "fetch"
-                | "move" | "close" | "comment" | "merge" | "call" | "do" | "checkpoint"
-                | "reindex" | "cluster" | "security" | "refresh" | "import" | "load"
-                | "reassign" => Err(self.not_supported(&value.to_ascii_uppercase())),
+                | "move" | "close" | "comment" | "merge" | "call" | "do" | "reindex"
+                | "cluster" | "security" | "refresh" | "import" | "load" | "reassign" => {
+                    Err(self.not_supported(&value.to_ascii_uppercase()))
+                }
                 _ => Err(self.unexpected()),
             },
             _ => Err(self.unexpected()),

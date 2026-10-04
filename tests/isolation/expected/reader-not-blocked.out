@@ -1,0 +1,106 @@
+Parsed test spec with 3 sessions
+
+starting permutation: a_b a_upd a_ins a_del r_sel a_c r_sel
+step a_b: BEGIN;
+step a_upd: UPDATE rnb_t SET v = 11 WHERE id = 1;
+step a_ins: INSERT INTO rnb_t VALUES (3, 30);
+step a_del: DELETE FROM rnb_t WHERE id = 2;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_c: COMMIT;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 3|30
+(2 rows)
+
+
+starting permutation: a_b a_upd a_ins a_del r_sel a_r r_sel
+step a_b: BEGIN;
+step a_upd: UPDATE rnb_t SET v = 11 WHERE id = 1;
+step a_ins: INSERT INTO rnb_t VALUES (3, 30);
+step a_del: DELETE FROM rnb_t WHERE id = 2;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_r: ROLLBACK;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+
+starting permutation: a_b a_upd b_upd r_sel a_c r_sel
+step a_b: BEGIN;
+step a_upd: UPDATE rnb_t SET v = 11 WHERE id = 1;
+step b_upd: UPDATE rnb_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_c: COMMIT;
+step b_upd: <... completed>
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id|  v
+--+---
+ 1|111
+ 2| 20
+(2 rows)
+
+
+starting permutation: a_b a_upd b_upd r_sel a_r r_sel
+step a_b: BEGIN;
+step a_upd: UPDATE rnb_t SET v = 11 WHERE id = 1;
+step b_upd: UPDATE rnb_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_r: ROLLBACK;
+step b_upd: <... completed>
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id|  v
+--+---
+ 1|110
+ 2| 20
+(2 rows)
+
+
+starting permutation: r_b r_sel a_b a_upd a_c r_sel r_c
+step r_b: BEGIN;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_b: BEGIN;
+step a_upd: UPDATE rnb_t SET v = 11 WHERE id = 1;
+step a_c: COMMIT;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 2|20
+(2 rows)
+
+step r_c: COMMIT;

@@ -1,12 +1,10 @@
 //! `StorageStack`: smgr + buffer pool + clog + heap assembled in one place,
 //! shared by `Cluster::open`, bootstrap and the test scaffolding
 //! (`m2.md` §4.8).
-//!
-//! 担当 C が実装する。
 
 use std::sync::Arc;
 
-use super::buffer::BufferPool;
+use super::buffer::{BufferPool, NoWal};
 use super::heap_store::HeapStore;
 use super::smgr::StorageManager;
 use super::vfs::Vfs;
@@ -24,12 +22,31 @@ pub struct StorageStack {
 }
 
 impl StorageStack {
+    /// Builds the stack over `vfs`. `next_xid` is the control file's next
+    /// XID (the clog loads the page that contains it). M2 has no WAL, so
+    /// the pool gets [`NoWal`].
     pub fn new(
-        _vfs: Arc<dyn Vfs>,
-        _rel_seg_blocks: u32,
-        _nframes: usize,
-        _next_xid: Xid,
+        vfs: Arc<dyn Vfs>,
+        rel_seg_blocks: u32,
+        nframes: usize,
+        next_xid: Xid,
     ) -> Result<StorageStack> {
-        Err(Error::not_supported("storage stack is not implemented yet"))
+        if rel_seg_blocks == 0 {
+            return Err(Error::internal("rel_seg_blocks must be positive"));
+        }
+        if nframes == 0 {
+            return Err(Error::internal("the buffer pool needs at least one frame"));
+        }
+        let smgr = Arc::new(StorageManager::new(Arc::clone(&vfs), rel_seg_blocks));
+        let pool = BufferPool::new(nframes, Arc::clone(&smgr), Arc::new(NoWal));
+        let clog = Arc::new(Clog::open(Arc::clone(&vfs), next_xid)?);
+        let heap = Arc::new(HeapStore::new(Arc::clone(&pool), Arc::clone(&clog)));
+        Ok(StorageStack {
+            vfs,
+            smgr,
+            pool,
+            clog,
+            heap,
+        })
     }
 }

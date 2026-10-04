@@ -1,0 +1,22 @@
+# フェーズ 3: 2 回のクラッシュを越えて値が残っている。続けて書いて、もう一度 kill -9 される。
+
+query IT
+SELECT id, v FROM cr6_t ORDER BY id
+----
+1 a
+2 bb
+3 c
+
+statement count 2
+INSERT INTO cr6_t VALUES (4, 'd'), (5, 'e')
+
+statement count 1
+DELETE FROM cr6_t WHERE id = 1
+
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 1
+INSERT INTO cr6_t VALUES (99, 'uncommitted')

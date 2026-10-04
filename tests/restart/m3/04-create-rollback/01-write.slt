@@ -1,0 +1,19 @@
+# フェーズ 1: BEGIN → CREATE TABLE → INSERT → ROLLBACK のあと kill -9 される。
+
+statement ok
+CREATE TABLE cr4_keep (id int)
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE cr4_t (id int, v text)
+
+statement count 2
+INSERT INTO cr4_t VALUES (1, 'a'), (2, 'b')
+
+statement ok
+ROLLBACK
+
+statement error (42P01)
+SELECT id FROM cr4_t

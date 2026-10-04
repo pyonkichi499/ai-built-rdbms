@@ -22,6 +22,24 @@ use crate::protocol::messages::{
     BackendMessage, DEFAULT_MAX_MESSAGE_LEN, ErrorFields, FieldDescription, FrontendMessage,
     StartupPacket,
 };
+use crate::shutdown::{Coordinator, Registration, ShutdownHandle, ShutdownMode};
+
+/// How often the accept loop looks for new connections, stop requests and
+/// a poisoned cluster.
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Why [`Server::run`] returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Smart or fast shutdown completed; the cluster is cleanly shut down.
+    Stopped,
+    /// Immediate shutdown: nothing was written. The caller must exit the
+    /// process without running destructors that write.
+    Immediate,
+    /// The cluster was poisoned (PANIC-level error). No checkpoint was
+    /// taken; the next start is refused until `--ignore-unclean-shutdown`.
+    Poisoned,
+}
 
 /// Default limit for completing the startup phase (PostgreSQL's
 /// `authentication_timeout` default).
@@ -51,6 +69,7 @@ struct Shared {
     /// Established sessions.
     sessions: AtomicUsize,
     next_pid: AtomicI32,
+    coordinator: Arc<Coordinator>,
 }
 
 /// Hard ceiling on connection threads for a given `max_connections`.
@@ -66,28 +85,44 @@ pub struct Server {
 }
 
 impl Server {
-    /// Creates the database and binds the listening socket. Port 0 picks an
-    /// ephemeral port (see [`Server::local_addr`]).
+    /// Opens the cluster in `config.data_directory` (on the local file
+    /// system) and binds the listening socket. Port 0 picks an ephemeral
+    /// port (see [`Server::local_addr`]). The cluster is opened first so
+    /// that the port only starts listening once the server is ready.
     pub fn bind(config: &Config) -> io::Result<Self> {
-        let listener = TcpListener::bind((config.listen, config.port))?;
-        // 担当 J が `-D` / data_directory 設定に置き換える（仮のパス）。
-        let data_dir = std::path::PathBuf::from("yuzhu-data");
-        let vfs = Arc::new(LocalVfs::new(data_dir.clone()));
-        let db = Cluster::open(
+        let vfs = Arc::new(LocalVfs::new(config.data_directory.clone()));
+        let cluster = Cluster::open(
             vfs,
             ClusterOptions {
-                data_dir,
-                shared_buffers: 16384,
+                data_dir: config.data_directory.clone(),
+                shared_buffers: config.shared_buffers,
                 max_connections: u32::try_from(config.max_connections).unwrap_or(u32::MAX),
-                checkpoint_timeout: Duration::from_mins(5),
-                ignore_unclean_shutdown: false,
+                checkpoint_timeout: config.checkpoint_timeout,
+                ignore_unclean_shutdown: config.ignore_unclean_shutdown,
             },
         )
-        .map_err(|e| io::Error::other(e.message))?;
+        .map_err(|e| io::Error::other(format_core_error(&e)))?;
+        Self::with_cluster(config, cluster)
+    }
+
+    /// Binds the listening socket for an already opened cluster (used by
+    /// [`Server::bind`] and by tests running on a simulated disk). If
+    /// binding fails the cluster is shut down cleanly again.
+    pub fn with_cluster(config: &Config, cluster: Arc<Cluster>) -> io::Result<Self> {
+        let listener = match TcpListener::bind((config.listen, config.port)) {
+            Ok(l) => l,
+            Err(e) => {
+                if let Err(se) = cluster.shutdown() {
+                    tracing::error!(error = %se, "cluster shutdown after bind failure failed");
+                }
+                return Err(e);
+            }
+        };
+        listener.set_nonblocking(true)?;
         Ok(Self {
             listener,
             shared: Arc::new(Shared {
-                db,
+                db: cluster,
                 max_connections: config.max_connections,
                 max_threads: thread_ceiling(config.max_connections),
                 max_message_len: DEFAULT_MAX_MESSAGE_LEN,
@@ -95,8 +130,19 @@ impl Server {
                 threads: AtomicUsize::new(0),
                 sessions: AtomicUsize::new(0),
                 next_pid: AtomicI32::new(1),
+                coordinator: Arc::new(Coordinator::default()),
             }),
         })
+    }
+
+    /// A handle for requesting smart / fast / immediate shutdown.
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle::new(Arc::clone(&self.shared.coordinator))
+    }
+
+    /// The cluster this server runs.
+    pub fn cluster(&self) -> &Arc<Cluster> {
+        &self.shared.db
     }
 
     /// Overrides the startup-phase timeout (default
@@ -125,20 +171,79 @@ impl Server {
         self.listener.local_addr()
     }
 
-    /// Accepts connections forever, one thread per connection.
-    pub fn run(self) -> io::Result<()> {
+    /// Accepts connections (one thread each) until a shutdown is requested
+    /// or the cluster is poisoned, then performs the shutdown:
+    ///
+    /// - smart / fast: refuse new connections with 57P03 (fast also tells
+    ///   every session to stop), wait until all connections ended, then
+    ///   `Cluster::shutdown` (final checkpoint).
+    /// - immediate: return at once without writing anything.
+    /// - poison: return at once without a checkpoint.
+    pub fn run(self) -> io::Result<Outcome> {
+        let shared = Arc::clone(&self.shared);
+        let coordinator = &shared.coordinator;
         tracing::info!(addr = %self.listener.local_addr()?, "listening");
-        for stream in self.listener.incoming() {
-            match stream {
-                Ok(stream) => self.spawn_connection(stream),
-                Err(e) => tracing::warn!(error = %e, "accept failed"),
+        let mut closed = false;
+        let mut interrupted = false;
+        loop {
+            if shared.db.is_poisoned() {
+                tracing::error!("cluster is poisoned; exiting without a checkpoint");
+                return Ok(Outcome::Poisoned);
+            }
+            match coordinator.requested() {
+                Some(ShutdownMode::Immediate) => {
+                    tracing::warn!("immediate shutdown requested; exiting without a checkpoint");
+                    return Ok(Outcome::Immediate);
+                }
+                Some(mode) => {
+                    if !closed {
+                        tracing::info!(?mode, "shutting down");
+                        coordinator.close();
+                        closed = true;
+                    }
+                    // Smart can be escalated to fast later; interrupt once.
+                    if mode == ShutdownMode::Fast && !interrupted {
+                        coordinator.interrupt_all();
+                        interrupted = true;
+                    }
+                    if coordinator.is_empty() {
+                        break;
+                    }
+                }
+                None => {}
+            }
+            match self.listener.accept() {
+                Ok((stream, _)) => self.spawn_connection(stream),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "accept failed");
+                    std::thread::sleep(POLL_INTERVAL);
+                }
             }
         }
-        Ok(())
+        tracing::info!("all connections ended; shutting down the cluster");
+        self.shared
+            .db
+            .shutdown()
+            .map_err(|e| io::Error::other(format_core_error(&e)))?;
+        Ok(Outcome::Stopped)
     }
 
     fn spawn_connection(&self, stream: TcpStream) {
+        let _ = stream.set_nonblocking(false);
         let shared = Arc::clone(&self.shared);
+        let pid = shared.next_pid.fetch_add(1, Ordering::Relaxed);
+        let Ok(registered_stream) = stream.try_clone() else {
+            tracing::warn!(pid, "cannot clone the socket; dropping the connection");
+            return;
+        };
+        let Some(registration) = shared.coordinator.register(pid, registered_stream) else {
+            reject_shutting_down(stream);
+            return;
+        };
         let guard = ThreadGuard::new(&shared);
         if guard.count > shared.max_threads {
             // Reject without parking a thread on this socket.
@@ -149,16 +254,30 @@ impl Server {
             reject_too_many(stream);
             return;
         }
-        let pid = shared.next_pid.fetch_add(1, Ordering::Relaxed);
         let spawned = std::thread::Builder::new()
             .name(format!("conn-{pid}"))
             .spawn(move || {
                 let _guard = guard;
-                run_connection(stream, &shared, pid);
+                run_connection(stream, &shared, pid, &registration);
             });
         if let Err(e) = spawned {
             tracing::error!(error = %e, "failed to spawn connection thread");
         }
+    }
+}
+
+/// Sends FATAL 57P03 on a socket from the accept loop and closes it.
+fn reject_shutting_down(stream: TcpStream) {
+    let _ = stream.set_write_timeout(Some(REJECT_WRITE_TIMEOUT));
+    let mut w = BufWriter::new(stream);
+    let _ = send_fatal(&mut w, "57P03", "the database system is shutting down");
+}
+
+/// Message plus hint of a core error, for logs and exit messages.
+fn format_core_error(e: &Error) -> String {
+    match &e.hint {
+        Some(h) => format!("{} (hint: {h})", e.message),
+        None => e.message.clone(),
     }
 }
 
@@ -214,30 +333,54 @@ impl Drop for CountGuard<'_> {
 }
 
 /// Runs one connection, isolating panics so that the server survives.
-fn run_connection(stream: TcpStream, shared: &Shared, pid: i32) {
+///
+/// Every exit path (normal, I/O error, panic) ends the session with
+/// `Session::terminate()`, which aborts an open transaction and releases the
+/// writer lock. After a panic the cluster is poisoned first, because shared
+/// state may be half-written (`m2.md` 6.3.4).
+fn run_connection(stream: TcpStream, shared: &Shared, pid: i32, registration: &Registration) {
     let peer = stream
         .peer_addr()
         .map_or_else(|_| "?".to_string(), |a| a.to_string());
     tracing::info!(pid, peer = %peer, "connection accepted");
     let _ = stream.set_nodelay(true);
     let panic_stream = stream.try_clone().ok();
-    let result = panic::catch_unwind(AssertUnwindSafe(|| handle_connection(stream, shared, pid)));
+    let mut session: Option<Session> = None;
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        handle_connection(stream, shared, pid, registration, &mut session)
+    }));
     match result {
-        Ok(Ok(())) => tracing::info!(pid, "connection closed"),
-        Ok(Err(e)) => tracing::info!(pid, error = %e, "connection closed by I/O error"),
+        Ok(r) => {
+            end_session(&mut session, pid);
+            match r {
+                Ok(()) => tracing::info!(pid, "connection closed"),
+                Err(e) => tracing::info!(pid, error = %e, "connection closed by I/O error"),
+            }
+        }
         Err(payload) => {
             let what = payload
                 .downcast_ref::<&str>()
                 .map(ToString::to_string)
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            tracing::error!(pid, panic = %what, "connection thread panicked");
+            tracing::error!(pid, panic = %what, "connection thread panicked; poisoning the cluster");
+            shared.db.poison();
+            end_session(&mut session, pid);
             if let Some(mut s) = panic_stream {
                 // Best effort: the client may be in the middle of a message.
                 let _ = send_fatal(&mut s, "XX000", "internal error: server thread panicked");
                 let _ = s.flush();
             }
         }
+    }
+}
+
+/// `Session::terminate()` that cannot take the thread down again.
+fn end_session(session: &mut Option<Session>, pid: i32) {
+    if let Some(mut s) = session.take()
+        && panic::catch_unwind(AssertUnwindSafe(|| s.terminate())).is_err()
+    {
+        tracing::error!(pid, "Session::terminate panicked");
     }
 }
 
@@ -304,7 +447,13 @@ enum Startup {
     Close,
 }
 
-fn handle_connection(stream: TcpStream, shared: &Shared, pid: i32) -> io::Result<()> {
+fn handle_connection(
+    stream: TcpStream,
+    shared: &Shared,
+    pid: i32,
+    registration: &Registration,
+    slot: &mut Option<Session>,
+) -> io::Result<()> {
     // Bound the startup phase (like `authentication_timeout`): a client that
     // connects and sends nothing must not hold a thread forever. The timeout
     // is set on the socket, so it applies to the cloned reader too.
@@ -334,7 +483,7 @@ fn handle_connection(stream: TcpStream, shared: &Shared, pid: i32) -> io::Result
     }
 
     tracing::info!(pid, user = %params.user, database = %params.database, "startup");
-    let mut session = match Session::new(Arc::clone(&shared.db), params) {
+    let session = match Session::new(Arc::clone(&shared.db), params) {
         Ok(s) => s,
         Err(e) => {
             tracing::info!(pid, error = %e, "session rejected");
@@ -342,6 +491,9 @@ fn handle_connection(stream: TcpStream, shared: &Shared, pid: i32) -> io::Result
             return writer.flush();
         }
     };
+
+    registration.set_flag(session.interrupt_flag());
+    let session = slot.insert(session);
 
     write_message(&mut writer, &BackendMessage::AuthenticationOk)?;
     for (name, value) in session.initial_parameter_status() {
@@ -360,9 +512,9 @@ fn handle_connection(stream: TcpStream, shared: &Shared, pid: i32) -> io::Result
             secret: random_secret(pid),
         },
     )?;
-    ready_for_query(&mut writer, &session)?;
+    ready_for_query(&mut writer, session)?;
 
-    message_loop(&mut reader, &mut writer, &mut session, shared, pid)
+    message_loop(&mut reader, &mut writer, session, shared, pid)
 }
 
 fn is_timeout(e: &io::Error) -> bool {
@@ -491,14 +643,26 @@ fn message_loop(
     shared: &Shared,
     pid: i32,
 ) -> io::Result<()> {
+    let interrupt = session.interrupt_flag();
     loop {
+        if interrupt.is_terminate_requested() {
+            return terminated_by_administrator(writer);
+        }
         let msg = match read_message(reader, shared.max_message_len) {
             Ok(Some(m)) => m,
             Ok(None) => {
+                if interrupt.is_terminate_requested() {
+                    return terminated_by_administrator(writer);
+                }
                 tracing::debug!(pid, "client disconnected without Terminate");
                 return Ok(());
             }
-            Err(ProtocolError::Io(e)) => return Err(e),
+            Err(ProtocolError::Io(e)) => {
+                if interrupt.is_terminate_requested() {
+                    return terminated_by_administrator(writer);
+                }
+                return Err(e);
+            }
             Err(ProtocolError::InvalidUtf8) => {
                 send_error(
                     writer,
@@ -518,6 +682,10 @@ fn message_loop(
             FrontendMessage::Query(sql) => {
                 tracing::debug!(pid, sql = %sql, "query");
                 session.execute_simple(&sql, &mut Sink::new(writer))?;
+                if session.is_closing() {
+                    // A FATAL was sent (e.g. 57P01, PANIC escalation).
+                    return writer.flush();
+                }
                 ready_for_query(writer, session)?;
             }
             FrontendMessage::Terminate => return Ok(()),
@@ -633,4 +801,13 @@ impl<W: Write> ResultSink for Sink<'_, W> {
     fn parameter_status(&mut self, name: &str, value: &str) -> io::Result<()> {
         write_message(self.w, &BackendMessage::ParameterStatus { name, value })
     }
+}
+
+/// Fast shutdown: tell the client why the connection ends (57P01).
+fn terminated_by_administrator<W: Write>(w: &mut W) -> io::Result<()> {
+    send_fatal(
+        w,
+        "57P01",
+        "terminating connection due to administrator command",
+    )
 }

@@ -1548,3 +1548,48 @@ fn nesting_limit_on_a_big_stack() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn m2_checkpoint_only_and_set_targets() {
+    assert!(matches!(one("CHECKPOINT"), Statement::Checkpoint(_)));
+    assert!(matches!(one("checkpoint;"), Statement::Checkpoint(_)));
+    syntax("CHECKPOINT 1", "1", 12);
+
+    let Statement::Update(u) = one("UPDATE ONLY t x SET a = 1") else {
+        panic!()
+    };
+    assert_eq!(u.table.name().value, "t");
+    assert_eq!(u.alias.unwrap().value, "x");
+    let Statement::Update(u) = one("UPDATE ONLY (s.t) SET a = 1") else {
+        panic!()
+    };
+    assert_eq!(u.table.parts.len(), 2);
+    let Statement::Update(u) = one("UPDATE t * SET a = 1") else {
+        panic!()
+    };
+    assert!(u.alias.is_none());
+    let Statement::Delete(d) = one("DELETE FROM ONLY t WHERE a = 1") else {
+        panic!()
+    };
+    assert!(d.selection.is_some());
+
+    let Statement::Update(u) = one("UPDATE t SET t.a = 1") else {
+        panic!()
+    };
+    assert_eq!(u.assignments[0].column.value, "t");
+    assert_eq!(u.assignments[0].fields[0].value, "a");
+    unsupported("UPDATE t SET a[1] = 1");
+    unsupported("UPDATE t SET (a, b) = (1, 2)");
+    unsupported("DELETE FROM t WHERE CURRENT OF c");
+}
+
+#[test]
+fn m2_qualified_names_and_e_strings() {
+    let Statement::Query(_) = one("SELECT pg_catalog.abs(-1) FROM pg_catalog.pg_class") else {
+        panic!()
+    };
+    assert_eq!(
+        q("SELECT E'a\\nb\\t\\\\\\x41\\101\\'' "),
+        "select 'a\nb\t\\AA''"
+    );
+}

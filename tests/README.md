@@ -9,12 +9,15 @@
 
 ```
 tests/
-├── run.sh            スイートの実行スクリプト（--restart で再起動テスト）
-├── pg.sh             検証用の PostgreSQL 17 コンテナを起動・停止・再起動する
-├── yuzhu.sh          yuzhu-server をテスト用に起動・停止・再起動する
+├── run.sh            スイートの実行スクリプト（--restart で再起動テスト、--crash で kill -9 のクラッシュテスト）
+├── pg.sh             検証用の PostgreSQL 17 コンテナを起動・停止・再起動（crash で kill -9）する
+├── yuzhu.sh          yuzhu-server をテスト用に起動・停止・再起動（crash で kill -9）する
 ├── slt/
 │   ├── m1/<機能>/*.slt   M1 の範囲のテスト（ddl, insert, constraints, select, expressions, types, functions, txn, session, errors）
 │   └── m2/<機能>/*.slt   M2 の範囲のテスト（dml, txn, ddl, catalog, types, psql）
+│   └── m3/<機能>/*.slt   M3 の範囲のテスト（txn, session, functions, checkpoint）
+├── restart/m3/<シナリオ>/NN-*.slt   クラッシュ（kill -9）をまたぐテスト（--crash）
+├── isolation/{specs,expected}   isolationtester 形式の spec と期待値
 └── restart/<シナリオ>/NN-*.slt   再起動をまたぐテスト（フェーズごとにサーバを再起動する）
 ```
 
@@ -77,6 +80,7 @@ tests/run.sh --target pg|yuzhu [--host H] [--port N] [--user U] [--db D] [files 
 ```sh
 (cd impl/rust && cargo build --release -p yuzhu-server)
 tests/yuzhu.sh start [--port 5432] [--data DIR] [--shared-buffers 1MB]   # データがなければ initdb してから起動
+tests/yuzhu.sh crash                                                     # kill -9 して同じオプションで起動し直す（M3）
 tests/yuzhu.sh restart                                                   # fast shutdown して同じオプションで起動し直す
 tests/yuzhu.sh stop [smart|fast|immediate]                               # データは残す
 tests/yuzhu.sh clean                                                     # 止めて、データごと消す
@@ -110,6 +114,35 @@ tests/run.sh --target yuzhu --restart tests/restart/02-rollback
 | `05-drop-commit` | DROP TABLE をコミット → 再起動 → テーブルもカタログの行もない |
 | `06-uncommitted-at-stop` | 別の接続にコミットしていない変更を残して停止 → 再起動 → その変更はない |
 
+### クラッシュをまたぐテスト（`tests/restart/m3/`、`--crash`）
+
+```sh
+tests/run.sh --target pg --crash                       # tests/restart/m3 の全シナリオ（フェーズの間で kill -9）
+tests/run.sh --target yuzhu --crash tests/restart/m3/08-around-checkpoint
+tests/run.sh --target pg --restart                     # tests/restart 直下だけ（m3 は含めない）
+```
+
+- `--crash` は `--restart` と同じ仕組みで、フェーズの間の停止を **kill -9** にする。停止チェックポイントも WAL の flush もなく、次の起動でクラッシュリカバリが走る。
+  - `pg`: 環境変数 `PG_CRASH_CMD`、なければ `tests/pg.sh crash`（docker があれば `docker kill -s KILL` + `docker start`。なければ `sandbox/pg.sh` の PostgreSQL の postmaster と子プロセスを kill -9 して `pg_ctl start`）。
+  - `yuzhu`: `tests/yuzhu.sh crash`（SIGKILL → 同じデータディレクトリ・同じオプションで起動 → 待ち受けを待つ）。
+- シナリオのディレクトリの追加ファイル: `yuzhu.args`（M2 と同じ）、`yuzhu.only`（あれば pg では飛ばす）、
+  `NN-<名前>.after.sh`（フェーズ NN のあと、サーバが止まっている間に実行。`$YUZHU_DATA` がデータディレクトリ。yuzhu だけ）。
+- 別の接続の未コミットの変更は `connection other` で残す。yuzhu の M3 は書き込みが 1 本ずつなので、本体の接続のコミットを先に済ませてから `other` が書き始める。
+- 集約は M4 なので、行数は `ORDER BY ... LIMIT 1 OFFSET N` で確かめる。テーブル名の接頭辞は `cr1_`〜`cr10_`。
+
+| シナリオ | 内容 |
+|---|---|
+| `01-committed-dml` | CREATE / INSERT / UPDATE / DELETE をコミット → クラッシュ → 残る。リカバリ後に足した変更も次のクラッシュで残る |
+| `02-uncommitted-hidden` | 別の接続の未コミットの INSERT / UPDATE / DELETE はクラッシュ後に見えず、行がロックされたままにならない |
+| `03-drop-commit` | DROP TABLE をコミット → クラッシュ → テーブルもカタログの行もない。同名で作り直せて、それも次のクラッシュで残る |
+| `04-create-rollback` | BEGIN → CREATE TABLE → INSERT → ROLLBACK → クラッシュ → ない |
+| `05-checkpoint-large` | プールより大きい表（`yuzhu.args`: 1MB）を全行 UPDATE → CHECKPOINT → もう一度全行 UPDATE → クラッシュ → 最後の値 |
+| `06-double-crash` | リカバリ直後に検査だけしてもう一度クラッシュ、さらに書いて 3 回目。未コミットのものが XID の再利用で見えない |
+| `07-ddl-in-flight` | 未コミットの CREATE TABLE と DROP TABLE の途中でクラッシュ → 作りかけは無く、DROP しかけの表は中身ごと残る |
+| `08-around-checkpoint` | チェックポイントの前後のコミット / ロールバック、チェックポイントをまたぐ未コミットのトランザクション、チェックポイントの後に作ったテーブル。リカバリ直後の CHECKPOINT |
+| `09-large-values` | TOAST される大きな値と、1 トランザクションでの 1024 行のコミットが全部残る |
+| `10-checksum-corrupt` | **yuzhu 専用**。チェックポイント後に止めて、ヒープのページを壊し（`01-prepare.after.sh`）、起動後に `XX001` で検出される。ほかの表は使え、壊れた表は DROP できる |
+
 ### M2 のテスト（`tests/slt/m2/`）の書き方
 
 M1 の規則に加えて:
@@ -140,10 +173,14 @@ tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-dete
 
 ### CI
 
-`.github/workflows/ci.yml` に 2 つのジョブがあります。
+`.github/workflows/ci.yml` のジョブ:
 
 - `slt-pg`: postgres:17 のサービスコンテナに対してスイートを流し、期待値が正しいことを確かめます。
-- `slt-yuzhu`: yuzhu-server をビルド・起動してスイートを流します（実装が揃うまでは `continue-on-error: true`）。
+- `slt-yuzhu`: yuzhu-server をビルド・起動して `tests/slt`（m1・m2・m3）を流します（実装が揃うまでは `continue-on-error: true`）。
+- `restart-pg` / `restart-yuzhu`: `--restart` の全シナリオと、`--restart --crash tests/restart/m3`。
+- `isolation`（pg / yuzhu のマトリクス）: `tests/tools/isolation` をビルドして `tests/isolation/specs` を流します。
+- `crash-sim`: クラッシュ試験 層 1（`cargo test --release -p yuzhu-core --test crash_sim`。固定シード）。
+- 夜間ジョブ（層 1 の長時間ランダム実行と層 2 の `cargo test -- --ignored`）は未追加です。
 
 ## テストの書き方
 
@@ -196,3 +233,28 @@ tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-dete
 SLT_EXTRA_ARGS=--override tests/run.sh --target pg tests/slt/m1/select/new_test.slt
 git diff tests/slt
 ```
+
+## M3 のテストの実行方法
+
+```sh
+# 1. SQL テスト（m1〜m3）
+tests/run.sh --target pg                                   # PostgreSQL 17 で期待値を確認
+tests/run.sh --target yuzhu                                # yuzhu（m3/txn/savepoint_unsupported.slt は yuzhu 専用）
+
+# 2. クラッシュをまたぐテスト（フェーズの間で kill -9 → 同じデータディレクトリで起動）
+tests/run.sh --target pg --restart --crash tests/restart/m3
+tests/run.sh --target yuzhu --restart --crash tests/restart/m3
+
+# 3. 分離性テスト
+cargo build --release --manifest-path tests/tools/isolation/Cargo.toml
+tests/tools/isolation/target/release/yuzhu-isolation --port 55432 tests/isolation/specs
+tests/tools/isolation/target/release/yuzhu-isolation --port 5432 --blocking-detection timeout tests/isolation/specs
+
+# 4. クラッシュ試験 層 1（SimVfs。サーバ不要）
+(cd impl/rust && cargo test --release -p yuzhu-core --test crash_sim)
+# 失敗の再現: YUZHU_SIM_SEED=... YUZHU_CRASH_AT=... cargo test -p yuzhu-core --test crash_sim
+# 層 2（kill -9、yuzhu-server/tests/crash_kill9.rs）: cargo test -p yuzhu-server --test crash_kill9 -- --ignored
+```
+
+- `--crash` は `--restart` と併用し、フェーズ間の再起動を `tests/yuzhu.sh crash` / `tests/pg.sh crash`（kill -9 → 起動 → 待つ）に置き換えます。
+- PostgreSQL 側のクラッシュは claude-sandbox では `sandbox/pg.sh` 経由で `PG_RESTART_CMD` を差し替えて行います。

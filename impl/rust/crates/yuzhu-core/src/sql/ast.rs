@@ -65,6 +65,8 @@ pub enum Statement {
     Reset(ResetStmt),
     Show(ShowStmt),
     Explain(Explain),
+    /// `CHECKPOINT` (M2).
+    Checkpoint(Checkpoint),
 }
 
 impl Statement {
@@ -81,6 +83,7 @@ impl Statement {
             Statement::Reset(s) => s.span,
             Statement::Show(s) => s.span,
             Statement::Explain(s) => s.span,
+            Statement::Checkpoint(s) => s.span,
         }
     }
 }
@@ -248,6 +251,10 @@ pub struct Update {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assignment {
     pub column: Ident,
+    /// Field names after the column (`SET t.a = ...` parses with `t` as
+    /// `column` and `a` here). Always an error in the analyzer: there are no
+    /// composite types.
+    pub fields: Vec<Ident>,
     pub value: Expr,
     pub span: Span,
 }
@@ -508,6 +515,12 @@ pub enum ParamTarget {
     All,
     /// Lower-cased name.
     Name(String),
+}
+
+/// `CHECKPOINT`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Checkpoint {
+    pub span: Span,
 }
 
 /// `EXPLAIN [ANALYZE] [VERBOSE] statement` (M4).

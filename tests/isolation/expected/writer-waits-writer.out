@@ -1,0 +1,115 @@
+Parsed test spec with 3 sessions
+
+starting permutation: a_b a_inc b_b b_mul a_c b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_mul: UPDATE www_t SET v = v * 10 WHERE id = 1; <waiting ...>
+step a_c: COMMIT;
+step b_mul: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id|  v
+--+---
+ 1|110
+ 2| 20
+ 3| 30
+(3 rows)
+
+
+starting permutation: a_b a_zero b_b b_cond a_c b_c c_sel
+step a_b: BEGIN;
+step a_zero: UPDATE www_t SET v = 0 WHERE id = 2;
+step b_b: BEGIN;
+step b_cond: UPDATE www_t SET v = -1 WHERE id = 2 AND v = 20; <waiting ...>
+step a_c: COMMIT;
+step b_cond: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2| 0
+ 3|30
+(3 rows)
+
+
+starting permutation: a_b a_del b_b b_upd3 a_c b_c c_sel
+step a_b: BEGIN;
+step a_del: DELETE FROM www_t WHERE id = 3;
+step b_b: BEGIN;
+step b_upd3: UPDATE www_t SET v = 99 WHERE id = 3; <waiting ...>
+step a_c: COMMIT;
+step b_upd3: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+
+starting permutation: a_b a_set500 b_b b_mul a_r b_c c_sel
+step a_b: BEGIN;
+step a_set500: UPDATE www_t SET v = 500 WHERE id = 1;
+step b_b: BEGIN;
+step b_mul: UPDATE www_t SET v = v * 10 WHERE id = 1; <waiting ...>
+step a_r: ROLLBACK;
+step b_mul: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id|  v
+--+---
+ 1|100
+ 2| 20
+ 3| 30
+(3 rows)
+
+
+starting permutation: a_b a_inc b_b b_del1 a_c b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_del1: DELETE FROM www_t WHERE id = 1; <waiting ...>
+step a_c: COMMIT;
+step b_del1: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 2|20
+ 3|30
+(2 rows)
+
+
+starting permutation: a_b a_inc b_b b_del1 a_r b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_del1: DELETE FROM www_t WHERE id = 1; <waiting ...>
+step a_r: ROLLBACK;
+step b_del1: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 2|20
+ 3|30
+(2 rows)
+
+
+starting permutation: a_b a_inc b_mul a_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_mul: UPDATE www_t SET v = v * 10 WHERE id = 1; <waiting ...>
+step a_c: COMMIT;
+step b_mul: <... completed>
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id|  v
+--+---
+ 1|110
+ 2| 20
+ 3| 30
+(3 rows)
+

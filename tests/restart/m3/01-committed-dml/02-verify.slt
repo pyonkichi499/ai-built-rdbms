@@ -1,0 +1,32 @@
+# フェーズ 2: クラッシュリカバリの後、コミットした変更がすべて残っている。
+
+query IT
+SELECT id, v FROM cr1_t ORDER BY id
+----
+1 a
+2 bb
+3 c
+4 dd
+6 f
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'cr1_t'
+----
+cr1_t
+
+# リカバリ後に書き込める
+statement count 1
+INSERT INTO cr1_t VALUES (7, 'g')
+
+statement count 1
+UPDATE cr1_t SET v = 'z' WHERE id = 1
+
+query IT
+SELECT id, v FROM cr1_t ORDER BY id
+----
+1 z
+2 bb
+3 c
+4 dd
+6 f
+7 g

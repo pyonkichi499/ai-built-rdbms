@@ -1,0 +1,14 @@
+# フェーズ 3: 壊れたテーブルを DROP したあとは、再起動しても通常どおり動く。
+
+statement error (42P01)
+SELECT id FROM cr10_bad
+
+query IT
+SELECT id, v FROM cr10_ok ORDER BY id
+----
+1 x
+2 y
+3 z
+
+statement ok
+DROP TABLE cr10_ok

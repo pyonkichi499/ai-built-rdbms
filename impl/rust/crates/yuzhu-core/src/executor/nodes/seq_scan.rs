@@ -106,6 +106,33 @@ mod tests {
     }
 
     #[test]
+    fn all_system_columns_have_their_types_of_values() {
+        let mut f = Fixture::new();
+        let rel = rel();
+        f.storage.add_row(rel.oid, vec![Datum::Int4(1)]);
+        let mut e: crate::executor::BoxedExecutor = Box::new(SeqScanExec::new(
+            rel,
+            vec![
+                SystemColumn::Xmax,
+                SystemColumn::Xmin,
+                SystemColumn::Cmin,
+                SystemColumn::Cmax,
+            ],
+        ));
+        // FakeStore rows: xmin = BOOTSTRAP (1), xmax = INVALID (0), cids 0.
+        assert_eq!(
+            f.run(&mut e).unwrap(),
+            vec![vec![
+                Datum::Int4(1),
+                Datum::Xid(0),
+                Datum::Xid(1),
+                Datum::Cid(0),
+                Datum::Cid(0)
+            ]]
+        );
+    }
+
+    #[test]
     fn stops_on_shutdown_request() {
         let mut f = Fixture::new();
         f.interrupts.request_terminate();

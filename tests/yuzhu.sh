@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # yuzhu-server をテスト用に起動・停止する補助スクリプト（tests/pg.sh と同じ形）。
 #
-#   tests/yuzhu.sh start|stop|restart|status|clean [stop のモード] [--port N] [--data DIR] [--shared-buffers SIZE]
+#   tests/yuzhu.sh start|stop|restart|crash|status|clean [stop のモード] [--port N] [--data DIR] [--shared-buffers SIZE]
 #
 # - start:   データディレクトリがなければ yuzhu-initdb -U postgres --no-sync で作り、yuzhu-server -D で起動して、
 #            待ち受けが始まるまで待つ。
-# - stop:    smart(SIGTERM) | fast(SIGINT、既定) | immediate(SIGQUIT)。終了を待つ。データは消さない。
+# - stop:    smart(SIGTERM) | fast(SIGINT、既定) | immediate(SIGQUIT) | kill(SIGKILL)。終了を待つ。データは消さない。
 # - restart: fast で止めて、同じデータディレクトリ・同じオプションで起動し直す。
 #            --port などを渡すと、そのオプションを上書きして起動する。
+# - crash:   kill -9（SIGKILL）で止めて、同じデータディレクトリ・同じオプションで起動し直す（クラッシュリカバリを通す）。
+#            停止チェックポイントも WAL の flush も行われない。起動したら待ち受けを待つ。
+# - restart と crash は、環境変数 YUZHU_BETWEEN_HOOK が実行可能なファイルを指していれば、サーバが止まっている間
+#   （停止のあと、起動の前）にそれを実行する。環境変数 YUZHU_DATA にデータディレクトリを渡す。
+#   失敗したら起動せずに失敗する（tests/run.sh のシナリオの NN-*.after.sh が使う。データファイルを壊すテスト用）。
 # - clean:   止めて、データディレクトリと状態を消す。
 # - status:  起動していれば 0、していなければ 1。
 #
@@ -26,33 +31,32 @@ SHARED_BUFFERS="${YUZHU_SHARED_BUFFERS:-}"
 STOP_MODE="fast"
 
 usage() {
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
 [ $# -ge 1 ] || usage
 CMD="$1"; shift
-GIVEN_OPTS=0
+PID_FILE="$STATE/server.pid"
+LOG_FILE="$STATE/server.log"
+OPTS_FILE="$STATE/options"
+
+# restart / crash は前回のオプションを引き継ぐ（コマンドラインで渡したものが優先）。
+if [ -f "$OPTS_FILE" ] && { [ "$CMD" = restart ] || [ "$CMD" = crash ]; }; then
+    # shellcheck disable=SC1090
+    . "$OPTS_FILE"
+fi
 while [ $# -gt 0 ]; do
     case "$1" in
-        --port) PORT="$2"; GIVEN_OPTS=1; shift 2 ;;
-        --data) DATA="$2"; GIVEN_OPTS=1; shift 2 ;;
-        --shared-buffers) SHARED_BUFFERS="$2"; GIVEN_OPTS=1; shift 2 ;;
-        smart|fast|immediate) STOP_MODE="$1"; shift ;;
+        --port) PORT="$2"; shift 2 ;;
+        --data) DATA="$2"; shift 2 ;;
+        --shared-buffers) SHARED_BUFFERS="$2"; shift 2 ;;
+        smart|fast|immediate|kill) STOP_MODE="$1"; shift ;;
         -h|--help) usage ;;
         *) echo "unknown option: $1" >&2; usage ;;
     esac
 done
 
-PID_FILE="$STATE/server.pid"
-LOG_FILE="$STATE/server.log"
-OPTS_FILE="$STATE/options"
-
-# 前回のオプションを引き継ぐ（restart で何も渡さなかったとき）。
-if [ "$GIVEN_OPTS" -eq 0 ] && [ -f "$OPTS_FILE" ] && [ "$CMD" = restart ]; then
-    # shellcheck disable=SC1090
-    . "$OPTS_FILE"
-fi
 DATA="${DATA:-$STATE/data}"
 
 is_running() {
@@ -119,6 +123,7 @@ do_stop() {
         smart) sig=TERM ;;
         fast) sig=INT ;;
         immediate) sig=QUIT ;;
+        kill) sig=KILL ;;
     esac
     local pid
     pid="$(cat "$PID_FILE")"
@@ -135,11 +140,25 @@ do_stop() {
     return 1
 }
 
+run_between_hook() {
+    local hook="${YUZHU_BETWEEN_HOOK:-}"
+    [ -n "$hook" ] || return 0
+    [ -x "$hook" ] || { echo "YUZHU_BETWEEN_HOOK is not executable: $hook" >&2; return 1; }
+    echo "running hook $hook"
+    YUZHU_DATA="$DATA" "$hook"
+}
+
 case "$CMD" in
     start) do_start ;;
     stop) do_stop "$STOP_MODE" ;;
     restart)
         do_stop "$STOP_MODE"
+        run_between_hook
+        do_start
+        ;;
+    crash)
+        do_stop kill
+        run_between_hook
         do_start
         ;;
     status)

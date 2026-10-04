@@ -1,0 +1,121 @@
+# SET はトランザクショナル
+
+statement ok
+BEGIN
+
+statement ok
+SET search_path = ibst_nosuch
+
+query T
+SHOW search_path
+----
+ibst_nosuch
+
+statement ok
+ROLLBACK
+
+query T
+SHOW search_path
+----
+"$user", public
+
+statement ok
+BEGIN
+
+statement ok
+SET application_name = 'st_a'
+
+statement ok
+COMMIT
+
+query T
+SHOW application_name
+----
+st_a
+
+# SET LOCAL はコミットで戻る
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL application_name = 'st_local'
+
+query T
+SHOW application_name
+----
+st_local
+
+statement ok
+COMMIT
+
+query T
+SHOW application_name
+----
+st_a
+
+# ブロック内の SET の後に SET LOCAL
+statement ok
+BEGIN
+
+statement ok
+SET application_name = 'st_b'
+
+statement ok
+SET LOCAL application_name = 'st_c'
+
+query T
+SHOW application_name
+----
+st_c
+
+statement ok
+COMMIT
+
+query T
+SHOW application_name
+----
+st_b
+
+# 暗黙ブロックがエラーで失敗したら SET も戻る
+statement error (22012)
+SET application_name = 'st_d'; SELECT 1 / 0
+
+query T
+SHOW application_name
+----
+st_b
+
+# 失敗したブロックでも SET は戻る
+statement ok
+BEGIN
+
+statement ok
+SET application_name = 'st_e'
+
+statement error (22012)
+SELECT 1 / 0
+
+statement ok
+ROLLBACK
+
+query T
+SHOW application_name
+----
+st_b
+
+# ブロック外の SET LOCAL は WARNING のみ
+statement ok
+SET LOCAL application_name = 'st_f'
+
+query T
+SHOW application_name
+----
+st_b
+
+statement ok
+RESET application_name
+
+query T
+SHOW application_name
+----
+(empty)

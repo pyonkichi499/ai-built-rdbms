@@ -11,20 +11,12 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
+use yuzhu_core::testing::TestCluster;
 use yuzhu_server::Server;
 use yuzhu_server::config::Config;
 
 fn start_server(max_connections: usize) -> SocketAddr {
-    let config = Config {
-        listen: [127, 0, 0, 1].into(),
-        port: 0,
-        max_connections,
-        ..Config::default()
-    };
-    let server = Server::bind(&config).expect("bind");
-    let addr = server.local_addr().expect("local_addr");
-    std::thread::spawn(move || server.run());
-    addr
+    start_server_with(max_connections, |s| s)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,10 +135,10 @@ impl Raw {
         assert_eq!(n, 0, "expected the server to close the connection");
     }
 
-    /// Full startup as user `alice`; returns the ParameterStatus values.
+    /// Full startup as user `postgres`; returns the ParameterStatus values.
     fn handshake(addr: SocketAddr) -> (Self, HashMap<String, String>) {
         let mut c = Self::connect(addr);
-        c.send_startup(&[("user", "alice"), ("database", "postgres")]);
+        c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
         let msgs = c.read_until_ready();
         let params = check_startup_response(&msgs);
         (c, params)
@@ -187,7 +179,7 @@ fn check_startup_response(msgs: &[Msg]) -> HashMap<String, String> {
 fn pg_connect(addr: SocketAddr) -> postgres::Client {
     postgres::Client::connect(
         &format!(
-            "host={} port={} user=alice dbname=postgres application_name=itest",
+            "host={} port={} user=postgres dbname=postgres application_name=itest",
             addr.ip(),
             addr.port()
         ),
@@ -197,7 +189,6 @@ fn pg_connect(addr: SocketAddr) -> postgres::Client {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn postgres_crate_connects_and_queries_get_responses() {
     let addr = start_server(10);
     let mut client = pg_connect(addr);
@@ -215,7 +206,6 @@ fn postgres_crate_connects_and_queries_get_responses() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn postgres_crate_extended_query_gets_feature_not_supported() {
     let addr = start_server(10);
     let mut client = pg_connect(addr);
@@ -228,7 +218,6 @@ fn postgres_crate_extended_query_gets_feature_not_supported() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn many_concurrent_clients() {
     let addr = start_server(100);
     let handles: Vec<_> = (0..8)
@@ -252,19 +241,18 @@ fn many_concurrent_clients() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn handshake_parameter_status() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
     c.send_startup(&[
-        ("user", "alice"),
+        ("user", "postgres"),
         ("database", "postgres"),
         ("application_name", "myapp"),
         ("client_encoding", "UTF8"),
     ]);
     let params = check_startup_response(&c.read_until_ready());
     let expected = [
-        ("server_version", "16.0"),
+        ("server_version", "17.0"),
         ("server_encoding", "UTF8"),
         ("client_encoding", "UTF8"),
         ("DateStyle", "ISO, MDY"),
@@ -273,7 +261,7 @@ fn handshake_parameter_status() {
         ("integer_datetimes", "on"),
         ("standard_conforming_strings", "on"),
         ("is_superuser", "on"),
-        ("session_authorization", "alice"),
+        ("session_authorization", "postgres"),
         ("application_name", "myapp"),
         ("default_transaction_read_only", "off"),
         ("in_hot_standby", "off"),
@@ -284,12 +272,11 @@ fn handshake_parameter_status() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn backend_pids_are_distinct() {
     let addr = start_server(10);
     let pid = |addr| {
         let mut c = Raw::connect(addr);
-        c.send_startup(&[("user", "u"), ("database", "postgres")]);
+        c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
         let msgs = c.read_until_ready();
         let k = msgs.iter().find(|m| m.tag == b'K').unwrap();
         i32::from_be_bytes([k.body[0], k.body[1], k.body[2], k.body[3]])
@@ -298,7 +285,6 @@ fn backend_pids_are_distinct() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn ssl_and_gssenc_requests_are_declined() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
@@ -308,12 +294,11 @@ fn ssl_and_gssenc_requests_are_declined() {
     assert_eq!(c.read_byte(), b'N');
     c.send_startup_code(80_877_103, &[]);
     assert_eq!(c.read_byte(), b'N');
-    c.send_startup(&[("user", "alice"), ("database", "postgres")]);
+    c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
     check_startup_response(&c.read_until_ready());
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn query_gets_exactly_one_ready_for_query() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -326,7 +311,6 @@ fn query_gets_exactly_one_ready_for_query() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn extended_query_message_is_rejected_until_sync() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -350,7 +334,6 @@ fn extended_query_message_is_rejected_until_sync() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn extended_query_error_is_flushed_before_sync() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -367,7 +350,6 @@ fn extended_query_error_is_flushed_before_sync() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn terminate_closes_connection() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -376,7 +358,6 @@ fn terminate_closes_connection() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn unknown_message_is_fatal_protocol_violation() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -390,7 +371,6 @@ fn unknown_message_is_fatal_protocol_violation() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn oversized_message_is_fatal() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -402,7 +382,6 @@ fn oversized_message_is_fatal() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn invalid_utf8_query_is_an_error_not_fatal() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
@@ -415,7 +394,6 @@ fn invalid_utf8_query_is_an_error_not_fatal() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn cancel_request_closes_connection() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
@@ -426,11 +404,10 @@ fn cancel_request_closes_connection() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn unsupported_protocol_version_is_rejected() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
-    c.send_startup_code(2 << 16, b"user\0alice\0\0");
+    c.send_startup_code(2 << 16, b"user\0postgres\0\0");
     let err = c.read_msg();
     assert_eq!(err.tag, b'E');
     assert_eq!(err.fields()[&b'S'], "FATAL");
@@ -439,11 +416,13 @@ fn unsupported_protocol_version_is_rejected() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn newer_minor_version_is_negotiated_down() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
-    c.send_startup_code(196_610, b"user\0alice\0database\0postgres\0_pq_.ext\0x\0\0");
+    c.send_startup_code(
+        196_610,
+        b"user\0postgres\0database\0postgres\0_pq_.ext\0x\0\0",
+    );
     let v = c.read_msg();
     assert_eq!(v.tag, b'v');
     let mut expected = 0i32.to_be_bytes().to_vec();
@@ -454,7 +433,6 @@ fn newer_minor_version_is_negotiated_down() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn missing_user_is_rejected() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
@@ -466,11 +444,10 @@ fn missing_user_is_rejected() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn unknown_database_is_rejected() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
-    c.send_startup(&[("user", "alice"), ("database", "no_such_db")]);
+    c.send_startup(&[("user", "postgres"), ("database", "no_such_db")]);
     let err = c.read_msg();
     assert_eq!(err.tag, b'E');
     assert_eq!(err.fields()[&b'S'], "FATAL");
@@ -479,12 +456,11 @@ fn unknown_database_is_rejected() {
 }
 
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn too_many_connections() {
     let addr = start_server(1);
     let (first, _) = Raw::handshake(addr);
     let mut second = Raw::connect(addr);
-    second.send_startup(&[("user", "alice"), ("database", "postgres")]);
+    second.send_startup(&[("user", "postgres"), ("database", "postgres")]);
     let err = second.read_msg();
     assert_eq!(err.tag, b'E');
     assert_eq!(err.fields()[&b'S'], "FATAL");
@@ -496,7 +472,7 @@ fn too_many_connections() {
     // The slot is released once the first connection's thread finishes.
     for _ in 0..100 {
         let mut c = Raw::connect(addr);
-        c.send_startup(&[("user", "alice"), ("database", "postgres")]);
+        c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
         if c.read_msg().tag == b'R' {
             return;
         }
@@ -512,7 +488,8 @@ fn start_server_with(max_connections: usize, f: impl FnOnce(Server) -> Server) -
         max_connections,
         ..Config::default()
     };
-    let server = f(Server::bind(&config).expect("bind"));
+    let cluster = TestCluster::new().cluster;
+    let server = f(Server::with_cluster(&config, cluster).expect("bind"));
     let addr = server.local_addr().expect("local_addr");
     std::thread::spawn(move || server.run());
     addr
@@ -520,7 +497,6 @@ fn start_server_with(max_connections: usize, f: impl FnOnce(Server) -> Server) -
 
 /// Sockets that connect and send nothing must not consume session slots.
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn idle_sockets_in_startup_do_not_lock_out_clients() {
     let addr = start_server(3);
     let idle: Vec<TcpStream> = (0..3).map(|_| TcpStream::connect(addr).unwrap()).collect();
@@ -534,7 +510,6 @@ fn idle_sockets_in_startup_do_not_lock_out_clients() {
 /// A client that sends nothing during startup is disconnected after the
 /// authentication timeout.
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn startup_times_out() {
     let addr = start_server_with(3, |s| {
         s.with_authentication_timeout(Duration::from_millis(200))
@@ -552,7 +527,6 @@ fn startup_times_out() {
 /// Beyond the thread ceiling, sockets are rejected immediately with 53300
 /// from the accept loop; the slot is reusable once the idle sockets go away.
 #[test]
-#[ignore = "M2: Cluster::open が未実装の間は起動できない。担当 J が復活させる"]
 fn thread_ceiling_rejects_immediately() {
     let addr = start_server_with(1, |s| s.with_max_threads(2));
     let idle: Vec<TcpStream> = (0..2).map(|_| TcpStream::connect(addr).unwrap()).collect();
@@ -566,7 +540,7 @@ fn thread_ceiling_rejects_immediately() {
     drop(idle);
     for _ in 0..100 {
         let mut c = Raw::connect(addr);
-        c.send_startup(&[("user", "alice"), ("database", "postgres")]);
+        c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
         if c.read_msg().tag == b'R' {
             return;
         }

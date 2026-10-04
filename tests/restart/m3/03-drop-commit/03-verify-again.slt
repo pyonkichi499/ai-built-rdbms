@@ -1,0 +1,12 @@
+# フェーズ 3: 作り直したテーブルがもう一度のクラッシュのあとも残る。
+
+query T
+SELECT a FROM cr3_t
+----
+again
+
+statement ok
+DROP TABLE cr3_t
+
+statement ok
+DROP TABLE cr3_keep

@@ -1,0 +1,10 @@
+# フェーズ 1: コミットして kill -9 される。
+
+statement ok
+CREATE TABLE cr6_t (id int NOT NULL, v text)
+
+statement count 3
+INSERT INTO cr6_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement count 1
+UPDATE cr6_t SET v = 'bb' WHERE id = 2

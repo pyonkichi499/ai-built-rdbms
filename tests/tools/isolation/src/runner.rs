@@ -406,6 +406,12 @@ impl Runner<'_> {
             }
 
             let sql = self.psteps[i].sql.clone();
+            if let Some(target) = cancel_directive(&sql) {
+                // 拡張: `-- @cancel <セッション名>` のステップは SQL を送らず、
+                // 対象セッションの実行中の問い合わせに CancelRequest を送る。
+                self.run_cancel_step(i, target, &mut waiting)?;
+                continue;
+            }
             if let Err(e) = self.conns[ci].conn.send_query(&sql) {
                 let _ = writeln!(
                     self.out,
@@ -450,6 +456,42 @@ impl Runner<'_> {
             && let Err(msg) = self.exec_and_print(0, sql)
         {
             let _ = write!(self.out, "teardown failed: {msg}");
+        }
+        Ok(())
+    }
+
+    /// `-- @cancel <セッション名>` ステップの実行。対象のステップが完了するまで待って結果も出す
+    /// （キャンセルの到達が非同期でも、出力の順序が変わらないようにする）。
+    fn run_cancel_step(
+        &mut self,
+        i: usize,
+        target: &str,
+        waiting: &mut Vec<usize>,
+    ) -> Result<(), Fatal> {
+        let _ = writeln!(
+            self.out,
+            "step {}: {}",
+            self.psteps[i].name, self.psteps[i].sql
+        );
+        let Some(ti) = self.spec.sessions.iter().position(|s| s.name == target) else {
+            let _ = writeln!(self.out, "cancel target session \"{target}\" not found");
+            return Err(Fatal);
+        };
+        let tci = 1 + ti;
+        let Some(active) = self.conns[tci].active else {
+            let _ = writeln!(
+                self.out,
+                "cancel target session \"{target}\" is not running a step"
+            );
+            return Err(Fatal);
+        };
+        if let Err(e) = self.conns[tci].conn.cancel() {
+            let _ = writeln!(self.out, "PQcancel failed: {e}");
+            return Err(Fatal);
+        }
+        let r = self.try_complete_step(active, RETRY)?;
+        if !r {
+            waiting.retain(|&x| x != active);
         }
         Ok(())
     }
@@ -655,6 +697,13 @@ impl Runner<'_> {
     }
 }
 
+/// `-- @cancel <セッション名>` だけから成る SQL なら、セッション名を返す。
+fn cancel_directive(sql: &str) -> Option<&str> {
+    let rest = sql.trim().strip_prefix("-- @cancel")?;
+    let name = rest.trim();
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then_some(name)
+}
+
 /// `width` バイトになるまで空白を足す（printf の `%-*s` / `%*s` はバイト数で数える）。
 fn pad(out: &mut String, s: &str, width: usize, left: bool) {
     let fill = width.saturating_sub(s.len());
@@ -770,5 +819,19 @@ mod tests {
         let mut out = String::new();
         print_result_set(&mut out, &[], &[vec![]]);
         assert_eq!(out, "");
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::cancel_directive;
+
+    #[test]
+    fn parses_cancel_directive() {
+        assert_eq!(cancel_directive("-- @cancel s1"), Some("s1"));
+        assert_eq!(cancel_directive("  -- @cancel  b \n"), Some("b"));
+        assert_eq!(cancel_directive("-- @cancel"), None);
+        assert_eq!(cancel_directive("-- @cancel a b"), None);
+        assert_eq!(cancel_directive("SELECT 1"), None);
     }
 }

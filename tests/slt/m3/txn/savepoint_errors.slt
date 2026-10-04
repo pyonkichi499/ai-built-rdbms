@@ -1,0 +1,78 @@
+# SAVEPOINT 系のエラーの順序（spec/design/m3.md 6.11.3）。PostgreSQL と yuzhu で共通の部分だけ。
+
+# ブロック外（単一文）
+statement error (25P01)
+SAVEPOINT sp_x
+
+statement error (25P01)
+RELEASE SAVEPOINT sp_x
+
+statement error (25P01)
+RELEASE sp_x
+
+statement error (25P01)
+ROLLBACK TO SAVEPOINT sp_x
+
+statement error (25P01)
+ROLLBACK TO sp_x
+
+# ブロック外（複数文の暗黙ブロック）
+statement error (25P01)
+SELECT 1; SAVEPOINT sp_x
+
+query I
+SELECT 1
+----
+1
+
+# ブロック内: 存在しないセーブポイントは 3B001 で、ブロックは失敗状態になる
+statement ok
+BEGIN
+
+statement error (3B001)
+RELEASE SAVEPOINT sp_x
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (3B001)
+ROLLBACK TO SAVEPOINT sp_x
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+# 失敗状態: SAVEPOINT / RELEASE は 25P02、ROLLBACK TO は 3B001（失敗状態のまま）
+statement ok
+BEGIN
+
+statement error (22012)
+SELECT 1 / 0
+
+statement error (25P02)
+SAVEPOINT sp_x
+
+statement error (25P02)
+RELEASE SAVEPOINT sp_x
+
+statement error (3B001)
+ROLLBACK TO SAVEPOINT sp_x
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT 2
+----
+2

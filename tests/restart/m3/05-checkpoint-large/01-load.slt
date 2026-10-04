@@ -1,0 +1,67 @@
+# フェーズ 1: プールより大きいテーブル（yuzhu は --shared-buffers 1MB = 128 ページ）を作り、
+# 全行 UPDATE → コミット → CHECKPOINT → さらに全行 UPDATE → コミットして kill -9 される。
+# 1 行は約 520 バイトなので、2048 行はおよそ 135 ページ。
+
+statement ok
+CREATE TABLE cr5_t (a int NOT NULL, pad text)
+
+statement ok
+INSERT INTO cr5_t VALUES (0, repeat('x', 500))
+
+statement count 1
+INSERT INTO cr5_t SELECT a + 1, pad FROM cr5_t
+
+statement count 2
+INSERT INTO cr5_t SELECT a + 2, pad FROM cr5_t
+
+statement count 4
+INSERT INTO cr5_t SELECT a + 4, pad FROM cr5_t
+
+statement count 8
+INSERT INTO cr5_t SELECT a + 8, pad FROM cr5_t
+
+statement count 16
+INSERT INTO cr5_t SELECT a + 16, pad FROM cr5_t
+
+statement count 32
+INSERT INTO cr5_t SELECT a + 32, pad FROM cr5_t
+
+statement count 64
+INSERT INTO cr5_t SELECT a + 64, pad FROM cr5_t
+
+statement count 128
+INSERT INTO cr5_t SELECT a + 128, pad FROM cr5_t
+
+statement count 256
+INSERT INTO cr5_t SELECT a + 256, pad FROM cr5_t
+
+statement count 512
+INSERT INTO cr5_t SELECT a + 512, pad FROM cr5_t
+
+statement count 1024
+INSERT INTO cr5_t SELECT a + 1024, pad FROM cr5_t
+
+# 0..2047 の 2048 行
+query I
+SELECT a FROM cr5_t ORDER BY a LIMIT 1 OFFSET 2047
+----
+2047
+
+statement count 2048
+UPDATE cr5_t SET a = a + 10000
+
+statement ok
+CHECKPOINT
+
+statement count 2048
+UPDATE cr5_t SET a = a + 10000
+
+query I
+SELECT a FROM cr5_t ORDER BY a LIMIT 1
+----
+20000
+
+query I
+SELECT a FROM cr5_t ORDER BY a DESC LIMIT 1
+----
+22047

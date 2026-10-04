@@ -1,0 +1,19 @@
+# yuzhu 専用（yuzhu.only）。PostgreSQL は既定でデータチェックサムが無効なので対応する挙動がない。
+# フェーズ 1: 2 つのテーブルを作ってチェックポイントまで済ませる（先に作った cr10_bad のファイルが
+# このあと 01-prepare.after.sh で壊される。OID が最小のユーザーテーブルのヒープ）。
+# varchar だけの表なので toast テーブルは作られない。
+
+statement ok
+CREATE TABLE cr10_bad (id int NOT NULL, v varchar(20))
+
+statement count 3
+INSERT INTO cr10_bad VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+CREATE TABLE cr10_ok (id int NOT NULL, v varchar(20))
+
+statement count 2
+INSERT INTO cr10_ok VALUES (1, 'x'), (2, 'y')
+
+statement ok
+CHECKPOINT

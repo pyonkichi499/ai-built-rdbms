@@ -1,0 +1,21 @@
+# フェーズ 3: フェーズ 2 でコミットした CREATE / DROP が残っている。
+
+query T
+SELECT g FROM cr7_ghost
+----
+real
+
+statement error (42P01)
+SELECT id FROM cr7_drop_pending
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cr7\_%' ORDER BY relname
+----
+cr7_ghost
+cr7_keep
+
+statement ok
+DROP TABLE cr7_ghost
+
+statement ok
+DROP TABLE cr7_keep

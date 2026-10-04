@@ -9,21 +9,23 @@
 //! transaction; inside a block an error moves the session to the failed
 //! state, where everything but COMMIT / ROLLBACK gives 25P02.
 //!
-//! 担当 I が M2 の手順（`m2.md` §5.2〜§5.4）で実装する。A が行ったのは
-//! M1 の `Database` / undo ログへの依存を外すところまで: 文の実行
-//! （`exec_statement` の `_` の枝）、CREATE / DROP の手順、ライターロック、
-//! コミットとアボートの実処理は未実装。M1 の実装は git の 88d1bc0 の
-//! `session.rs` を参照。
+//! M2 の手順（`m2.md` §5.2〜§5.4）: 書く文はライターロックを先に取り、
+//! ストレージバリア（共有）の下でスナップショット → analyze → plan → 実行し、
+//! 文が成功したら CCI する。コミット / アボートは §5.3。
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::analyzer::BoundSelect;
+use crate::analyzer::{self, BoundCreateTable, BoundDropTable, BoundSelect, BoundStatement};
 use crate::catalog::CatalogReader;
-use crate::engine::Cluster;
+use crate::catalog::reader::StatementCatalog;
+use crate::catalog::store::NewTable;
+use crate::engine::{Cluster, DatabaseHandle};
 use crate::error::{Error, Result, Severity, SqlState, sqlstate};
-use crate::executor::SessionInfo;
+use crate::executor::eval::row_to_text;
+use crate::executor::{self, ExecCtx, SessionInfo};
 use crate::interrupt::InterruptFlag;
+use crate::planner;
 use crate::settings::Settings;
 use crate::sql::{
     self,
@@ -32,6 +34,8 @@ use crate::sql::{
         TransactionMode,
     },
 };
+use crate::storage::buffer;
+use crate::storage::smgr::{DEFAULTTABLESPACE_OID, RelFileLocator, RelFileNumber};
 use crate::txn::Transaction;
 use crate::types::{Datum, Oid, SqlType, io, oid};
 
@@ -139,9 +143,14 @@ const IN_FAILED_MSG: &str =
 #[derive(Debug)]
 pub struct Session {
     /// `Some` for sessions made by [`Session::new`]. `None` only in unit
-    /// tests of the statement state machine, until `TestCluster` exists.
-    #[allow(dead_code)]
+    /// tests of the statement state machine.
     cluster: Option<Arc<Cluster>>,
+    /// The database this session is connected to (`Some` with `cluster`).
+    db: Option<Arc<DatabaseHandle>>,
+    /// OID of the connected role (the owner of created tables).
+    role_oid: Oid,
+    /// A FATAL error was sent: the server must close the connection.
+    closing: bool,
     params: StartupParams,
     state: TxState,
     txn: Transaction,
@@ -149,7 +158,6 @@ pub struct Session {
     /// Last value sent to the client for each reported parameter.
     reported: HashMap<&'static str, String>,
     /// Session ID (the writer lock owner passed to `begin_write`).
-    #[allow(dead_code)]
     id: u64,
     /// Whether the current Query message has more than one statement
     /// (PostgreSQL's implicit transaction *block*, where SET LOCAL works).
@@ -162,9 +170,17 @@ impl Session {
     /// (`3D000`), a database that does not accept connections (`55000`) and
     /// an unknown role (`28000`) as FATAL errors.
     pub fn new(cluster: Arc<Cluster>, params: StartupParams) -> Result<Session> {
-        cluster.connect(&params.database, &params.user)?;
+        let (db, role) = cluster.connect(&params.database, &params.user)?;
         let id = cluster.next_session_id();
-        Ok(Session::build(Some(cluster), id, params))
+        let mut s = Session::build(Some(cluster), id, params);
+        if let Some(c) = &s.cluster {
+            for (name, value) in c.server_settings() {
+                s.settings.set_server_value(name, value);
+            }
+        }
+        s.db = Some(db);
+        s.role_oid = role.oid;
+        Ok(s)
     }
 
     fn build(cluster: Option<Arc<Cluster>>, id: u64, params: StartupParams) -> Session {
@@ -172,6 +188,9 @@ impl Session {
         let reported = settings.reported_values().into_iter().collect();
         Session {
             cluster,
+            db: None,
+            role_oid: 0,
+            closing: false,
             id,
             multi_statement: false,
             params,
@@ -206,6 +225,12 @@ impl Session {
         if self.state != TxState::Idle {
             self.rollback_transaction();
         }
+    }
+
+    /// A FATAL error was reported: the server must close the connection
+    /// after sending the pending messages.
+    pub fn is_closing(&self) -> bool {
+        self.closing
     }
 
     /// The flag through which the server asks this session to stop.
@@ -267,8 +292,10 @@ impl Session {
                 Err(e) => return self.report_error(e, sql, sink),
             }
         }
-        if self.state == TxState::Implicit {
-            self.commit_transaction();
+        if self.state == TxState::Implicit
+            && let Err(e) = self.commit_transaction()
+        {
+            return self.report_error(e, sql, sink);
         }
         self.flush_parameter_status(sink)
     }
@@ -281,6 +308,17 @@ impl Session {
         sql: &str,
         sink: &mut dyn ResultSink,
     ) -> std::io::Result<()> {
+        if e.severity == Severity::Panic {
+            // The shared state may be inconsistent: stop the cluster's
+            // writes and drop this connection (`m2.md` §5.2 step 10).
+            if let Some(c) = &self.cluster {
+                c.poison();
+            }
+            e.severity = Severity::Fatal;
+        }
+        if e.severity == Severity::Fatal {
+            self.closing = true;
+        }
         match self.state {
             TxState::Implicit => {
                 self.rollback_transaction();
@@ -337,18 +375,71 @@ impl Session {
         self.state = state;
     }
 
-    /// 担当 I が `m2.md` §5.3 の手順（`clog`、`pending_unlinks`）で実装する。
-    fn commit_transaction(&mut self) {
-        self.txn = Transaction::new();
+    /// Commits (`m2.md` §5.3). The session is idle afterwards even when this
+    /// fails: a failure to record the commit is `Severity::Panic`.
+    fn commit_transaction(&mut self) -> Result<()> {
+        let mut txn = std::mem::replace(&mut self.txn, Transaction::new());
         self.settings.commit();
         self.state = TxState::Idle;
+        let (Some(cluster), Some(xid)) = (self.cluster.as_ref(), txn.xid) else {
+            return Ok(());
+        };
+        let mgr = cluster.txn_manager();
+        // 1. clog + running list. The cache is invalidated only after this.
+        mgr.commit(xid)?;
+        // 2.
+        if txn.catalog_dirty {
+            cluster.invalidate_all_catalog_caches();
+        }
+        // 3. Remove the files of dropped tables once no statement can be
+        // reading them. A failure does not undo the commit.
+        if !txn.pending_unlinks.is_empty() {
+            Self::unlink_files(cluster, &txn.pending_unlinks);
+        }
+        // 4. Release the writer lock.
+        txn.writer = None;
+        Ok(())
     }
 
-    /// 担当 I が `m2.md` §5.3 の手順（`clog`、`pending_creates`）で実装する。
+    /// Aborts (`m2.md` §5.3). Never fails to reset the session; the error of
+    /// `TxnManager::abort` (a `Panic`) is dropped here and poisons the
+    /// cluster.
     fn rollback_transaction(&mut self) {
-        self.txn = Transaction::new();
+        let mut txn = std::mem::replace(&mut self.txn, Transaction::new());
         self.settings.rollback();
         self.state = TxState::Idle;
+        let (Some(cluster), Some(xid)) = (self.cluster.as_ref(), txn.xid) else {
+            return;
+        };
+        if let Err(e) = cluster.txn_manager().abort(xid) {
+            warn(&format!("could not record the abort: {}", e.message));
+            cluster.poison();
+        }
+        if !txn.pending_creates.is_empty() {
+            Self::unlink_files(cluster, &txn.pending_creates);
+        }
+        txn.writer = None;
+    }
+
+    /// Removes relation files under the exclusive storage barrier. Errors
+    /// are only warned about: the transaction is already decided.
+    fn unlink_files(cluster: &Cluster, rels: &[RelFileLocator]) {
+        let guard = match cluster.txn_manager().exclusive_barrier() {
+            Ok(g) => g,
+            Err(e) => {
+                warn(&format!("could not remove relation files: {}", e.message));
+                return;
+            }
+        };
+        for rel in rels {
+            if let Err(e) = cluster.storage().unlink_storage(*rel) {
+                warn(&format!(
+                    "could not remove relation file {}: {}",
+                    rel.rel_number.0, e.message
+                ));
+            }
+        }
+        drop(guard);
     }
 
     // ----- statements --------------------------------------------------------
@@ -366,11 +457,236 @@ impl Session {
                 Ok("RESET".into())
             }
             Statement::Show(s) => self.exec_show(s, out),
-            // 担当 I が analyze → plan → execute と DDL の手順を実装する。
-            _ => Err(Error::not_supported(
-                "executing this statement is not implemented yet",
-            )),
+            Statement::Checkpoint(_) => {
+                // No storage barrier may be held (`checkpoint::run` takes it).
+                let cluster = self.cluster()?;
+                cluster.checkpoint()?;
+                Ok("CHECKPOINT".into())
+            }
+            _ => self.exec_data_statement(stmt, out),
         }
+    }
+
+    fn cluster(&self) -> Result<Arc<Cluster>> {
+        self.cluster
+            .clone()
+            .ok_or_else(|| Error::not_supported("this session has no cluster"))
+    }
+
+    /// SELECT / VALUES / INSERT / UPDATE / DELETE / CREATE TABLE / DROP TABLE
+    /// (`m2.md` §5.2).
+    fn exec_data_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<String> {
+        let cluster = self.cluster()?;
+        let Some(db) = self.db.clone() else {
+            return Err(Error::internal("session has a cluster but no database"));
+        };
+        if cluster.is_poisoned() {
+            return Err(Error::new(
+                sqlstate::ADMIN_SHUTDOWN,
+                "the server is in a failed state; restart it",
+            )
+            .with_severity(Severity::Fatal));
+        }
+        // 1. The writer lock comes before the snapshot, so that no other
+        // writer's commit lands between the snapshot and our first write.
+        let is_write = matches!(
+            stmt,
+            Statement::Insert(_)
+                | Statement::Update(_)
+                | Statement::Delete(_)
+                | Statement::CreateTable(_)
+                | Statement::DropTable(_)
+        );
+        let mgr = Arc::clone(cluster.txn_manager());
+        if is_write && self.txn.writer.is_none() {
+            let (xid, guard) = mgr.begin_write(self.id, self.settings.lock_timeout())?;
+            self.txn.xid = Some(xid);
+            self.txn.writer = Some(guard);
+        }
+        // 2. The shared storage barrier for the duration of the statement.
+        let barrier = mgr.statement_barrier()?;
+        buffer::track::barrier_acquired();
+        let result = self.run_under_barrier(stmt, &cluster, &db, out);
+        buffer::track::barrier_released();
+        drop(barrier);
+        // 8.
+        buffer::assert_no_pins();
+        let tag = result?;
+        // 9.
+        self.txn.command_counter_increment()?;
+        Ok(tag)
+    }
+
+    /// Steps 3 to 6 of `m2.md` §5.2.
+    fn run_under_barrier(
+        &mut self,
+        stmt: &Statement,
+        cluster: &Cluster,
+        db: &Arc<DatabaseHandle>,
+        out: &mut Output,
+    ) -> Result<String> {
+        // 3. The generation is read before the snapshot.
+        let generation = db.cache.generation();
+        // 4.
+        let snap = cluster.txn_manager().snapshot(self.txn.xid, self.txn.cid);
+        // 5.
+        let search_path = self.settings.search_path();
+        let catalog = StatementCatalog {
+            db,
+            snapshot: &snap,
+            gen_at_snapshot: generation,
+            bypass_cache: self.txn.catalog_dirty,
+            search_path: &search_path,
+        };
+        // 6.
+        let bound = analyzer::analyze(stmt, &catalog)?;
+        match bound {
+            BoundStatement::CreateTable(c) => {
+                self.exec_create_table(&c, cluster, db, &snap, &catalog, out)
+            }
+            BoundStatement::DropTable(d) => self.exec_drop_table(&d, db, &snap, out),
+            BoundStatement::Checkpoint => Err(Error::internal(
+                "CHECKPOINT must be handled before the storage barrier",
+            )),
+            bound => {
+                let plan = planner::plan(&bound)?;
+                let (columns, types) = match &bound {
+                    BoundStatement::Select(sel) => (Some(column_descs(sel, &catalog)), {
+                        sel.columns
+                            .iter()
+                            .map(|c| {
+                                if c.ty.oid == oid::UNKNOWN {
+                                    SqlType::TEXT
+                                } else {
+                                    c.ty
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                    _ => (None, Vec::new()),
+                };
+                out.columns = columns;
+                let ncols = types.len();
+                let opts = io::OutputOpts {
+                    extra_float_digits: self.settings.extra_float_digits(),
+                };
+                let info = self.session_info();
+                let interrupts = Arc::clone(&self.interrupt);
+                let mut exec = executor::build(&plan);
+                let mut ctx = ExecCtx {
+                    catalog: &catalog,
+                    storage: &**cluster.storage(),
+                    txn: &mut self.txn,
+                    snapshot: &snap,
+                    session: &info,
+                    interrupts: &interrupts,
+                };
+                while let Some(row) = exec.next(&mut ctx)? {
+                    if out.columns.is_some() {
+                        let visible: Vec<Datum> = row.iter().take(ncols).cloned().collect();
+                        out.rows.push(row_to_text(&visible, &types, &opts));
+                    }
+                }
+                let n = exec.rows_affected();
+                Ok(match bound {
+                    BoundStatement::Select(_) => format!("SELECT {}", out.rows.len()),
+                    BoundStatement::Insert(_) => format!("INSERT 0 {n}"),
+                    BoundStatement::Update(_) => format!("UPDATE {n}"),
+                    BoundStatement::Delete(_) => format!("DELETE {n}"),
+                    _ => unreachable!("handled above"),
+                })
+            }
+        }
+    }
+
+    /// CREATE TABLE (`m2.md` §5.4).
+    fn exec_create_table(
+        &mut self,
+        c: &BoundCreateTable,
+        cluster: &Cluster,
+        db: &Arc<DatabaseHandle>,
+        snap: &crate::txn::Snapshot,
+        catalog: &dyn CatalogReader,
+        out: &mut Output,
+    ) -> Result<String> {
+        if catalog.table(Some(&c.schema), &c.name)?.is_some() {
+            if c.if_not_exists {
+                out.notices.push(already_exists_notice(&c.name));
+                return Ok("CREATE TABLE".into());
+            }
+            return Err(Error::new(
+                sqlstate::DUPLICATE_TABLE,
+                format!("relation \"{}\" already exists", c.name),
+            ));
+        }
+        let Some(namespace) = db.catalog.namespace_oid(snap, &c.schema)? else {
+            return Err(Error::new(
+                sqlstate::INVALID_SCHEMA_NAME,
+                format!("schema \"{}\" does not exist", c.schema),
+            ));
+        };
+        let alloc = cluster.oid_allocator();
+        let oid = db.catalog.get_new_relation_oid(alloc)?;
+        let locator = RelFileLocator {
+            spc_oid: DEFAULTTABLESPACE_OID,
+            db_oid: db.oid,
+            rel_number: RelFileNumber(oid),
+        };
+        let (attrdef_oids, constraint_oids) = db
+            .catalog
+            .allocate_child_oids(alloc, &c.columns, &c.checks)?;
+        // The file is created first and remembered, so an abort removes it.
+        cluster.storage().create_storage(locator)?;
+        self.txn.pending_creates.push(locator);
+        let w = self.txn.write_ctx()?;
+        db.catalog.create_table(
+            &w,
+            snap,
+            &NewTable {
+                oid,
+                namespace,
+                name: c.name.clone(),
+                owner: self.role_oid,
+                columns: c.columns.clone(),
+                checks: c.checks.clone(),
+                attrdef_oids,
+                constraint_oids,
+            },
+        )?;
+        self.txn.catalog_dirty = true;
+        Ok("CREATE TABLE".into())
+    }
+
+    /// DROP TABLE (`m2.md` §5.4). The files go at commit.
+    fn exec_drop_table(
+        &mut self,
+        d: &BoundDropTable,
+        db: &Arc<DatabaseHandle>,
+        snap: &crate::txn::Snapshot,
+        out: &mut Output,
+    ) -> Result<String> {
+        for name in &d.missing {
+            out.notices.push(Notice::new(
+                Severity::Notice,
+                sqlstate::SUCCESSFUL_COMPLETION,
+                format!("table \"{name}\" does not exist, skipping"),
+            ));
+        }
+        for def in &d.tables {
+            if def.is_system_catalog() {
+                return Err(Error::new(
+                    sqlstate::INSUFFICIENT_PRIVILEGE,
+                    format!("permission denied: \"{}\" is a system catalog", def.name),
+                ));
+            }
+        }
+        for def in &d.tables {
+            let w = self.txn.write_ctx()?;
+            db.catalog.drop_table(&w, snap, def)?;
+            self.txn.pending_unlinks.push(def.locator);
+            self.txn.catalog_dirty = true;
+        }
+        Ok("DROP TABLE".into())
     }
 
     fn exec_transaction(
@@ -409,7 +725,7 @@ impl Session {
                     if state != TxState::Block {
                         out.notices.push(no_transaction_warning());
                     }
-                    self.commit_transaction();
+                    self.commit_transaction()?;
                     Ok("COMMIT".into())
                 }
             },
@@ -479,7 +795,6 @@ impl Session {
         Ok("SHOW".into())
     }
 
-    #[allow(dead_code)]
     fn session_info(&self) -> SessionInfo {
         let current_schema = self
             .settings
@@ -536,8 +851,11 @@ fn no_transaction_warning() -> Notice {
         "there is no transaction in progress",
     )
 }
+#[allow(clippy::print_stderr)]
+fn warn(msg: &str) {
+    eprintln!("WARNING:  {msg}");
+}
 
-#[allow(dead_code)]
 fn already_exists_notice(name: &str) -> Notice {
     Notice::new(
         Severity::Notice,
@@ -546,7 +864,6 @@ fn already_exists_notice(name: &str) -> Notice {
     )
 }
 
-#[allow(dead_code)]
 fn text_column(name: impl Into<String>) -> ColumnDesc {
     ColumnDesc {
         name: name.into(),
@@ -559,7 +876,6 @@ fn text_column(name: impl Into<String>) -> ColumnDesc {
 }
 
 /// `RowDescription` fields for a SELECT's visible columns.
-#[allow(dead_code)]
 fn column_descs(sel: &BoundSelect, catalog: &dyn CatalogReader) -> Vec<ColumnDesc> {
     sel.columns
         .iter()
@@ -580,53 +896,6 @@ fn column_descs(sel: &BoundSelect, catalog: &dyn CatalogReader) -> Vec<ColumnDes
             }
         })
         .collect()
-}
-
-/// Text output of a value, honouring `extra_float_digits`.
-#[allow(dead_code)]
-fn datum_text(d: &Datum, ty: SqlType, extra_float_digits: i32) -> Option<String> {
-    if extra_float_digits <= 0 {
-        match d {
-            Datum::Float8(v) => return Some(format_g(*v, 15 + extra_float_digits)),
-            Datum::Float4(v) => return Some(format_g(f64::from(*v), 6 + extra_float_digits)),
-            _ => {}
-        }
-    }
-    io::output_text(d, ty)
-}
-
-/// C's `%.*g` (what `float8out` / `float4out` use when
-/// `extra_float_digits <= 0`), with PostgreSQL's spellings of the special
-/// values. `precision` below 1 is treated as 1.
-#[allow(dead_code)]
-fn format_g(v: f64, precision: i32) -> String {
-    if v.is_nan() {
-        return "NaN".into();
-    }
-    if v.is_infinite() {
-        return if v > 0.0 { "Infinity" } else { "-Infinity" }.into();
-    }
-    if v == 0.0 {
-        return if v.is_sign_negative() { "-0" } else { "0" }.into();
-    }
-    let p = usize::try_from(precision.max(1)).unwrap_or(1);
-    let e_form = format!("{:.*e}", p - 1, v);
-    let (mantissa, exp) = e_form.split_once('e').unwrap_or((&e_form, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let strip = |s: &str| -> String {
-        if s.contains('.') {
-            s.trim_end_matches('0').trim_end_matches('.').to_owned()
-        } else {
-            s.to_owned()
-        }
-    };
-    if exp < -4 || exp >= precision.max(1) {
-        let sign = if exp < 0 { '-' } else { '+' };
-        format!("{}e{sign}{:02}", strip(mantissa), exp.abs())
-    } else {
-        let decimals = usize::try_from(precision.max(1) - 1 - exp).unwrap_or(0);
-        strip(&format!("{v:.decimals$}"))
-    }
 }
 
 /// Settings given at connection start: `application_name`, other startup
@@ -788,14 +1057,6 @@ mod tests {
         let mut s = Session::build(None, 1, p);
         assert_eq!(show_value(&mut s, "search_path"), "foo");
         assert_eq!(show_value(&mut s, "extra_float_digits"), "2");
-    }
-
-    #[test]
-    fn unimplemented_statements_are_rejected_for_now() {
-        let mut s = session();
-        let ev = sql(&mut s, "select 1");
-        assert_eq!(ev, vec![Ev::Error("0A000", None)]);
-        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
     }
 
     #[test]
@@ -1163,23 +1424,328 @@ mod tests {
         assert_eq!(s.session_info().current_schema, None);
     }
 
+    // ----- with a real cluster --------------------------------------------
+
+    use crate::testing::TestCluster;
+
+    fn cl() -> (TestCluster, Session) {
+        let tc = TestCluster::new();
+        let s = tc.session("postgres").unwrap();
+        (tc, s)
+    }
+
+    fn errors(ev: &[Ev]) -> Vec<&'static str> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Ev::Error(c, _) => Some(*c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn data(ev: &[Ev]) -> Vec<Vec<Option<String>>> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Ev::Row(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn one(s: &mut Session, q: &str) -> String {
+        let ev = sql(s, q);
+        assert!(errors(&ev).is_empty(), "{q}: {ev:?}");
+        data(&ev)[0][0].clone().unwrap()
+    }
+
+    fn count(s: &mut Session, table: &str) -> usize {
+        let ev = sql(s, &format!("select * from {table}"));
+        assert!(errors(&ev).is_empty(), "{ev:?}");
+        data(&ev).len()
+    }
+
+    fn tags(ev: &[Ev]) -> Vec<String> {
+        ev.iter()
+            .filter_map(|e| match e {
+                Ev::Complete(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn float_output_with_extra_float_digits() {
-        let t = |v: f64, efd| datum_text(&Datum::Float8(v), SqlType::FLOAT8, efd).unwrap();
-        assert_eq!(t(0.1 + 0.2, 0), "0.3");
-        assert_eq!(t(1.0 / 3.0, 0), "0.333333333333333");
-        assert_eq!(t(0.1 + 0.2, 1), "0.30000000000000004");
-        assert_eq!(t(3.25, -15), "3");
-        assert_eq!(t(f64::from(0.1f32), 0), "0.100000001490116");
-        assert_eq!(t(1e20, 0), "1e+20");
-        assert_eq!(t(1e-5, 0), "1e-05");
-        assert_eq!(t(123_456.0, 0), "123456");
-        assert_eq!(t(-0.0, 0), "-0");
-        assert_eq!(t(f64::INFINITY, 0), "Infinity");
-        assert_eq!(t(99999.95, -10), "1e+05");
-        let f = datum_text(&Datum::Float4(1.0 / 3.0), SqlType::FLOAT4, 0).unwrap();
-        assert_eq!(f, "0.333333");
-        assert_eq!(format_g(1e15, 15), "1e+15");
-        assert_eq!(format_g(1e14, 15), "100000000000000");
+    fn select_without_table_and_show_server_values() {
+        let (_tc, mut s) = cl();
+        assert_eq!(one(&mut s, "select 1 + 1"), "2");
+        assert_eq!(one(&mut s, "show server_version"), "17.0");
+        assert_eq!(one(&mut s, "show server_version_num"), "170000");
+        assert_eq!(one(&mut s, "show data_checksums"), "on");
+        assert_eq!(one(&mut s, "show block_size"), "8192");
+        assert_eq!(one(&mut s, "show segment_size"), "1GB");
+        assert_eq!(one(&mut s, "show checkpoint_timeout"), "1h");
+        assert_eq!(one(&mut s, "show data_directory"), "/sim/data");
+        assert_eq!(one(&mut s, "show shared_buffers"), "2MB");
+        assert!(one(&mut s, "select version()").starts_with("PostgreSQL 17.0"));
+    }
+
+    #[test]
+    fn create_insert_select_update_delete() {
+        let (_tc, mut s) = cl();
+        let ev = sql(&mut s, "create table t (a int primary_key_free, b text)");
+        assert_eq!(errors(&ev), vec!["42601"]);
+        let ev = sql(
+            &mut s,
+            "create table t (a int not null, b text default 'x')",
+        );
+        assert_eq!(tags(&ev), vec!["CREATE TABLE"]);
+        let ev = sql(
+            &mut s,
+            "insert into t values (1, 'one'), (2, null), (3, default)",
+        );
+        assert_eq!(tags(&ev), vec!["INSERT 0 3"]);
+        assert_eq!(count(&mut s, "t"), 3);
+        let ev = sql(&mut s, "select a, b from t order by a");
+        assert_eq!(
+            data(&ev),
+            vec![
+                vec![Some("1".into()), Some("one".into())],
+                vec![Some("2".into()), None],
+                vec![Some("3".into()), Some("x".into())],
+            ]
+        );
+        assert_eq!(
+            tags(&sql(&mut s, "update t set a = a + 10 where a >= 2")),
+            vec!["UPDATE 2"]
+        );
+        assert_eq!(
+            tags(&sql(&mut s, "delete from t where a = 1")),
+            vec!["DELETE 1"]
+        );
+        let ev = sql(&mut s, "select a from t order by a");
+        assert_eq!(
+            data(&ev),
+            vec![vec![Some("12".into())], vec![Some("13".into())]]
+        );
+        // Constraint violations abort the statement.
+        let ev = sql(&mut s, "insert into t values (null, 'z')");
+        assert_eq!(errors(&ev), vec!["23502"]);
+        assert_eq!(count(&mut s, "t"), 2);
+        // pg_catalog tables are visible and protected.
+        assert_eq!(
+            one(&mut s, "select relname from pg_class where relname = 't'"),
+            "t"
+        );
+        assert_eq!(errors(&sql(&mut s, "drop table pg_class")), vec!["42501"]);
+        assert_eq!(
+            errors(&sql(&mut s, "insert into pg_class (relname) values ('x')")),
+            vec!["42501"]
+        );
+    }
+
+    #[test]
+    fn rollback_undoes_data_and_ddl() {
+        let (tc, mut s) = cl();
+        sql(&mut s, "create table keep (a int)");
+        sql(&mut s, "insert into keep values (1)");
+        sql(&mut s, "begin");
+        sql(&mut s, "create table gone (a int)");
+        sql(&mut s, "insert into gone values (1)");
+        sql(&mut s, "insert into keep values (2)");
+        assert_eq!(count(&mut s, "gone"), 1);
+        assert_eq!(count(&mut s, "keep"), 2);
+        let files_during = rel_files(&tc);
+        sql(&mut s, "rollback");
+        sql(&mut s, "checkpoint");
+        assert_eq!(count(&mut s, "keep"), 1);
+        assert_eq!(errors(&sql(&mut s, "select * from gone")), vec!["42P01"]);
+        assert!(rel_files(&tc) < files_during, "created file removed");
+        // The writer lock is free again.
+        let mut s2 = tc.session("postgres").unwrap();
+        assert_eq!(
+            tags(&sql(&mut s2, "insert into keep values (3)")),
+            vec!["INSERT 0 1"]
+        );
+    }
+
+    #[test]
+    fn drop_table_unlinks_at_commit_only() {
+        let (tc, mut s) = cl();
+        sql(&mut s, "create table d (a int)");
+        sql(&mut s, "insert into d values (1)");
+        let before = rel_files(&tc);
+        sql(&mut s, "begin");
+        assert_eq!(tags(&sql(&mut s, "drop table d")), vec!["DROP TABLE"]);
+        assert_eq!(errors(&sql(&mut s, "select * from d")), vec!["42P01"]);
+        sql(&mut s, "rollback");
+        assert_eq!(count(&mut s, "d"), 1);
+        assert_eq!(rel_files(&tc), before);
+        sql(&mut s, "drop table d");
+        sql(&mut s, "checkpoint");
+        assert!(rel_files(&tc) < before);
+        let ev = sql(&mut s, "drop table if exists d");
+        assert_eq!(tags(&ev), vec!["DROP TABLE"]);
+        assert!(ev.contains(&Ev::Notice(Severity::Notice, "00000")));
+        assert_eq!(errors(&sql(&mut s, "drop table d")), vec!["42P01"]);
+    }
+
+    #[test]
+    fn if_not_exists_and_duplicates() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table x (a int)");
+        assert_eq!(
+            errors(&sql(&mut s, "create table x (a int)")),
+            vec!["42P07"]
+        );
+        let ev = sql(&mut s, "create table if not exists x (a int)");
+        assert_eq!(tags(&ev), vec!["CREATE TABLE"]);
+        assert!(ev.contains(&Ev::Notice(Severity::Notice, "42P07")));
+        let ev = sql(&mut s, "create table pg_catalog.zz (a int)");
+        assert_eq!(errors(&ev), vec!["42501"]);
+    }
+
+    #[test]
+    fn failed_block_aborts_and_releases_writer() {
+        let (tc, mut s) = cl();
+        sql(&mut s, "create table f (a int not null)");
+        sql(&mut s, "begin");
+        sql(&mut s, "insert into f values (1)");
+        assert_eq!(
+            errors(&sql(&mut s, "insert into f values (null)")),
+            vec!["23502"]
+        );
+        assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+        assert_eq!(errors(&sql(&mut s, "select 1")), vec!["25P02"]);
+        sql(&mut s, "commit");
+        assert_eq!(count(&mut s, "f"), 0);
+        let mut s2 = tc.session("postgres").unwrap();
+        assert_eq!(
+            tags(&sql(&mut s2, "insert into f values (5)")),
+            vec!["INSERT 0 1"]
+        );
+    }
+
+    #[test]
+    fn writer_lock_is_exclusive_and_readers_see_only_committed() {
+        let (tc, mut s1) = cl();
+        let mut s2 = tc.session("postgres").unwrap();
+        sql(&mut s1, "create table w (a int)");
+        sql(&mut s1, "begin");
+        sql(&mut s1, "insert into w values (1)");
+        // Readers neither wait nor see the uncommitted row.
+        assert_eq!(count(&mut s2, "w"), 0);
+        // A second writer times out.
+        sql(&mut s2, "set lock_timeout = '50ms'");
+        assert_eq!(
+            errors(&sql(&mut s2, "insert into w values (2)")),
+            vec!["55P03"]
+        );
+        assert_eq!(s2.transaction_status(), TransactionStatus::Idle);
+        sql(&mut s1, "commit");
+        assert_eq!(count(&mut s2, "w"), 1);
+        assert_eq!(
+            tags(&sql(&mut s2, "insert into w values (2)")),
+            vec!["INSERT 0 1"]
+        );
+    }
+
+    #[test]
+    fn ddl_is_visible_to_other_sessions_after_commit() {
+        let (tc, mut s1) = cl();
+        let mut s2 = tc.session("postgres").unwrap();
+        // Fill s2's view of the cache with the absence and presence.
+        assert_eq!(errors(&sql(&mut s2, "select * from n")), vec!["42P01"]);
+        sql(&mut s1, "create table n (a int)");
+        sql(&mut s1, "insert into n values (7)");
+        assert_eq!(one(&mut s2, "select a from n"), "7");
+        sql(&mut s1, "drop table n");
+        assert_eq!(errors(&sql(&mut s2, "select * from n")), vec!["42P01"]);
+    }
+
+    #[test]
+    fn same_transaction_ddl_then_dml_and_update_halloween() {
+        let (_tc, mut s) = cl();
+        let ev = sql(
+            &mut s,
+            "begin; create table h (a int); insert into h values (1), (2); \
+             update h set a = a + 1; insert into h select a from h; commit",
+        );
+        assert!(errors(&ev).is_empty(), "{ev:?}");
+        assert_eq!(count(&mut s, "h"), 4);
+        let ev = sql(&mut s, "select a from h order by a");
+        let vals: Vec<_> = data(&ev)
+            .into_iter()
+            .map(|r| r[0].clone().unwrap())
+            .collect();
+        assert_eq!(vals, ["2", "2", "3", "3"]);
+    }
+
+    #[test]
+    fn data_survives_clean_restart_and_checkpoint_crash() {
+        let (tc, mut s) = cl();
+        sql(&mut s, "create table p (a int, b text)");
+        sql(&mut s, "insert into p values (1, 'x'), (2, 'y')");
+        assert_eq!(tags(&sql(&mut s, "checkpoint")), vec!["CHECKPOINT"]);
+        s.terminate();
+        drop(s);
+        let tc = tc.restart().unwrap();
+        let mut s = tc.session("postgres").unwrap();
+        assert_eq!(count(&mut s, "p"), 2);
+        sql(&mut s, "insert into p values (3, 'z')");
+        sql(&mut s, "checkpoint");
+        s.terminate();
+        drop(s);
+        let tc = tc
+            .crash_and_restart(crate::storage::vfs::CrashMode::DropUnsynced)
+            .unwrap();
+        let mut s = tc.session("postgres").unwrap();
+        assert_eq!(count(&mut s, "p"), 3);
+        assert_eq!(one(&mut s, "select b from p where a = 3"), "z");
+    }
+
+    #[test]
+    fn terminate_in_a_block_releases_everything() {
+        let (tc, mut s) = cl();
+        sql(&mut s, "create table r (a int)");
+        sql(&mut s, "begin");
+        sql(&mut s, "insert into r values (1)");
+        s.terminate();
+        let mut s2 = tc.session("postgres").unwrap();
+        assert_eq!(
+            tags(&sql(&mut s2, "insert into r values (2)")),
+            vec!["INSERT 0 1"]
+        );
+        assert_eq!(count(&mut s2, "r"), 1);
+    }
+
+    #[test]
+    fn interrupt_stops_a_statement_with_fatal() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table i (a int)");
+        sql(&mut s, "insert into i values (1), (2)");
+        s.interrupt_flag().request_terminate();
+        let ev = sql(&mut s, "select * from i");
+        assert_eq!(errors(&ev), vec!["57P01"]);
+        assert!(s.is_closing());
+    }
+
+    #[test]
+    fn user_function_error_and_system_columns() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table sc (a int)");
+        sql(&mut s, "insert into sc values (1)");
+        assert_eq!(one(&mut s, "select ctid from sc"), "(0,1)");
+        assert_eq!(
+            one(
+                &mut s,
+                "select 1 from pg_database where datname = current_database()"
+            ),
+            "1"
+        );
+    }
+
+    /// Number of files in the `postgres` database directory.
+    fn rel_files(tc: &TestCluster) -> usize {
+        let vfs: &dyn crate::storage::vfs::Vfs = &tc.vfs;
+        vfs.read_dir(std::path::Path::new("base/5")).unwrap().len()
     }
 }

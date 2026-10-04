@@ -1,0 +1,163 @@
+# 分離レベル
+
+statement ok
+CREATE TABLE il_t (n int)
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+query T
+SHOW default_transaction_isolation
+----
+read committed
+
+statement ok
+BEGIN ISOLATION LEVEL READ COMMITTED
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN ISOLATION LEVEL READ UNCOMMITTED
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+statement ok
+COMMIT
+
+statement ok
+START TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+statement ok
+COMMIT
+
+# 次のトランザクションは既定に戻る
+query T
+SHOW transaction_isolation
+----
+read committed
+
+# SET TRANSACTION を最初の文として
+statement ok
+BEGIN
+
+statement ok
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+statement ok
+ROLLBACK
+
+# 問い合わせのあとは 25001
+statement ok
+BEGIN
+
+query I
+SELECT n FROM il_t
+----
+
+# 現在と同じレベルへの変更は成功し、違うレベルへの変更は 25001（PostgreSQL は異なる値のときだけ検査する）
+statement ok
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED
+
+statement error (25001)
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+# SET TRANSACTION ISOLATION LEVEL ... 以外(READ ONLY)は問い合わせのあとでも可
+statement ok
+BEGIN
+
+query I
+SELECT 1
+----
+1
+
+statement ok
+SET TRANSACTION READ ONLY
+
+statement ok
+ROLLBACK
+
+# ブロック外の SET TRANSACTION は WARNING のみで何もしない
+statement ok
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED
+
+statement ok
+SET TRANSACTION READ ONLY
+
+query T
+SHOW transaction_read_only
+----
+off
+
+# セッションの既定
+statement ok
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+query T
+SHOW default_transaction_isolation
+----
+read uncommitted
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+statement ok
+BEGIN
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+statement ok
+COMMIT
+
+statement ok
+SET default_transaction_isolation = 'read committed'
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+statement ok
+SET transaction_isolation = 'read committed'
+
+statement ok
+RESET default_transaction_isolation
+
+query T
+SHOW default_transaction_isolation
+----
+read committed
+
+statement ok
+DROP TABLE il_t

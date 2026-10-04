@@ -62,6 +62,7 @@ pub(super) fn table_scope(table: &TableDef, alias: Option<&TableAlias>) -> Resul
         },
         table_oid: table.oid,
         columns,
+        system_natts: None,
     }))
 }
 
@@ -141,16 +142,16 @@ impl Analyzer<'_> {
             return Err(not_supported("HAVING", h.span()));
         }
         // FROM
-        let (from, scope) = match s.from.as_slice() {
+        let (mut from, scope) = match s.from.as_slice() {
             [] => (BoundFrom::None, Scope::empty()),
             [TableRef::Table { name, alias, .. }] => {
                 let table = self.resolve_table(name)?;
-                let scope = table_scope(&table, alias.as_ref())?;
+                let mut scope = table_scope(&table, alias.as_ref())?;
+                scope.enable_system_columns();
                 (
                     BoundFrom::Table {
                         table,
                         alias: alias.as_ref().map(|a| a.name.value.clone()),
-                        // 担当 H1 が、参照されたシステム列をここに積む。
                         system_columns: Vec::new(),
                     },
                     scope,
@@ -210,6 +211,9 @@ impl Analyzer<'_> {
             self.transform_sort_clause(&q.order_by, &mut targets, &columns, &scope, distinct)?;
         let limit = self.transform_limit(q.limit.as_ref(), &scope, ExprKind::Limit)?;
         let offset = self.transform_limit(q.offset.as_ref(), &scope, ExprKind::Offset)?;
+        if let BoundFrom::Table { system_columns, .. } = &mut from {
+            *system_columns = scope.used_system_columns();
+        }
         Ok(BoundSelect {
             from,
             filter,
@@ -239,10 +243,14 @@ impl Analyzer<'_> {
 
     fn output_column(name: String, b: &BoundExpr, scope: &Scope) -> OutputColumn {
         let (table_oid, attnum) = match (&b.kind, &scope.rel) {
-            (BoundExprKind::ColumnRef { index }, Some(rel)) if rel.table_oid != 0 => (
-                rel.table_oid,
-                rel.columns.get(*index).map_or(0, |c| c.attnum),
-            ),
+            (BoundExprKind::ColumnRef { index }, Some(rel))
+                if rel.table_oid != 0 && *index < rel.columns.len() =>
+            {
+                (
+                    rel.table_oid,
+                    rel.columns.get(*index).map_or(0, |c| c.attnum),
+                )
+            }
             _ => (0, 0),
         };
         OutputColumn {
@@ -318,6 +326,7 @@ impl Analyzer<'_> {
             refname: "*VALUES*".to_owned(),
             schema: None,
             table_oid: 0,
+            system_natts: None,
             columns: names
                 .iter()
                 .zip(&types)

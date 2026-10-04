@@ -1,0 +1,31 @@
+# フェーズ 2: 大きな値も 1024 行も残っている。
+
+query II
+SELECT id, length(body) FROM cr9_t ORDER BY id
+----
+1 30000
+2 60000
+3 5
+
+query B
+SELECT body = repeat('abc', 10000) FROM cr9_t WHERE id = 1
+----
+t
+
+query I
+SELECT a FROM cr9_many ORDER BY a LIMIT 1 OFFSET 1023
+----
+1023
+
+query I
+SELECT a FROM cr9_many ORDER BY a LIMIT 1 OFFSET 1024
+----
+
+statement count 1
+DELETE FROM cr9_t WHERE id = 2
+
+statement ok
+DROP TABLE cr9_t
+
+statement ok
+DROP TABLE cr9_many

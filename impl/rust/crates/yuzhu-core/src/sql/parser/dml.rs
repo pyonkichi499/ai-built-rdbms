@@ -85,6 +85,22 @@ impl Parser<'_> {
         })
     }
 
+    /// `relation_expr`: `[ONLY] name [*]` or `ONLY (name)`. There is no table
+    /// inheritance, so `ONLY` and `*` change nothing.
+    fn parse_relation_expr(&mut self) -> Result<crate::sql::ast::ObjectName> {
+        if self.eat_kw("only") {
+            if self.eat(&TokenKind::LParen) {
+                let name = self.parse_object_name()?;
+                self.expect(&TokenKind::RParen)?;
+                return Ok(name);
+            }
+            return self.parse_object_name();
+        }
+        let name = self.parse_object_name()?;
+        self.eat_op("*");
+        Ok(name)
+    }
+
     /// `relation_expr_opt_alias`: `name [[AS] ColId]`. A bare alias cannot
     /// be the keyword `SET` (for UPDATE).
     fn parse_relation_alias(&mut self) -> Result<Option<Ident>> {
@@ -99,11 +115,7 @@ impl Parser<'_> {
 
     pub(super) fn parse_update(&mut self) -> Result<Update> {
         let start = self.advance().span.start;
-        if self.is_kw("only") {
-            return Err(self.not_supported("ONLY"));
-        }
-        let table = self.parse_object_name()?;
-        self.eat_op("*");
+        let table = self.parse_relation_expr()?;
         let alias = self.parse_relation_alias()?;
         self.expect_kw("set")?;
         let mut assignments = Vec::new();
@@ -112,7 +124,14 @@ impl Parser<'_> {
                 return Err(self.not_supported("multiple-column UPDATE"));
             }
             let astart = self.start();
-            let column = self.parse_target_column()?;
+            let column = self.parse_col_id()?;
+            let mut fields = Vec::new();
+            while self.eat(&TokenKind::Dot) {
+                fields.push(self.parse_col_label()?);
+            }
+            if self.peek_kind() == &TokenKind::LBracket {
+                return Err(self.not_supported("assignment to a subscript"));
+            }
             if !self.eat_op("=") {
                 return Err(self.unexpected());
             }
@@ -120,6 +139,7 @@ impl Parser<'_> {
             self.allow_default(&value);
             assignments.push(Assignment {
                 column,
+                fields,
                 value,
                 span: self.span_from(astart),
             });
@@ -158,11 +178,7 @@ impl Parser<'_> {
     pub(super) fn parse_delete(&mut self) -> Result<Delete> {
         let start = self.advance().span.start;
         self.expect_kw("from")?;
-        if self.is_kw("only") {
-            return Err(self.not_supported("ONLY"));
-        }
-        let table = self.parse_object_name()?;
-        self.eat_op("*");
+        let table = self.parse_relation_expr()?;
         let alias = self.parse_relation_alias()?;
         let using = if self.eat_kw("using") {
             self.parse_from_list()?

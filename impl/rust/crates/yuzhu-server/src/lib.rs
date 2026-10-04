@@ -8,5 +8,7 @@
 pub mod config;
 mod connection;
 pub mod protocol;
+pub mod shutdown;
 
-pub use connection::{DEFAULT_AUTHENTICATION_TIMEOUT, Server};
+pub use connection::{DEFAULT_AUTHENTICATION_TIMEOUT, Outcome, Server};
+pub use shutdown::{ShutdownHandle, ShutdownMode};

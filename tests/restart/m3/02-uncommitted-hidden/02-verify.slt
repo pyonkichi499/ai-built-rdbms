@@ -1,0 +1,30 @@
+# フェーズ 2: コミットした行だけが残り、未コミットの INSERT / UPDATE / DELETE は見えない。
+# 未コミットの版が書き込んだ行をロックしたまま残っていない（書き込みがブロックされない）。
+
+query IT
+SELECT id, v FROM cr2_t ORDER BY id
+----
+1 a
+2 b
+3 cc
+4 d
+
+statement count 1
+UPDATE cr2_t SET v = 'aa' WHERE id = 1
+
+statement count 1
+DELETE FROM cr2_t WHERE id = 2
+
+statement count 1
+INSERT INTO cr2_t VALUES (100, 'new')
+
+query IT
+SELECT id, v FROM cr2_t ORDER BY id
+----
+1 aa
+3 cc
+4 d
+100 new
+
+statement ok
+DROP TABLE cr2_t

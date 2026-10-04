@@ -30,7 +30,7 @@ pub(crate) mod test_util {
     use std::sync::Mutex;
 
     use crate::catalog::fake::FakeCatalog;
-    use crate::error::{Error, Result};
+    use crate::error::Result;
     use crate::executor::eval::tests::session;
     use crate::executor::{BoxedExecutor, ExecCtx};
     use crate::interrupt::InterruptFlag;
@@ -41,11 +41,16 @@ pub(crate) mod test_util {
     use crate::txn::{Snapshot, Transaction, Xid};
     use crate::types::{Datum, Oid, Row, Tid};
 
-    /// A `TableStore` that keeps rows in memory (no MVCC, no UPDATE /
-    /// DELETE). Stands in for `HeapStore` in executor and planner unit tests.
+    /// A `TableStore` that keeps rows in memory (no MVCC). Deleted rows
+    /// leave a hole so TIDs stay stable. `force_result` makes the next
+    /// `delete` / `update` return a given `TmResult` without changing
+    /// anything. Stands in for `HeapStore` in executor and planner tests.
     #[derive(Debug, Default)]
     pub(crate) struct FakeStore {
-        tables: Mutex<HashMap<Oid, Vec<Row>>>,
+        tables: Mutex<HashMap<Oid, Vec<Option<Row>>>>,
+        forced: Mutex<std::collections::VecDeque<TmResult>>,
+        /// `(xid, cid)` of every write, in order.
+        writes: Mutex<Vec<(Xid, u32)>>,
     }
 
     impl FakeStore {
@@ -56,16 +61,30 @@ pub(crate) mod test_util {
                 .unwrap()
                 .entry(oid)
                 .or_default()
-                .push(row);
+                .push(Some(row));
         }
 
+        /// Live rows in TID order.
         pub(crate) fn rows(&self, oid: Oid) -> Vec<Row> {
             self.tables
                 .lock()
                 .unwrap()
                 .get(&oid)
-                .cloned()
+                .map(|v| v.iter().flatten().cloned().collect())
                 .unwrap_or_default()
+        }
+
+        /// The next `delete` / `update` returns `r` and changes nothing.
+        pub(crate) fn force_result(&self, r: TmResult) {
+            self.forced.lock().unwrap().push_back(r);
+        }
+
+        pub(crate) fn writes(&self) -> Vec<(Xid, u32)> {
+            self.writes.lock().unwrap().clone()
+        }
+
+        fn slot(tid: Tid) -> usize {
+            usize::from(tid.offset).saturating_sub(1)
         }
     }
 
@@ -74,10 +93,6 @@ pub(crate) mod test_util {
             block: 0,
             offset: u16::try_from(n + 1).unwrap(),
         }
-    }
-
-    fn unsupported() -> Error {
-        Error::not_supported("not supported by FakeStore")
     }
 
     impl TableStore for FakeStore {
@@ -92,38 +107,89 @@ pub(crate) mod test_util {
         }
         fn insert(&self, rel: &RelHandle, w: &WriteCtx, row: &[Datum]) -> Result<Tid> {
             assert_ne!(w.xid, Xid::INVALID);
+            self.writes.lock().unwrap().push((w.xid, w.cid));
             let mut t = self.tables.lock().unwrap();
             let rows = t.entry(rel.oid).or_default();
-            rows.push(row.to_vec());
+            rows.push(Some(row.to_vec()));
             Ok(tid_of(rows.len() - 1))
         }
-        fn delete(&self, _: &RelHandle, _: &WriteCtx, _: &Snapshot, _: Tid) -> Result<TmResult> {
-            Err(unsupported())
+        fn delete(
+            &self,
+            rel: &RelHandle,
+            w: &WriteCtx,
+            _: &Snapshot,
+            tid: Tid,
+        ) -> Result<TmResult> {
+            self.writes.lock().unwrap().push((w.xid, w.cid));
+            if let Some(r) = self.forced.lock().unwrap().pop_front() {
+                return Ok(r);
+            }
+            let mut t = self.tables.lock().unwrap();
+            match t.get_mut(&rel.oid).and_then(|v| v.get_mut(Self::slot(tid))) {
+                Some(s) if s.is_some() => {
+                    *s = None;
+                    Ok(TmResult::Ok)
+                }
+                _ => Ok(TmResult::Invisible),
+            }
         }
         fn update(
             &self,
-            _: &RelHandle,
-            _: &WriteCtx,
+            rel: &RelHandle,
+            w: &WriteCtx,
             _: &Snapshot,
-            _: Tid,
-            _: &[Datum],
+            tid: Tid,
+            new_row: &[Datum],
         ) -> Result<UpdateOutcome> {
-            Err(unsupported())
+            self.writes.lock().unwrap().push((w.xid, w.cid));
+            if let Some(r) = self.forced.lock().unwrap().pop_front() {
+                return Ok(UpdateOutcome {
+                    result: r,
+                    new_tid: None,
+                });
+            }
+            let mut t = self.tables.lock().unwrap();
+            let rows = t.entry(rel.oid).or_default();
+            match rows.get_mut(Self::slot(tid)) {
+                Some(s) if s.is_some() => {
+                    *s = None;
+                    rows.push(Some(new_row.to_vec()));
+                    Ok(UpdateOutcome {
+                        result: TmResult::Ok,
+                        new_tid: Some(tid_of(rows.len() - 1)),
+                    })
+                }
+                _ => Ok(UpdateOutcome {
+                    result: TmResult::Invisible,
+                    new_tid: None,
+                }),
+            }
         }
         fn begin_scan(&self, rel: &RelHandle, snap: &Snapshot) -> Result<HeapScan> {
+            // The live rows at this moment: rows added later (the new
+            // versions written by an UPDATE) are not seen, like the
+            // command-ID rule of the real heap.
             let tuples = self
-                .rows(rel.oid)
-                .into_iter()
-                .enumerate()
-                .map(|(i, row)| HeapTuple {
-                    tid: tid_of(i),
-                    xmin: Xid::BOOTSTRAP,
-                    xmax: Xid::INVALID,
-                    cmin: 0,
-                    cmax: 0,
-                    row,
+                .tables
+                .lock()
+                .unwrap()
+                .get(&rel.oid)
+                .map(|v| {
+                    v.iter()
+                        .enumerate()
+                        .filter_map(|(i, r)| {
+                            r.as_ref().map(|row| HeapTuple {
+                                tid: tid_of(i),
+                                xmin: Xid::BOOTSTRAP,
+                                xmax: Xid::INVALID,
+                                cmin: 0,
+                                cmax: 0,
+                                row: row.clone(),
+                            })
+                        })
+                        .collect()
                 })
-                .collect();
+                .unwrap_or_default();
             Ok(HeapScan::from_tuples(rel.clone(), snap.clone(), tuples))
         }
         fn scan_next(&self, scan: &mut HeapScan) -> Result<Option<HeapTuple>> {

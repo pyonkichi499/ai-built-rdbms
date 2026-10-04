@@ -29,8 +29,9 @@ use crate::catalog::CatalogReader;
 use crate::error::{Error, Result};
 use crate::sql::ast::Statement;
 
-/// Analyzes SELECT / VALUES / INSERT / CREATE TABLE / DROP TABLE.
-/// Other statements (UPDATE, DELETE, EXPLAIN) give 0A000; utility
+/// Analyzes SELECT / VALUES / INSERT / UPDATE / DELETE / CHECKPOINT / CREATE
+/// TABLE / DROP TABLE.
+/// EXPLAIN gives 0A000; utility
 /// statements handled by the session never reach here.
 pub fn analyze(stmt: &Statement, catalog: &dyn CatalogReader) -> Result<BoundStatement> {
     let a = Analyzer { catalog };
@@ -39,12 +40,9 @@ pub fn analyze(stmt: &Statement, catalog: &dyn CatalogReader) -> Result<BoundSta
         Statement::Insert(ins) => a.analyze_insert(ins).map(BoundStatement::Insert),
         Statement::CreateTable(ct) => a.analyze_create_table(ct).map(BoundStatement::CreateTable),
         Statement::DropTable(dt) => a.analyze_drop_table(dt).map(BoundStatement::DropTable),
-        Statement::Update(u) => {
-            Err(Error::not_supported("UPDATE is not supported yet").with_span(u.span))
-        }
-        Statement::Delete(d) => {
-            Err(Error::not_supported("DELETE is not supported yet").with_span(d.span))
-        }
+        Statement::Update(u) => a.analyze_update(u).map(BoundStatement::Update),
+        Statement::Delete(d) => a.analyze_delete(d).map(BoundStatement::Delete),
+        Statement::Checkpoint(_) => Ok(BoundStatement::Checkpoint),
         Statement::Explain(e) => {
             Err(Error::not_supported("EXPLAIN is not supported yet").with_span(e.span))
         }

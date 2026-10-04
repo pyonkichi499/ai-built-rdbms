@@ -96,6 +96,7 @@ jobs:
           cat yuzhu-server.log >&2
           exit 1
       - name: Run tests/slt against yuzhu-server
+        # tests/slt の m1・m2・m3 を流す（m3/txn/savepoint_unsupported.slt は yuzhu 専用）
         run: tests/run.sh --target yuzhu --host 127.0.0.1 --port 5433
       - name: Show yuzhu-server log
         if: always()
@@ -128,3 +129,110 @@ jobs:
           docker logs yuzhu-smoke >&2
           docker rm -f yuzhu-smoke
           exit 1
+
+  # M3: クラッシュをまたぐ再起動テスト（tests/restart の全シナリオ。m3 は kill -9 のクラッシュを含む）。
+  restart-pg:
+    name: Restart/crash tests on PostgreSQL 17 (expected values)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache sqllogictest-bin
+        id: slt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqllogictest
+          key: sqllogictest-bin-0.29.1-${{ runner.os }}
+      - name: Install sqllogictest-bin 0.29.1
+        if: steps.slt-cache.outputs.cache-hit != 'true'
+        run: cargo install sqllogictest-bin --locked --version 0.29.1
+      - name: Start PostgreSQL 17
+        run: tests/pg.sh start
+      - name: Restart tests (tests/restart)
+        run: tests/run.sh --target pg --restart --port 55432
+      - name: Crash tests (tests/restart/m3)
+        run: tests/run.sh --target pg --restart --crash --port 55432 tests/restart/m3
+      - name: Stop PostgreSQL
+        if: always()
+        run: tests/pg.sh stop
+
+  restart-yuzhu:
+    name: Restart/crash tests on yuzhu-server
+    runs-on: ubuntu-latest
+    # TODO: M3 の実装が揃ったら continue-on-error を外す。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: Cache sqllogictest-bin
+        id: slt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqllogictest
+          key: sqllogictest-bin-0.29.1-${{ runner.os }}
+      - name: Install sqllogictest-bin 0.29.1
+        if: steps.slt-cache.outputs.cache-hit != 'true'
+        run: cargo install sqllogictest-bin --locked --version 0.29.1
+      - name: Build yuzhu-server and yuzhu-initdb
+        working-directory: impl/rust
+        run: cargo build --release -p yuzhu-server
+      - name: Start yuzhu-server
+        run: tests/yuzhu.sh start --port 5433
+      - name: Restart tests (tests/restart)
+        run: tests/run.sh --target yuzhu --restart --port 5433
+      - name: Crash tests (tests/restart/m3)
+        run: tests/run.sh --target yuzhu --restart --crash --port 5433 tests/restart/m3
+      - name: Stop yuzhu-server
+        if: always()
+        run: tests/yuzhu.sh clean
+
+  # M3: isolationtester 互換の spec（tests/isolation/specs）。PostgreSQL で期待値を確かめ、yuzhu でも流す。
+  isolation:
+    name: Isolation tests (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.target == 'yuzhu' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [pg, yuzhu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/tools/isolation
+      - name: Build yuzhu-isolation
+        run: cargo build --release --manifest-path tests/tools/isolation/Cargo.toml
+      - name: Run against PostgreSQL 17
+        if: matrix.target == 'pg'
+        run: |
+          tests/pg.sh start
+          tests/tools/isolation/target/release/yuzhu-isolation --port 55432 tests/isolation/specs
+          tests/pg.sh stop
+      - name: Run against yuzhu-server
+        if: matrix.target == 'yuzhu'
+        run: |
+          (cd impl/rust && cargo build --release -p yuzhu-server)
+          tests/yuzhu.sh start --port 5433
+          tests/tools/isolation/target/release/yuzhu-isolation --port 5433 --blocking-detection timeout tests/isolation/specs
+          tests/yuzhu.sh clean
+
+  # M3: クラッシュ試験 層 1（SimVfs。固定シード。長時間のランダム実行は #[ignore] で夜間ジョブ）。
+  crash-sim:
+    name: Crash simulation (layer 1)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: impl/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: cargo test (crash_sim)
+        run: cargo test --release -p yuzhu-core --test crash_sim

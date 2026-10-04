@@ -4,29 +4,66 @@
 //! return NULL without being called when an argument is NULL; `AND`/`OR`
 //! follow three-valued logic and stop at the first deciding operand;
 //! `CASE` and `COALESCE` evaluate lazily (`COALESCE(1, 1/0)` is 1).
+//!
+//! This module also holds the output stage that turns result rows into
+//! text ([`row_to_text`]), including the `regproc` display rule.
 
-use super::{ExecCtx, SessionInfo};
+use super::{EvalCtx, ExecCtx, SessionInfo};
 use crate::analyzer::{BoolTestKind, BoundExpr, BoundExprKind, SessionValueKind};
-use crate::catalog::{BuiltinFunction, BuiltinOperator, CastMethod, FnKind};
+use crate::catalog::{BuiltinFunction, BuiltinOperator, CastMethod, FnKind, builtin};
 use crate::error::{Error, Result, sqlstate};
-use crate::types::{Datum, Row, SqlType, io, ops};
+use crate::types::io::OutputOpts;
+use crate::types::{Datum, Oid, Row, SqlType, io, ops};
+
+/// The evaluation context (session values and catalog) of a running
+/// statement.
+pub fn eval_ctx<'a>(ctx: &ExecCtx<'a>) -> EvalCtx<'a> {
+    EvalCtx {
+        session: ctx.session,
+        catalog: ctx.catalog,
+    }
+}
 
 /// Evaluates `expr` over `row`. AND/OR use three-valued logic; strict
 /// functions and operators return NULL without being called when an
 /// argument is NULL.
 pub fn eval(expr: &BoundExpr, row: &Row, ctx: &ExecCtx<'_>) -> Result<Datum> {
-    eval_expr(expr, row, ctx.session)
+    eval_expr(expr, row, &eval_ctx(ctx))
 }
 
-/// Like [`eval`], but needs only the session values (no catalog/storage).
-pub fn eval_expr(expr: &BoundExpr, row: &Row, session: &SessionInfo) -> Result<Datum> {
-    Evaluator { row, session }.eval(expr)
+/// Like [`eval`], but takes only the session values and the catalog.
+pub fn eval_expr(expr: &BoundExpr, row: &Row, ctx: &EvalCtx<'_>) -> Result<Datum> {
+    Evaluator { row, ctx }.eval(expr)
 }
 
 /// Evaluates a predicate: `Some(b)` for a boolean, `None` for NULL.
-pub fn eval_bool(expr: &BoundExpr, row: &Row, session: &SessionInfo) -> Result<Option<bool>> {
-    let d = eval_expr(expr, row, session)?;
+pub fn eval_bool(expr: &BoundExpr, row: &Row, ctx: &EvalCtx<'_>) -> Result<Option<bool>> {
+    let d = eval_expr(expr, row, ctx)?;
     to_bool(&d)
+}
+
+/// [`eval_bool`] for node code that holds an [`ExecCtx`].
+pub fn eval_pred(expr: &BoundExpr, row: &Row, ctx: &ExecCtx<'_>) -> Result<Option<bool>> {
+    eval_bool(expr, row, &eval_ctx(ctx))
+}
+
+/// The display name of a function OID for `regproc` output (PostgreSQL's
+/// `regprocout`): the bare name if it is unique among the built-in
+/// functions, `pg_catalog.name` if overloaded, `None` if unknown.
+pub fn regproc_name(oid: Oid) -> Option<String> {
+    builtin::regproc_name(oid)
+}
+
+/// The output stage: converts a result row to text values. `types` gives
+/// the column types; `regproc` columns are shown by function name.
+pub fn row_to_text(row: &Row, types: &[SqlType], opts: &OutputOpts) -> Vec<Option<String>> {
+    row.iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let ty = types.get(i).copied().unwrap_or(SqlType::TEXT);
+            io::output_text_regproc(d, ty, opts, &regproc_name)
+        })
+        .collect()
 }
 
 fn to_bool(d: &Datum) -> Result<Option<bool>> {
@@ -39,21 +76,18 @@ fn to_bool(d: &Datum) -> Result<Option<bool>> {
     }
 }
 
-/// Calls a built-in function. `FnKind::Context` functions need the catalog and
-/// session (`EvalCtx`), which 担当 H2 wires in; until then they are rejected.
-fn call_function(func: &BuiltinFunction, vals: &[Datum]) -> Result<Datum> {
+/// Calls a built-in function. `FnKind::Context` functions also get the
+/// catalog and the session.
+fn call_function(func: &BuiltinFunction, vals: &[Datum], ctx: &EvalCtx<'_>) -> Result<Datum> {
     match func.kind {
         FnKind::Pure(f) => f(vals),
-        FnKind::Context(_) => Err(Error::not_supported(format!(
-            "function {} is not supported yet",
-            func.name
-        ))),
+        FnKind::Context(f) => f(vals, ctx.catalog, ctx.session),
     }
 }
 
 struct Evaluator<'a> {
     row: &'a Row,
-    session: &'a SessionInfo,
+    ctx: &'a EvalCtx<'a>,
 }
 
 impl Evaluator<'_> {
@@ -76,13 +110,13 @@ impl Evaluator<'_> {
                     let Some(vals) = self.eval_strict_args(args)? else {
                         return Ok(Datum::Null);
                     };
-                    call_function(func, &vals)
+                    call_function(func, &vals, self.ctx)
                 } else {
                     let vals = args
                         .iter()
                         .map(|a| self.eval(a))
                         .collect::<Result<Vec<_>>>()?;
-                    call_function(func, &vals)
+                    call_function(func, &vals, self.ctx)
                 }
             }
             BoundExprKind::Cast {
@@ -135,7 +169,7 @@ impl Evaluator<'_> {
                 eq_op,
                 negated,
             } => self.eval_in_list(inner, list, eq_op, *negated),
-            BoundExprKind::SessionValue(kind) => Ok(session_value(self.session, *kind)),
+            BoundExprKind::SessionValue(kind) => Ok(session_value(self.ctx.session, *kind)),
         }
     }
 
@@ -484,6 +518,16 @@ pub(crate) mod tests {
         }
     }
 
+    /// An `EvalCtx` over `s` and an empty catalog (leaked: test only).
+    pub(crate) fn ectx(s: &SessionInfo) -> EvalCtx<'_> {
+        let catalog: &'static crate::catalog::fake::FakeCatalog =
+            Box::leak(Box::new(crate::catalog::fake::FakeCatalog::new("postgres")));
+        EvalCtx {
+            session: s,
+            catalog,
+        }
+    }
+
     pub(crate) fn lit(d: Datum, ty: SqlType) -> BoundExpr {
         BoundExpr::new(BoundExprKind::Literal(d), ty, Span::default())
     }
@@ -583,7 +627,7 @@ pub(crate) mod tests {
     }
 
     fn ev(e: &BoundExpr) -> Result<Datum> {
-        eval_expr(e, &vec![], &session())
+        eval_expr(e, &vec![], &ectx(&session()))
     }
 
     #[test]
@@ -591,10 +635,10 @@ pub(crate) mod tests {
         assert_eq!(ev(&int(3)).unwrap(), Datum::Int4(3));
         let row = vec![Datum::Int4(10), Datum::Text("x".into())];
         assert_eq!(
-            eval_expr(&col(1, SqlType::TEXT), &row, &session()).unwrap(),
+            eval_expr(&col(1, SqlType::TEXT), &row, &ectx(&session())).unwrap(),
             Datum::Text("x".into())
         );
-        assert!(eval_expr(&col(5, SqlType::TEXT), &row, &session()).is_err());
+        assert!(eval_expr(&col(5, SqlType::TEXT), &row, &ectx(&session())).is_err());
         assert_eq!(ev(&div(int(7), int(2))).unwrap(), Datum::Int4(3));
         // Strict: NULL argument -> NULL without calling (no division error).
         assert_eq!(ev(&div(null(SqlType::INT4), int(0))).unwrap(), Datum::Null);
@@ -846,6 +890,78 @@ pub(crate) mod tests {
         );
     }
 
+    fn ctx_fn(
+        args: &[Datum],
+        cat: &dyn crate::catalog::CatalogReader,
+        s: &SessionInfo,
+    ) -> Result<Datum> {
+        Ok(Datum::Text(format!(
+            "{}:{}:{}",
+            cat.current_database(),
+            s.current_user,
+            args[0].as_i64().unwrap()
+        )))
+    }
+    static CTX_FN: BuiltinFunction = BuiltinFunction {
+        oid: 1,
+        name: "ctx_fn",
+        args: &[oid::INT4],
+        result: oid::TEXT,
+        strict: true,
+        kind: FnKind::Context(ctx_fn),
+    };
+
+    #[test]
+    fn context_functions_see_catalog_and_session() {
+        let f = |arg| {
+            mk(
+                BoundExprKind::Function {
+                    func: &CTX_FN,
+                    args: vec![arg],
+                },
+                SqlType::TEXT,
+            )
+        };
+        assert_eq!(
+            ev(&f(int(7))).unwrap(),
+            Datum::Text("postgres:alice:7".into())
+        );
+        // Strict: NULL in, NULL out without calling.
+        assert_eq!(ev(&f(null(SqlType::INT4))).unwrap(), Datum::Null);
+    }
+
+    #[test]
+    fn regproc_output_uses_function_names() {
+        // 0 is "-", an unknown OID stays numeric, an overloaded name is
+        // schema-qualified, a unique name is bare.
+        assert_eq!(regproc_name(1397).as_deref(), Some("pg_catalog.abs"));
+        assert_eq!(regproc_name(89).as_deref(), Some("version"));
+        assert_eq!(regproc_name(4_000_000_000), None);
+        let types = [
+            SqlType::of(oid::REGPROC),
+            SqlType::of(oid::REGPROC),
+            SqlType::of(oid::REGPROC),
+            SqlType::of(oid::OID),
+            SqlType::INT4,
+        ];
+        let row = vec![
+            Datum::Oid(0),
+            Datum::Oid(89),
+            Datum::Oid(4_000_000_000),
+            Datum::Oid(89),
+            Datum::Null,
+        ];
+        assert_eq!(
+            row_to_text(&row, &types, &OutputOpts::default()),
+            vec![
+                Some("-".into()),
+                Some("version".into()),
+                Some("4000000000".into()),
+                Some("89".into()),
+                None
+            ]
+        );
+    }
     #[test]
     fn casts_typmod_and_session_values() {
         let c = mk(
@@ -913,12 +1029,12 @@ pub(crate) mod tests {
         let mut s = session();
         s.current_schema = None;
         assert_eq!(
-            eval_expr(&sv(SessionValueKind::CurrentSchema), &vec![], &s).unwrap(),
+            eval_expr(&sv(SessionValueKind::CurrentSchema), &vec![], &ectx(&s)).unwrap(),
             Datum::Null
         );
-        assert!(eval_bool(&int(1), &vec![], &session()).is_err());
+        assert!(eval_bool(&int(1), &vec![], &ectx(&session())).is_err());
         assert_eq!(
-            eval_bool(&op(&GT, int(2), int(1)), &vec![], &session()).unwrap(),
+            eval_bool(&op(&GT, int(2), int(1)), &vec![], &ectx(&session())).unwrap(),
             Some(true)
         );
     }

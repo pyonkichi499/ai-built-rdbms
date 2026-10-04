@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::Analyzer;
 use super::bound::{BoundCreateTable, BoundDropTable};
-use super::expr::{ExprCtx, first_column_ref};
+use super::expr::{ExprCtx, sole_column_ref};
 use super::scope::{ExprKind, Scope, ScopeColumn, ScopeRel};
 use super::select::display_name;
 use crate::catalog::{BoundExprSource, CheckDef, ColumnDef, builtin};
@@ -205,6 +205,14 @@ impl Analyzer<'_> {
         let schema = match ct.name.schema() {
             None => "public".to_owned(),
             Some(s) if s.value == "public" => "public".to_owned(),
+            Some(s) if s.value == "pg_catalog" => {
+                return Err(Error::new(
+                    sqlstate::INSUFFICIENT_PRIVILEGE,
+                    format!("permission denied to create \"pg_catalog.{name}\""),
+                )
+                .with_detail("System catalog modifications are currently disallowed.")
+                .with_span(s.span));
+            }
             Some(s) => {
                 return Err(Error::new(
                     sqlstate::INVALID_SCHEMA_NAME,
@@ -244,6 +252,16 @@ impl Analyzer<'_> {
                         return Err(Error::new(
                             sqlstate::DUPLICATE_COLUMN,
                             format!("column \"{cname}\" specified more than once"),
+                        )
+                        .with_span(cd.name.span));
+                    }
+                    if crate::catalog::schema::SYSTEM_COLUMNS
+                        .iter()
+                        .any(|(n, _, _)| n == cname)
+                    {
+                        return Err(Error::new(
+                            sqlstate::DUPLICATE_COLUMN,
+                            format!("column name \"{cname}\" conflicts with a system column name"),
                         )
                         .with_span(cd.name.span));
                     }
@@ -358,6 +376,7 @@ impl Analyzer<'_> {
             refname: name.clone(),
             schema: Some(schema.clone()),
             table_oid: 0,
+            system_natts: None,
             columns: columns
                 .iter()
                 .map(|c| ScopeColumn {
@@ -391,7 +410,7 @@ impl Analyzer<'_> {
             let cname = if let Some(n) = c.name {
                 n.value.clone()
             } else {
-                let col = first_column_ref(&b).map(|i| columns[i].name.as_str());
+                let col = sole_column_ref(&b).map(|i| columns[i].name.as_str());
                 let mut pass = 0u32;
                 loop {
                     let label = if pass == 0 {

@@ -2,7 +2,7 @@
 
 use crate::analyzer::BoundExpr;
 use crate::error::Result;
-use crate::executor::eval::eval_bool;
+use crate::executor::eval::eval_pred;
 use crate::executor::{BoxedExecutor, ExecCtx, Executor};
 use crate::types::Row;
 
@@ -28,7 +28,7 @@ impl FilterExec {
 impl Executor for FilterExec {
     fn next(&mut self, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
         while let Some(row) = self.input.next(ctx)? {
-            if eval_bool(&self.predicate, &row, ctx.session)? == Some(true) {
+            if eval_pred(&self.predicate, &row, ctx)? == Some(true) {
                 return Ok(Some(row));
             }
         }

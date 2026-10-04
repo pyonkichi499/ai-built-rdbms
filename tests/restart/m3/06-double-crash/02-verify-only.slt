@@ -1,0 +1,17 @@
+# フェーズ 2: 検査だけして、コミットする書き込みはせずにすぐもう一度 kill -9 される（リカバリ直後のクラッシュ）。
+
+query IT
+SELECT id, v FROM cr6_t ORDER BY id
+----
+1 a
+2 bb
+3 c
+
+# 検査だけでは済まさず、未コミットの変更も残して落とす（次のリカバリで XID が再利用されても見えない）
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 1
+INSERT INTO cr6_t VALUES (98, 'uncommitted')

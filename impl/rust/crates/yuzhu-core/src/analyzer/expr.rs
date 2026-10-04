@@ -87,18 +87,23 @@ pub(super) fn contains_column_ref(e: &BoundExpr) -> bool {
     found
 }
 
-/// The first column referenced in pre-order (PostgreSQL's
-/// `pull_var_clause` order), used for constraint names.
-pub(super) fn first_column_ref(e: &BoundExpr) -> Option<usize> {
-    let mut first = None;
+/// The column referenced when the expression references exactly one distinct
+/// column (PostgreSQL names a CHECK `<table>_<col>_check` only then;
+/// otherwise `<table>_check`).
+pub(super) fn sole_column_ref(e: &BoundExpr) -> Option<usize> {
+    let mut cols: Vec<usize> = Vec::new();
     visit(e, &mut |x| {
-        if first.is_none()
-            && let BoundExprKind::ColumnRef { index } = x.kind
+        if let BoundExprKind::ColumnRef { index } = x.kind
+            && !cols.contains(&index)
         {
-            first = Some(index);
+            cols.push(index);
         }
     });
-    first
+    if let [only] = cols[..] {
+        Some(only)
+    } else {
+        None
+    }
 }
 
 /// Pre-order traversal.
@@ -457,6 +462,13 @@ impl Analyzer<'_> {
                 if let Some(schema) = name.schema()
                     && schema.value != "pg_catalog"
                 {
+                    if schema.value != "public" {
+                        return Err(Error::new(
+                            sqlstate::INVALID_SCHEMA_NAME,
+                            format!("schema \"{}\" does not exist", schema.value),
+                        )
+                        .with_span(schema.span));
+                    }
                     let shown: Vec<&str> = name.parts.iter().map(|p| p.value.as_str()).collect();
                     let args = args
                         .iter()

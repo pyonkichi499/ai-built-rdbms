@@ -8,7 +8,7 @@
 use crate::analyzer::{BoundCheck, BoundExpr};
 use crate::catalog::TableDef;
 use crate::error::{Error, Result, sqlstate};
-use crate::executor::eval::eval_bool;
+use crate::executor::eval::eval_pred;
 use crate::executor::{BoxedExecutor, ExecCtx, Executor, eval};
 use crate::storage::RelHandle;
 use crate::types::{Datum, Row, io};
@@ -77,18 +77,7 @@ impl InsertExec {
 
     fn insert_one(&mut self, input: &Row, ctx: &mut ExecCtx<'_>) -> Result<()> {
         let row = self.build_row(input, ctx)?;
-        let needs_table = self
-            .not_null
-            .iter()
-            .zip(&row)
-            .any(|(nn, d)| *nn && d.is_null())
-            || !self.checks.is_empty();
-        if needs_table {
-            let table = ctx.catalog.table_by_oid(self.rel.oid)?.ok_or_else(|| {
-                Error::internal(format!("relation with OID {} does not exist", self.rel.oid))
-            })?;
-            check_constraints(&table, &row, &self.not_null, &self.checks, ctx)?;
-        }
+        enforce_constraints(self.rel.oid, &row, &self.not_null, &self.checks, ctx)?;
         let w = ctx.write_ctx()?;
         ctx.storage.insert(&self.rel, &w, &row)?;
         self.count += 1;
@@ -118,7 +107,7 @@ fn check_constraints(
         }
     }
     for check in checks {
-        if eval_bool(&check.expr, row, ctx.session)? == Some(false) {
+        if eval_pred(&check.expr, row, ctx)? == Some(false) {
             return Err(Error::new(
                 sqlstate::CHECK_VIOLATION,
                 format!(
@@ -130,6 +119,28 @@ fn check_constraints(
         }
     }
     Ok(())
+}
+
+/// NOT NULL then CHECK for a row about to be written, as PostgreSQL's
+/// `ExecConstraints`. The table definition is fetched from the catalog
+/// only when something needs checking (names are used in messages).
+pub(crate) fn enforce_constraints(
+    rel_oid: crate::types::Oid,
+    row: &Row,
+    not_null: &[bool],
+    checks: &[BoundCheck],
+    ctx: &ExecCtx<'_>,
+) -> Result<()> {
+    let needs_table =
+        not_null.iter().zip(row).any(|(nn, d)| *nn && d.is_null()) || !checks.is_empty();
+    if !needs_table {
+        return Ok(());
+    }
+    let table = ctx
+        .catalog
+        .table_by_oid(rel_oid)?
+        .ok_or_else(|| Error::internal(format!("relation with OID {rel_oid} does not exist")))?;
+    check_constraints(&table, row, not_null, checks, ctx)
 }
 
 /// Maximum bytes of each value shown in `Failing row contains (...)`.

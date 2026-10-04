@@ -1,0 +1,50 @@
+# フェーズ 1: 大きな値（TOAST）と、1 つのトランザクションでの大量の行をコミットして kill -9 される。
+# 複数ページにまたがるトランザクションのコミットが全部残る（途中のページだけ残ることがない）。
+
+statement ok
+CREATE TABLE cr9_t (id int NOT NULL, body text)
+
+statement count 3
+INSERT INTO cr9_t VALUES (1, repeat('abc', 10000)), (2, repeat('xyz', 20000)), (3, 'small')
+
+statement ok
+CREATE TABLE cr9_many (a int NOT NULL, pad text)
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO cr9_many VALUES (0, repeat('x', 200))
+
+statement count 1
+INSERT INTO cr9_many SELECT a + 1, pad FROM cr9_many
+
+statement count 2
+INSERT INTO cr9_many SELECT a + 2, pad FROM cr9_many
+
+statement count 4
+INSERT INTO cr9_many SELECT a + 4, pad FROM cr9_many
+
+statement count 8
+INSERT INTO cr9_many SELECT a + 8, pad FROM cr9_many
+
+statement count 16
+INSERT INTO cr9_many SELECT a + 16, pad FROM cr9_many
+
+statement count 32
+INSERT INTO cr9_many SELECT a + 32, pad FROM cr9_many
+
+statement count 64
+INSERT INTO cr9_many SELECT a + 64, pad FROM cr9_many
+
+statement count 128
+INSERT INTO cr9_many SELECT a + 128, pad FROM cr9_many
+
+statement count 256
+INSERT INTO cr9_many SELECT a + 256, pad FROM cr9_many
+
+statement count 512
+INSERT INTO cr9_many SELECT a + 512, pad FROM cr9_many
+
+statement ok
+COMMIT

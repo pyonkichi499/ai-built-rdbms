@@ -1,0 +1,66 @@
+Parsed test spec with 3 sessions
+
+starting permutation: b_set a_b a_upd b_upd a_c c_sel
+step b_set: SET lock_timeout = '500ms';
+step a_b: BEGIN;
+step a_upd: UPDATE lto_t SET v = 11 WHERE id = 1;
+step b_upd: UPDATE lto_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step a_c: COMMIT;
+step b_upd: <... completed>
+step c_sel: SELECT v FROM lto_t;
+  v
+---
+111
+(1 row)
+
+
+starting permutation: b_set a_b a_upd b_b b_upd b_sel b_r a_c c_sel
+step b_set: SET lock_timeout = '500ms';
+step a_b: BEGIN;
+step a_upd: UPDATE lto_t SET v = 11 WHERE id = 1;
+step b_b: BEGIN;
+step b_upd: UPDATE lto_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step b_upd: <... completed>
+ERROR:  canceling statement due to lock timeout
+step b_sel: SELECT v FROM lto_t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+11
+(1 row)
+
+
+starting permutation: b_set a_b a_upd b_b b_upd b_c a_c c_sel
+step b_set: SET lock_timeout = '500ms';
+step a_b: BEGIN;
+step a_upd: UPDATE lto_t SET v = 11 WHERE id = 1;
+step b_b: BEGIN;
+step b_upd: UPDATE lto_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step b_upd: <... completed>
+ERROR:  canceling statement due to lock timeout
+step b_c: COMMIT;
+step a_c: COMMIT;
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+11
+(1 row)
+
+
+starting permutation: b_set a_b a_upd b_upd a_c b_upd c_sel
+step b_set: SET lock_timeout = '500ms';
+step a_b: BEGIN;
+step a_upd: UPDATE lto_t SET v = 11 WHERE id = 1;
+step b_upd: UPDATE lto_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step a_c: COMMIT;
+step b_upd: <... completed>
+step b_upd: UPDATE lto_t SET v = v + 100 WHERE id = 1;
+step c_sel: SELECT v FROM lto_t;
+  v
+---
+211
+(1 row)
+

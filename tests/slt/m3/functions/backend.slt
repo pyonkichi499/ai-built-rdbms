@@ -1,0 +1,120 @@
+# pg_backend_pid / pg_sleep / pg_isolation_test_session_is_blocked / void / int4[]
+
+query ?
+SELECT pg_backend_pid() > 0
+----
+t
+
+query I
+SELECT pg_backend_pid() = pg_backend_pid()
+----
+t
+
+query ?
+SELECT pg_isolation_test_session_is_blocked(pg_backend_pid(), '{1}')
+----
+f
+
+query ?
+SELECT pg_isolation_test_session_is_blocked(pg_backend_pid(), '{}')
+----
+f
+
+query ?
+SELECT pg_isolation_test_session_is_blocked(pg_backend_pid(), '{1,2,3}')
+----
+f
+
+query ?
+SELECT pg_isolation_test_session_is_blocked(NULL, '{1}') IS NULL
+----
+t
+
+# 2 接続で pid が異なる
+connection a
+query ?
+SELECT pg_backend_pid() > 0
+----
+t
+
+# void の出力は空文字列
+query T
+SELECT pg_sleep(0)
+----
+(empty)
+
+query ?
+SELECT pg_sleep(0) IS NULL
+----
+f
+
+query T
+SELECT pg_typeof(pg_sleep(0))::text
+----
+void
+
+query T
+SELECT pg_typeof('{1,2}'::int4[])::text
+----
+integer[]
+
+# int4[] のテキスト入出力
+query T
+SELECT '{1,2,NULL}'::int4[]::text
+----
+{1,2,NULL}
+
+query T
+SELECT '{}'::int4[]::text
+----
+{}
+
+query T
+SELECT '{ 1 , 2 }'::int4[]::text
+----
+{1,2}
+
+query T
+SELECT '{-5}'::int4[]::text
+----
+{-5}
+
+statement error (22P02)
+SELECT '{1,2'::int4[]
+
+statement error (22P02)
+SELECT 'abc'::int4[]
+
+statement error (22P02)
+SELECT '{a}'::int4[]
+
+# 型の存在
+query I
+SELECT typarray FROM pg_type WHERE oid = 23
+----
+1007
+
+query T
+SELECT typname FROM pg_type WHERE oid = 2278
+----
+void
+
+query T
+SELECT typtype FROM pg_type WHERE oid = 2278
+----
+p
+
+query I
+SELECT typelem FROM pg_type WHERE oid = 1007
+----
+23
+
+query T
+SELECT typcategory FROM pg_type WHERE oid = 1007
+----
+A
+
+query I
+SELECT typlen FROM pg_type WHERE oid = 1007
+----
+-1

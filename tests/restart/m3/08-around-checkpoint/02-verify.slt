@@ -1,0 +1,25 @@
+# フェーズ 2: チェックポイントの前後のコミットが残り、ロールバックと未コミットのものは見えない。
+
+query IT
+SELECT id, v FROM cr8_t ORDER BY id
+----
+1 after-ckpt
+3 before3
+4 after4
+5 after5
+
+query I
+SELECT a FROM cr8_late ORDER BY a
+----
+7
+8
+
+statement count 1
+INSERT INTO cr8_late VALUES (9)
+
+# リカバリ直後のチェックポイントと、その後の書き込みもできる
+statement ok
+CHECKPOINT
+
+statement count 1
+UPDATE cr8_t SET v = 'final' WHERE id = 3

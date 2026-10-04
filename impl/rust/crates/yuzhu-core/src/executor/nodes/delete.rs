@@ -1,19 +1,17 @@
-//! Executor node: DELETE (`m2.md` §4.7, §6.10). Input rows are the target
+//! Executor node: DELETE (`m2.md` §4.7, §5.5). Input rows are the target
 //! table's user columns followed by the `ctid`.
-//!
-//! 担当 H2 が実装する。
 
 use crate::error::{Error, Result};
+use crate::executor::nodes::update::{already_modified, split_ctid};
 use crate::executor::{BoxedExecutor, ExecCtx, Executor};
-use crate::storage::RelHandle;
+use crate::storage::{RelHandle, TmResult};
 use crate::types::Row;
 
 pub struct DeleteExec {
-    #[allow(dead_code)]
     rel: RelHandle,
-    #[allow(dead_code)]
     input: BoxedExecutor,
     count: u64,
+    done: bool,
 }
 
 impl std::fmt::Debug for DeleteExec {
@@ -31,13 +29,42 @@ impl DeleteExec {
             rel,
             input,
             count: 0,
+            done: false,
         }
+    }
+
+    fn delete_one(&mut self, input: Row, ctx: &mut ExecCtx<'_>) -> Result<()> {
+        ctx.check_interrupts()?;
+        let (_, tid) = split_ctid(input, self.rel.desc.attrs.len())?;
+        let w = ctx.write_ctx()?;
+        match ctx.storage.delete(&self.rel, &w, ctx.snapshot, tid)? {
+            TmResult::Ok => self.count += 1,
+            TmResult::SelfModified { cmax } => {
+                if cmax != w.cid {
+                    return Err(already_modified("deleted"));
+                }
+            }
+            other => {
+                return Err(Error::internal(format!(
+                    "unexpected result of delete on relation {}: {other:?}",
+                    self.rel.oid
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
 impl Executor for DeleteExec {
-    fn next(&mut self, _ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
-        Err(Error::not_supported("DELETE is not implemented yet"))
+    fn next(&mut self, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
+        if self.done {
+            return Ok(None);
+        }
+        self.done = true;
+        while let Some(input) = self.input.next(ctx)? {
+            self.delete_one(input, ctx)?;
+        }
+        Ok(None)
     }
 
     fn rows_affected(&self) -> u64 {

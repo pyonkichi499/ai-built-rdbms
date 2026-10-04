@@ -1,0 +1,89 @@
+# statement_timeout
+
+statement ok
+SET statement_timeout = '100ms'
+
+query T
+SHOW statement_timeout
+----
+100ms
+
+statement error (57014)
+SELECT pg_sleep(2)
+
+# タイムアウトの後も接続は使える
+query I
+SELECT 1
+----
+1
+
+# 短い pg_sleep は成功し、void は空文字列で出る
+query T
+SELECT pg_sleep(0.01)
+----
+(empty)
+
+statement ok
+SET statement_timeout = 0
+
+query T
+SHOW statement_timeout
+----
+0
+
+query T
+SELECT pg_sleep(0.01)
+----
+(empty)
+
+# 負なら即座に戻る
+query T
+SELECT pg_sleep(-1)
+----
+(empty)
+
+# ブロック内: タイムアウトで失敗状態になる
+statement ok
+SET statement_timeout = '100ms'
+
+statement ok
+BEGIN
+
+statement error (57014)
+SELECT pg_sleep(2)
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+# 文ごとの期限: 短い文を重ねても累積しない
+statement ok
+BEGIN
+
+query T
+SELECT pg_sleep(0.06)
+----
+(empty)
+
+query T
+SELECT pg_sleep(0.06)
+----
+(empty)
+
+query T
+SELECT pg_sleep(0.06)
+----
+(empty)
+
+statement ok
+COMMIT
+
+statement ok
+RESET statement_timeout
+
+query T
+SHOW statement_timeout
+----
+0

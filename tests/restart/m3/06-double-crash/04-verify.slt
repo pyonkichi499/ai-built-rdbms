@@ -1,0 +1,16 @@
+# フェーズ 4: 3 回目のクラッシュのあと、フェーズ 1 と 3 のコミットが残り、未コミットはない。
+# XID の再利用で、前のクラッシュの未コミットの行が見えてしまうことがない。
+
+query IT
+SELECT id, v FROM cr6_t ORDER BY id
+----
+2 bb
+3 c
+4 d
+5 e
+
+statement count 1
+INSERT INTO cr6_t VALUES (6, 'f')
+
+statement ok
+DROP TABLE cr6_t

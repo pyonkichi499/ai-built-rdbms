@@ -13,19 +13,21 @@ pub mod plan;
 pub use plan::*;
 
 use crate::analyzer::{
-    BoundExpr, BoundExprKind, BoundFrom, BoundInsert, BoundSelect, BoundStatement,
+    BoundDelete, BoundExpr, BoundExprKind, BoundFrom, BoundInsert, BoundSelect, BoundStatement,
+    BoundUpdate,
 };
+use crate::catalog::{SystemColumn, TableDef};
 use crate::error::{Error, Result};
 use crate::storage::RelHandle;
+use crate::types::{SqlType, oid};
 
-/// Plans a SELECT or INSERT. DDL statements are not planned.
+/// Plans a SELECT, INSERT, UPDATE or DELETE. DDL statements are not planned.
 pub fn plan(stmt: &BoundStatement) -> Result<PhysicalPlan> {
     match stmt {
         BoundStatement::Select(s) => Ok(plan_select(s)),
         BoundStatement::Insert(i) => Ok(plan_insert(i)),
-        BoundStatement::Update(_) | BoundStatement::Delete(_) => Err(Error::not_supported(
-            "UPDATE and DELETE planning is not implemented yet",
-        )),
+        BoundStatement::Update(u) => Ok(plan_update(u)),
+        BoundStatement::Delete(d) => Ok(plan_delete(d)),
         BoundStatement::CreateTable(_)
         | BoundStatement::DropTable(_)
         | BoundStatement::Checkpoint => Err(Error::internal(
@@ -156,6 +158,80 @@ pub fn plan_insert(i: &BoundInsert) -> PhysicalPlan {
         checks,
         not_null: i.table.columns.iter().map(|c| c.not_null).collect(),
         table_name: i.table.name.clone(),
+    }
+}
+
+/// The scan (and filter) feeding an UPDATE / DELETE: output rows are the
+/// table's user columns followed by `ctid` (`m2.md` §4.7). WHERE may have
+/// referenced system columns; a Project drops them.
+fn plan_dml_input(
+    table: &TableDef,
+    filter: Option<&BoundExpr>,
+    system_columns: &[SystemColumn],
+) -> PhysicalPlan {
+    let natts = table.columns.len();
+    let mut scan_columns = system_columns.to_vec();
+    scan_columns.push(SystemColumn::Ctid);
+    let ctid_index = natts + system_columns.len();
+    let mut node = PhysicalPlan::SeqScan {
+        rel: RelHandle::from_table(table),
+        columns: table.columns.iter().map(|c| c.ty).collect(),
+        system_columns: scan_columns,
+    };
+    if let Some(p) = filter {
+        node = PhysicalPlan::Filter {
+            input: Box::new(node),
+            predicate: p.clone(),
+        };
+    }
+    if system_columns.is_empty() {
+        return node;
+    }
+    let span = filter.map(|f| f.span).unwrap_or_default();
+    let mut exprs: Vec<BoundExpr> = table
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| BoundExpr::new(BoundExprKind::ColumnRef { index: i }, c.ty, span))
+        .collect();
+    exprs.push(BoundExpr::new(
+        BoundExprKind::ColumnRef { index: ctid_index },
+        SqlType::of(oid::TID),
+        span,
+    ));
+    PhysicalPlan::Project {
+        input: Box::new(node),
+        exprs,
+    }
+}
+
+/// Plans an UPDATE. CHECK constraints are evaluated in name order.
+pub fn plan_update(u: &BoundUpdate) -> PhysicalPlan {
+    let mut checks = u.checks.clone();
+    checks.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    PhysicalPlan::Update {
+        rel: RelHandle::from_table(&u.table),
+        input: Box::new(plan_dml_input(
+            &u.table,
+            u.filter.as_ref(),
+            &u.system_columns,
+        )),
+        assignments: u.assignments.clone(),
+        checks,
+        not_null: u.not_null.clone(),
+        table_name: u.table.name.clone(),
+    }
+}
+
+/// Plans a DELETE.
+pub fn plan_delete(d: &BoundDelete) -> PhysicalPlan {
+    PhysicalPlan::Delete {
+        rel: RelHandle::from_table(&d.table),
+        input: Box::new(plan_dml_input(
+            &d.table,
+            d.filter.as_ref(),
+            &d.system_columns,
+        )),
     }
 }
 
@@ -363,5 +439,278 @@ mod tests {
             f.storage.rows(t.oid)[1],
             vec![Datum::Int4(2), Datum::Text("dflt".into())]
         );
+    }
+}
+
+#[cfg(test)]
+mod dml_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::analyzer::{BoundCheck, UpdateSource};
+    use crate::catalog::fake::table_def;
+    use crate::catalog::{ColumnDef, TableDef};
+    use crate::error::sqlstate;
+    use crate::executor::build;
+    use crate::executor::eval::tests::{GT, col, int, lit, null, op, text};
+    use crate::executor::nodes::test_util::Fixture;
+    use crate::storage::TmResult;
+    use crate::types::{Datum, Row};
+
+    const T: u32 = 16384;
+
+    fn table() -> Arc<TableDef> {
+        let c = |name: &str, attnum, ty, not_null| ColumnDef {
+            name: name.into(),
+            attnum,
+            ty,
+            not_null,
+            default: None,
+        };
+        Arc::new(table_def(
+            T,
+            "t",
+            vec![
+                c("a", 1, SqlType::INT4, true),
+                c("b", 2, SqlType::TEXT, false),
+                c("c", 3, SqlType::INT4, false),
+            ],
+            vec![],
+        ))
+    }
+
+    fn fixture(rows: &[(i32, &str, i32)]) -> Fixture {
+        let mut f = Fixture::new();
+        let t = table();
+        for (a, b, c) in rows {
+            f.storage.add_row(
+                T,
+                vec![Datum::Int4(*a), Datum::Text((*b).into()), Datum::Int4(*c)],
+            );
+        }
+        f.catalog.put_table(t);
+        f
+    }
+
+    fn row(a: i32, b: &str, c: i32) -> Row {
+        vec![Datum::Int4(a), Datum::Text(b.into()), Datum::Int4(c)]
+    }
+
+    fn update(assignments: Vec<(usize, UpdateSource)>, filter: Option<BoundExpr>) -> BoundUpdate {
+        BoundUpdate {
+            table: table(),
+            assignments,
+            filter,
+            system_columns: vec![],
+            checks: vec![],
+            not_null: vec![true, false, false],
+        }
+    }
+
+    fn run_plan(f: &mut Fixture, p: &PhysicalPlan) -> Result<u64> {
+        let mut e = build(p);
+        f.run(&mut e)?;
+        Ok(e.rows_affected())
+    }
+
+    fn a_gt(n: i32) -> BoundExpr {
+        op(&GT, col(0, SqlType::INT4), int(n))
+    }
+
+    #[test]
+    fn update_with_where() {
+        let mut f = fixture(&[(1, "x", 0), (2, "y", 0)]);
+        let u = update(vec![(1, UpdateSource::Expr(text("z")))], Some(a_gt(1)));
+        let p = plan(&BoundStatement::Update(u)).unwrap();
+        // No system columns: Update <- Filter <- SeqScan(ctid).
+        let PhysicalPlan::Update { input, .. } = &p else {
+            panic!("expected Update");
+        };
+        assert!(matches!(**input, PhysicalPlan::Filter { .. }));
+        assert_eq!(run_plan(&mut f, &p).unwrap(), 1);
+        assert_eq!(f.storage.rows(T), vec![row(1, "x", 0), row(2, "z", 0)]);
+    }
+
+    #[test]
+    fn set_expressions_see_the_old_row() {
+        let mut f = fixture(&[(1, "x", 10)]);
+        let u = update(
+            vec![
+                (0, UpdateSource::Expr(col(2, SqlType::INT4))),
+                (2, UpdateSource::Expr(col(0, SqlType::INT4))),
+            ],
+            None,
+        );
+        let p = plan_update(&u);
+        assert_eq!(run_plan(&mut f, &p).unwrap(), 1);
+        assert_eq!(f.storage.rows(T), vec![row(10, "x", 1)]);
+    }
+
+    #[test]
+    fn update_without_where_does_not_rescan_new_versions() {
+        let mut f = fixture(&[(1, "a", 0), (2, "b", 0), (3, "c", 0)]);
+        let u = update(vec![(2, UpdateSource::Expr(int(9)))], None);
+        assert_eq!(run_plan(&mut f, &plan_update(&u)).unwrap(), 3);
+        assert_eq!(f.storage.rows(T).len(), 3);
+        // All writes used the transaction's XID and the current command ID.
+        assert_eq!(f.storage.writes(), vec![(f.txn.xid.unwrap(), 0); 3]);
+    }
+
+    #[test]
+    fn default_source() {
+        let mut f = fixture(&[(1, "x", 5)]);
+        let u = update(
+            vec![
+                (1, UpdateSource::Default(None)),
+                (2, UpdateSource::Default(Some(int(42)))),
+            ],
+            None,
+        );
+        run_plan(&mut f, &plan_update(&u)).unwrap();
+        assert_eq!(
+            f.storage.rows(T),
+            vec![vec![Datum::Int4(1), Datum::Null, Datum::Int4(42)]]
+        );
+    }
+
+    #[test]
+    fn system_columns_in_where_are_dropped_before_update() {
+        let mut f = fixture(&[(1, "x", 0), (2, "y", 0)]);
+        let mut u = update(vec![(2, UpdateSource::Expr(int(1)))], None);
+        u.system_columns = vec![SystemColumn::TableOid];
+        u.filter = Some(op(&GT, col(3, SqlType::of(oid::OID)), int(0)));
+        // The comparison is int4 > int4 over an oid value; use a literal
+        // true filter instead of an oid operator.
+        u.filter = Some(lit(Datum::Bool(true), SqlType::BOOL));
+        let p = plan_update(&u);
+        let PhysicalPlan::Update { input, .. } = &p else {
+            panic!("expected Update");
+        };
+        let PhysicalPlan::Project { exprs, .. } = &**input else {
+            panic!("expected Project, got {input:?}");
+        };
+        assert_eq!(exprs.len(), 4);
+        assert!(matches!(
+            exprs[3].kind,
+            BoundExprKind::ColumnRef { index: 4 }
+        ));
+        assert_eq!(run_plan(&mut f, &p).unwrap(), 2);
+        assert_eq!(f.storage.rows(T), vec![row(1, "x", 1), row(2, "y", 1)]);
+    }
+
+    #[test]
+    fn not_null_violation_leaves_the_row() {
+        let mut f = fixture(&[(1, "x", 0)]);
+        let u = update(vec![(0, UpdateSource::Expr(null(SqlType::INT4)))], None);
+        let e = run_plan(&mut f, &plan_update(&u)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::NOT_NULL_VIOLATION);
+        assert_eq!(
+            e.detail.as_deref(),
+            Some("Failing row contains (null, x, 0).")
+        );
+        assert_eq!(f.storage.rows(T), vec![row(1, "x", 0)]);
+        assert!(f.storage.writes().is_empty());
+    }
+
+    #[test]
+    fn check_violation_is_found_before_writing_and_in_name_order() {
+        let mut f = fixture(&[(1, "x", 0), (5, "y", 0)]);
+        let ck = |name: &str, n| BoundCheck {
+            name: name.into(),
+            expr: a_gt(n),
+        };
+        let mut u = update(vec![(0, UpdateSource::Expr(int(1)))], None);
+        u.checks = vec![ck("t_zz", 0), ck("t_aa", 1)];
+        let e = run_plan(&mut f, &plan_update(&u)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::CHECK_VIOLATION);
+        assert_eq!(
+            e.message,
+            "new row for relation \"t\" violates check constraint \"t_aa\""
+        );
+        assert!(f.storage.writes().is_empty());
+    }
+
+    #[test]
+    fn delete_with_and_without_where() {
+        let mut f = fixture(&[(1, "x", 0), (2, "y", 0), (3, "z", 0)]);
+        let d = BoundDelete {
+            table: table(),
+            filter: Some(a_gt(1)),
+            system_columns: vec![],
+        };
+        let p = plan(&BoundStatement::Delete(d)).unwrap();
+        assert_eq!(run_plan(&mut f, &p).unwrap(), 2);
+        assert_eq!(f.storage.rows(T), vec![row(1, "x", 0)]);
+        let d = BoundDelete {
+            table: table(),
+            filter: None,
+            system_columns: vec![],
+        };
+        assert_eq!(run_plan(&mut f, &plan_delete(&d)).unwrap(), 1);
+        assert!(f.storage.rows(T).is_empty());
+    }
+
+    #[test]
+    fn self_modified_rows() {
+        // Same command: skipped and not counted.
+        let mut f = fixture(&[(1, "x", 0)]);
+        f.storage.force_result(TmResult::SelfModified { cmax: 0 });
+        let u = update(vec![(2, UpdateSource::Expr(int(1)))], None);
+        assert_eq!(run_plan(&mut f, &plan_update(&u)).unwrap(), 0);
+        // An earlier command: 27000.
+        let mut f = fixture(&[(1, "x", 0)]);
+        f.storage.force_result(TmResult::SelfModified { cmax: 7 });
+        let e = run_plan(&mut f, &plan_update(&u)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::TRIGGERED_DATA_CHANGE_VIOLATION);
+        let mut f = fixture(&[(1, "x", 0)]);
+        f.storage.force_result(TmResult::SelfModified { cmax: 7 });
+        let d = BoundDelete {
+            table: table(),
+            filter: None,
+            system_columns: vec![],
+        };
+        let e = run_plan(&mut f, &plan_delete(&d)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::TRIGGERED_DATA_CHANGE_VIOLATION);
+        // Anything else is an internal error.
+        let mut f = fixture(&[(1, "x", 0)]);
+        f.storage.force_result(TmResult::Deleted {
+            xmax: crate::txn::Xid(9),
+        });
+        let e = run_plan(&mut f, &plan_delete(&d)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn interrupts_stop_dml() {
+        let mut f = fixture(&[(1, "x", 0)]);
+        f.interrupts.request_terminate();
+        let d = BoundDelete {
+            table: table(),
+            filter: None,
+            system_columns: vec![],
+        };
+        let e = run_plan(&mut f, &plan_delete(&d)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::ADMIN_SHUTDOWN);
+        assert_eq!(f.storage.rows(T).len(), 1);
+    }
+
+    #[test]
+    fn malformed_input_rows_are_internal_errors() {
+        use crate::executor::nodes::ValuesExec;
+        let mut f = fixture(&[]);
+        let bad = |exprs: Vec<BoundExpr>| -> crate::executor::BoxedExecutor {
+            Box::new(crate::executor::nodes::DeleteExec::new(
+                RelHandle::from_table(&table()),
+                Box::new(ValuesExec::new(vec![exprs])),
+            ))
+        };
+        // Too short.
+        let e = f.run(&mut bad(vec![int(1)])).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        // Last column is not a ctid.
+        let e = f
+            .run(&mut bad(vec![int(1), text("x"), int(2), int(3)]))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
     }
 }

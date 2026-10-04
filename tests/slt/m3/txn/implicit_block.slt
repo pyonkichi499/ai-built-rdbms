@@ -1,0 +1,87 @@
+# Simple Query の暗黙トランザクションブロック（spec/research/m3-tx-semantics.md 第 11 節）
+
+statement ok
+CREATE TABLE ib_t (x int)
+
+# 途中の BEGIN は先行文を取り込む: 1 も 2 も消える
+statement ok
+INSERT INTO ib_t VALUES (1); BEGIN; INSERT INTO ib_t VALUES (2); ROLLBACK
+
+query I
+SELECT x FROM ib_t ORDER BY x
+----
+
+# COMMIT が区切り: 10 と 11 は残り、12 は消える（エラーで暗黙ブロックがロールバック）
+statement error (22012)
+INSERT INTO ib_t VALUES (10); BEGIN; INSERT INTO ib_t VALUES (11); COMMIT; INSERT INTO ib_t VALUES (12); SELECT 1 / 0
+
+query I
+SELECT x FROM ib_t ORDER BY x
+----
+10
+11
+
+# 暗黙ブロック中の COMMIT は WARNING を出してコミットする。その後のエラーで 21 だけ消える
+statement error (22012)
+INSERT INTO ib_t VALUES (20); COMMIT; INSERT INTO ib_t VALUES (21); SELECT 1 / 0
+
+query I
+SELECT x FROM ib_t ORDER BY x
+----
+10
+11
+20
+
+# エラーで残りの文は実行されず、全体がロールバックされる
+statement error (22012)
+INSERT INTO ib_t VALUES (30); SELECT 1 / 0; INSERT INTO ib_t VALUES (31)
+
+query I
+SELECT x FROM ib_t ORDER BY x
+----
+10
+11
+20
+
+# 複数文が成功すれば全体がコミットされる
+statement ok
+INSERT INTO ib_t VALUES (40); INSERT INTO ib_t VALUES (41)
+
+query I
+SELECT x FROM ib_t WHERE x >= 40 ORDER BY x
+----
+40
+41
+
+# 暗黙ブロックの途中でエラーなら、先行する文も消える（原子性）
+statement error (23502)
+CREATE TABLE ib_t2 (a int NOT NULL); INSERT INTO ib_t2 VALUES (NULL)
+
+statement error (42P01)
+SELECT * FROM ib_t2
+
+# 暗黙ブロックの BEGIN 以降のエラーでブロックは失敗状態で残る
+statement error (22012)
+BEGIN; INSERT INTO ib_t VALUES (50); SELECT 1 / 0
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT x FROM ib_t WHERE x >= 50 ORDER BY x
+----
+
+# 暗黙ブロックの中では SET LOCAL が使え、Query の終了で戻る
+statement ok
+SELECT 1; SET LOCAL application_name = 'ib'
+
+query T
+SHOW application_name
+----
+(empty)
+
+statement ok
+DROP TABLE ib_t

@@ -1,0 +1,29 @@
+# フェーズ 2: テーブルもカタログの行もない。同名で作り直せる。他のテーブルは残っている。
+
+statement error (42P01)
+SELECT id FROM cr3_t
+
+query T
+SELECT relname FROM pg_class WHERE relname IN ('cr3_t', 'cr3_keep') ORDER BY relname
+----
+cr3_keep
+
+query I
+SELECT id FROM cr3_keep
+----
+10
+
+statement ok
+CREATE TABLE cr3_t (a text)
+
+query T
+SELECT a FROM cr3_t
+----
+
+statement count 1
+INSERT INTO cr3_t VALUES ('again')
+
+query T
+SELECT a FROM cr3_t
+----
+again

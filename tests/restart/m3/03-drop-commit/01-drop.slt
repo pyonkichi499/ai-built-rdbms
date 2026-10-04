@@ -1,0 +1,19 @@
+# フェーズ 1: DROP TABLE をコミットして kill -9 される。
+
+statement ok
+CREATE TABLE cr3_t (id int)
+
+statement count 2
+INSERT INTO cr3_t VALUES (1), (2)
+
+statement ok
+CREATE TABLE cr3_keep (id int)
+
+statement count 1
+INSERT INTO cr3_keep VALUES (10)
+
+statement ok
+DROP TABLE cr3_t
+
+statement error (42P01)
+SELECT id FROM cr3_t

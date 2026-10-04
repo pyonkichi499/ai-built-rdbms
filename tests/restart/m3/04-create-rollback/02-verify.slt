@@ -1,0 +1,22 @@
+# フェーズ 2: ロールバックした CREATE TABLE のテーブルは見えない。同名で作り直せる。
+
+statement error (42P01)
+SELECT id FROM cr4_t
+
+query T
+SELECT relname FROM pg_class WHERE relname IN ('cr4_t', 'cr4_keep') ORDER BY relname
+----
+cr4_keep
+
+statement ok
+CREATE TABLE cr4_t (id int, v text)
+
+query IT
+SELECT id, v FROM cr4_t
+----
+
+statement ok
+DROP TABLE cr4_t
+
+statement ok
+DROP TABLE cr4_keep

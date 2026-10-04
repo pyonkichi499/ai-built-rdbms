@@ -146,3 +146,15 @@ tests/tools/isolation/validate-pg-suite.sh --port 55432 eval-plan-qual      # �
 | `rc-visibility` | Read Committed の可視性（未コミットは見えない・コミット後は次の文で見える・読み取りは待たない・ROLLBACK） | M3 |
 | `lost-update` | 同じ行の同時 UPDATE で後者が待ち、RC では最新行で再実行、RR では 40001 | M3（RR の permutation は M5） |
 | `write-skew-rr` | Repeatable Read では write skew を防げない（両方コミットでき、当番が 0 人になる） | M5（RR、count） |
+
+### 拡張: `-- @cancel <セッション名>`
+
+ステップの SQL が `-- @cancel <セッション名>` だけのとき、ランナーは SQL を送らず、対象セッションで実行中
+（`<waiting ...>` 中）のステップに CancelRequest を送り、そのステップが完了するまで待って結果（`<... completed>` と
+`ERROR:  canceling statement due to user request`）を出してから次へ進む。`pg_cancel_backend()` や `pg_stat_activity`
+に頼らずに待ち中の文を中断でき、PostgreSQL と yuzhu の両方で同じ spec が使える。本家の spec 文法にはない拡張で、
+SQL としてはコメントなので、他のランナーに渡しても空の問い合わせになるだけ。
+
+M3 の追加 spec: `writer-waits-writer`、`writer-queue`、`reader-not-blocked`、`lock-timeout`、`statement-timeout-wait`、
+`cancel-wait`、`idle-in-tx-timeout`。同じ行を更新する組み合わせだけを使う（別の行への書き込みは PostgreSQL では待たないが
+yuzhu の M3 は待つ、という既知の差を避けるため）。

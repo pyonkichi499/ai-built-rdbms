@@ -1,6 +1,9 @@
 //! Name resolution scope: the (at most one, in M1) FROM item whose columns
 //! form the input row.
 
+use std::cell::RefCell;
+
+use crate::catalog::SystemColumn;
 use crate::error::{Error, Result, Span, sqlstate};
 use crate::sql::ast::Ident;
 use crate::types::{Oid, SqlType};
@@ -24,6 +27,9 @@ pub(super) struct ScopeRel {
     /// Base table OID (0 for VALUES or a table being created).
     pub(super) table_oid: Oid,
     pub(super) columns: Vec<ScopeColumn>,
+    /// Number of user columns when the system columns can be referenced
+    /// (SELECT / UPDATE / DELETE over a base table).
+    pub(super) system_natts: Option<usize>,
 }
 
 /// What kind of clause an expression appears in (PostgreSQL's
@@ -32,6 +38,8 @@ pub(super) struct ScopeRel {
 pub(super) enum ExprKind {
     SelectTarget,
     Where,
+    /// Right-hand side of UPDATE SET.
+    UpdateSet,
     OrderBy,
     Limit,
     Offset,
@@ -47,6 +55,7 @@ impl ExprKind {
         match self {
             ExprKind::SelectTarget => "SELECT",
             ExprKind::Where => "WHERE",
+            ExprKind::UpdateSet => "UPDATE",
             ExprKind::OrderBy => "ORDER BY",
             ExprKind::Limit => "LIMIT",
             ExprKind::Offset => "OFFSET",
@@ -60,15 +69,20 @@ impl ExprKind {
 #[derive(Debug, Clone, Default)]
 pub(super) struct Scope {
     pub(super) rel: Option<ScopeRel>,
+    /// System columns referenced so far (appearance order, no duplicates).
+    used_system: RefCell<Vec<SystemColumn>>,
 }
 
 impl Scope {
     pub(super) fn empty() -> Self {
-        Scope { rel: None }
+        Scope::default()
     }
 
     pub(super) fn with_rel(rel: ScopeRel) -> Self {
-        Scope { rel: Some(rel) }
+        Scope {
+            rel: Some(rel),
+            used_system: RefCell::default(),
+        }
     }
 
     /// Does a qualifier (`t` or `schema.t`) name the FROM item?
@@ -94,7 +108,7 @@ impl Scope {
         &self,
         parts: &[Ident],
         span: Span,
-    ) -> Result<(usize, &ScopeColumn)> {
+    ) -> Result<(usize, ScopeColumn)> {
         let Some((colname, qual)) = parts.split_last() else {
             return Err(Error::internal("empty column reference"));
         };
@@ -119,8 +133,11 @@ impl Scope {
                 .iter()
                 .enumerate()
                 .find(|(_, c)| c.name == colname.value)
+                .map(|(i, c)| (i, c.clone()))
         });
         if let Some(f) = found {
+            Ok(f)
+        } else if let Some(f) = self.system_column(&colname.value) {
             Ok(f)
         } else {
             let shown = if qual.is_empty() {
@@ -152,5 +169,51 @@ impl Scope {
             },
             (None, Some(rel)) => Ok(rel.columns.iter().enumerate().collect()),
         }
+    }
+}
+
+impl Scope {
+    /// Lets expressions reference the system columns of the (single) base
+    /// table. User columns take precedence over system columns of the
+    /// same name.
+    pub(super) fn enable_system_columns(&mut self) {
+        if let Some(rel) = &mut self.rel {
+            rel.system_natts = Some(rel.columns.len());
+        }
+    }
+
+    /// The system columns referenced so far, in appearance order.
+    pub(super) fn used_system_columns(&self) -> Vec<SystemColumn> {
+        self.used_system.borrow().clone()
+    }
+
+    /// Resolves a system column name to its input-row index
+    /// (`natts + position in the used list`), recording the use.
+    fn system_column(&self, name: &str) -> Option<(usize, ScopeColumn)> {
+        let natts = self.rel.as_ref()?.system_natts?;
+        let (col, (cname, attnum, type_oid)) = [
+            SystemColumn::Ctid,
+            SystemColumn::Xmin,
+            SystemColumn::Cmin,
+            SystemColumn::Xmax,
+            SystemColumn::Cmax,
+            SystemColumn::TableOid,
+        ]
+        .into_iter()
+        .zip(crate::catalog::schema::SYSTEM_COLUMNS)
+        .find(|(_, (n, _, _))| *n == name)?;
+        let mut used = self.used_system.borrow_mut();
+        let pos = used.iter().position(|c| *c == col).unwrap_or_else(|| {
+            used.push(col);
+            used.len() - 1
+        });
+        Some((
+            natts + pos,
+            ScopeColumn {
+                name: cname.to_owned(),
+                ty: SqlType::of(type_oid),
+                attnum,
+            },
+        ))
     }
 }

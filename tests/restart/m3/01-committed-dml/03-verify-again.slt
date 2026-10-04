@@ -1,0 +1,14 @@
+# フェーズ 3: リカバリ後に足した変更も、もう一度のクラッシュのあとに残る。
+
+query IT
+SELECT id, v FROM cr1_t ORDER BY id
+----
+1 z
+2 bb
+3 c
+4 dd
+6 f
+7 g
+
+statement ok
+DROP TABLE cr1_t

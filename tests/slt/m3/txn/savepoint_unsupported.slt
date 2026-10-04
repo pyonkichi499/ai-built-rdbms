@@ -1,0 +1,24 @@
+# yuzhu 専用: ブロック内の SAVEPOINT は 0A000（PostgreSQL では成功するので pg では実行しない）。
+
+onlyif yuzhu
+statement ok
+BEGIN
+
+onlyif yuzhu
+statement error (0A000)
+SAVEPOINT spu_x
+
+# 0A000 のあとブロックは失敗状態
+onlyif yuzhu
+statement error (25P02)
+SELECT 1
+
+onlyif yuzhu
+statement ok
+ROLLBACK
+
+onlyif yuzhu
+query I
+SELECT 1
+----
+1

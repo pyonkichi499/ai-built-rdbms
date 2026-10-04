@@ -25,7 +25,7 @@ postgres
 statement error (42601)
 SELECT current_user()
 
-# version() は "PostgreSQL" で始まる。yuzhu は "PostgreSQL 16.0 (yuzhu ...)" を返す
+# version() は "PostgreSQL" で始まる。yuzhu は "PostgreSQL 17.0 (yuzhu ...)" を返す
 query ?
 SELECT version() LIKE 'PostgreSQL %'
 ----

@@ -49,10 +49,26 @@ pub trait VfsFile: Send + Sync + std::fmt::Debug {
 
 pub trait VfsLock: Send + std::fmt::Debug {}
 
-/// The error every stub returns until 担当 B implements the real thing.
-pub(crate) fn unsupported(what: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!("{what}: not implemented yet"),
-    )
+/// Normalizes a data-directory-relative path: drops `.` components and
+/// rejects absolute paths and `..` (so that nothing can escape the root).
+/// The root itself is the empty path.
+pub(crate) fn normalize(path: &Path) -> io::Result<PathBuf> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::Normal(n) => out.push(n),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "path must be relative and must not contain \"..\": {}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(out)
 }

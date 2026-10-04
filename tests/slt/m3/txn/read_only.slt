@@ -1,0 +1,205 @@
+# READ ONLY トランザクション
+
+statement ok
+CREATE TABLE ro_t (id int, v int)
+
+statement ok
+INSERT INTO ro_t VALUES (1, 10)
+
+statement ok
+CREATE TABLE ro_drop (x int)
+
+statement ok
+BEGIN READ ONLY
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement error (25006)
+INSERT INTO ro_t VALUES (2, 20)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+UPDATE ro_t SET v = 11 WHERE id = 1
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+DELETE FROM ro_t WHERE id = 1
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+CREATE TABLE ro_new (x int)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+DROP TABLE ro_drop
+
+statement ok
+ROLLBACK
+
+# SELECT は成功する
+statement ok
+BEGIN READ ONLY
+
+query II
+SELECT id, v FROM ro_t
+----
+1 10
+
+statement ok
+COMMIT
+
+# 何も変わっていない
+query II
+SELECT id, v FROM ro_t
+----
+1 10
+
+statement error (42P01)
+SELECT * FROM ro_new
+
+# SET TRANSACTION READ ONLY
+statement ok
+BEGIN
+
+statement ok
+SET TRANSACTION READ ONLY
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement error (25006)
+INSERT INTO ro_t VALUES (3, 30)
+
+statement ok
+ROLLBACK
+
+# BEGIN READ WRITE
+statement ok
+BEGIN READ WRITE
+
+query T
+SHOW transaction_read_only
+----
+off
+
+statement ok
+INSERT INTO ro_t VALUES (2, 20)
+
+statement ok
+COMMIT
+
+# default_transaction_read_only
+statement ok
+SET default_transaction_read_only = on
+
+query T
+SHOW default_transaction_read_only
+----
+on
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement error (25006)
+INSERT INTO ro_t VALUES (3, 30)
+
+# 既定が on でも BEGIN READ WRITE で書ける
+statement ok
+BEGIN READ WRITE
+
+statement ok
+INSERT INTO ro_t VALUES (3, 30)
+
+statement ok
+COMMIT
+
+statement ok
+SET default_transaction_read_only = off
+
+statement ok
+INSERT INTO ro_t VALUES (4, 40)
+
+# SET SESSION CHARACTERISTICS
+statement ok
+SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY
+
+statement error (25006)
+INSERT INTO ro_t VALUES (5, 50)
+
+statement ok
+SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE
+
+statement ok
+SHOW transaction_read_only
+
+query II
+SELECT id, v FROM ro_t ORDER BY id
+----
+1 10
+2 20
+3 30
+4 40
+
+# 失敗した READ ONLY ブロックでも ROLLBACK で戻れる
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+INSERT INTO ro_t VALUES (9, 90)
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+query T
+SHOW transaction_read_only
+----
+off
+
+# DEFERRABLE は受け付けるだけ
+statement ok
+BEGIN READ ONLY NOT DEFERRABLE
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN READ WRITE, ISOLATION LEVEL READ COMMITTED
+
+statement ok
+COMMIT
+
+statement ok
+DROP TABLE ro_t
+
+statement ok
+DROP TABLE ro_drop

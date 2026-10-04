@@ -1,0 +1,198 @@
+# COMMIT AND CHAIN / ROLLBACK AND CHAIN
+
+statement ok
+CREATE TABLE chn_t (n int)
+
+# ブロック外は ERROR 25P01
+statement error (25P01)
+COMMIT AND CHAIN
+
+statement error (25P01)
+ROLLBACK AND CHAIN
+
+statement error (25P01)
+END AND CHAIN
+
+statement error (25P01)
+ABORT AND CHAIN
+
+# 暗黙のブロック中も ERROR
+statement error (25P01)
+SELECT 1; COMMIT AND CHAIN
+
+# COMMIT AND CHAIN: コミットして同じ特性で新しいブロック
+statement ok
+BEGIN READ ONLY
+
+statement ok
+COMMIT AND CHAIN
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement error (25006)
+INSERT INTO chn_t VALUES (1)
+
+statement ok
+ROLLBACK
+
+query T
+SHOW transaction_read_only
+----
+off
+
+# 新しいブロックはまだ開いている: COMMIT AND CHAIN の後に ROLLBACK で閉じられ、その後はブロック外
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO chn_t VALUES (1)
+
+statement ok
+COMMIT AND CHAIN
+
+statement ok
+INSERT INTO chn_t VALUES (2)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM chn_t ORDER BY n
+----
+1
+
+# ROLLBACK AND CHAIN
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO chn_t VALUES (3)
+
+statement ok
+ROLLBACK AND CHAIN
+
+statement ok
+INSERT INTO chn_t VALUES (4)
+
+statement ok
+COMMIT
+
+query I
+SELECT n FROM chn_t ORDER BY n
+----
+1
+4
+
+# ROLLBACK AND CHAIN は特性も引き継ぐ
+statement ok
+BEGIN READ ONLY
+
+statement ok
+ROLLBACK AND CHAIN
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement ok
+COMMIT
+
+# 分離レベルも引き継ぐ
+statement ok
+BEGIN ISOLATION LEVEL READ UNCOMMITTED
+
+statement ok
+COMMIT AND CHAIN
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+statement ok
+COMMIT
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+# AND NO CHAIN は通常の COMMIT
+statement ok
+BEGIN
+
+statement ok
+COMMIT AND NO CHAIN
+
+statement error (25P01)
+COMMIT AND CHAIN
+
+# 失敗状態からの COMMIT AND CHAIN / ROLLBACK AND CHAIN: ロールバックして新しいブロック
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+INSERT INTO chn_t VALUES (5)
+
+statement ok
+ROLLBACK AND CHAIN
+
+# 新しいブロックは失敗状態ではない
+query I
+SELECT 1
+----
+1
+
+# 失敗状態からの ROLLBACK AND CHAIN では、PostgreSQL 17 は READ ONLY を引き継がない（off になる）
+query T
+SHOW transaction_read_only
+----
+off
+
+statement ok
+COMMIT
+
+# 失敗状態での COMMIT AND CHAIN
+statement ok
+BEGIN
+
+statement error (22012)
+SELECT 1 / 0
+
+statement ok
+COMMIT AND CHAIN
+
+query I
+SELECT 1
+----
+1
+
+statement ok
+COMMIT
+
+# 連鎖の途中の変更はコミットされている
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO chn_t VALUES (6)
+
+statement ok
+COMMIT AND CHAIN
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM chn_t ORDER BY n
+----
+1
+4
+6
+
+statement ok
+DROP TABLE chn_t

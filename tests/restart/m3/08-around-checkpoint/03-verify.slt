@@ -1,0 +1,22 @@
+# フェーズ 3: リカバリ直後のチェックポイントをまたいでも値が残る。
+
+query IT
+SELECT id, v FROM cr8_t ORDER BY id
+----
+1 after-ckpt
+3 final
+4 after4
+5 after5
+
+query I
+SELECT a FROM cr8_late ORDER BY a
+----
+7
+8
+9
+
+statement ok
+DROP TABLE cr8_t
+
+statement ok
+DROP TABLE cr8_late

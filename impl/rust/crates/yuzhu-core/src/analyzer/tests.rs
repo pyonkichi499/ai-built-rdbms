@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::catalog::fake::{FakeCatalog as MemoryCatalog, table_def};
-use crate::catalog::{CastMethod, TableDef};
+use crate::catalog::{CastMethod, SystemColumn, TableDef};
 use crate::error::Error;
 use crate::types::{Datum, Oid, SqlType, oid};
 
@@ -107,7 +107,7 @@ fn operator_resolution() {
     let c = catalog();
     assert_eq!(op_oid(&first(&c, "SELECT s + s FROM t")), 550);
     assert_eq!(op_oid(&first(&c, "SELECT s + a FROM t")), 552);
-    assert_eq!(op_oid(&first(&c, "SELECT a + g FROM t")), 688);
+    assert_eq!(op_oid(&first(&c, "SELECT a + g FROM t")), 692);
     assert_eq!(op_oid(&first(&c, "SELECT a + c FROM t")), 591);
     assert_eq!(first(&c, "SELECT 1 + 1::float4").ty, SqlType::FLOAT8);
     assert_eq!(op_oid(&first(&c, "SELECT v = v FROM t")), 98);
@@ -119,7 +119,7 @@ fn operator_resolution() {
     assert_eq!(err(&c, "SELECT '1'::float8 % '2'::float8"), "42883");
     assert_eq!(op_oid(&first(&c, "SELECT -a FROM t")), 558);
     assert_eq!(op_oid(&first(&c, "SELECT 2 ^ 3")), 965);
-    assert_eq!(op_oid(&first(&c, "SELECT +c FROM t")), 1914);
+    assert_eq!(op_oid(&first(&c, "SELECT +c FROM t")), 1920);
     let e = run(&c, "SELECT 1 = true").unwrap_err();
     assert_eq!(e.message, "operator does not exist: integer = boolean");
 }
@@ -474,8 +474,6 @@ fn limit_offset() {
 #[test]
 fn unsupported_statements() {
     let c = catalog();
-    assert_eq!(err(&c, "UPDATE t SET a = 1"), "0A000");
-    assert_eq!(err(&c, "DELETE FROM t"), "0A000");
     assert_eq!(err(&c, "SELECT a FROM t GROUP BY a"), "0A000");
     assert_eq!(err(&c, "SELECT 1 UNION SELECT 2"), "0A000");
     assert_eq!(err(&c, "SELECT * FROM t, t AS u"), "0A000");
@@ -667,8 +665,8 @@ fn stored_defaults_and_checks() {
     ));
     assert_eq!(i.checks.len(), 5);
     assert_eq!(i.checks[0].expr.ty, SqlType::BOOL);
-    // a column CHECK referencing another column is named after the first
-    // referenced column
+    // a column CHECK referencing another column is named after the column only if it refs
+    // exactly one column (otherwise "<table>_check")
     create(
         &mut c,
         "CREATE TABLE k2 (lo int, hi int CHECK (hi >= lo), x int CHECK (x > 0), y int CHECK (y > 0) CHECK (y < 9))",
@@ -677,7 +675,7 @@ fn stored_defaults_and_checks() {
     let names: Vec<&str> = t.checks.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["k2_hi_check", "k2_x_check", "k2_y_check", "k2_y_check1"]
+        vec!["k2_check", "k2_x_check", "k2_y_check", "k2_y_check1"]
     );
 }
 
@@ -789,4 +787,196 @@ fn builtin_tables_are_consistent() {
                 .all(|b| (b.source, b.target) != (a.source, a.target))
         );
     }
+}
+
+// ----- M2: UPDATE / DELETE / CHECKPOINT / system columns -------------------
+
+fn update(c: &MemoryCatalog, sql: &str) -> BoundUpdate {
+    match run(c, sql) {
+        Ok(BoundStatement::Update(u)) => u,
+        other => panic!("{sql}: {other:?}"),
+    }
+}
+
+fn delete(c: &MemoryCatalog, sql: &str) -> BoundDelete {
+    match run(c, sql) {
+        Ok(BoundStatement::Delete(d)) => d,
+        other => panic!("{sql}: {other:?}"),
+    }
+}
+
+#[test]
+fn update_basic() {
+    let mut c = catalog();
+    create(
+        &mut c,
+        "CREATE TABLE n (a int NOT NULL DEFAULT 7, b int CHECK (b > 0))",
+    );
+    let u = update(&c, "UPDATE n SET a = DEFAULT, b = a + 1 WHERE b > 0");
+    assert_eq!(u.assignments.len(), 2);
+    assert_eq!(u.assignments[0].0, 0);
+    assert!(matches!(
+        &u.assignments[0].1,
+        UpdateSource::Default(Some(_))
+    ));
+    let UpdateSource::Expr(e) = &u.assignments[1].1 else {
+        panic!()
+    };
+    assert_eq!(e.ty, SqlType::INT4);
+    assert!(u.filter.is_some());
+    assert_eq!(u.not_null, vec![true, false]);
+    assert_eq!(u.checks.len(), 1);
+    assert!(u.system_columns.is_empty());
+    // DEFAULT without a default expression is NULL
+    let u = update(&c, "UPDATE n SET b = DEFAULT");
+    assert!(matches!(&u.assignments[0].1, UpdateSource::Default(None)));
+    // assignment cast of an unknown literal and of int4 to int8
+    let u = update(&c, "UPDATE t SET g = a, c = '1.5', v = 'ab'");
+    assert_eq!(u.assignments.len(), 3);
+    for (_, s) in &u.assignments {
+        let UpdateSource::Expr(e) = s else { panic!() };
+        assert!(e.ty.oid != oid::UNKNOWN);
+    }
+    // alias, ONLY, qualified table
+    update(
+        &c,
+        "UPDATE ONLY public.t AS x SET a = x.a + 1 WHERE x.b = 'q'",
+    );
+}
+
+#[test]
+fn update_errors() {
+    let c = catalog();
+    assert_eq!(err(&c, "UPDATE t SET zzz = 1"), "42703");
+    assert_eq!(err(&c, "UPDATE t SET a = zzz"), "42703");
+    assert_eq!(err(&c, "UPDATE t SET a = 1 WHERE zzz = 1"), "42703");
+    assert_eq!(err(&c, "UPDATE t SET a = 1, a = 2"), "42601");
+    assert_eq!(err(&c, "UPDATE t SET ctid = '(0,1)'"), "0A000");
+    assert_eq!(err(&c, "UPDATE t SET xmin = 1"), "0A000");
+    assert_eq!(err(&c, "UPDATE t SET t.a = 1"), "42703");
+    assert_eq!(err(&c, "UPDATE t SET a.x = 1"), "42804");
+    assert_eq!(err(&c, "UPDATE t SET a = true"), "42804");
+    assert_eq!(err(&c, "UPDATE t SET a = b"), "42804");
+    assert_eq!(err(&c, "UPDATE t SET a = 'abc'"), "22P02");
+    assert_eq!(err(&c, "UPDATE t SET a = 1 WHERE b"), "42804");
+    assert_eq!(err(&c, "UPDATE nope SET a = 1"), "42P01");
+    assert_eq!(err(&c, "UPDATE t SET a = 2 RETURNING a"), "0A000");
+    assert_eq!(err(&c, "UPDATE t SET a = 1 FROM t AS u"), "0A000");
+    assert_eq!(err(&c, "UPDATE x.t SET a = 1"), "42P01");
+    let e = run(&c, "UPDATE t SET t.a = 1").unwrap_err();
+    assert_eq!(e.message, "column \"t\" of relation \"t\" does not exist");
+    assert!(e.hint.is_some());
+}
+
+#[test]
+fn delete_basic_and_errors() {
+    let c = catalog();
+    let d = delete(&c, "DELETE FROM t");
+    assert!(d.filter.is_none());
+    let d = delete(
+        &c,
+        "DELETE FROM ONLY t AS x WHERE x.a > 1 AND x.xmin IS NOT NULL",
+    );
+    assert!(d.filter.is_some());
+    assert_eq!(d.system_columns, vec![SystemColumn::Xmin]);
+    assert_eq!(err(&c, "DELETE FROM t WHERE a"), "42804");
+    assert_eq!(err(&c, "DELETE FROM t WHERE zzz = 1"), "42703");
+    assert_eq!(err(&c, "DELETE FROM nope"), "42P01");
+    assert_eq!(err(&c, "DELETE FROM t RETURNING a"), "0A000");
+    assert_eq!(err(&c, "DELETE FROM t USING t AS u"), "0A000");
+    assert_eq!(err(&c, "DELETE FROM t AS x WHERE t.a = 1"), "42P01");
+}
+
+#[test]
+fn checkpoint_statement() {
+    let c = catalog();
+    assert!(matches!(
+        run(&c, "CHECKPOINT").unwrap(),
+        BoundStatement::Checkpoint
+    ));
+}
+
+#[test]
+fn system_columns() {
+    let mut c = catalog();
+    let s = select(
+        &c,
+        "SELECT xmin, ctid, xmin, tableoid FROM t WHERE cmax IS NULL",
+    );
+    let BoundFrom::Table { system_columns, .. } = &s.from else {
+        panic!()
+    };
+    // natts of t is 7; first-use order: cmax (WHERE is analyzed after the
+    // target list, so xmin, ctid, tableoid come first)
+    assert_eq!(
+        system_columns,
+        &vec![
+            SystemColumn::Xmin,
+            SystemColumn::Ctid,
+            SystemColumn::TableOid,
+            SystemColumn::Cmax
+        ]
+    );
+    let idx = |e: &BoundExpr| match e.kind {
+        BoundExprKind::ColumnRef { index } => index,
+        _ => panic!(),
+    };
+    assert_eq!(idx(&s.targets[0]), 7);
+    assert_eq!(idx(&s.targets[1]), 8);
+    assert_eq!(idx(&s.targets[2]), 7);
+    assert_eq!(idx(&s.targets[3]), 9);
+    assert_eq!(
+        s.columns.iter().map(|c| c.ty.oid).collect::<Vec<_>>(),
+        vec![oid::XID, oid::TID, oid::XID, oid::OID]
+    );
+    // `*` excludes them; qualified names work; unreferenced -> empty
+    assert_eq!(select(&c, "SELECT * FROM t").columns.len(), 7);
+    let s = select(&c, "SELECT t.ctid FROM t");
+    assert_eq!(s.columns[0].name, "ctid");
+    let BoundFrom::Table { system_columns, .. } = &s.from else {
+        panic!()
+    };
+    assert_eq!(system_columns, &vec![SystemColumn::Ctid]);
+    // no FROM: not a column
+    assert_eq!(err(&c, "SELECT xmin"), "42703");
+    // CREATE TABLE refuses the names
+    assert_eq!(err(&c, "CREATE TABLE s (xmin int)"), "42701");
+    assert_eq!(
+        err(&c, "CREATE TABLE s (a int CHECK (ctid IS NULL))"),
+        "42703"
+    );
+    // UPDATE collects them from WHERE and SET
+    create(&mut c, "CREATE TABLE u (a int)");
+    let u = update(
+        &c,
+        "UPDATE u SET a = CASE WHEN cmin IS NULL THEN 1 ELSE 2 END WHERE xmax IS NOT NULL",
+    );
+    assert_eq!(
+        u.system_columns,
+        vec![SystemColumn::Xmax, SystemColumn::Cmin]
+    );
+}
+
+#[test]
+fn qualified_functions() {
+    let c = catalog();
+    select(&c, "SELECT pg_catalog.abs(-1)");
+    select(&c, "SELECT pg_catalog.length('a')");
+    assert_eq!(err(&c, "SELECT public.abs(-1)"), "42883");
+}
+
+#[test]
+fn catalog_tables_are_read_only() {
+    let mut c = catalog();
+    let def = Arc::new(TableDef {
+        schema: "pg_catalog".into(),
+        ..table_def(1259, "pg_class", vec![], vec![])
+    });
+    c.put_table(def);
+    assert_eq!(err(&c, "UPDATE pg_catalog.pg_class SET x = 1"), "42501");
+    assert_eq!(err(&c, "DELETE FROM pg_catalog.pg_class"), "42501");
+    assert_eq!(
+        err(&c, "INSERT INTO pg_catalog.pg_class DEFAULT VALUES"),
+        "42501"
+    );
 }

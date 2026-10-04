@@ -1,0 +1,48 @@
+# フェーズ 1: 本体の接続で行をコミットしたあと、別の接続に未コミットの変更を残して kill -9 される。
+# （yuzhu の M3 は書き込みが 1 本ずつなので、先にコミットしてから other が書き始める）
+
+statement ok
+CREATE TABLE cr2_t (id int NOT NULL, v text)
+
+statement count 3
+INSERT INTO cr2_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement count 1
+INSERT INTO cr2_t VALUES (4, 'd')
+
+statement count 1
+UPDATE cr2_t SET v = 'cc' WHERE id = 3
+
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 1
+INSERT INTO cr2_t VALUES (100, 'uncommitted')
+
+connection other
+statement count 1
+UPDATE cr2_t SET v = 'uncommitted' WHERE id = 1
+
+connection other
+statement count 1
+DELETE FROM cr2_t WHERE id = 2
+
+connection other
+query IT
+SELECT id, v FROM cr2_t ORDER BY id
+----
+1 uncommitted
+3 cc
+4 d
+100 uncommitted
+
+# 本体の接続（読み取り）はコミット済みの版だけを見る
+query IT
+SELECT id, v FROM cr2_t ORDER BY id
+----
+1 a
+2 b
+3 cc
+4 d

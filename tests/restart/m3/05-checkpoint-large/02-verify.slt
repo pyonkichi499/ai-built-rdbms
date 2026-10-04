@@ -1,0 +1,31 @@
+# フェーズ 2: チェックポイントの前後の UPDATE が両方残り、最後の値が見える。
+
+query I
+SELECT a FROM cr5_t ORDER BY a LIMIT 1
+----
+20000
+
+query I
+SELECT a FROM cr5_t ORDER BY a DESC LIMIT 1
+----
+22047
+
+query I
+SELECT a FROM cr5_t ORDER BY a LIMIT 1 OFFSET 2047
+----
+22047
+
+query I
+SELECT a FROM cr5_t ORDER BY a LIMIT 1 OFFSET 2048
+----
+
+# 古い版（10000 台、0 台）は見えない
+query I
+SELECT a FROM cr5_t WHERE a < 20000 LIMIT 1
+----
+
+statement count 2048
+UPDATE cr5_t SET a = a + 1
+
+statement ok
+DROP TABLE cr5_t

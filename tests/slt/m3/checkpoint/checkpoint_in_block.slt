@@ -1,0 +1,82 @@
+# CHECKPOINT 文（PostgreSQL ではスーパーユーザーのみ。ランナーは postgres）
+
+statement ok
+CHECKPOINT
+
+statement ok
+CHECKPOINT
+
+statement ok
+CREATE TABLE ck_t (n int)
+
+statement ok
+INSERT INTO ck_t VALUES (1)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT n FROM ck_t
+----
+1
+
+# ブロック内でも通る（PostgreSQL は CHECKPOINT を PreventInTransactionBlock にしない）
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ck_t VALUES (2)
+
+statement ok
+CHECKPOINT
+
+statement ok
+ROLLBACK
+
+query I
+SELECT n FROM ck_t ORDER BY n
+----
+1
+
+statement ok
+BEGIN READ ONLY
+
+statement ok
+CHECKPOINT
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO ck_t VALUES (3)
+
+statement ok
+CHECKPOINT
+
+statement ok
+COMMIT
+
+query I
+SELECT n FROM ck_t ORDER BY n
+----
+1
+3
+
+# 失敗状態では 25P02
+statement ok
+BEGIN
+
+statement error (22012)
+SELECT 1 / 0
+
+statement error (25P02)
+CHECKPOINT
+
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE ck_t

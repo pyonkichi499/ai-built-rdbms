@@ -18,7 +18,7 @@ use crate::error::{Error, Result, sqlstate};
 
 /// The value reported by `version()`.
 pub const VERSION_STRING: &str = concat!(
-    "PostgreSQL 16.0 (yuzhu ",
+    "PostgreSQL 17.0 (yuzhu ",
     env!("CARGO_PKG_VERSION"),
     ") on x86_64-pc-linux-gnu, compiled by rustc, 64-bit"
 );
@@ -97,6 +97,41 @@ pub static SETTINGS: &[SettingDef] = &[
         false,
         Kind::ReadOnly,
         "Shows the size of a disk block.",
+    ),
+    def(
+        "checkpoint_timeout",
+        "5min",
+        false,
+        Kind::ReadOnly,
+        "Sets the maximum time between automatic WAL checkpoints.",
+    ),
+    def(
+        "data_checksums",
+        "on",
+        false,
+        Kind::ReadOnly,
+        "Shows whether data checksums are turned on for this cluster.",
+    ),
+    def(
+        "data_directory",
+        "",
+        false,
+        Kind::ReadOnly,
+        "Sets the server's data directory.",
+    ),
+    def(
+        "segment_size",
+        "1GB",
+        false,
+        Kind::ReadOnly,
+        "Shows the number of pages per disk file.",
+    ),
+    def(
+        "shared_buffers",
+        "128MB",
+        false,
+        Kind::ReadOnly,
+        "Sets the number of shared memory buffers used by the server.",
     ),
     def(
         "bytea_output",
@@ -240,14 +275,14 @@ pub static SETTINGS: &[SettingDef] = &[
     ),
     def(
         "server_version",
-        "16.0",
+        "17.0",
         true,
         Kind::ReadOnly,
         "Shows the server version.",
     ),
     def(
         "server_version_num",
-        "160000",
+        "170000",
         false,
         Kind::ReadOnly,
         "Shows the server version as an integer.",
@@ -548,6 +583,18 @@ impl Settings {
         }
     }
 
+    /// Sets the value shown for a read-only parameter that depends on the
+    /// server (`shared_buffers`, `data_directory`, ...). Unknown names are
+    /// ignored.
+    pub fn set_server_value(&mut self, name: &str, value: &str) {
+        if let Some(d) = lookup(name) {
+            let k = key(d.name);
+            self.reset_values.insert(k.clone(), value.to_owned());
+            self.session.insert(k.clone(), value.to_owned());
+            self.current.insert(k, value.to_owned());
+        }
+    }
+
     /// The effective value of a parameter (`SHOW`). Returns the canonical
     /// name and the value.
     pub fn show(&self, name: &str) -> Result<(String, String)> {
@@ -680,6 +727,15 @@ impl Settings {
         self.get("extra_float_digits").parse().unwrap_or(1)
     }
 
+    /// `lock_timeout`; `None` waits forever (value 0).
+    pub fn lock_timeout(&self) -> Option<std::time::Duration> {
+        let ms = parse_millis("lock_timeout", self.get("lock_timeout")).unwrap_or(0);
+        u64::try_from(ms)
+            .ok()
+            .filter(|ms| *ms > 0)
+            .map(std::time::Duration::from_millis)
+    }
+
     /// Whether a message of `level` (`notice`, `warning`, ...) passes
     /// `client_min_messages`.
     pub fn client_wants(&self, level: &str) -> bool {
@@ -760,7 +816,7 @@ mod tests {
         );
         assert_eq!(st.show("search_path").unwrap().1, "\"$user\", public");
         assert_eq!(st.show("session_authorization").unwrap().1, "alice");
-        assert_eq!(st.show("server_version_num").unwrap().1, "160000");
+        assert_eq!(st.show("server_version_num").unwrap().1, "170000");
         assert_eq!(st.show("max_identifier_length").unwrap().1, "63");
         assert_eq!(
             st.show("nope").unwrap_err().sqlstate,
@@ -873,6 +929,6 @@ mod tests {
         assert_eq!(parse_bool("of"), Some(false));
         assert_eq!(parse_bool("Y"), Some(true));
         assert_eq!(split_ident_list("\"a,b\", C"), s(&["a,b", "c"]));
-        assert!(VERSION_STRING.starts_with("PostgreSQL 16.0 (yuzhu "));
+        assert!(VERSION_STRING.starts_with("PostgreSQL 17.0 (yuzhu "));
     }
 }
