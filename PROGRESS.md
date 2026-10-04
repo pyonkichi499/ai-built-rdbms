@@ -17,7 +17,7 @@
 ## M2 の状況
 
 - 設計書 `spec/design/m2.md` は作成済み。実装は未着手。
-- テスト `tests/slt/m2/` は `dml/update_basic.slt` と `dml/update_expr.slt` の 2 ファイルのみ。`catalog`・`ddl`・`psql`・`txn`・`types` は空。
+- テスト `tests/slt/m2/dml/` に 6 ファイル（delete_basic, update_basic, update_constraints, update_errors, update_expr, update_halloween）。`catalog`・`ddl`・`psql`・`txn`・`types` は空。
 - M2 のテストはまだ yuzhu に対して実行していない（UPDATE / DELETE が未実装のため）。
 
 ## 残課題
