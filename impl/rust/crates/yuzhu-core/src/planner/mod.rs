@@ -16,14 +16,20 @@ use crate::analyzer::{
     BoundExpr, BoundExprKind, BoundFrom, BoundInsert, BoundSelect, BoundStatement,
 };
 use crate::error::{Error, Result};
+use crate::storage::RelHandle;
 
 /// Plans a SELECT or INSERT. DDL statements are not planned.
 pub fn plan(stmt: &BoundStatement) -> Result<PhysicalPlan> {
     match stmt {
         BoundStatement::Select(s) => Ok(plan_select(s)),
         BoundStatement::Insert(i) => Ok(plan_insert(i)),
-        BoundStatement::CreateTable(_) | BoundStatement::DropTable(_) => Err(Error::internal(
-            "DDL statements are executed by the session, not planned",
+        BoundStatement::Update(_) | BoundStatement::Delete(_) => Err(Error::not_supported(
+            "UPDATE and DELETE planning is not implemented yet",
+        )),
+        BoundStatement::CreateTable(_)
+        | BoundStatement::DropTable(_)
+        | BoundStatement::Checkpoint => Err(Error::internal(
+            "utility statements are executed by the session, not planned",
         )),
     }
 }
@@ -46,9 +52,14 @@ pub fn plan_select(s: &BoundSelect) -> PhysicalPlan {
         (from, filter) => {
             let source = match from {
                 BoundFrom::None => PhysicalPlan::Result { exprs: Vec::new() },
-                BoundFrom::Table { table, .. } => PhysicalPlan::SeqScan {
-                    table_oid: table.oid,
+                BoundFrom::Table {
+                    table,
+                    system_columns,
+                    ..
+                } => PhysicalPlan::SeqScan {
+                    rel: RelHandle::from_table(table),
                     columns: table.columns.iter().map(|c| c.ty).collect(),
+                    system_columns: system_columns.clone(),
                 },
                 BoundFrom::Values { rows, .. } => PhysicalPlan::Values { rows: rows.clone() },
             };
@@ -118,7 +129,11 @@ pub fn plan_select(s: &BoundSelect) -> PhysicalPlan {
 fn is_identity(targets: &[BoundExpr], from: &BoundFrom) -> bool {
     let width = match from {
         BoundFrom::None => 0,
-        BoundFrom::Table { table, .. } => table.columns.len(),
+        BoundFrom::Table {
+            table,
+            system_columns,
+            ..
+        } => table.columns.len() + system_columns.len(),
         BoundFrom::Values { types, .. } => types.len(),
     };
     targets.len() == width
@@ -134,12 +149,13 @@ pub fn plan_insert(i: &BoundInsert) -> PhysicalPlan {
     let mut checks = i.checks.clone();
     checks.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
     PhysicalPlan::Insert {
-        table_oid: i.table.oid,
+        rel: RelHandle::from_table(&i.table),
         input: Box::new(plan_select(&i.source)),
         column_map: i.column_map.clone(),
         defaults: i.defaults.clone(),
         checks,
         not_null: i.table.columns.iter().map(|c| c.not_null).collect(),
+        table_name: i.table.name.clone(),
     }
 }
 
@@ -149,11 +165,11 @@ mod tests {
 
     use super::*;
     use crate::analyzer::{BoundCheck, BoundSortKey, OutputColumn};
+    use crate::catalog::fake::table_def;
     use crate::catalog::{ColumnDef, TableDef};
     use crate::executor::build;
     use crate::executor::eval::tests::{GT, col, int, lit, op, text};
     use crate::executor::nodes::test_util::Fixture;
-    use crate::storage::TableStore;
     use crate::types::{Datum, SqlType};
 
     fn out(name: &str, ty: SqlType) -> OutputColumn {
@@ -191,23 +207,20 @@ mod tests {
             not_null: attnum == 1,
             default: None,
         };
-        Arc::new(TableDef {
-            oid: 16384,
-            schema: "public".into(),
-            name: "t".into(),
-            columns: vec![c("a", 1, SqlType::INT4), c("b", 2, SqlType::TEXT)],
-            checks: vec![],
-        })
+        Arc::new(table_def(
+            16384,
+            "t",
+            vec![c("a", 1, SqlType::INT4), c("b", 2, SqlType::TEXT)],
+            vec![],
+        ))
     }
 
     fn fixture_with_rows(rows: &[(i32, &str)]) -> Fixture {
         let mut f = Fixture::new();
         let t = table();
-        f.storage.create_table(t.oid).unwrap();
         for (a, b) in rows {
             f.storage
-                .insert(t.oid, vec![Datum::Int4(*a), Datum::Text((*b).into())])
-                .unwrap();
+                .add_row(t.oid, vec![Datum::Int4(*a), Datum::Text((*b).into())]);
         }
         f.catalog.put_table(t);
         f
@@ -241,6 +254,7 @@ mod tests {
             BoundFrom::Table {
                 table: table(),
                 alias: None,
+                system_columns: vec![],
             },
             vec![col(0, SqlType::INT4), col(1, SqlType::TEXT)],
             2,
@@ -257,6 +271,7 @@ mod tests {
             BoundFrom::Table {
                 table: table(),
                 alias: None,
+                system_columns: vec![],
             },
             vec![col(1, SqlType::TEXT), col(0, SqlType::INT4)],
             1,
@@ -345,7 +360,7 @@ mod tests {
         assert!(f.run(&mut e).unwrap().is_empty());
         assert_eq!(e.rows_affected(), 2);
         assert_eq!(
-            f.storage.scan(t.oid).unwrap()[1].1,
+            f.storage.rows(t.oid)[1],
             vec![Datum::Int4(2), Datum::Text("dflt".into())]
         );
     }

@@ -51,7 +51,38 @@ pub fn output_text_with(d: &Datum, ty: SqlType, opts: &OutputOpts) -> Option<Str
         Datum::Float4(v) => float4_out_with(*v, efd),
         Datum::Float8(v) => float8_out_with(*v, efd),
         Datum::Text(s) => s.clone(),
+        Datum::Oid(_)
+        | Datum::Char(_)
+        | Datum::Xid(_)
+        | Datum::Cid(_)
+        | Datum::Tid(_)
+        | Datum::OidVector(_) => {
+            return super::sys::output_text(d);
+        }
     })
+}
+
+/// Like [`output_text_with`], but a `regproc` column is shown by function
+/// name. `regproc_name` maps a function OID to its display name (`None` =
+/// unknown, shown as a number); 0 is shown as `-` (PostgreSQL's `regprocout`).
+/// The executor's output stage passes a lookup into `catalog::builtin`.
+pub fn output_text_regproc(
+    d: &Datum,
+    ty: SqlType,
+    opts: &OutputOpts,
+    regproc_name: &dyn Fn(Oid) -> Option<String>,
+) -> Option<String> {
+    if ty.oid == oid::REGPROC
+        && let Datum::Oid(v) = d
+    {
+        if *v == 0 {
+            return Some("-".into());
+        }
+        if let Some(name) = regproc_name(*v) {
+            return Some(name);
+        }
+    }
+    output_text_with(d, ty, opts)
 }
 
 /// `float8out` for any `extra_float_digits`.
@@ -174,6 +205,7 @@ pub fn input_text(s: &str, ty: SqlType) -> Result<Datum> {
         oid::FLOAT8 => float8_in(s).map(Datum::Float8),
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => Ok(Datum::Text(s.to_owned())),
         oid::NAME => Ok(Datum::Text(truncate_identifier(s).to_owned())),
+        t if super::sys::handles(t) => super::sys::input_text(s, ty),
         other => Err(Error::internal(format!(
             "no input function for type with OID {other}"
         ))),

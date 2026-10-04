@@ -5,6 +5,7 @@ pub mod datum;
 mod float_fmt;
 pub mod io;
 pub mod ops;
+pub mod sys;
 
 pub use datum::{Datum, Row, cmp_datum};
 
@@ -15,18 +16,44 @@ pub type Oid = u32;
 pub mod oid {
     use super::Oid;
     pub const BOOL: Oid = 16;
+    pub const CHAR: Oid = 18;
     pub const NAME: Oid = 19;
     pub const INT8: Oid = 20;
     pub const INT2: Oid = 21;
     pub const INT4: Oid = 23;
     pub const TEXT: Oid = 25;
     pub const OID: Oid = 26;
+    pub const REGPROC: Oid = 24;
+    pub const TID: Oid = 27;
+    pub const XID: Oid = 28;
+    pub const CID: Oid = 29;
+    pub const OIDVECTOR: Oid = 30;
+    pub const PG_NODE_TREE: Oid = 194;
+    pub const ACLITEM: Oid = 1033;
+    pub const TIMESTAMPTZ: Oid = 1184;
+    pub const ANYARRAY: Oid = 2277;
+    pub const ACLITEM_ARRAY: Oid = 1034;
+    pub const TEXT_ARRAY: Oid = 1009;
+    pub const INT2_ARRAY: Oid = 1005;
+    pub const OID_ARRAY: Oid = 1028;
+    pub const CHAR_ARRAY: Oid = 1002;
+    /// First OID handed out for objects created by genbki (initdb), as in
+    /// `src/include/access/transam.h`.
+    pub const FIRST_GENBKI_OBJECT_ID: Oid = 10000;
     pub const FLOAT4: Oid = 700;
     pub const FLOAT8: Oid = 701;
     pub const UNKNOWN: Oid = 705;
     pub const VARCHAR: Oid = 1043;
     /// OIDs of user-created objects start here.
     pub const FIRST_NORMAL_OBJECT_ID: Oid = 16384;
+}
+
+/// `ItemPointerData`: heap block number and 1-based line pointer offset
+/// (offset 0 is invalid). Ordered by physical position.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct Tid {
+    pub block: u32,
+    pub offset: u16,
 }
 
 /// Size of the `varchar` typmod header: `typmod = n + VARHDRSZ`.

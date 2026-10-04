@@ -213,7 +213,7 @@ impl Analyzer<'_> {
                 .with_span(s.span));
             }
         };
-        if self.catalog.table(Some(&schema), &name).is_some() {
+        if self.catalog.table(Some(&schema), &name)?.is_some() {
             if ct.if_not_exists {
                 // The session reports `NOTICE: relation "x" already exists,
                 // skipping`; the definition is not analyzed (as in PG).

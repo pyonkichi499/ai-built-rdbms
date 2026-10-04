@@ -4,6 +4,7 @@
 //!
 //! `CASTS`, `OPERATORS` and `FUNCTIONS` use the PostgreSQL 17 OIDs.
 
+use super::FnKind;
 use crate::types::ops::{self, BuiltinFn};
 use crate::types::{Oid, oid};
 
@@ -80,7 +81,7 @@ pub struct BuiltinFunction {
     pub args: &'static [Oid],
     pub result: Oid,
     pub strict: bool,
-    pub func: BuiltinFn,
+    pub kind: FnKind,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,7 +345,7 @@ const fn func(
         args,
         result,
         strict: true,
-        func,
+        kind: FnKind::Pure(func),
     }
 }
 

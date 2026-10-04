@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::catalog::memory::MemoryCatalog;
+use crate::catalog::fake::{FakeCatalog as MemoryCatalog, table_def};
 use crate::catalog::{CastMethod, TableDef};
 use crate::error::Error;
 use crate::types::{Datum, Oid, SqlType, oid};
@@ -30,11 +30,8 @@ fn create(c: &mut MemoryCatalog, sql: &str) {
     };
     let oid = c.allocate_oid();
     c.put_table(Arc::new(TableDef {
-        oid,
         schema: ct.schema,
-        name: ct.name,
-        columns: ct.columns,
-        checks: ct.checks,
+        ..table_def(oid, &ct.name, ct.columns, ct.checks)
     }));
 }
 
@@ -655,7 +652,7 @@ fn stored_defaults_and_checks() {
         &mut c,
         "CREATE TABLE k (a int DEFAULT '42' CHECK (a > 0), b int, c text CONSTRAINT c_not_empty CHECK (c <> ''), CHECK (b < 100), CONSTRAINT a_lt_b CHECK (a < b), CHECK (1 > 0))",
     );
-    let t = c.table(None, "k").unwrap();
+    let t = c.table(None, "k").unwrap().unwrap();
     assert_eq!(t.columns[0].default.as_ref().unwrap().expr_sql, "'42'");
     let names: Vec<&str> = t.checks.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
@@ -676,7 +673,7 @@ fn stored_defaults_and_checks() {
         &mut c,
         "CREATE TABLE k2 (lo int, hi int CHECK (hi >= lo), x int CHECK (x > 0), y int CHECK (y > 0) CHECK (y < 9))",
     );
-    let t = c.table(None, "k2").unwrap();
+    let t = c.table(None, "k2").unwrap().unwrap();
     let names: Vec<&str> = t.checks.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
         names,

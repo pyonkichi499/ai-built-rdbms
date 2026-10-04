@@ -56,6 +56,8 @@ pub mod sqlstate {
     pub const READ_ONLY_SQL_TRANSACTION: SqlState = SqlState("25006");
     pub const NO_ACTIVE_SQL_TRANSACTION: SqlState = SqlState("25P01");
     pub const IN_FAILED_SQL_TRANSACTION: SqlState = SqlState("25P02");
+    // Class 27
+    pub const TRIGGERED_DATA_CHANGE_VIOLATION: SqlState = SqlState("27000");
     // Class 28
     pub const INVALID_AUTHORIZATION_SPECIFICATION: SqlState = SqlState("28000");
     pub const INVALID_PASSWORD: SqlState = SqlState("28P01");
@@ -91,14 +93,22 @@ pub mod sqlstate {
     // Class 53 / 54 - resources / limits
     pub const OUT_OF_MEMORY: SqlState = SqlState("53200");
     pub const TOO_MANY_CONNECTIONS: SqlState = SqlState("53300");
+    pub const DISK_FULL: SqlState = SqlState("53100");
     pub const PROGRAM_LIMIT_EXCEEDED: SqlState = SqlState("54000");
-    // Class 55 / 57
+    pub const TOO_MANY_COLUMNS: SqlState = SqlState("54011");
+    // Class 55 / 57 / 58
+    pub const OBJECT_NOT_IN_PREREQUISITE_STATE: SqlState = SqlState("55000");
+    pub const LOCK_NOT_AVAILABLE: SqlState = SqlState("55P03");
     pub const OBJECT_IN_USE: SqlState = SqlState("55006");
     pub const CANT_CHANGE_RUNTIME_PARAM: SqlState = SqlState("55P02");
     pub const QUERY_CANCELED: SqlState = SqlState("57014");
     pub const ADMIN_SHUTDOWN: SqlState = SqlState("57P01");
+    pub const CANNOT_CONNECT_NOW: SqlState = SqlState("57P03");
+    pub const IO_ERROR: SqlState = SqlState("58030");
+    pub const UNDEFINED_FILE: SqlState = SqlState("58P01");
     // Class XX
     pub const INTERNAL_ERROR: SqlState = SqlState("XX000");
+    pub const DATA_CORRUPTED: SqlState = SqlState("XX001");
 }
 
 /// Message severity (the `S`/`V` fields of `ErrorResponse` / `NoticeResponse`).
@@ -245,6 +255,23 @@ impl Error {
         Error::new(sqlstate::INTERNAL_ERROR, message)
     }
 
+    /// `XX001`: a page, control file or other on-disk structure is damaged.
+    pub fn corrupted(message: impl Into<String>) -> Self {
+        Error::new(sqlstate::DATA_CORRUPTED, message)
+    }
+
+    /// Converts a `std::io::Error` into an error with a SQLSTATE
+    /// (`NotFound` -> 58P01, `StorageFull` -> 53100, otherwise 58030).
+    /// The OS error text is appended to `message`.
+    pub fn from_io(e: &std::io::Error, message: impl Into<String>) -> Self {
+        let state = match e.kind() {
+            std::io::ErrorKind::NotFound => sqlstate::UNDEFINED_FILE,
+            std::io::ErrorKind::StorageFull => sqlstate::DISK_FULL,
+            _ => sqlstate::IO_ERROR,
+        };
+        Error::new(state, format!("{}: {e}", message.into()))
+    }
+
     /// Converts `cursor_byte` into a 1-based character `position` using the
     /// query text the byte offset refers to. No-op if `position` is set.
     pub fn resolve_position(&mut self, sql: &str) {
@@ -302,6 +329,19 @@ mod tests {
         assert_eq!(s.sqlstate, sqlstate::SYNTAX_ERROR);
         assert_eq!(s.position, Some(3));
         assert_eq!(Severity::Warning.as_str(), "WARNING");
+    }
+
+    #[test]
+    fn io_and_corruption_errors() {
+        use std::io::{Error as IoError, ErrorKind};
+        let nf = Error::from_io(&IoError::from(ErrorKind::NotFound), "could not open");
+        assert_eq!(nf.sqlstate, sqlstate::UNDEFINED_FILE);
+        assert!(nf.message.starts_with("could not open: "));
+        let full = Error::from_io(&IoError::from(ErrorKind::StorageFull), "x");
+        assert_eq!(full.sqlstate, sqlstate::DISK_FULL);
+        let other = Error::from_io(&IoError::other("boom"), "x");
+        assert_eq!(other.sqlstate, sqlstate::IO_ERROR);
+        assert_eq!(Error::corrupted("bad").sqlstate.code(), "XX001");
     }
 
     #[test]

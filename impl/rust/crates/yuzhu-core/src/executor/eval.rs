@@ -7,7 +7,7 @@
 
 use super::{ExecCtx, SessionInfo};
 use crate::analyzer::{BoolTestKind, BoundExpr, BoundExprKind, SessionValueKind};
-use crate::catalog::{BuiltinOperator, CastMethod};
+use crate::catalog::{BuiltinFunction, BuiltinOperator, CastMethod, FnKind};
 use crate::error::{Error, Result, sqlstate};
 use crate::types::{Datum, Row, SqlType, io, ops};
 
@@ -39,6 +39,18 @@ fn to_bool(d: &Datum) -> Result<Option<bool>> {
     }
 }
 
+/// Calls a built-in function. `FnKind::Context` functions need the catalog and
+/// session (`EvalCtx`), which 担当 H2 wires in; until then they are rejected.
+fn call_function(func: &BuiltinFunction, vals: &[Datum]) -> Result<Datum> {
+    match func.kind {
+        FnKind::Pure(f) => f(vals),
+        FnKind::Context(_) => Err(Error::not_supported(format!(
+            "function {} is not supported yet",
+            func.name
+        ))),
+    }
+}
+
 struct Evaluator<'a> {
     row: &'a Row,
     session: &'a SessionInfo,
@@ -64,13 +76,13 @@ impl Evaluator<'_> {
                     let Some(vals) = self.eval_strict_args(args)? else {
                         return Ok(Datum::Null);
                     };
-                    (func.func)(&vals)
+                    call_function(func, &vals)
                 } else {
                     let vals = args
                         .iter()
                         .map(|a| self.eval(a))
                         .collect::<Result<Vec<_>>>()?;
-                    (func.func)(&vals)
+                    call_function(func, &vals)
                 }
             }
             BoundExprKind::Cast {
@@ -549,7 +561,7 @@ pub(crate) mod tests {
         args: &[oid::TEXT],
         result: oid::INT4,
         strict: true,
-        func: textlen,
+        kind: FnKind::Pure(textlen),
     };
 
     pub(crate) fn op(o: &'static BuiltinOperator, l: BoundExpr, r: BoundExpr) -> BoundExpr {

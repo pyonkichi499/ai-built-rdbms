@@ -1,7 +1,10 @@
 //! Physical plan (immutable tree).
 
+pub use crate::analyzer::UpdateSource;
 use crate::analyzer::{BoundCheck, BoundExpr};
-use crate::types::{Oid, SqlType};
+use crate::catalog::SystemColumn;
+use crate::storage::RelHandle;
+use crate::types::SqlType;
 
 /// A sort key over the input row of a `Sort` node.
 #[derive(Debug, Clone)]
@@ -19,11 +22,12 @@ pub enum PhysicalPlan {
     /// Emits each row of constant-ish expressions (evaluated over an empty
     /// row).
     Values { rows: Vec<Vec<BoundExpr>> },
-    /// Full scan of a table in insertion order. `columns` are the table's
-    /// column types in attnum order (the row layout).
+    /// Full scan of a table. Output row = the user columns (attnum order,
+    /// types in `columns`) followed by `system_columns` in order.
     SeqScan {
-        table_oid: Oid,
+        rel: RelHandle,
         columns: Vec<SqlType>,
+        system_columns: Vec<SystemColumn>,
     },
     /// Passes rows for which `predicate` is true (NULL/false drop).
     Filter {
@@ -49,12 +53,12 @@ pub enum PhysicalPlan {
         limit: Option<BoundExpr>,
         offset: Option<BoundExpr>,
     },
-    /// Inserts input rows into `table_oid`; emits nothing and counts rows.
+    /// Inserts input rows into `rel`; emits nothing and counts rows.
     /// Per row: build the table row via `column_map` / `defaults` → NOT
-    /// NULL check (`not_null[i]`) → `checks` → `storage.insert` → undo log.
+    /// NULL check (`not_null[i]`) → `checks` → `storage.insert`.
     /// Input rows are already coerced to the column types.
     Insert {
-        table_oid: Oid,
+        rel: RelHandle,
         input: Box<PhysicalPlan>,
         /// Per table column: index into the input row, or `None`.
         column_map: Vec<Option<usize>>,
@@ -63,5 +67,25 @@ pub enum PhysicalPlan {
         checks: Vec<BoundCheck>,
         /// Per table column.
         not_null: Vec<bool>,
+        /// For error messages.
+        table_name: String,
+    },
+    /// Updates the rows of `input`: the target table's user columns followed
+    /// by `ctid` (`Datum::Tid`). Per row: evaluate `assignments` over the old
+    /// row, NOT NULL, `checks`, then `storage.update`.
+    Update {
+        rel: RelHandle,
+        input: Box<PhysicalPlan>,
+        /// `(attnum - 1, source)`.
+        assignments: Vec<(usize, UpdateSource)>,
+        checks: Vec<BoundCheck>,
+        /// Per table column.
+        not_null: Vec<bool>,
+        table_name: String,
+    },
+    /// Deletes the rows of `input` (user columns followed by `ctid`).
+    Delete {
+        rel: RelHandle,
+        input: Box<PhysicalPlan>,
     },
 }

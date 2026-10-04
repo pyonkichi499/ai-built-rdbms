@@ -13,8 +13,20 @@ pub enum Datum {
     Int8(i64),
     Float4(f32),
     Float8(f64),
-    /// Shared by text, varchar, unknown and name.
+    /// Shared by text, varchar, unknown, name and `pg_node_tree`.
     Text(String),
+    /// `oid` and `regproc`.
+    Oid(u32),
+    /// `"char"`.
+    Char(u8),
+    /// `xid` (the lower 32 bits of the 64-bit XID).
+    Xid(u32),
+    /// `cid`.
+    Cid(u32),
+    /// `tid`.
+    Tid(super::Tid),
+    /// `oidvector`.
+    OidVector(Vec<u32>),
 }
 
 /// A row of values, in column order.
@@ -65,6 +77,12 @@ impl Datum {
             Datum::Int2(_) | Datum::Int4(_) | Datum::Int8(_) => 1,
             Datum::Float4(_) | Datum::Float8(_) => 2,
             Datum::Text(_) => 3,
+            Datum::Oid(_) => 5,
+            Datum::Char(_) => 6,
+            Datum::Xid(_) => 7,
+            Datum::Cid(_) => 8,
+            Datum::Tid(_) => 9,
+            Datum::OidVector(_) => 10,
             Datum::Null => 4,
         }
     }
@@ -92,8 +110,13 @@ pub fn cmp_f64(a: f64, b: f64) -> Ordering {
 /// (a bug in the caller) are ordered by a fixed type rank instead of
 /// panicking.
 pub fn cmp_datum(a: &Datum, b: &Datum) -> Ordering {
-    use Datum::{Bool, Float4, Float8, Text};
+    use Datum::{Bool, Char, Cid, Float4, Float8, Oid, OidVector, Text, Tid, Xid};
     match (a, b) {
+        // Unsigned comparison (oid, xid and cid are u32).
+        (Oid(x), Oid(y)) | (Xid(x), Xid(y)) | (Cid(x), Cid(y)) => x.cmp(y),
+        (Char(x), Char(y)) => x.cmp(y),
+        (Tid(x), Tid(y)) => x.cmp(y),
+        (OidVector(x), OidVector(y)) => x.cmp(y),
         (Bool(x), Bool(y)) => x.cmp(y),
         (Text(x), Text(y)) => x.as_bytes().cmp(y.as_bytes()),
         (Float4(x), Float4(y)) => cmp_f64(f64::from(*x), f64::from(*y)),
@@ -161,6 +184,23 @@ mod tests {
         assert_eq!(cmp_datum(&Int4(2), &Float8(1.5)), Ordering::Greater);
         assert_eq!(cmp_datum(&Null, &Int4(1)), Ordering::Greater);
         assert_eq!(cmp_datum(&Null, &Null), Ordering::Equal);
+    }
+
+    #[test]
+    fn system_type_ordering() {
+        // oid / xid / cid compare as unsigned.
+        assert_eq!(cmp_datum(&Oid(u32::MAX), &Oid(1)), Ordering::Greater);
+        assert_eq!(cmp_datum(&Xid(1), &Xid(2)), Ordering::Less);
+        assert_eq!(cmp_datum(&Cid(7), &Cid(7)), Ordering::Equal);
+        assert_eq!(cmp_datum(&Char(b'a'), &Char(b'b')), Ordering::Less);
+        // tid: block first, then offset.
+        let t = |block, offset| Tid(crate::types::Tid { block, offset });
+        assert_eq!(cmp_datum(&t(1, 9), &t(2, 1)), Ordering::Less);
+        assert_eq!(cmp_datum(&t(2, 3), &t(2, 1)), Ordering::Greater);
+        assert_eq!(
+            cmp_datum(&OidVector(vec![1, 2]), &OidVector(vec![1, 3])),
+            Ordering::Less
+        );
     }
 
     #[test]

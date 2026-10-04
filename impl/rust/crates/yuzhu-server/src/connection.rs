@@ -10,8 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use yuzhu_core::storage::vfs::LocalVfs;
 use yuzhu_core::{
-    ColumnDesc, Database, DatabaseConfig, Error, Notice, ResultSink, Session, Severity,
+    Cluster, ClusterOptions, ColumnDesc, Error, Notice, ResultSink, Session, Severity,
     StartupParams,
 };
 
@@ -38,7 +39,7 @@ const REJECT_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// State shared by all connections of a server.
 #[derive(Debug)]
 struct Shared {
-    db: Arc<Database>,
+    db: Arc<Cluster>,
     /// Limit on established sessions (post-startup).
     max_connections: usize,
     /// Hard ceiling on connection threads, including those still in startup.
@@ -69,9 +70,20 @@ impl Server {
     /// ephemeral port (see [`Server::local_addr`]).
     pub fn bind(config: &Config) -> io::Result<Self> {
         let listener = TcpListener::bind((config.listen, config.port))?;
-        let db = Database::new(DatabaseConfig {
-            database_name: config.database_name.clone(),
-        });
+        // 担当 J が `-D` / data_directory 設定に置き換える（仮のパス）。
+        let data_dir = std::path::PathBuf::from("yuzhu-data");
+        let vfs = Arc::new(LocalVfs::new(data_dir.clone()));
+        let db = Cluster::open(
+            vfs,
+            ClusterOptions {
+                data_dir,
+                shared_buffers: 16384,
+                max_connections: u32::try_from(config.max_connections).unwrap_or(u32::MAX),
+                checkpoint_timeout: Duration::from_mins(5),
+                ignore_unclean_shutdown: false,
+            },
+        )
+        .map_err(|e| io::Error::other(e.message))?;
         Ok(Self {
             listener,
             shared: Arc::new(Shared {

@@ -1,61 +1,116 @@
-//! Executor node: sequential scan (all live rows in insertion order).
+//! Executor node: sequential scan. Emits the user columns followed by the
+//! requested system columns (`m2.md` §4.7).
 
+use crate::catalog::SystemColumn;
 use crate::error::Result;
 use crate::executor::{ExecCtx, Executor};
-use crate::storage::RowId;
-use crate::types::{Oid, Row};
+use crate::storage::{HeapScan, HeapTuple, RelHandle};
+use crate::types::{Datum, Row};
 
 #[derive(Debug)]
 pub struct SeqScanExec {
-    table_oid: Oid,
-    /// Snapshot taken on the first `next` call (M1: a full copy, so an
-    /// `INSERT INTO t SELECT * FROM t` reads the statement-start contents).
-    rows: Option<std::vec::IntoIter<(RowId, Row)>>,
+    rel: RelHandle,
+    system_columns: Vec<SystemColumn>,
+    /// Started on the first `next` call, with the statement's snapshot.
+    scan: Option<HeapScan>,
 }
 
 impl SeqScanExec {
-    pub fn new(table_oid: Oid) -> Self {
+    pub fn new(rel: RelHandle, system_columns: Vec<SystemColumn>) -> Self {
         SeqScanExec {
-            table_oid,
-            rows: None,
+            rel,
+            system_columns,
+            scan: None,
         }
+    }
+
+    fn row_of(&self, t: HeapTuple) -> Row {
+        let mut row = t.row;
+        for c in &self.system_columns {
+            row.push(match c {
+                SystemColumn::Ctid => Datum::Tid(t.tid),
+                SystemColumn::Xmin => Datum::Xid(t.xmin.to_external()),
+                SystemColumn::Cmin => Datum::Cid(t.cmin),
+                SystemColumn::Xmax => Datum::Xid(t.xmax.to_external()),
+                SystemColumn::Cmax => Datum::Cid(t.cmax),
+                SystemColumn::TableOid => Datum::Oid(self.rel.oid),
+            });
+        }
+        row
     }
 }
 
 impl Executor for SeqScanExec {
     fn next(&mut self, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
-        if self.rows.is_none() {
-            self.rows = Some(ctx.storage.scan(self.table_oid)?.into_iter());
+        ctx.check_interrupts()?;
+        if self.scan.is_none() {
+            self.scan = Some(ctx.storage.begin_scan(&self.rel, ctx.snapshot)?);
         }
-        Ok(self
-            .rows
-            .as_mut()
-            .and_then(Iterator::next)
-            .map(|(_, row)| row))
+        let Some(scan) = self.scan.as_mut() else {
+            return Ok(None);
+        };
+        Ok(ctx.storage.scan_next(scan)?.map(|t| self.row_of(t)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::ColumnDef;
+    use crate::catalog::fake::table_def;
     use crate::executor::nodes::test_util::Fixture;
-    use crate::storage::TableStore;
-    use crate::types::Datum;
+    use crate::types::{SqlType, Tid};
+
+    fn rel() -> RelHandle {
+        let col = ColumnDef {
+            name: "a".into(),
+            attnum: 1,
+            ty: SqlType::INT4,
+            not_null: false,
+            default: None,
+        };
+        RelHandle::from_table(&table_def(7, "t", vec![col], vec![]))
+    }
 
     #[test]
-    fn scans_in_insertion_order() {
+    fn scans_rows_in_storage_order_with_system_columns() {
         let mut f = Fixture::new();
-        f.storage.create_table(7).unwrap();
-        f.storage.insert(7, vec![Datum::Int4(2)]).unwrap();
-        let id = f.storage.insert(7, vec![Datum::Int4(9)]).unwrap();
-        f.storage.insert(7, vec![Datum::Int4(1)]).unwrap();
-        f.storage.delete_row(7, id).unwrap();
-        let mut e: crate::executor::BoxedExecutor = Box::new(SeqScanExec::new(7));
+        let rel = rel();
+        f.storage.add_row(rel.oid, vec![Datum::Int4(2)]);
+        f.storage.add_row(rel.oid, vec![Datum::Int4(1)]);
+        let mut e: crate::executor::BoxedExecutor = Box::new(SeqScanExec::new(
+            rel.clone(),
+            vec![SystemColumn::Ctid, SystemColumn::TableOid],
+        ));
         assert_eq!(
             f.run(&mut e).unwrap(),
-            vec![vec![Datum::Int4(2)], vec![Datum::Int4(1)]]
+            vec![
+                vec![
+                    Datum::Int4(2),
+                    Datum::Tid(Tid {
+                        block: 0,
+                        offset: 1
+                    }),
+                    Datum::Oid(7)
+                ],
+                vec![
+                    Datum::Int4(1),
+                    Datum::Tid(Tid {
+                        block: 0,
+                        offset: 2
+                    }),
+                    Datum::Oid(7)
+                ],
+            ]
         );
-        let mut e: crate::executor::BoxedExecutor = Box::new(SeqScanExec::new(8));
-        assert!(f.run(&mut e).is_err());
+    }
+
+    #[test]
+    fn stops_on_shutdown_request() {
+        let mut f = Fixture::new();
+        f.interrupts.request_terminate();
+        let mut e: crate::executor::BoxedExecutor = Box::new(SeqScanExec::new(rel(), vec![]));
+        let err = f.run(&mut e).unwrap_err();
+        assert_eq!(err.sqlstate, crate::error::sqlstate::ADMIN_SHUTDOWN);
     }
 }

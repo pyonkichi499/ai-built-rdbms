@@ -8,16 +8,22 @@
 //! outside an explicit block, one Query message is one implicit
 //! transaction; inside a block an error moves the session to the failed
 //! state, where everything but COMMIT / ROLLBACK gives 25P02.
+//!
+//! 担当 I が M2 の手順（`m2.md` §5.2〜§5.4）で実装する。A が行ったのは
+//! M1 の `Database` / undo ログへの依存を外すところまで: 文の実行
+//! （`exec_statement` の `_` の枝）、CREATE / DROP の手順、ライターロック、
+//! コミットとアボートの実処理は未実装。M1 の実装は git の 88d1bc0 の
+//! `session.rs` を参照。
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::analyzer::{self, BoundCreateTable, BoundDropTable, BoundSelect, BoundStatement};
-use crate::catalog::{CatalogReader, TableDef};
-use crate::engine::{Database, DbState};
+use crate::analyzer::BoundSelect;
+use crate::catalog::CatalogReader;
+use crate::engine::Cluster;
 use crate::error::{Error, Result, Severity, SqlState, sqlstate};
-use crate::executor::{self, ExecCtx, SessionInfo};
-use crate::planner;
+use crate::executor::SessionInfo;
+use crate::interrupt::InterruptFlag;
 use crate::settings::Settings;
 use crate::sql::{
     self,
@@ -26,8 +32,7 @@ use crate::sql::{
         TransactionMode,
     },
 };
-use crate::storage::TableStore;
-use crate::txn::{self, Transaction, UndoEntry};
+use crate::txn::Transaction;
 use crate::types::{Datum, Oid, SqlType, io, oid};
 
 /// Values from the `StartupMessage`.
@@ -133,55 +138,49 @@ const IN_FAILED_MSG: &str =
 /// One client session.
 #[derive(Debug)]
 pub struct Session {
-    db: Arc<Database>,
+    /// `Some` for sessions made by [`Session::new`]. `None` only in unit
+    /// tests of the statement state machine, until `TestCluster` exists.
+    #[allow(dead_code)]
+    cluster: Option<Arc<Cluster>>,
     params: StartupParams,
     state: TxState,
     txn: Transaction,
     settings: Settings,
     /// Last value sent to the client for each reported parameter.
     reported: HashMap<&'static str, String>,
-    /// Writer lock owner id (`Database::acquire_writer`).
+    /// Session ID (the writer lock owner passed to `begin_write`).
+    #[allow(dead_code)]
     id: u64,
-    /// Whether this session holds the database writer lock.
-    holds_writer: bool,
     /// Whether the current Query message has more than one statement
     /// (PostgreSQL's implicit transaction *block*, where SET LOCAL works).
     multi_statement: bool,
-}
-
-impl Drop for Session {
-    /// The connection is gone (EOF, Terminate, I/O error, FATAL, panic):
-    /// abort the open transaction, as a PostgreSQL backend does on exit.
-    fn drop(&mut self) {
-        self.abort();
-    }
+    interrupt: Arc<InterruptFlag>,
 }
 
 impl Session {
-    /// Creates a session. An unknown database name is rejected with
-    /// `3D000 database "x" does not exist`.
-    pub fn new(db: Arc<Database>, params: StartupParams) -> Result<Session> {
-        if params.database != db.config().database_name {
-            return Err(Error::new(
-                sqlstate::INVALID_CATALOG_NAME,
-                format!("database \"{}\" does not exist", params.database),
-            )
-            .with_severity(Severity::Fatal));
-        }
+    /// Creates a session. `Cluster::connect` rejects an unknown database
+    /// (`3D000`), a database that does not accept connections (`55000`) and
+    /// an unknown role (`28000`) as FATAL errors.
+    pub fn new(cluster: Arc<Cluster>, params: StartupParams) -> Result<Session> {
+        cluster.connect(&params.database, &params.user)?;
+        let id = cluster.next_session_id();
+        Ok(Session::build(Some(cluster), id, params))
+    }
+
+    fn build(cluster: Option<Arc<Cluster>>, id: u64, params: StartupParams) -> Session {
         let settings = Settings::new(&params.user, &startup_settings(&params));
         let reported = settings.reported_values().into_iter().collect();
-        let id = db.new_session_id();
-        Ok(Session {
+        Session {
+            cluster,
             id,
-            holds_writer: false,
             multi_statement: false,
-            db,
             params,
             state: TxState::Idle,
             txn: Transaction::new(),
             settings,
             reported,
-        })
+            interrupt: Arc::new(InterruptFlag::default()),
+        }
     }
 
     /// `ParameterStatus` messages to send right after authentication.
@@ -201,12 +200,17 @@ impl Session {
         self.run(sql, parsed, sink)
     }
 
-    /// Aborts any open transaction. Called implicitly on drop; the server
-    /// may call it explicitly when the connection ends.
-    pub fn abort(&mut self) {
-        if self.state != TxState::Idle || self.holds_writer || !self.txn.undo.is_empty() {
+    /// Must be called when the connection closes (also after a panic):
+    /// aborts the open transaction.
+    pub fn terminate(&mut self) {
+        if self.state != TxState::Idle {
             self.rollback_transaction();
         }
+    }
+
+    /// The flag through which the server asks this session to stop.
+    pub fn interrupt_flag(&self) -> Arc<InterruptFlag> {
+        Arc::clone(&self.interrupt)
     }
 
     pub fn transaction_status(&self) -> TransactionStatus {
@@ -255,7 +259,6 @@ impl Session {
             if self.state == TxState::Idle {
                 self.begin_transaction(TxState::Implicit);
             }
-            self.txn.begin_statement();
             let mut out = Output::default();
             let result = self.exec_statement(stmt, &mut out);
             self.send_output(&out, sink)?;
@@ -329,51 +332,21 @@ impl Session {
     // ----- transaction control ---------------------------------------------
 
     fn begin_transaction(&mut self, state: TxState) {
-        self.txn.clear();
+        self.txn = Transaction::new();
         self.settings.begin();
         self.state = state;
     }
 
+    /// 担当 I が `m2.md` §5.3 の手順（`clog`、`pending_unlinks`）で実装する。
     fn commit_transaction(&mut self) {
-        if !self.txn.undo.is_empty() {
-            let db = Arc::clone(&self.db);
-            let guard = db.lock();
-            txn::commit(&mut self.txn, &guard.storage);
-        }
-        self.txn.clear();
-        self.release_writer();
+        self.txn = Transaction::new();
         self.settings.commit();
         self.state = TxState::Idle;
     }
 
-    /// Takes the writer lock (held until the transaction ends) before a
-    /// writing statement. Must be called without the database lock held.
-    fn acquire_writer(&mut self) {
-        if !self.holds_writer {
-            self.db.acquire_writer(self.id);
-            self.holds_writer = true;
-        }
-    }
-
-    fn release_writer(&mut self) {
-        if self.holds_writer {
-            self.db.release_writer(self.id);
-            self.holds_writer = false;
-        }
-    }
-
+    /// 担当 I が `m2.md` §5.3 の手順（`clog`、`pending_creates`）で実装する。
     fn rollback_transaction(&mut self) {
-        let entries = self.txn.take_all_undo();
-        if !entries.is_empty() {
-            let db = Arc::clone(&self.db);
-            let mut guard = db.lock();
-            let state = &mut *guard;
-            // Undo is best effort: every entry is attempted, and a failure
-            // only means the object was already gone.
-            let _ = txn::apply_undo(entries, &mut state.catalog, &state.storage);
-        }
-        self.txn.clear();
-        self.release_writer();
+        self.txn = Transaction::new();
         self.settings.rollback();
         self.state = TxState::Idle;
     }
@@ -393,32 +366,10 @@ impl Session {
                 Ok("RESET".into())
             }
             Statement::Show(s) => self.exec_show(s, out),
-            _ => {
-                if matches!(
-                    stmt,
-                    Statement::CreateTable(_)
-                        | Statement::DropTable(_)
-                        | Statement::Insert(_)
-                        | Statement::Update(_)
-                        | Statement::Delete(_)
-                ) {
-                    self.acquire_writer();
-                }
-                let db = Arc::clone(&self.db);
-                let mut guard = db.lock();
-                if let Statement::CreateTable(c) = stmt
-                    && c.if_not_exists
-                {
-                    let schema = c.name.schema().map(|i| i.value.as_str());
-                    let name = &c.name.name().value;
-                    if guard.catalog.table(schema, name).is_some() {
-                        out.notices.push(already_exists_notice(name));
-                        return Ok("CREATE TABLE".into());
-                    }
-                }
-                let bound = analyzer::analyze(stmt, &guard.catalog)?;
-                self.exec_bound(bound, &mut guard, out)
-            }
+            // 担当 I が analyze → plan → execute と DDL の手順を実装する。
+            _ => Err(Error::not_supported(
+                "executing this statement is not implemented yet",
+            )),
         }
     }
 
@@ -528,6 +479,7 @@ impl Session {
         Ok("SHOW".into())
     }
 
+    #[allow(dead_code)]
     fn session_info(&self) -> SessionInfo {
         let current_schema = self
             .settings
@@ -537,121 +489,9 @@ impl Session {
         SessionInfo {
             current_user: self.params.user.clone(),
             session_user: self.params.user.clone(),
-            database: self.db.config().database_name.clone(),
+            database: self.params.database.clone(),
             current_schema,
         }
-    }
-
-    /// Executes an analyzed statement with the database lock held.
-    fn exec_bound(
-        &mut self,
-        bound: BoundStatement,
-        state: &mut DbState,
-        out: &mut Output,
-    ) -> Result<String> {
-        match bound {
-            BoundStatement::CreateTable(c) => self.exec_create_table(c, state, out),
-            BoundStatement::DropTable(d) => self.exec_drop_table(d, state, out),
-            BoundStatement::Select(sel) => {
-                let columns = column_descs(&sel, &state.catalog);
-                let plan = planner::plan(&BoundStatement::Select(sel.clone()))?;
-                out.columns = Some(columns);
-                let info = self.session_info();
-                let efd = self.settings.extra_float_digits();
-                let ncols = sel.columns.len();
-                let types: Vec<SqlType> = sel.columns.iter().map(|c| c.ty).collect();
-                let mut exec = executor::build(&plan);
-                let mut ctx = ExecCtx {
-                    catalog: &state.catalog,
-                    storage: &state.storage,
-                    txn: &mut self.txn,
-                    session: &info,
-                };
-                while let Some(row) = exec.next(&mut ctx)? {
-                    out.rows.push(
-                        row.iter()
-                            .take(ncols)
-                            .zip(&types)
-                            .map(|(d, ty)| datum_text(d, *ty, efd))
-                            .collect(),
-                    );
-                }
-                Ok(format!("SELECT {}", out.rows.len()))
-            }
-            insert @ BoundStatement::Insert(_) => {
-                let plan = planner::plan(&insert)?;
-                let info = self.session_info();
-                let mut exec = executor::build(&plan);
-                let mut ctx = ExecCtx {
-                    catalog: &state.catalog,
-                    storage: &state.storage,
-                    txn: &mut self.txn,
-                    session: &info,
-                };
-                while exec.next(&mut ctx)?.is_some() {}
-                Ok(format!("INSERT 0 {}", exec.rows_affected()))
-            }
-        }
-    }
-
-    fn exec_create_table(
-        &mut self,
-        c: BoundCreateTable,
-        state: &mut DbState,
-        out: &mut Output,
-    ) -> Result<String> {
-        if state.catalog.table(Some(&c.schema), &c.name).is_some() {
-            if c.if_not_exists {
-                out.notices.push(already_exists_notice(&c.name));
-                return Ok("CREATE TABLE".into());
-            }
-            return Err(Error::new(
-                sqlstate::DUPLICATE_TABLE,
-                format!("relation \"{}\" already exists", c.name),
-            ));
-        }
-        let oid = state.catalog.allocate_oid();
-        state.storage.create_table(oid)?;
-        state.catalog.put_table(Arc::new(TableDef {
-            oid,
-            schema: c.schema,
-            name: c.name,
-            columns: c.columns,
-            checks: c.checks,
-        }));
-        self.txn.record(UndoEntry::CreatedTable { table_oid: oid });
-        Ok("CREATE TABLE".into())
-    }
-
-    fn exec_drop_table(
-        &mut self,
-        d: BoundDropTable,
-        state: &mut DbState,
-        out: &mut Output,
-    ) -> Result<String> {
-        for name in &d.missing {
-            out.notices.push(Notice::new(
-                Severity::Notice,
-                sqlstate::SUCCESSFUL_COMPLETION,
-                format!("table \"{name}\" does not exist, skipping"),
-            ));
-        }
-        for def in d.tables {
-            if state.catalog.table_by_oid(def.oid).is_none() {
-                continue; // listed twice
-            }
-            // The rows are kept for stores that cannot `restore_dropped`.
-            let rows = state
-                .storage
-                .scan(def.oid)?
-                .into_iter()
-                .map(|(_, r)| r)
-                .collect();
-            state.storage.drop_table(def.oid)?;
-            state.catalog.remove_table(def.oid);
-            self.txn.record(UndoEntry::DroppedTable { def, rows });
-        }
-        Ok("DROP TABLE".into())
     }
 }
 
@@ -697,6 +537,7 @@ fn no_transaction_warning() -> Notice {
     )
 }
 
+#[allow(dead_code)]
 fn already_exists_notice(name: &str) -> Notice {
     Notice::new(
         Severity::Notice,
@@ -705,6 +546,7 @@ fn already_exists_notice(name: &str) -> Notice {
     )
 }
 
+#[allow(dead_code)]
 fn text_column(name: impl Into<String>) -> ColumnDesc {
     ColumnDesc {
         name: name.into(),
@@ -717,6 +559,7 @@ fn text_column(name: impl Into<String>) -> ColumnDesc {
 }
 
 /// `RowDescription` fields for a SELECT's visible columns.
+#[allow(dead_code)]
 fn column_descs(sel: &BoundSelect, catalog: &dyn CatalogReader) -> Vec<ColumnDesc> {
     sel.columns
         .iter()
@@ -740,6 +583,7 @@ fn column_descs(sel: &BoundSelect, catalog: &dyn CatalogReader) -> Vec<ColumnDes
 }
 
 /// Text output of a value, honouring `extra_float_digits`.
+#[allow(dead_code)]
 fn datum_text(d: &Datum, ty: SqlType, extra_float_digits: i32) -> Option<String> {
     if extra_float_digits <= 0 {
         match d {
@@ -754,6 +598,7 @@ fn datum_text(d: &Datum, ty: SqlType, extra_float_digits: i32) -> Option<String>
 /// C's `%.*g` (what `float8out` / `float4out` use when
 /// `extra_float_digits <= 0`), with PostgreSQL's spellings of the special
 /// values. `precision` below 1 is treated as 1.
+#[allow(dead_code)]
 fn format_g(v: f64, precision: i32) -> String {
     if v.is_nan() {
         return "NaN".into();
@@ -816,12 +661,10 @@ fn startup_settings(params: &StartupParams) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzer::OutputColumn;
-    use crate::catalog::ColumnDef;
-    use crate::engine::DatabaseConfig;
+    use crate::analyzer::{BoundFrom, OutputColumn};
+    use crate::catalog::fake::FakeCatalog;
     use crate::error::Span;
     use crate::sql::ast::{ResetStmt, TransactionStmt};
-    use crate::storage::RowId;
 
     fn params(db: &str) -> StartupParams {
         StartupParams {
@@ -879,7 +722,7 @@ mod tests {
     }
 
     fn session() -> Session {
-        Session::new(Database::new(DatabaseConfig::default()), params("postgres")).unwrap()
+        Session::build(None, 1, params("postgres"))
     }
 
     fn tx(kind: TransactionKind) -> Statement {
@@ -919,102 +762,12 @@ mod tests {
         }
     }
 
-    /// Runs one analyzed statement inside the statement machinery (the
-    /// analyzer is owned by another module).
-    fn run_bound(s: &mut Session, bound: BoundStatement) -> Vec<Ev> {
-        if s.state == TxState::Idle {
-            s.begin_transaction(TxState::Implicit);
-        }
-        s.txn.begin_statement();
-        let mut out = Output::default();
-        let db = Arc::clone(&s.db);
-        let r = {
-            let mut g = db.lock();
-            s.exec_bound(bound, &mut g, &mut out)
-        };
-        let mut sink = Sink::default();
-        s.send_output(&out, &mut sink).unwrap();
-        match r {
-            Ok(tag) => sink.command_complete(&tag).unwrap(),
-            Err(e) => s.report_error(e, "", &mut sink).unwrap(),
-        }
-        if s.state == TxState::Implicit {
-            s.commit_transaction();
-        }
-        sink.0
-    }
-
-    fn create(name: &str, if_not_exists: bool) -> BoundStatement {
-        BoundStatement::CreateTable(BoundCreateTable {
-            schema: "public".into(),
-            name: name.into(),
-            if_not_exists,
-            columns: vec![ColumnDef {
-                name: "a".into(),
-                attnum: 1,
-                ty: SqlType::INT4,
-                not_null: false,
-                default: None,
-            }],
-            checks: vec![],
-        })
-    }
-
-    fn table(s: &Session, name: &str) -> Option<Arc<TableDef>> {
-        s.db.lock().catalog.table(None, name)
-    }
-
-    fn drop_bound(s: &Session, names: &[&str]) -> BoundStatement {
-        let g = s.db.lock();
-        let mut tables = vec![];
-        let mut missing = vec![];
-        for n in names {
-            match g.catalog.table(None, n) {
-                Some(t) => tables.push(t),
-                None => missing.push((*n).to_owned()),
-            }
-        }
-        BoundStatement::DropTable(BoundDropTable { tables, missing })
-    }
-
-    /// Simulates the executor's INSERT (storage + undo log).
-    fn insert_row(s: &mut Session, name: &str, v: i32) -> RowId {
-        let oid = table(s, name).unwrap().oid;
-        let id =
-            s.db.lock()
-                .storage
-                .insert(oid, vec![Datum::Int4(v)])
-                .unwrap();
-        s.txn.record(UndoEntry::Inserted {
-            table_oid: oid,
-            row_id: id,
-        });
-        id
-    }
-
-    fn rows(s: &Session, name: &str) -> Vec<Datum> {
-        let oid = table(s, name).unwrap().oid;
-        s.db.lock()
-            .storage
-            .scan(oid)
-            .unwrap()
-            .into_iter()
-            .map(|(_, r)| r[0].clone())
-            .collect()
-    }
-
     #[test]
-    fn rejects_unknown_database() {
-        let db = Database::new(DatabaseConfig::default());
-        let e = Session::new(db.clone(), params("nope")).unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::INVALID_CATALOG_NAME);
-        assert_eq!(e.severity, Severity::Fatal);
-        assert_eq!(e.message, "database \"nope\" does not exist");
-        let s = Session::new(db, params("postgres")).unwrap();
+    fn initial_parameter_status_lists_reported_parameters() {
+        let s = session();
         assert_eq!(s.transaction_status(), TransactionStatus::Idle);
         let ps = s.initial_parameter_status();
         assert!(ps.contains(&("session_authorization".into(), "alice".into())));
-        assert!(ps.contains(&("server_version".into(), "16.0".into())));
         assert!(ps.contains(&("application_name".into(), "psql".into())));
         assert!(ps.contains(&("DateStyle".into(), "ISO, MDY".into())));
         assert!(ps.contains(&("TimeZone".into(), "UTC".into())));
@@ -1032,9 +785,27 @@ mod tests {
             ),
             ("bogus".into(), "x".into()),
         ];
-        let mut s = Session::new(Database::new(DatabaseConfig::default()), p).unwrap();
+        let mut s = Session::build(None, 1, p);
         assert_eq!(show_value(&mut s, "search_path"), "foo");
         assert_eq!(show_value(&mut s, "extra_float_digits"), "2");
+    }
+
+    #[test]
+    fn unimplemented_statements_are_rejected_for_now() {
+        let mut s = session();
+        let ev = sql(&mut s, "select 1");
+        assert_eq!(ev, vec![Ev::Error("0A000", None)]);
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+    }
+
+    #[test]
+    fn terminate_ends_the_open_transaction() {
+        let mut s = session();
+        run(&mut s, vec![tx(TransactionKind::Begin)]);
+        assert_eq!(s.transaction_status(), TransactionStatus::InBlock);
+        s.terminate();
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+        assert!(!s.interrupt_flag().is_terminate_requested());
     }
 
     #[test]
@@ -1275,39 +1046,6 @@ mod tests {
         sink.0
     }
 
-    fn count_rows(db: &Database, name: &str) -> Option<usize> {
-        let g = db.lock();
-        let t = g.catalog.table(None, name)?;
-        Some(g.storage.scan(t.oid).unwrap().len())
-    }
-
-    #[test]
-    fn dropping_session_aborts_open_transaction() {
-        let db = Database::new(DatabaseConfig::default());
-        let mut a = Session::new(db.clone(), params("postgres")).unwrap();
-        sql(&mut a, "create table t(a int); create table k(a int)");
-        sql(&mut a, "insert into t values (1)");
-        let mut b = Session::new(db.clone(), params("postgres")).unwrap();
-        let ev = sql(
-            &mut b,
-            "begin; insert into t values (2); drop table k; create table n(x int)",
-        );
-        assert!(!ev.iter().any(|e| matches!(e, Ev::Error(..))), "{ev:?}");
-        assert_eq!(count_rows(&db, "t"), Some(2));
-        drop(b); // connection closed without COMMIT
-        assert_eq!(count_rows(&db, "t"), Some(1));
-        assert_eq!(count_rows(&db, "k"), Some(0));
-        assert_eq!(count_rows(&db, "n"), None);
-        assert_eq!(db.writer_owner(), None);
-        // A failed block is cleaned up too.
-        let mut c = Session::new(db.clone(), params("postgres")).unwrap();
-        sql(&mut c, "begin; insert into t values (3); select 1/0");
-        assert_eq!(c.transaction_status(), TransactionStatus::Failed);
-        c.abort();
-        assert_eq!(c.transaction_status(), TransactionStatus::Idle);
-        assert_eq!(count_rows(&db, "t"), Some(1));
-    }
-
     /// A sink whose writes fail after `ok` successful command completions.
     struct FailingSink {
         ok: usize,
@@ -1343,58 +1081,18 @@ mod tests {
 
     #[test]
     fn sink_failure_rolls_back_implicit_transaction() {
-        let db = Database::new(DatabaseConfig::default());
-        let mut s = Session::new(db.clone(), params("postgres")).unwrap();
-        let r = s.execute_simple(
-            "create table t(a int); insert into t values (1); select 1",
+        let mut s = session();
+        let r = s.run(
+            "",
+            Ok(vec![
+                set("application_name", "a", false),
+                set("application_name", "b", false),
+            ]),
             &mut FailingSink { ok: 1 },
         );
         assert!(r.is_err());
         assert_eq!(s.transaction_status(), TransactionStatus::Idle);
-        assert!(s.txn.undo.is_empty());
-        assert_eq!(count_rows(&db, "t"), None);
-        assert_eq!(db.writer_owner(), None);
-    }
-
-    /// Runs `q` on `s` in another thread; returns a receiver for the events.
-    fn spawn_sql(mut s: Session, q: &'static str) -> std::sync::mpsc::Receiver<(Session, Vec<Ev>)> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let ev = sql(&mut s, q);
-            let _ = tx.send((s, ev));
-        });
-        rx
-    }
-
-    #[test]
-    fn writer_lock_serializes_writing_transactions() {
-        use std::time::Duration;
-        let db = Database::new(DatabaseConfig::default());
-        let mut a = Session::new(db.clone(), params("postgres")).unwrap();
-        sql(&mut a, "create table d(x int); insert into d values (1)");
-        // A drops d in a block; B's CREATE of the same name must wait, so
-        // A's ROLLBACK cannot produce two tables named d.
-        sql(&mut a, "begin; drop table d");
-        let b = Session::new(db.clone(), params("postgres")).unwrap();
-        let rx = spawn_sql(b, "create table d(y text)");
-        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
-        // Readers are not blocked.
-        let mut r = Session::new(db.clone(), params("postgres")).unwrap();
-        assert_eq!(sql(&mut r, "select 1").len(), 3);
-        sql(&mut a, "rollback");
-        let (b, ev) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(matches!(ev[..], [Ev::Error("42P07", _)]), "{ev:?}");
-        assert_eq!(count_rows(&db, "d"), Some(1));
-        assert_eq!(db.lock().catalog.tables().len(), 1);
-        // A creates a table in a block; B's INSERT into it waits, so A's
-        // ROLLBACK cannot destroy B's committed rows.
-        sql(&mut a, "begin; create table e(x int)");
-        let rx = spawn_sql(b, "insert into e values (1)");
-        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
-        sql(&mut a, "rollback");
-        let (_b, ev) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(matches!(ev[..], [Ev::Error("42P01", _)]), "{ev:?}");
-        assert_eq!(db.writer_owner(), None);
+        assert_eq!(show_value(&mut s, "application_name"), "psql");
     }
 
     #[test]
@@ -1408,70 +1106,9 @@ mod tests {
     }
 
     #[test]
-    fn create_drop_and_undo() {
-        let mut s = session();
-        assert_eq!(
-            run_bound(&mut s, create("t", false)),
-            vec![Ev::Complete("CREATE TABLE".into())]
-        );
-        let oid = table(&s, "t").unwrap().oid;
-        assert_eq!(oid, oid::FIRST_NORMAL_OBJECT_ID);
-        assert_eq!(
-            run_bound(&mut s, create("t", false)),
-            vec![Ev::Error("42P07", None)]
-        );
-        assert_eq!(
-            run_bound(&mut s, create("t", true)),
-            vec![
-                Ev::Notice(Severity::Notice, "42P07"),
-                Ev::Complete("CREATE TABLE".into())
-            ]
-        );
-
-        // Insert in a block, then ROLLBACK.
-        run(&mut s, vec![tx(TransactionKind::Begin)]);
-        s.txn.begin_statement();
-        insert_row(&mut s, "t", 1);
-        run(&mut s, vec![tx(TransactionKind::Commit)]);
-        run(&mut s, vec![tx(TransactionKind::Begin)]);
-        s.txn.begin_statement();
-        insert_row(&mut s, "t", 2);
-        run_bound(&mut s, create("u", false));
-        assert!(table(&s, "u").is_some());
-        run(&mut s, vec![tx(TransactionKind::Rollback)]);
-        assert_eq!(rows(&s, "t"), vec![Datum::Int4(1)]);
-        assert!(table(&s, "u").is_none());
-
-        // DROP + ROLLBACK restores table and rows (including rows inserted
-        // in the same transaction before the DROP, which are then undone).
-        run(&mut s, vec![tx(TransactionKind::Begin)]);
-        s.txn.begin_statement();
-        insert_row(&mut s, "t", 3);
-        let d = drop_bound(&s, &["t", "nope"]);
-        assert_eq!(
-            run_bound(&mut s, d),
-            vec![
-                Ev::Notice(Severity::Notice, "00000"),
-                Ev::Complete("DROP TABLE".into())
-            ]
-        );
-        assert!(table(&s, "t").is_none());
-        run(&mut s, vec![tx(TransactionKind::Rollback)]);
-        assert_eq!(rows(&s, "t"), vec![Datum::Int4(1)]);
-
-        // DROP + COMMIT frees the storage.
-        let d = drop_bound(&s, &["t"]);
-        run_bound(&mut s, d);
-        assert!(table(&s, "t").is_none());
-        assert!(s.db.lock().storage.scan(oid).is_err());
-        assert!(!s.db.lock().storage.restore_dropped(oid).unwrap());
-    }
-
-    #[test]
     fn column_descriptions() {
-        let s = session();
         let sel = BoundSelect {
-            from: analyzer::BoundFrom::None,
+            from: BoundFrom::None,
             filter: None,
             targets: vec![],
             columns: vec![
@@ -1499,8 +1136,8 @@ mod tests {
             limit: None,
             offset: None,
         };
-        let g = s.db.lock();
-        let d = column_descs(&sel, &g.catalog);
+        let cat = FakeCatalog::new("postgres");
+        let d = column_descs(&sel, &cat);
         assert_eq!(
             (
                 d[0].table_oid,

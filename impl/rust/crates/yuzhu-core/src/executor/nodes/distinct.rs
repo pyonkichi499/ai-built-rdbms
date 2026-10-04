@@ -32,6 +32,8 @@ enum KeyDatum {
     Int(i64),
     Float(u64),
     Text(String),
+    /// oid, xid, cid, "char", tid and oidvector: a tag and the words.
+    Words(u8, Vec<u64>),
 }
 
 fn key_of(d: &Datum) -> KeyDatum {
@@ -53,6 +55,12 @@ fn key_of(d: &Datum) -> KeyDatum {
         Datum::Float4(v) => float(f64::from(*v)),
         Datum::Float8(v) => float(*v),
         Datum::Text(s) => KeyDatum::Text(s.clone()),
+        Datum::Oid(v) => KeyDatum::Words(0, vec![u64::from(*v)]),
+        Datum::Xid(v) => KeyDatum::Words(1, vec![u64::from(*v)]),
+        Datum::Cid(v) => KeyDatum::Words(2, vec![u64::from(*v)]),
+        Datum::Char(v) => KeyDatum::Words(3, vec![u64::from(*v)]),
+        Datum::Tid(t) => KeyDatum::Words(4, vec![u64::from(t.block), u64::from(t.offset)]),
+        Datum::OidVector(v) => KeyDatum::Words(5, v.iter().map(|x| u64::from(*x)).collect()),
     }
 }
 

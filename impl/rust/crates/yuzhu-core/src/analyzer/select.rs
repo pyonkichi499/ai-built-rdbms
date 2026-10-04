@@ -90,7 +90,7 @@ impl Analyzer<'_> {
         }
         let schema = name.schema().map(|s| s.value.as_str());
         self.catalog
-            .table(schema, &name.name().value)
+            .table(schema, &name.name().value)?
             .ok_or_else(|| {
                 Error::new(
                     sqlstate::UNDEFINED_TABLE,
@@ -150,6 +150,8 @@ impl Analyzer<'_> {
                     BoundFrom::Table {
                         table,
                         alias: alias.as_ref().map(|a| a.name.value.clone()),
+                        // 担当 H1 が、参照されたシステム列をここに積む。
+                        system_columns: Vec::new(),
                     },
                     scope,
                 )

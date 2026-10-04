@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use crate::catalog::{BuiltinFunction, BuiltinOperator, CastMethod, CheckDef, ColumnDef, TableDef};
+use crate::catalog::{
+    BuiltinFunction, BuiltinOperator, CastMethod, CheckDef, ColumnDef, SystemColumn, TableDef,
+};
 use crate::error::Span;
 pub use crate::sql::ast::SessionValueKind;
 use crate::types::{Datum, Oid, SqlType};
@@ -19,6 +21,10 @@ pub enum BoundStatement {
     Insert(BoundInsert),
     CreateTable(BoundCreateTable),
     DropTable(BoundDropTable),
+    Update(BoundUpdate),
+    Delete(BoundDelete),
+    /// `CHECKPOINT`: executed by the session, never planned.
+    Checkpoint,
 }
 
 /// A typed expression.
@@ -152,6 +158,10 @@ pub enum BoundFrom {
         table: Arc<TableDef>,
         /// Alias if given (for display / EXPLAIN).
         alias: Option<String>,
+        /// System columns the query references (appearance order, no
+        /// duplicates). A reference is `ColumnRef { index: natts + i }` for
+        /// `system_columns[i]`; the scan emits them after the user columns.
+        system_columns: Vec<SystemColumn>,
     },
     /// `VALUES` rows (each coerced to the common column types).
     Values {
@@ -247,4 +257,37 @@ pub struct BoundDropTable {
     /// skipping`); without it, the analyzer raises 42P01.
     pub tables: Vec<Arc<TableDef>>,
     pub missing: Vec<String>,
+}
+
+/// Source of an UPDATE assignment.
+#[derive(Debug, Clone)]
+pub enum UpdateSource {
+    /// Evaluated over the old row (the user columns of the input row).
+    /// Assignment cast and typmod are already applied.
+    Expr(BoundExpr),
+    /// `DEFAULT` (`None` = NULL).
+    Default(Option<BoundExpr>),
+}
+
+/// UPDATE after analysis (`m2.md` §4.7).
+#[derive(Debug, Clone)]
+pub struct BoundUpdate {
+    pub table: Arc<TableDef>,
+    /// `(attnum - 1, source)` per assigned column.
+    pub assignments: Vec<(usize, UpdateSource)>,
+    pub filter: Option<BoundExpr>,
+    /// System columns referenced by WHERE and SET (appearance order, no
+    /// duplicates, `Ctid` excluded).
+    pub system_columns: Vec<SystemColumn>,
+    pub checks: Vec<BoundCheck>,
+    /// Per table column.
+    pub not_null: Vec<bool>,
+}
+
+/// DELETE after analysis.
+#[derive(Debug, Clone)]
+pub struct BoundDelete {
+    pub table: Arc<TableDef>,
+    pub filter: Option<BoundExpr>,
+    pub system_columns: Vec<SystemColumn>,
 }

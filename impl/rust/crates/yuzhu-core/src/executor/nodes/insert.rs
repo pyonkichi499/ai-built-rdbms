@@ -2,19 +2,20 @@
 //!
 //! Per input row (already coerced to the column types): build the table
 //! row via `column_map` / `defaults` → NOT NULL checks in column order
-//! (23502) → CHECK constraints (23514; NULL passes) → `storage.insert` →
-//! undo log entry. Emits no rows; the count is `rows_affected`.
+//! (23502) → CHECK constraints (23514; NULL passes) → `storage.insert`
+//! (with the transaction's `WriteCtx`). Emits no rows; the count is `rows_affected`.
 
 use crate::analyzer::{BoundCheck, BoundExpr};
 use crate::catalog::TableDef;
 use crate::error::{Error, Result, sqlstate};
 use crate::executor::eval::eval_bool;
 use crate::executor::{BoxedExecutor, ExecCtx, Executor, eval};
-use crate::txn::UndoEntry;
-use crate::types::{Datum, Oid, Row, io};
+use crate::storage::RelHandle;
+use crate::types::{Datum, Row, io};
 
 pub struct InsertExec {
-    table_oid: Oid,
+    rel: RelHandle,
+    table_name: String,
     input: BoxedExecutor,
     column_map: Vec<Option<usize>>,
     defaults: Vec<Option<BoundExpr>>,
@@ -27,7 +28,7 @@ pub struct InsertExec {
 impl std::fmt::Debug for InsertExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InsertExec")
-            .field("table_oid", &self.table_oid)
+            .field("table", &self.table_name)
             .field("count", &self.count)
             .finish_non_exhaustive()
     }
@@ -35,7 +36,8 @@ impl std::fmt::Debug for InsertExec {
 
 impl InsertExec {
     pub fn new(
-        table_oid: Oid,
+        rel: RelHandle,
+        table_name: String,
         input: BoxedExecutor,
         column_map: Vec<Option<usize>>,
         defaults: Vec<Option<BoundExpr>>,
@@ -43,7 +45,8 @@ impl InsertExec {
         not_null: Vec<bool>,
     ) -> Self {
         InsertExec {
-            table_oid,
+            rel,
+            table_name,
             input,
             column_map,
             defaults,
@@ -81,19 +84,13 @@ impl InsertExec {
             .any(|(nn, d)| *nn && d.is_null())
             || !self.checks.is_empty();
         if needs_table {
-            let table = ctx.catalog.table_by_oid(self.table_oid).ok_or_else(|| {
-                Error::internal(format!(
-                    "relation with OID {} does not exist",
-                    self.table_oid
-                ))
+            let table = ctx.catalog.table_by_oid(self.rel.oid)?.ok_or_else(|| {
+                Error::internal(format!("relation with OID {} does not exist", self.rel.oid))
             })?;
             check_constraints(&table, &row, &self.not_null, &self.checks, ctx)?;
         }
-        let row_id = ctx.storage.insert(self.table_oid, row)?;
-        ctx.txn.record(UndoEntry::Inserted {
-            table_oid: self.table_oid,
-            row_id,
-        });
+        let w = ctx.write_ctx()?;
+        ctx.storage.insert(&self.rel, &w, &row)?;
         self.count += 1;
         Ok(())
     }
@@ -187,11 +184,12 @@ impl Executor for InsertExec {
 mod tests {
     use super::*;
     use crate::catalog::ColumnDef;
+    use crate::catalog::fake::table_def;
     use crate::executor::eval::tests::{GT, col, int, null, op, text};
+    use crate::executor::nodes::ValuesExec;
     use crate::executor::nodes::test_util::Fixture;
-    use crate::executor::nodes::{SeqScanExec, ValuesExec};
-    use crate::storage::TableStore;
-    use crate::types::SqlType;
+    use crate::storage::RelHandle;
+    use crate::types::{Oid, SqlType};
     use std::sync::Arc;
 
     const T: Oid = 16384;
@@ -205,18 +203,16 @@ mod tests {
             not_null,
             default: None,
         };
-        f.catalog.put_table(Arc::new(TableDef {
-            oid: T,
-            schema: "public".into(),
-            name: "t".into(),
-            columns: vec![
+        f.catalog.put_table(Arc::new(table_def(
+            T,
+            "t",
+            vec![
                 c("a", 1, SqlType::INT4, true),
                 c("b", 2, SqlType::TEXT, false),
                 c("c", 3, SqlType::INT4, false),
             ],
-            checks: vec![],
-        }));
-        f.storage.create_table(T).unwrap();
+            vec![],
+        )));
         f
     }
 
@@ -227,9 +223,14 @@ mod tests {
         }
     }
 
+    fn rel() -> RelHandle {
+        RelHandle::from_table(&table_def(T, "t", vec![], vec![]))
+    }
+
     fn insert(rows: Vec<Vec<BoundExpr>>, column_map: Vec<Option<usize>>) -> InsertExec {
         InsertExec::new(
-            T,
+            rel(),
+            "t".into(),
             Box::new(ValuesExec::new(rows)),
             column_map,
             vec![None, None, Some(int(42))],
@@ -238,13 +239,12 @@ mod tests {
         )
     }
 
-    fn scan(f: &mut Fixture) -> Vec<Row> {
-        let mut e: BoxedExecutor = Box::new(SeqScanExec::new(T));
-        f.run(&mut e).unwrap()
+    fn scan(f: &Fixture) -> Vec<Row> {
+        f.storage.rows(T)
     }
 
     #[test]
-    fn inserts_with_defaults_and_undo() {
+    fn inserts_with_defaults() {
         let mut f = fixture();
         let mut e: BoxedExecutor = Box::new(insert(
             vec![vec![text("x"), int(1)], vec![null(SqlType::TEXT), int(2)]],
@@ -253,17 +253,12 @@ mod tests {
         assert!(f.run(&mut e).unwrap().is_empty());
         assert_eq!(e.rows_affected(), 2);
         assert_eq!(
-            scan(&mut f),
+            scan(&f),
             vec![
                 vec![Datum::Int4(1), Datum::Text("x".into()), Datum::Int4(42)],
                 vec![Datum::Int4(2), Datum::Null, Datum::Int4(42)],
             ]
         );
-        assert_eq!(f.txn.undo.len(), 2);
-        assert!(matches!(
-            f.txn.undo[1],
-            UndoEntry::Inserted { table_oid: T, .. }
-        ));
     }
 
     #[test]
@@ -286,8 +281,8 @@ mod tests {
             err.detail.as_deref(),
             Some("Failing row contains (null, x, 42).")
         );
-        // The first row was inserted and logged; the session undoes it.
-        assert_eq!(f.txn.undo.len(), 1);
+        // The first row was inserted before the violation was found.
+        assert_eq!(scan(&f).len(), 1);
     }
 
     #[test]
@@ -309,7 +304,8 @@ mod tests {
         );
         // CHECK on a nullable column: NULL result passes.
         let mut e: BoxedExecutor = Box::new(InsertExec::new(
-            T,
+            rel(),
+            "t".into(),
             Box::new(ValuesExec::new(vec![vec![int(5)]])),
             vec![Some(0), None, None],
             vec![None, None, None],
@@ -326,7 +322,7 @@ mod tests {
     #[test]
     fn failing_row_clips_long_values() {
         let f = fixture();
-        let table = f.catalog.table_by_oid(T).unwrap();
+        let table = f.catalog.table_by_oid(T).unwrap().unwrap();
         let long = "é".repeat(40);
         let d = failing_row(
             &table,
