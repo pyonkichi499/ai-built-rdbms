@@ -48,6 +48,15 @@ psql -h 127.0.0.1 -p 5432 -U postgres
 
 コンテナは `yuzhu-server --listen 0.0.0.0 --port 5432` で起動します。追加の引数（例: `--log-level debug`、`--max-connections 50`）は `docker run` のイメージ名の後ろに付けてください。現時点（M1）ではデータはメモリ上のみで、コンテナを止めると消えます。
 
+## 開発用コンテナ
+
+Claude Code を `claude-sandbox` で権限確認なしに動かすためのイメージ（Rust + PostgreSQL 17 + Claude Code）を `sandbox/` に用意しています。使い方は [sandbox/README.md](sandbox/README.md) を参照してください。
+
+```sh
+docker build -t yuzhu-sandbox sandbox   # イメージをビルド
+claude-sandbox                          # Claude Code を起動（イメージは .claude-sandbox.toml で指定）
+```
+
 ## ライセンス
 
 [LICENSE](LICENSE) を参照してください。

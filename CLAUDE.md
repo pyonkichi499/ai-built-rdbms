@@ -27,6 +27,24 @@ yuzhu（PostgreSQL ワイヤプロトコル互換 RDBMS をゼロから実装）
 - `tests/` のテストは**本物の PostgreSQL に対しても実行できる**こと（PostgreSQL が正解の基準）。
 - 設計は `spec/design/` を参照。判断に迷う点は推奨案で進め、`QUESTIONS.md` に記録する。
 
+## 作業の進め方
+
+- 再開時はまず `PROGRESS.md` と `QUESTIONS.md` を読む。
+- ユーザーの許可を待たず、推奨案で自律的に進める。並列化できる作業はサブエージェントや Workflow で並列に進めてよい（コストは気にしない）。
+- ユーザーに質問するときは 1 回に 1 問。選択肢を出すときは工数感を添える。
+- `git push` はしない。
+- コミットメッセージは日本語。1 行目に要約、空行のあとに箇条書きで内容を書く。`Co-Authored-By` などの AI ツールの署名は入れない。
+
+## コンテナ（claude-sandbox）での作業
+
+`HOME` が `/home/sandbox` なら、`claude-sandbox` のコンテナ（イメージ `yuzhu-sandbox`）内で動いている（詳細は `sandbox/README.md`）。
+
+- コミットはしてよい（署名なしになる）。push はホストで行う。
+- 本物の PostgreSQL 17 は `sandbox/pg.sh start` で `127.0.0.1:55432` に起動する（docker が無いので `tests/pg.sh` は使えない）。
+  あとは `tests/run.sh --target pg` などをそのまま使える。
+- ビルド成果物は `$CARGO_TARGET_DIR`（`/home/sandbox/cargo-target`）に出る。ドキュメントの `target/release/<名前>` は
+  `$CARGO_TARGET_DIR/release/<名前>` と読み替える。
+
 ## マイルストーン（詳細は要件定義を参照）
 
 - M1: 繋がって動く（データはメモリ上）。プロトコル（Simple Query・trust）、手書きパーサ、基本型、CREATE TABLE / INSERT / 単一テーブル SELECT、NOT NULL・DEFAULT・CHECK、カタログスタブ、共通テストランナー

@@ -1,0 +1,2 @@
+# claude-sandbox が使うイメージ（sandbox/Dockerfile。docker build -t yuzhu-sandbox sandbox）
+image = "yuzhu-sandbox"
