@@ -1,0 +1,111 @@
+# UPDATE の基本: 1 列・複数列の SET、WHERE なし、合う行なし、更新件数
+
+statement ok
+CREATE TABLE upd_b_t (id int, a int, b text)
+
+statement ok
+INSERT INTO upd_b_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')
+
+# 1 列
+statement count 1
+UPDATE upd_b_t SET a = 11 WHERE id = 1
+
+query IIT
+SELECT id, a, b FROM upd_b_t ORDER BY id
+----
+1 11 x
+2 20 y
+3 30 z
+
+# 複数列
+statement count 1
+UPDATE upd_b_t SET a = 21, b = 'yy' WHERE id = 2
+
+query IIT
+SELECT id, a, b FROM upd_b_t ORDER BY id
+----
+1 11 x
+2 21 yy
+3 30 z
+
+# 合う行がない
+statement count 0
+UPDATE upd_b_t SET a = 0 WHERE id = 99
+
+statement count 0
+UPDATE upd_b_t SET a = 0 WHERE NULL
+
+statement count 0
+UPDATE upd_b_t SET a = 0 WHERE false
+
+query IIT
+SELECT id, a, b FROM upd_b_t ORDER BY id
+----
+1 11 x
+2 21 yy
+3 30 z
+
+# 複数行
+statement count 2
+UPDATE upd_b_t SET b = 'm' WHERE id >= 2
+
+query IIT
+SELECT id, a, b FROM upd_b_t ORDER BY id
+----
+1 11 x
+2 21 m
+3 30 m
+
+# WHERE なしは全行
+statement count 3
+UPDATE upd_b_t SET a = 0
+
+query IIT
+SELECT id, a, b FROM upd_b_t ORDER BY id
+----
+1 0 x
+2 0 m
+3 0 m
+
+# 同じ値への更新も 1 件として数える
+statement count 3
+UPDATE upd_b_t SET a = 0
+
+# NULL への更新
+statement count 1
+UPDATE upd_b_t SET b = NULL WHERE id = 1
+
+query IT
+SELECT id, b FROM upd_b_t WHERE b IS NULL
+----
+1 NULL
+
+# テーブル別名、ONLY
+statement count 1
+UPDATE upd_b_t AS u SET a = 5 WHERE u.id = 3
+
+statement count 1
+UPDATE upd_b_t u SET a = 6 WHERE u.id = 2
+
+statement count 1
+UPDATE ONLY upd_b_t SET a = 7 WHERE id = 1
+
+query II
+SELECT id, a FROM upd_b_t ORDER BY id
+----
+1 7
+2 6
+3 5
+
+# 行数 0 のテーブル
+statement ok
+CREATE TABLE upd_b_empty (a int)
+
+statement count 0
+UPDATE upd_b_empty SET a = 1
+
+statement ok
+DROP TABLE upd_b_empty
+
+statement ok
+DROP TABLE upd_b_t

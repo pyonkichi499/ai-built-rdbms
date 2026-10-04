@@ -1,30 +1,36 @@
 # 進捗と再開手順
 
-最終更新: 2026-10-04（M1 実装ワークフロー・M2 設計ワークフロー・M3 調査ワークフローを並列で実行中）
+最終更新: 2026-10-04（M1 完了。M2 はテストの先行作成中）
 
 ## 完了したこと
 
 - 要件定義書（Claude Docs）: <https://claude.ai/code/artifact/9381e901-9f2a-49a4-9bb2-479295dde6e2>
-- 調査レポート 4 本: `spec/research/`（プロトコル、型システム、sqllogictest、Rust 製 DB の構成）
-- M1 基本設計書: `spec/design/m1.md`（並列実装のための契約。分担は第 7 節）
-- リポジトリの雛形: Cargo ワークスペース（`impl/rust/`、`yuzhu-core` と `yuzhu-server`）、CI（fmt・clippy・test）、`README.md`、`CLAUDE.md`、`.gitignore`
-- 仮決めした事項の一覧: `QUESTIONS.md`
+- 調査レポート: `spec/research/`（プロトコル、型、sqllogictest、Rust 製 DB の構成、M2〜M5 の事前調査）
+- 設計書: `spec/design/m1.md`（契約は `m1-changes.md` で改訂）、`m2.md`、`m3.md`
+- M1 実装: 手書きパーサ・アナライザ・実行・セッション・サーバ（`yuzhu-core`、`yuzhu-server`、`yuzhu-numeric`、`yuzhu-datetime`）
+- M1 の確認結果（2026-10-04）:
+  - `tests/run.sh --target yuzhu`: `tests/slt/m1` の 37 ファイル中 37 通過、失敗 0
+  - `tests/run.sh --target pg`（PostgreSQL 17）: 37 ファイル中 37 通過、失敗 0
+  - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` すべて通過
+- CI（fmt・clippy・test）、`README.md`、`CLAUDE.md`、claude-sandbox 用コンテナ
 
-すべて未コミットです（`QUESTIONS.md` の Q-001 を参照）。
+## M2 の状況
 
-## 進行中
+- 設計書 `spec/design/m2.md` は作成済み。実装は未着手。
+- テスト `tests/slt/m2/` は `dml/update_basic.slt` と `dml/update_expr.slt` の 2 ファイルのみ。`catalog`・`ddl`・`psql`・`txn`・`types` は空。
+- M2 のテストはまだ yuzhu に対して実行していない（UPDATE / DELETE が未実装のため）。
 
-- 基盤（`yuzhu-core` の共通型。契約の変更は `spec/design/m1-changes.md`）・テスト（`tests/slt/m1/` の 37 ファイル。PostgreSQL 17 で全件通過）・サーバ（`yuzhu-server`）は完了。
-- ワークフロー `m1-implement`: パーサ・アナライザ・実行・セッションを並列実装 → slt を回して担当ごとに修正（最大 8 周）→ 3 観点のレビューと修正 → 最終確認。
-- ワークフロー `m2-design`: M2 の調査 4 本 → `spec/design/m2.md` → レビューと修正。
-- ワークフロー `m3-research`: M3 の調査 4 本（`spec/research/m3-*.md`）。
+## 残課題
+
+- M2 のテストの残りを作成し、PostgreSQL 17 で通ることを確認する。
+- M2 の実装（8KB ページ、バッファプール、ヒープ、リレーションごとのファイル、カタログのテーブル化、UPDATE / DELETE、initdb）。
+- M3 以降は設計書 `spec/design/m3.md` と調査 `spec/research/` を参照。
 
 ## 再開手順
 
-1. `QUESTIONS.md` の回答を反映する（特に Q-001 のコミット方針）。
-2. 上の 3 つを並列で再開する（基盤・テスト・サーバ）。
-3. 基盤が終わったら、パーサ・アナライザ・実行・セッションの 4 担当を並列で走らせる（設計書の第 7 節）。
-4. 結合して `tests/run.sh --target yuzhu` を通す → M1 完了。
+1. `QUESTIONS.md` を読む（仮決め事項の一覧）。
+2. `spec/design/m2.md` に沿って M2 のテスト作成と実装を並列に進める。
+3. 各段階で `tests/run.sh --target yuzhu` と `--target pg` の両方を確認する。
 
 ## 環境メモ
 

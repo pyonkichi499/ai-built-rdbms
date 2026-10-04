@@ -1,0 +1,136 @@
+# Halloween 問題: 自分が書いた新しい版を同じ文のスキャンが拾わないこと
+
+statement ok
+CREATE TABLE upd_h_t (a int)
+
+statement ok
+INSERT INTO upd_h_t VALUES (0)
+
+statement count 1
+INSERT INTO upd_h_t SELECT a + 1 FROM upd_h_t
+
+statement count 2
+INSERT INTO upd_h_t SELECT a + 2 FROM upd_h_t
+
+statement count 4
+INSERT INTO upd_h_t SELECT a + 4 FROM upd_h_t
+
+statement count 8
+INSERT INTO upd_h_t SELECT a + 8 FROM upd_h_t
+
+statement count 16
+INSERT INTO upd_h_t SELECT a + 16 FROM upd_h_t
+
+statement count 32
+INSERT INTO upd_h_t SELECT a + 32 FROM upd_h_t
+
+statement count 64
+INSERT INTO upd_h_t SELECT a + 64 FROM upd_h_t
+
+statement count 128
+INSERT INTO upd_h_t SELECT a + 128 FROM upd_h_t
+
+statement count 256
+INSERT INTO upd_h_t SELECT a + 256 FROM upd_h_t
+
+statement count 512
+INSERT INTO upd_h_t SELECT a + 512 FROM upd_h_t
+
+statement count 1024
+INSERT INTO upd_h_t SELECT a + 1024 FROM upd_h_t
+
+# 0..2047 の 2048 行
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1
+----
+0
+
+query I
+SELECT a FROM upd_h_t ORDER BY a DESC LIMIT 1
+----
+2047
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1 OFFSET 2047
+----
+2047
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1 OFFSET 2048
+----
+
+# 全行を 1 回ずつ更新する（新しい版を拾えば 2048 件を超える）
+statement count 2048
+UPDATE upd_h_t SET a = a + 1
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1
+----
+1
+
+query I
+SELECT a FROM upd_h_t ORDER BY a DESC LIMIT 1
+----
+2048
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1 OFFSET 2047
+----
+2048
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1 OFFSET 2048
+----
+
+# 値が小さくなる向きの更新でも同じ
+statement count 2048
+UPDATE upd_h_t SET a = a - 1
+
+query I
+SELECT a FROM upd_h_t WHERE a = 0
+----
+0
+
+# 部分更新（WHERE の述語を新しい版が満たしても拾わない）
+statement count 1024
+UPDATE upd_h_t SET a = a + 1024 WHERE a < 1024
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1
+----
+1024
+
+query I
+SELECT a FROM upd_h_t ORDER BY a DESC LIMIT 1 OFFSET 2047
+----
+1024
+
+# DELETE した行は自分の文の後で見えない
+statement count 2048
+DELETE FROM upd_h_t
+
+query I
+SELECT a FROM upd_h_t LIMIT 1
+----
+
+# 自己参照の INSERT ... SELECT は元の行だけを読む
+statement ok
+INSERT INTO upd_h_t VALUES (1), (2)
+
+statement count 2
+INSERT INTO upd_h_t SELECT a FROM upd_h_t
+
+statement count 4
+INSERT INTO upd_h_t SELECT a FROM upd_h_t
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1 OFFSET 7
+----
+2
+
+query I
+SELECT a FROM upd_h_t ORDER BY a LIMIT 1 OFFSET 8
+----
+
+statement ok
+DROP TABLE upd_h_t

@@ -1,0 +1,102 @@
+# DELETE の基本
+
+statement ok
+CREATE TABLE del_b_t (id int, s text)
+
+statement ok
+INSERT INTO del_b_t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')
+
+statement count 1
+DELETE FROM del_b_t WHERE id = 1
+
+query IT
+SELECT id, s FROM del_b_t ORDER BY id
+----
+2 b
+3 c
+4 d
+5 e
+
+# 合う行がない
+statement count 0
+DELETE FROM del_b_t WHERE id = 99
+
+# WHERE NULL は 0 件
+statement count 0
+DELETE FROM del_b_t WHERE NULL
+
+statement count 0
+DELETE FROM del_b_t WHERE s = NULL
+
+statement count 0
+DELETE FROM del_b_t WHERE false
+
+# 複数行
+statement count 2
+DELETE FROM del_b_t WHERE id > 3
+
+query IT
+SELECT id, s FROM del_b_t ORDER BY id
+----
+2 b
+3 c
+
+# 別名と ONLY
+statement count 1
+DELETE FROM del_b_t AS d WHERE d.id = 2
+
+statement count 1
+DELETE FROM ONLY del_b_t WHERE id = 3
+
+query IT
+SELECT id, s FROM del_b_t
+----
+
+# 空のテーブルへの DELETE
+statement count 0
+DELETE FROM del_b_t
+
+# 削除してから再挿入
+statement count 3
+INSERT INTO del_b_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement count 3
+DELETE FROM del_b_t
+
+query IT
+SELECT id, s FROM del_b_t
+----
+
+statement count 2
+INSERT INTO del_b_t VALUES (10, 'x'), (11, 'y')
+
+query IT
+SELECT id, s FROM del_b_t ORDER BY id
+----
+10 x
+11 y
+
+# WHERE なしは全行
+statement count 2
+DELETE FROM del_b_t
+
+# 更新してから削除、削除してから更新
+statement ok
+INSERT INTO del_b_t VALUES (1, 'a'), (2, 'b')
+
+statement count 1
+UPDATE del_b_t SET s = 'aa' WHERE id = 1
+
+statement count 1
+DELETE FROM del_b_t WHERE s = 'aa'
+
+statement count 0
+UPDATE del_b_t SET s = 'zz' WHERE id = 1
+
+query IT
+SELECT id, s FROM del_b_t
+----
+2 b
+
+statement ok
+DROP TABLE del_b_t

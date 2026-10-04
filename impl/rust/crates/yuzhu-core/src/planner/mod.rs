@@ -323,6 +323,7 @@ mod tests {
                 vec![col(0, SqlType::INT4)],
                 1,
             )),
+            coercions: None,
             column_map: vec![Some(0), None],
             defaults: vec![None, Some(text("dflt"))],
             checks: vec![ck("zz"), ck("aa")],

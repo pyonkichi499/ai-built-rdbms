@@ -1,0 +1,125 @@
+# UPDATE の SET 式
+
+statement ok
+CREATE TABLE upd_e_t (id int, a int, b int, s text DEFAULT 'dflt', n int)
+
+statement ok
+INSERT INTO upd_e_t (id, a, b) VALUES (1, 1, 100), (2, 2, 200), (3, 3, 300)
+
+statement count 3
+UPDATE upd_e_t SET a = a + 1
+
+query III
+SELECT id, a, b FROM upd_e_t ORDER BY id
+----
+1 2 100
+2 3 200
+3 4 300
+
+# 右辺はすべて更新前の行に対して評価される（入れ替えになる）
+statement count 3
+UPDATE upd_e_t SET a = b, b = a
+
+query III
+SELECT id, a, b FROM upd_e_t ORDER BY id
+----
+1 100 2
+2 200 3
+3 300 4
+
+# 左の SET の結果は右の SET から見えない
+statement count 1
+UPDATE upd_e_t SET a = 0, b = a WHERE id = 1
+
+query III
+SELECT id, a, b FROM upd_e_t WHERE id = 1
+----
+1 0 100
+
+# CASE、関数、キャスト
+statement count 3
+UPDATE upd_e_t SET s = CASE WHEN id = 1 THEN 'one' WHEN id = 2 THEN upper('two') ELSE 'other' END
+
+query IT
+SELECT id, s FROM upd_e_t ORDER BY id
+----
+1 one
+2 TWO
+3 other
+
+statement count 3
+UPDATE upd_e_t SET n = (id::text || '0')::int + length(s)
+
+query II
+SELECT id, n FROM upd_e_t ORDER BY id
+----
+1 13
+2 23
+3 35
+
+statement count 3
+UPDATE upd_e_t SET s = s || '!' || id
+
+query IT
+SELECT id, s FROM upd_e_t ORDER BY id
+----
+1 one!1
+2 TWO!2
+3 other!3
+
+# 他の列を使う WHERE と SET
+statement count 2
+UPDATE upd_e_t SET n = coalesce(n, 0) * 2 WHERE n > 20
+
+query II
+SELECT id, n FROM upd_e_t ORDER BY id
+----
+1 13
+2 46
+3 70
+
+# DEFAULT
+statement count 3
+UPDATE upd_e_t SET s = DEFAULT
+
+query IT
+SELECT id, s FROM upd_e_t ORDER BY id
+----
+1 dflt
+2 dflt
+3 dflt
+
+# DEFAULT のない列への DEFAULT は NULL
+statement count 3
+UPDATE upd_e_t SET n = DEFAULT
+
+query II
+SELECT id, n FROM upd_e_t ORDER BY id
+----
+1 NULL
+2 NULL
+3 NULL
+
+statement count 1
+UPDATE upd_e_t SET s = 'custom', n = DEFAULT, a = DEFAULT WHERE id = 2
+
+query ITII
+SELECT id, s, a, n FROM upd_e_t WHERE id = 2
+----
+2 custom NULL NULL
+
+# 同じ列を 2 回 SET するとエラー
+statement error (42601)
+UPDATE upd_e_t SET a = 1, a = 2
+
+# 定数だけの更新 + 式の中の NULL
+statement count 3
+UPDATE upd_e_t SET b = b + NULL
+
+query I
+SELECT id FROM upd_e_t WHERE b IS NOT NULL
+----
+
+
+statement ok
+DROP TABLE upd_e_t

@@ -1,0 +1,95 @@
+# UPDATE と制約: NOT NULL、CHECK、長さ、範囲
+
+statement ok
+CREATE TABLE upd_c_t (id int, a int NOT NULL, b int, c varchar(3), s smallint, CONSTRAINT b_pos CHECK (b > 0), CHECK (a < 100))
+
+statement ok
+INSERT INTO upd_c_t VALUES (1, 1, 1, 'abc', 1), (2, 2, 2, 'abc', 2), (3, 3, 3, 'abc', 3)
+
+# 23502
+statement error (23502)
+UPDATE upd_c_t SET a = NULL WHERE id = 1
+
+statement error null value in column "a"
+UPDATE upd_c_t SET a = NULL
+
+# 23514（SET した列の CHECK）
+statement error (23514)
+UPDATE upd_c_t SET b = 0 WHERE id = 1
+
+statement error violates check constraint "b_pos"
+UPDATE upd_c_t SET b = -5
+
+# SET していない列の CHECK も評価される。b に既に違反する行は作れないので、a の CHECK で確かめる
+statement error (23514)
+UPDATE upd_c_t SET a = 100 WHERE id = 1
+
+# 無名の CHECK の制約名
+statement error violates check constraint "upd_c_t_a_check"
+UPDATE upd_c_t SET a = 1000
+
+# CHECK が NULL を返すなら通る
+statement count 1
+UPDATE upd_c_t SET b = NULL WHERE id = 1
+
+# 22001
+statement error (22001)
+UPDATE upd_c_t SET c = 'abcd' WHERE id = 1
+
+# 22003
+statement error (22003)
+UPDATE upd_c_t SET s = 40000 WHERE id = 1
+
+statement error (22003)
+UPDATE upd_c_t SET a = 2147483647 + 1 WHERE id = 1
+
+# 違反した文では 1 行も変わらない
+query IIITI
+SELECT id, a, b, c, s FROM upd_c_t ORDER BY id
+----
+1 1 NULL abc 1
+2 2 2 abc 2
+3 3 3 abc 3
+
+# 3 行の更新の 2 行目で違反したら 1 行も変わらない
+statement error (23514)
+UPDATE upd_c_t SET a = CASE WHEN id = 2 THEN 100 ELSE a + 10 END
+
+statement error (23502)
+UPDATE upd_c_t SET a = CASE WHEN id = 2 THEN NULL ELSE a + 10 END
+
+query II
+SELECT id, a FROM upd_c_t ORDER BY id
+----
+1 1
+2 2
+3 3
+
+# 3 行目で違反（途中まで更新した行も消える）
+statement error (22003)
+UPDATE upd_c_t SET s = CASE WHEN id = 3 THEN 32767 + s ELSE s + 1 END
+
+query II
+SELECT id, s FROM upd_c_t ORDER BY id
+----
+1 1
+2 2
+3 3
+
+# 違反の後も接続は使える
+statement count 3
+UPDATE upd_c_t SET a = a + 1
+
+query II
+SELECT id, a FROM upd_c_t ORDER BY id
+----
+1 2
+2 3
+3 4
+
+# 型違いの代入は 42804
+statement error (42804)
+UPDATE upd_c_t SET a = 'text'::text
+
+statement ok
+DROP TABLE upd_c_t
