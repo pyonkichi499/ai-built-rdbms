@@ -1,0 +1,25 @@
+# LIMIT / OFFSET の引数は先に bigint へ coerce され（42804）、そのあとで変数を含まないか検査される（42P10）
+
+statement ok
+CREATE TABLE lvc_t (c0 integer, c1 text, c2 varchar(10), c3 boolean)
+
+statement ok
+INSERT INTO lvc_t VALUES (1, 'a', 'b', true)
+
+statement error (42804)
+SELECT * FROM lvc_t ORDER BY 1, 2 LIMIT c1
+
+statement error (42804)
+SELECT * FROM lvc_t ORDER BY 1, 2 LIMIT c2
+
+statement error (42804)
+SELECT * FROM lvc_t ORDER BY 1, 2 LIMIT c3
+
+statement error (42804)
+SELECT * FROM lvc_t ORDER BY 1, 2 OFFSET c1
+
+statement error (42P10)
+SELECT * FROM lvc_t ORDER BY 1, 2 LIMIT c0
+
+statement ok
+DROP TABLE lvc_t

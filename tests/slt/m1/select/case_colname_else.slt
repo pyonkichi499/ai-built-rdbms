@@ -1,0 +1,34 @@
+# CASE の暗黙の列名は ELSE 結果の列名（列参照・関数。キャストは中身を見る）に従う。COALESCE は "coalesce"
+
+statement ok
+CREATE TABLE case_cn_t (c4 int, i int)
+
+statement ok
+INSERT INTO case_cn_t VALUES (1, 1), (2, 0)
+
+statement error (42702)
+SELECT c4, CASE WHEN i > 0 THEN c4 ELSE c4 END FROM case_cn_t ORDER BY c4
+
+statement error (42702)
+SELECT x.*, CASE WHEN FALSE THEN 'a' ELSE c4::text END FROM case_cn_t x ORDER BY c4
+
+query II
+SELECT c4, CASE WHEN i > 0 THEN 10 ELSE 20 END FROM case_cn_t ORDER BY c4
+----
+1 10
+2 20
+
+query II
+SELECT c4, COALESCE(i, 0) FROM case_cn_t ORDER BY coalesce DESC
+----
+1 1
+2 0
+
+query T
+SELECT CASE WHEN i > 0 THEN 'a' ELSE upper('b') END FROM case_cn_t ORDER BY upper
+----
+B
+a
+
+statement ok
+DROP TABLE case_cn_t

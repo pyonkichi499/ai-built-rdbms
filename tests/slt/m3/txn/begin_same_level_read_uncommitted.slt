@@ -1,0 +1,68 @@
+# READ UNCOMMITTED は正規化されず、SHOW・COMMIT AND CHAIN・ブロック内 BEGIN の同一レベル判定でも保たれる。
+# 同じレベルなら問い合わせのあとでもブロック内 BEGIN は成功する（WARNING のみ）。
+# レベルが変わるときだけ 25001（PostgreSQL 17 で実測）。
+
+statement ok
+BEGIN ISOLATION LEVEL READ UNCOMMITTED
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+query I
+SELECT 1
+----
+1
+
+statement ok
+COMMIT AND CHAIN
+
+query I
+SELECT 1
+----
+1
+
+query T
+SHOW transaction_isolation
+----
+read uncommitted
+
+statement ok
+BEGIN TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+statement error (25001)
+BEGIN ISOLATION LEVEL READ COMMITTED
+
+statement ok
+ROLLBACK
+
+# READ WRITE を先に書いても、レベルの変更は 25001。READ ONLY のブロックなら read-write のエラーが先。
+
+statement ok
+BEGIN
+
+query I
+SELECT 1
+----
+1
+
+statement error (25001)
+BEGIN READ WRITE, ISOLATION LEVEL READ UNCOMMITTED
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+query I
+SELECT 1
+----
+1
+
+statement error (25001)
+BEGIN READ WRITE, ISOLATION LEVEL READ UNCOMMITTED
+
+statement ok
+ROLLBACK

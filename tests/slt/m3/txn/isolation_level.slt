@@ -161,3 +161,6 @@ read committed
 
 statement ok
 DROP TABLE il_t
+
+statement ok
+RESET ALL

@@ -1,0 +1,30 @@
+# 単項 @（絶対値）演算子
+
+query IIII
+SELECT @(-7::int4), @(-7::int2), @(-7::int8), @(7::int4)
+----
+7 7 7 7
+
+query RRR
+SELECT @(-7.5::float8), @('-0.5'::float4), @(-7.5::numeric)
+----
+7.5 0.5 7.5
+
+query I
+SELECT @(NULL::int4)
+----
+NULL
+
+query I
+SELECT @ -5
+----
+5
+
+statement error (22003)
+SELECT @((-2147483647-1)::int4)
+
+statement error (22003)
+SELECT @((-32767-1)::int2)
+
+statement error (22003)
+SELECT @((-9223372036854775807-1)::int8)

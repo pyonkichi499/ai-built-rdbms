@@ -1,0 +1,31 @@
+# 定数式はプラン時に畳み込まれる: 行が 0 件でも (WHERE が偽・LIMIT 0・空テーブル) 定数式のエラーが報告される
+
+statement ok
+CREATE TABLE qcf_t (c1 int, c4 int)
+
+statement error (22003)
+SELECT (2147483647 + 84) AS r0, c4 FROM qcf_t WHERE c4 BETWEEN 1 AND 50 ORDER BY 1 LIMIT 0
+
+statement error (22003)
+SELECT (8 * 2032021243) AS a, pg_typeof((8 * 2032021243))::text WHERE (NOT ((-60) BETWEEN 81 AND 26)) LIMIT 0::bigint
+
+statement error (22003)
+SELECT c1, (COALESCE(46, c1) * 215309565) FROM qcf_t WHERE (TRUE) IS UNKNOWN ORDER BY 1
+
+statement ok
+SELECT CASE WHEN true THEN 1 ELSE 1/0 END FROM qcf_t
+
+statement ok
+SELECT COALESCE(1, 2147483647 + 1) FROM qcf_t
+
+statement error (22003)
+SELECT CASE WHEN c1 > 0 THEN 2147483647 + 1 END FROM qcf_t
+
+statement error (22003)
+UPDATE qcf_t SET c1 = 2147483647 + 1 WHERE false
+
+statement error (22012)
+DELETE FROM qcf_t WHERE c1 = 1 / 0
+
+statement ok
+DROP TABLE qcf_t

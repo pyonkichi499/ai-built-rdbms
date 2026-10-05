@@ -1,0 +1,16 @@
+# 定数式のエラー（プランナの定数畳み込み）は、LIMIT / OFFSET の負数エラーより先に報告される
+
+statement error (22003)
+SELECT (10 / 5) AS a WHERE (COALESCE(51, 43) <> (13 + 2147483647)) OFFSET -2
+
+statement error (22003)
+SELECT ((2147483647 - 4) * 72) AS a OFFSET -1
+
+statement error (22003)
+SELECT ((2147483647 - 4) * 72) AS a LIMIT -1
+
+statement error (2201X)
+SELECT 1 AS a OFFSET -1
+
+statement error (2201W)
+SELECT 1 AS a LIMIT -1

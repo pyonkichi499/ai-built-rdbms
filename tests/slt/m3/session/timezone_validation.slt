@@ -1,0 +1,41 @@
+# SET TIME ZONE は未知のゾーン名を拒否する
+
+statement error (22023)
+SET TIME ZONE 'No/Such_Zone'
+
+statement error (22023)
+SET TIME ZONE 'foo'
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SHOW timezone
+----
+Asia/Tokyo
+
+# 不正な値の後も直前の値が残る
+statement error (22023)
+SET TIME ZONE 'No/Such_Zone'
+
+query T
+SHOW timezone
+----
+Asia/Tokyo
+
+statement ok
+SET TIME ZONE 'PST8PDT'
+
+statement ok
+SET TIME ZONE '+05:30'
+
+statement ok
+SET TIME ZONE 'utc'
+
+query T
+SHOW timezone
+----
+UTC
+
+statement ok
+RESET timezone

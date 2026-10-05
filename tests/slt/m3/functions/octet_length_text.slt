@@ -1,0 +1,19 @@
+query I
+SELECT octet_length('日本語')
+----
+9
+
+query I
+SELECT octet_length('abc')
+----
+3
+
+query I
+SELECT octet_length('')
+----
+0
+
+query I
+SELECT octet_length(NULL::text)
+----
+NULL

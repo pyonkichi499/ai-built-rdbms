@@ -1,0 +1,41 @@
+# INSERT ... SELECT（ORDER BY / DISTINCT / LIMIT 付き）でも代入キャストが掛かる
+
+statement ok
+CREATE TABLE isac_a(c0 text, c1 boolean, c2 smallint, c3 bigint, c4 float8)
+
+statement ok
+INSERT INTO isac_a VALUES ('x', true, 7, 9, 1.5)
+
+statement ok
+CREATE TABLE isac_b(c0 varchar(8), c1 varchar(8), c2 integer, c3 integer, c4 text)
+
+statement ok
+INSERT INTO isac_b (c0, c1, c2, c3, c4) SELECT c0, c1, c2, c3, c4 FROM isac_a ORDER BY 1, 2
+
+statement ok
+INSERT INTO isac_b (c0, c1, c2, c3, c4) SELECT DISTINCT c0, c1, c2, c3, c4 FROM isac_a
+
+statement ok
+INSERT INTO isac_b (c0, c1, c2, c3, c4) SELECT c0, c1, c2, c3, c4 FROM isac_a LIMIT 1
+
+query TTIIT
+SELECT * FROM isac_b
+----
+x true 7 9 1.5
+x true 7 9 1.5
+x true 7 9 1.5
+
+statement ok
+INSERT INTO isac_a VALUES ('y', false, 1, 3000000000, 2)
+
+statement error (22003)
+INSERT INTO isac_b (c0, c1, c2, c3, c4) SELECT c0, c1, c2, c3, c4 FROM isac_a ORDER BY c3
+
+statement error (22001)
+INSERT INTO isac_b (c0) SELECT 'abcdefghij'::text FROM isac_a ORDER BY 1
+
+statement ok
+DROP TABLE isac_a
+
+statement ok
+DROP TABLE isac_b

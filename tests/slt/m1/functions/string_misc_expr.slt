@@ -1,0 +1,58 @@
+# 文字列・数学関数: split_part / starts_with / translate / concat / concat_ws / quote_ident / quote_literal / div / gcd / lcm / degrees / radians / octet_length / bit_length
+
+query TTTTTTTTIIRRII
+SELECT split_part('a b', ' ', 1), starts_with('abc','a')::text, translate('abc','a','x'), concat('a',1,'b'), concat_ws(',','a',1), quote_ident('a'), quote_literal('a'), div(7.5::numeric, 2)::text, gcd(4,6), lcm(4,6), degrees('1'::float8), radians('1'::float8), octet_length('abc'), bit_length('abc')
+----
+a true xbc a1b a,1 a 'a' 3 2 12 57.29577951308232 0.017453292519943295 3 24
+
+query TTTTT
+SELECT split_part('a,b,c', ',', -1), split_part('a,b,c', ',', 4), split_part('abc', '', 1), split_part('', ',', 1), split_part('a,b,c', ',', -3)
+----
+c (empty) abc (empty) a
+
+statement error (22023)
+SELECT split_part('a,b', ',', 0)
+
+query TTT
+SELECT translate('12345', '143', 'ax'), translate('aab', 'aa', 'xy'), translate('héllo', 'é', 'e')
+----
+a2x5 xxb hello
+
+query TTTT
+SELECT concat('a', NULL, 'b'), concat(true, 1.5, NULL), concat_ws('-', 'a', NULL, 'b'), concat_ws(NULL, 'a', 'b')
+----
+ab t1.5 a-b NULL
+
+query TTTTT
+SELECT quote_ident('Foo'), quote_ident('select'), quote_ident('a"b'), quote_ident('a b'), quote_ident('')
+----
+"Foo" "select" "a""b" "a b" ""
+
+query TTT
+SELECT quote_literal('it''s'), quote_literal('a\b'), quote_literal(NULL)
+----
+'it''s' E'a\\b' NULL
+
+query TTI
+SELECT div(-7.5::numeric, 2)::text, div(7, 2)::text, gcd(-4, 6)
+----
+-3 3 2
+
+statement error (22012)
+SELECT div(1::numeric, 0)
+
+query IIII
+SELECT gcd(0, 0), lcm(0, 5), lcm(-4, 6), gcd(9223372036854775807, 3::bigint)::int
+----
+0 0 12 1
+
+statement error (22003)
+SELECT lcm(2147483647, 2)
+
+statement error (22003)
+SELECT gcd(-2147483648, 0)
+
+query II
+SELECT octet_length('あ'), bit_length('あ')
+----
+3 24

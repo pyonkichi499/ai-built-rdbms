@@ -1,0 +1,29 @@
+statement ok
+SET DateStyle = 'German'
+
+query T
+SHOW DateStyle
+----
+German, DMY
+
+statement ok
+SET DateStyle = 'German, MDY'
+
+query T
+SHOW DateStyle
+----
+German, MDY
+
+statement ok
+SET DateStyle = 'DMY'
+
+statement ok
+SET DateStyle = 'SQL'
+
+query T
+SHOW DateStyle
+----
+SQL, DMY
+
+statement ok
+RESET DateStyle

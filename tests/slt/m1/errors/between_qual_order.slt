@@ -1,0 +1,17 @@
+# WHERE の AND 条件は安い順に評価される（BETWEEN は >= と <= に展開される）ため、後ろの条件が偽なら桁あふれする側は評価されない
+
+statement ok
+CREATE TABLE bqo_t (c0 integer, c1 integer NOT NULL)
+
+statement ok
+INSERT INTO bqo_t VALUES (19, 44), (NULL, 70), (69, 23)
+
+statement ok
+DELETE FROM bqo_t WHERE (abs(c1) BETWEEN (c0 + 2147483647) AND (37 % 9))
+
+query II rowsort
+SELECT c0, c1 FROM bqo_t WHERE abs(c1) BETWEEN (c0 + 2147483647) AND (37 % 9)
+----
+
+statement ok
+DROP TABLE bqo_t

@@ -1,0 +1,35 @@
+# 複数行 INSERT / UPDATE: 定数の型変換エラー (22001/22003) はプラン時に全行ぶん先に報告され、
+# 行ごとの NOT NULL (23502) / CHECK (23514) より優先される
+
+statement ok
+CREATE TABLE dmlcc_t (c0 integer NOT NULL, c1 varchar(8), c2 smallint CHECK (c2 > 0))
+
+statement error (22001)
+INSERT INTO dmlcc_t VALUES (NULL, 'x'), (1, 'xxxxxxxxxxx')
+
+statement error (22003)
+INSERT INTO dmlcc_t VALUES (1, 'x', 0), (1, 'x', 70000)
+
+statement error (22003)
+INSERT INTO dmlcc_t VALUES (1, 'x', 0), (1, 'x', 99999999999)
+
+statement ok
+INSERT INTO dmlcc_t VALUES (1, 'x', 5)
+
+statement error (22001)
+UPDATE dmlcc_t SET c0 = NULL, c1 = 'xxxxxxxxxxxxx'
+
+statement error (22003)
+UPDATE dmlcc_t SET c0 = NULL, c2 = 70000
+
+statement error (22001)
+UPDATE dmlcc_t SET c2 = 0, c1 = 'xxxxxxxxxxxxx'
+
+statement error (23502)
+INSERT INTO dmlcc_t VALUES (NULL, 'x', 1)
+
+statement error (23514)
+INSERT INTO dmlcc_t VALUES (1, 'x', 0)
+
+statement ok
+DROP TABLE dmlcc_t

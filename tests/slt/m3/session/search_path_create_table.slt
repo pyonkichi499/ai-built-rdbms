@@ -1,0 +1,40 @@
+# CREATE TABLE の作成先スキーマは search_path に従う
+
+statement ok
+CREATE TABLE sp_existing (a int)
+
+statement ok
+SET search_path = pg_catalog
+
+statement error (42501)
+CREATE TABLE sp_t1 (a int)
+
+statement ok
+SET search_path TO sp_nonexist
+
+statement error (3F000)
+CREATE TABLE sp_t2 (a int)
+
+statement ok
+SET search_path TO sp_nonexist, public
+
+statement ok
+CREATE TABLE sp_t3 (a int)
+
+statement ok
+SET search_path = ''
+
+statement error (3F000)
+CREATE TABLE sp_t4 (a int)
+
+statement ok
+SET search_path = DEFAULT
+
+statement error (42P07)
+CREATE TABLE sp_existing (a int)
+
+statement ok
+DROP TABLE sp_existing
+
+statement ok
+DROP TABLE sp_t3

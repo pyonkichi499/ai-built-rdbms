@@ -1,0 +1,16 @@
+# 数値リテラルの末尾ゴミは 42601。メッセージは PG と同じくリテラル全体（識別子文字の連続まで）を含む
+
+statement error trailing junk after numeric literal at or near "0b2"
+SELECT 0b2
+
+statement error trailing junk after numeric literal at or near "0o8"
+SELECT 0o8
+
+statement error trailing junk after numeric literal at or near "1__0"
+SELECT 1__0
+
+statement error trailing junk after numeric literal at or near "123abc"
+SELECT 123abc
+
+statement error invalid binary integer at or near "0b"
+SELECT 0b

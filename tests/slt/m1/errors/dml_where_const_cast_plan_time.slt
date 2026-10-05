@@ -1,0 +1,14 @@
+statement ok
+CREATE TABLE dmlcf_e(a smallint)
+
+statement error (22003)
+UPDATE dmlcf_e SET a = 1 WHERE (-3528243972)::smallint > 1
+
+statement error (22003)
+DELETE FROM dmlcf_e WHERE 3000000000::int > 1
+
+statement error (22003)
+SELECT a FROM dmlcf_e WHERE (-3528243972)::smallint > 1
+
+statement ok
+DROP TABLE dmlcf_e

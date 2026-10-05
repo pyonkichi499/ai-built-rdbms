@@ -1,0 +1,32 @@
+# AND / OR の定数オペランドが関数・LIKE・NULLIF・LEAST・COALESCE でも畳まれ、
+# もう一方（エラーになる）オペランドが評価されない
+
+statement ok
+CREATE TABLE qfold_t (c0 int)
+
+statement ok
+INSERT INTO qfold_t VALUES (95)
+
+query I
+SELECT c0 FROM qfold_t WHERE ((c0 - (-2147483648)) IS NULL AND lower('a') LIKE 'H%o') IS NOT FALSE
+----
+
+query I
+SELECT c0 FROM qfold_t WHERE (c0 - (-2147483648)) IS NULL AND lower('a') LIKE 'H%o'
+----
+
+query I
+SELECT c0 FROM qfold_t WHERE (c0 - (-2147483648)) IS NULL AND nullif(1, 1) IS NOT NULL
+----
+
+query I
+SELECT c0 FROM qfold_t WHERE (c0 - (-2147483648)) > 0 OR least(1, 2) = 1
+----
+95
+
+query I
+SELECT c0 FROM qfold_t WHERE (c0 - (-2147483648)) > 0 AND coalesce(NULL, false)
+----
+
+statement ok
+DROP TABLE qfold_t

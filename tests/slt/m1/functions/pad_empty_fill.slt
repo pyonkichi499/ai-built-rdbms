@@ -1,0 +1,21 @@
+# lpad/rpad: fill が空でも長さに切り詰める
+
+query T
+SELECT rpad('ABC', 0, '')
+----
+(empty)
+
+query T
+SELECT '[' || lpad('  42  ', 2, '') || ']'
+----
+[  ]
+
+query T
+SELECT rpad('日本語', 2, '')
+----
+日本
+
+query T
+SELECT lpad('ab', 5, '') || '|' || rpad('ab', -1, '') || '|'
+----
+ab||

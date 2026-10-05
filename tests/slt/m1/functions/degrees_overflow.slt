@@ -1,0 +1,9 @@
+# degrees(float8) は有限の入力で結果が無限大になるとき 22003 を返す。
+
+statement error (22003)
+SELECT degrees('1e308'::float8)
+
+query T
+SELECT degrees('Infinity'::float8)::text
+----
+Infinity

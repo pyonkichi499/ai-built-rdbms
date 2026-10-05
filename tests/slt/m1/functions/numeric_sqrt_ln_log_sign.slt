@@ -1,0 +1,35 @@
+# numeric 引数の sqrt / ln / log / log10 / sign は numeric を返し、スケールは PostgreSQL の規則に従う。
+
+query T
+SELECT sqrt(2.5::numeric) || '|' || pg_typeof(ln(0.10::numeric)) || '|' || log(100.00::numeric) || '|' || sqrt(1e-10::numeric) || '|' || sign(0.10::numeric) || '|' || pg_typeof(sign(2.5::numeric))
+----
+1.581138830084190|numeric|2.0000000000000000|0.000010000000000000000|1|numeric
+
+query T
+SELECT sqrt(0::numeric) || '|' || sqrt(2::numeric) || '|' || sqrt(4::numeric) || '|' || sqrt(123456789.123456789::numeric) || '|' || sqrt(2.0000::numeric) || '|' || sqrt(1e20::numeric)
+----
+0.000000000000000|1.414213562373095|2.000000000000000|11111.11106611111|1.414213562373095|10000000000.00000
+
+query T
+SELECT ln(1::numeric) || '|' || ln(2::numeric) || '|' || ln(0.10::numeric) || '|' || ln(1.0001::numeric) || '|' || ln(1e50::numeric) || '|' || ln(123456.789::numeric)
+----
+0.0000000000000000|0.6931471805599453|-2.3025850929940457|0.00009999500033330834|115.12925464970228|11.723646487185881
+
+query T
+SELECT log(1000::numeric) || '|' || log10(5::numeric) || '|' || log(2::numeric, 1024::numeric) || '|' || log(3::numeric, 7::numeric) || '|' || log(0.5::numeric, 8::numeric)
+----
+3.0000000000000000|0.6989700043360188|10.0000000000000000|1.7712437491614223|-3.0000000000000000
+
+query T
+SELECT sign(0::numeric) || '|' || sign(-5.50::numeric) || '|' || sqrt('NaN'::numeric) || '|' || ln('NaN'::numeric) || '|' || ln('Infinity'::numeric) || '|' || sqrt('Infinity'::numeric)
+----
+0|-1|NaN|NaN|Infinity|Infinity
+
+statement error (2201F)
+SELECT sqrt(-1::numeric)
+
+statement error (2201E)
+SELECT ln(0::numeric)
+
+statement error (2201E)
+SELECT ln(-1::numeric)

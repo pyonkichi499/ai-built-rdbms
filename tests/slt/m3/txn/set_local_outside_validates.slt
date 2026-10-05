@@ -1,0 +1,28 @@
+# ブロック外の SET LOCAL も値を検証する（WARNING のあと 22023）
+
+statement error (22023)
+SET LOCAL lock_timeout = 'zz'
+
+statement error (22023)
+SET LOCAL statement_timeout = 'abc'
+
+statement error (22023)
+SET LOCAL transaction_read_only = 'x'
+
+statement error (22023)
+SET LOCAL DateStyle = 'Foo'
+
+statement error (22023)
+SET LOCAL IntervalStyle = 'z'
+
+statement error (22023)
+SET LOCAL bytea_output = 'raw'
+
+statement error (22023)
+SET LOCAL client_min_messages = 'loud'
+
+statement error (22023)
+SET LOCAL extra_float_digits = 4
+
+statement ok
+SET LOCAL lock_timeout = '1s'

@@ -1,0 +1,14 @@
+# GUC のエラーメッセージ: 範囲エラーは単位つき、enum の名前は小文字の正規名
+# （メッセージは正規表現の部分一致。SQLSTATE はすべて 22023）
+
+statement error -5 ms is outside the valid range for parameter "statement_timeout" \(0 ms \.\. 2147483647 ms\)
+SET statement_timeout = -5
+
+statement error outside the valid range for parameter "lock_timeout" \(0 ms \.\. 2147483647 ms\)
+SET lock_timeout = '-1s'
+
+statement error invalid value for parameter "intervalstyle": "z"
+SET IntervalStyle = 'z'
+
+statement error invalid value for parameter "bytea_output": "z"
+SET BYTEA_OUTPUT = 'z'

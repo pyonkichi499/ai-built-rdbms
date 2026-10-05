@@ -1,0 +1,32 @@
+# ロールバックしたトランザクション内で作ったカスタム GUC は、空文字列のプレースホルダとして残る
+
+statement ok
+BEGIN
+
+statement ok
+SET cgrp.custom = 'v'
+
+statement error (22012)
+SELECT 1/0
+
+statement ok
+END
+
+query T
+SHOW cgrp.custom
+----
+(empty)
+
+statement ok
+BEGIN
+
+statement ok
+SET cgrp.other = 'w'
+
+statement ok
+ROLLBACK
+
+query T
+SHOW cgrp.other
+----
+(empty)

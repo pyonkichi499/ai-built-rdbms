@@ -1,0 +1,25 @@
+# SET CONSTRAINTS（ブロック外は WARNING のみ）と SET SESSION AUTHORIZATION DEFAULT を受け付ける
+
+statement ok
+SET CONSTRAINTS ALL DEFERRED
+
+statement ok
+SET CONSTRAINTS ALL IMMEDIATE
+
+statement ok
+BEGIN
+
+statement ok
+SET CONSTRAINTS ALL DEFERRED
+
+statement ok
+SET CONSTRAINTS ALL IMMEDIATE
+
+statement ok
+COMMIT
+
+statement ok
+SET SESSION AUTHORIZATION DEFAULT
+
+statement ok
+RESET session_authorization

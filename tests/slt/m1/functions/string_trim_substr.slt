@@ -1,0 +1,43 @@
+# 文字列関数: left / right / replace / btrim・ltrim・rtrim / substr・substring / position・strpos、数値の round・trunc
+
+statement ok
+CREATE TABLE fn_str_t (c0 int, c1 varchar(20))
+
+statement ok
+INSERT INTO fn_str_t VALUES (5, 'banana'), (-3, '  xay  '), (NULL, NULL), (12, '')
+
+query TTTTTT
+SELECT left(c1, 2), right(c1, -2), replace(c1, 'a', 'x'), substr(c1, 2, 3), substr(c1, -1, 3), substring(c1 from 3) FROM fn_str_t WHERE c0 = 5
+----
+ba nana bxnxnx ana b nana
+
+query TTTTTTII
+SELECT trim(c1), btrim(c1, 'ab '), ltrim(c1), rtrim(c1, 'y '), trim(both 'a' from c1), trim(leading from c1), position('a' in c1), strpos(c1, 'an') FROM fn_str_t WHERE c0 = 5
+----
+banana nan banana banana banan banana 2 2
+
+query TTTII
+SELECT '[' || trim(c1) || ']', '[' || ltrim(c1) || ']', '[' || rtrim(c1) || ']', position('a' in c1), strpos(c1, 'y') FROM fn_str_t WHERE c0 = -3
+----
+[xay] [xay  ] [  xay] 4 5
+
+query RRRR
+SELECT round(c0, 1), round(2.5, 0), round(-2.5), trunc(-2.567, 2) FROM fn_str_t WHERE c0 = 5
+----
+5.0 3 -3 -2.56
+
+query TTI
+SELECT left(c1, 2), replace(c1, 'a', 'x'), position('a' in c1) FROM fn_str_t WHERE c0 IS NULL
+----
+NULL NULL NULL
+
+query TI
+SELECT left(c1, 2), position('' in c1) FROM fn_str_t WHERE c0 = 12
+----
+(empty) 1
+
+statement error (22011)
+SELECT substr('abc', 1, -1)
+
+statement ok
+DROP TABLE fn_str_t

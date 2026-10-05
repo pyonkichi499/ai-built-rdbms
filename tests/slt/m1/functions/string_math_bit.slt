@@ -1,0 +1,95 @@
+# 文字列関数・数学関数・ビット演算子・正規表現演算子（M4 以降の関数が 42883 にならないこと）。
+
+query T
+SELECT substr('abc',1,2)
+----
+ab
+
+query T
+SELECT substr('abcdef', -1, 4) || '|' || substr('abcdef', 3) || '|' || substring('abcdef', 2, 3) || '|' || substr('abc', 5, 2)
+----
+ab|cdef|bcd|
+
+statement error negative substring length
+SELECT substr('abc', 1, -1)
+
+query T
+SELECT left('abc',2) || '|' || left('abc',-1) || '|' || right('abc',2) || '|' || right('abc',-1) || '|' || left('abc', 10)
+----
+ab|ab|bc|bc|abc
+
+query T
+SELECT replace('abcabc','b','XY') || '|' || replace('abc','','x')
+----
+aXYcaXYc|abc
+
+query T
+SELECT '[' || trim('  a ') || '][' || trim(both 'x' from 'xxaxx') || '][' || trim(leading 'x' from 'xxaxx') || '][' || ltrim('  a') || '][' || rtrim('a  ') || '][' || btrim('xyaxy', 'xy') || ']'
+----
+[a][a][axx][a][a][a]
+
+query III
+SELECT position('a' in 'abc'), position('z' in 'abc'), strpos('hello', 'll')
+----
+1 0 3
+
+query T
+SELECT lpad('hi', 5, 'xy') || '|' || rpad('hi', 5, 'xy') || '|' || lpad('hi', 5) || '|' || lpad('hello', 3) || '|' || rpad('hi', 1)
+----
+xyxhi|hixyx|   hi|hel|h
+
+query IIT
+SELECT char_length('héllo'), ascii('A'), reverse('abc')
+----
+5 65 cba
+
+query T
+SELECT initcap('hELLO wORLD-foo bar_baz') || '|' || md5('abc') || '|' || chr(65)
+----
+Hello World-Foo Bar_Baz|900150983cd24fb0d6963f7d28e17f72|A
+
+query T
+SELECT md5('')
+----
+d41d8cd98f00b204e9800998ecf8427e
+
+query IIRRR
+SELECT mod(5,2), mod(-5,2), sign(1), round('1.5'::float8), round('2.5'::float8)
+----
+1 -1 1 2 2
+
+query RRRRR
+SELECT power('2'::float8,2), sqrt('16'::float8), ln('1'::float8), ceil('1.2'::float8), floor('-1.2'::float8)
+----
+4 4 0 2 -2
+
+statement error cannot take square root of a negative number
+SELECT sqrt('-1'::float8)
+
+statement error cannot take logarithm of zero
+SELECT ln('0'::float8)
+
+query IIIII
+SELECT 12 & 10, 12 | 10, 12 # 10, ~5, 1 << 4
+----
+8 14 6 -6 16
+
+query IIII
+SELECT 256 >> 4, ~(5::int2), 5::int8 & 3::int8, (-16) >> 2
+----
+16 -6 1 -4
+
+query BBBB
+SELECT 'abc' ~ 'b', 'abc' ~ '^b', 'ABC' ~* 'b', 'abc' !~ 'x'
+----
+t f t t
+
+query BBB
+SELECT 'abcabc' ~ '^(abc)+$', 'a1b' ~ '[[:digit:]]', 'foo.bar' ~ 'o\.b'
+----
+t t t
+
+query T
+SELECT substr(NULL::text, 1, 2) IS NULL AND (NULL::text ~ 'a') IS NULL
+----
+t

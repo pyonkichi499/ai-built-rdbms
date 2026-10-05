@@ -1,0 +1,69 @@
+# IS [NOT] DISTINCT FROM / GREATEST / LEAST
+
+query ?
+SELECT GREATEST(1, 2)
+----
+2
+
+query ?
+SELECT 1 IS DISTINCT FROM 2
+----
+t
+
+query ????
+SELECT NULL IS DISTINCT FROM NULL, NULL IS NOT DISTINCT FROM NULL, 1 IS NOT DISTINCT FROM NULL, 1 IS DISTINCT FROM 1
+----
+f t f f
+
+query ?????
+SELECT GREATEST(1, 2.5, NULL), LEAST(3, 1, 2), LEAST('b', 'a'), GREATEST(NULL, NULL), GREATEST(1.5, 2)
+----
+2.5 1 a NULL 2
+
+query ??
+SELECT pg_typeof(GREATEST(1, 2.5)), pg_typeof(LEAST(1, 2))
+----
+numeric integer
+
+statement error (22P02)
+SELECT GREATEST(1, 'x')
+
+statement error (42804)
+SELECT LEAST(1, true)
+
+statement ok
+CREATE TABLE exp_dg_t (a int, b int)
+
+statement ok
+INSERT INTO exp_dg_t VALUES (1, 1), (1, 2), (NULL, 1), (NULL, NULL)
+
+query II rowsort
+SELECT a, b FROM exp_dg_t WHERE a IS DISTINCT FROM b
+----
+1 2
+NULL 1
+
+query II rowsort
+SELECT a, b FROM exp_dg_t WHERE a IS NOT DISTINCT FROM b
+----
+1 1
+NULL NULL
+
+query ? rowsort
+SELECT GREATEST(a, b) FROM exp_dg_t
+----
+1
+1
+2
+NULL
+
+query ? rowsort
+SELECT LEAST(a, b, 0) FROM exp_dg_t
+----
+0
+0
+0
+0
+
+statement ok
+DROP TABLE exp_dg_t

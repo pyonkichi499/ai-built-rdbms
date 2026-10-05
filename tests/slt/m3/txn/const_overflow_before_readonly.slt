@@ -1,0 +1,61 @@
+# 定数の範囲外エラー（22003）は解析・計画時に出る。READ ONLY・CHECK・NOT NULL・行の実行より先
+
+statement ok
+CREATE TABLE zq_ro (a int CHECK (a < 5), b int NOT NULL)
+
+statement ok
+BEGIN READ ONLY
+
+statement error (22003)
+INSERT INTO zq_ro VALUES (2147483648, 1)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (22003)
+INSERT INTO zq_ro VALUES (9, 1), (2147483648, 1)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (22003)
+INSERT INTO zq_ro VALUES (1, NULL), (2147483648, 1)
+
+statement ok
+ROLLBACK
+
+statement error (22003)
+INSERT INTO zq_ro VALUES (9, 1), (2147483648, 1)
+
+statement error (22003)
+UPDATE zq_ro SET a = 1 WHERE (-3817370103)::integer > 0
+
+statement error (22003)
+DELETE FROM zq_ro WHERE 2147483647::smallint > 0
+
+statement error (22003)
+UPDATE zq_ro SET a = 2147483647::smallint
+
+statement error (22003)
+INSERT INTO zq_ro SELECT 2147483647::smallint WHERE false
+
+statement ok
+UPDATE zq_ro SET a = 1 WHERE abs(-2678211473) > 0
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+DELETE FROM zq_ro WHERE abs(-2678211473) > 0
+
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE zq_ro

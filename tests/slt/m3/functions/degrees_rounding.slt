@@ -1,0 +1,14 @@
+query R
+SELECT degrees('4.5'::float8)
+----
+257.8310078088704
+
+query R
+SELECT degrees(0.1::float8)
+----
+5.729577951308232
+
+query R
+SELECT radians('4.5'::float8)
+----
+0.07853981633974483

@@ -1,0 +1,7 @@
+# chr に負数を渡すと 22023 (invalid_parameter_value)。0 は 54000
+
+statement error (22023)
+SELECT chr(-1)
+
+statement error (54000)
+SELECT chr(0)

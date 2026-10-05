@@ -1,0 +1,31 @@
+# 整数のビット演算子 (& | # ~ << >>)：int2/int4/int8 の混在とシフト（右辺は int4）。
+
+query I
+SELECT (100000) | (2::int2)
+----
+100002
+
+query I
+SELECT (1) & (1)
+----
+1
+
+query I
+SELECT (-1) << (2::int2)
+----
+-4
+
+query IIII
+SELECT 5::int2 # 3::int8, 5::int8 & 3::int2, 1::int8 << 3::int2, (-8)::int2 >> 1
+----
+6 1 8 -4
+
+query IIII
+SELECT ~5::int2, 5::int8 | 3, 1::int2 << 15, 1::int2 << 16
+----
+-6 7 -32768 0
+
+query IIII
+SELECT 1::int4 << 32, 1::int8 << 64, 1 << -1, -8 >> 40
+----
+1 1 -2147483648 -1

@@ -1,0 +1,23 @@
+# 三角関数・双曲線関数（float8）。範囲外入力は 22003 "input is out of range"。
+
+query T
+SELECT sin('1.5'::float8) || '|' || cos('1.5'::float8) || '|' || tan('1.5'::float8) || '|' || asin(0.5::float8) || '|' || acos(0.5::float8) || '|' || atan(1.5::float8) || '|' || atan2('1.5'::float8, '0.1'::float8)
+----
+0.9974949866040544|0.0707372016677029|14.101419947171719|0.5235987755982989|1.0471975511965979|0.982793723247329|1.5042281630190728
+
+query T
+SELECT sinh(1::float8) || '|' || cosh(1::float8) || '|' || tanh(0.5::float8) || '|' || atan('Infinity'::float8) || '|' || sin('NaN'::float8) || '|' || cosh('Infinity'::float8)
+----
+1.1752011936438014|1.5430806348152437|0.46211715726000974|1.5707963267948966|NaN|Infinity
+
+statement error input is out of range
+SELECT sin('Infinity'::float8)
+
+statement error input is out of range
+SELECT asin(2::float8)
+
+statement error input is out of range
+SELECT acos(-2::float8)
+
+statement error input is out of range
+SELECT tan('-Infinity'::float8)

@@ -1,0 +1,32 @@
+# 定数の代入キャスト (varchar(n) の長さ検査・smallint の範囲検査) もプラン時に評価される:
+# 対象行が 0 件でも UPDATE の SET 値と INSERT ... SELECT の定数列でエラーになる
+
+statement ok
+CREATE TABLE dcac_e (a smallint, v varchar(8))
+
+statement error (22001)
+UPDATE dcac_e SET v = 'xxxxxxxxxxx'
+
+statement ok
+INSERT INTO dcac_e VALUES (1, 'a')
+
+statement error (22001)
+UPDATE dcac_e SET v = 'xxxxxxxxxxx' WHERE a = 5
+
+statement error (22003)
+UPDATE dcac_e SET a = 70000 WHERE false
+
+statement error (22003)
+INSERT INTO dcac_e SELECT 70000, 'a' WHERE false
+
+statement error (22001)
+INSERT INTO dcac_e SELECT 1, 'xxxxxxxxxxxxx' WHERE false
+
+statement error (22003)
+INSERT INTO dcac_e SELECT 70000, 'a' FROM dcac_e WHERE a = 5
+
+statement ok
+INSERT INTO dcac_e SELECT a, v FROM dcac_e WHERE false
+
+statement ok
+DROP TABLE dcac_e

@@ -1,0 +1,94 @@
+# current_setting / set_config / txid_current_if_assigned
+
+query T
+SELECT current_setting('application_name')
+----
+(empty)
+
+query T
+SELECT set_config('application_name', 'introspect_x', false)
+----
+introspect_x
+
+query T
+SELECT current_setting('application_name')
+----
+introspect_x
+
+query T
+SHOW application_name
+----
+introspect_x
+
+query T
+SELECT current_setting('introspect.nothing', true) IS NULL
+----
+t
+
+query T
+SELECT current_setting('transaction_isolation')
+----
+read committed
+
+statement error unrecognized configuration parameter "introspect_no_such"
+SELECT current_setting('introspect_no_such')
+
+statement error unrecognized configuration parameter "introspect_no_such"
+SELECT current_setting('introspect_no_such', false)
+
+query T
+SELECT set_config('application_name', NULL, false)
+----
+(empty)
+
+# is_local = true は明示トランザクション内でだけ効く
+statement ok
+BEGIN
+
+query T
+SELECT set_config('application_name', 'introspect_local', true)
+----
+introspect_local
+
+query T
+SELECT current_setting('application_name')
+----
+introspect_local
+
+statement ok
+COMMIT
+
+query T
+SELECT current_setting('application_name')
+----
+(empty)
+
+query T
+SELECT txid_current_if_assigned() IS NULL
+----
+t
+
+statement ok
+CREATE TABLE introspect_t (a int)
+
+statement ok
+BEGIN
+
+query T
+SELECT txid_current_if_assigned() IS NULL
+----
+t
+
+statement ok
+INSERT INTO introspect_t VALUES (1)
+
+query T
+SELECT txid_current_if_assigned() IS NOT NULL
+----
+t
+
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE introspect_t

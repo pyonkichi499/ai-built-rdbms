@@ -203,3 +203,6 @@ DROP TABLE ro_t
 
 statement ok
 DROP TABLE ro_drop
+
+statement ok
+RESET default_transaction_read_only

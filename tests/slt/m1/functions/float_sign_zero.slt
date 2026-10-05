@@ -1,0 +1,6 @@
+# sign(float) は -0 と NaN に対して 0 を返す（-0 や NaN を返さない）。
+
+query T
+SELECT sign('-0'::float8) || '|' || sign('-0'::float4) || '|' || sign('NaN'::float8) || '|' || sign(2.5::float8) || '|' || sign(-2.5::float8) || '|' || sign('0'::float8)
+----
+0|0|0|1|-1|0

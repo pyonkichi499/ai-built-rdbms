@@ -1,0 +1,33 @@
+# 使われない CASE / COALESCE の枝は PG の定数畳み込みで捨てられ、枝内のエラーは発火しない
+
+statement ok
+CREATE TABLE dbf_t (c0 int, c2 int)
+
+statement ok
+INSERT INTO dbf_t VALUES (1, 7)
+
+query I
+SELECT CASE WHEN false THEN (2147483647 + 41) ELSE c2 END FROM dbf_t
+----
+7
+
+query I
+SELECT COALESCE(85, c0, (-2147483648) * 1744878602) FROM dbf_t LIMIT 1+1
+----
+85
+
+query I
+SELECT COALESCE(92, 5) + CASE WHEN false THEN (2147483647 + 41) ELSE c2 END FROM dbf_t
+----
+99
+
+query I
+SELECT CASE WHEN true THEN c2 ELSE (2147483647 + 41) END FROM dbf_t
+----
+7
+
+statement error (22003)
+SELECT CASE WHEN c0 > 0 THEN (2147483647 + 41) ELSE c2 END FROM dbf_t
+
+statement ok
+DROP TABLE dbf_t

@@ -196,3 +196,39 @@ SELECT n FROM chn_t ORDER BY n
 
 statement ok
 DROP TABLE chn_t
+
+# 失敗したブロックからの AND CHAIN: BEGIN で指定した READ ONLY は abort で戻るが、
+# AND CHAIN で復元した特性は次の失敗後も引き継がれる
+statement ok
+CREATE TABLE chn_ro (n int)
+
+statement ok
+BEGIN READ ONLY
+
+statement ok
+ROLLBACK AND CHAIN
+
+statement error (22012)
+SELECT 1/0
+
+statement ok
+ROLLBACK AND CHAIN
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement error (25006)
+DELETE FROM chn_ro
+
+statement ok
+ROLLBACK
+
+query T
+SHOW transaction_read_only
+----
+off
+
+statement ok
+DROP TABLE chn_ro

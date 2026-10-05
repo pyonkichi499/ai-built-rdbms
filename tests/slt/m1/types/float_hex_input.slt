@@ -1,0 +1,39 @@
+# float8 / real の文字列入力: strtod 相当の 16 進浮動小数点
+
+query RRRR
+SELECT CAST('0x10' AS double precision), '0x1.8p1'::float8, ' -0X10 '::float8, '0xA.8'::float8
+----
+16 3 -16 10.5
+
+query RRR
+SELECT '0x10'::real, '0x1p-2'::real, '+0x.8'::float8
+----
+16 0.25 0.5
+
+query R
+SELECT '0x1e3'::float8
+----
+483
+
+query B
+SELECT NULLIF('0.5'::float8, '0x10') IS NOT NULL
+----
+t
+
+statement error (22P02)
+SELECT '0x'::float8
+
+statement error (22P02)
+SELECT '0x1p'::float8
+
+statement error (22P02)
+SELECT '0xg'::real
+
+statement error (22P02)
+SELECT '0x1_0'::float8
+
+statement error (22003)
+SELECT '0x1p99999'::float8
+
+statement error (22003)
+SELECT '0x1p-99999'::float8
