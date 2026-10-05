@@ -47,7 +47,7 @@ M4 の executor の契約です。式評価（`eval`）、サブプラン、物�
 | D5-4 | 式評価の可変性 | `eval(expr, row, &mut ExecCtx)`（00 §10）。SubLink 以外の評価は `EvalCtx` だけを使う。`EvalCtx` に `type_env` と `params` を足す | 00 の署名どおり。キャスト（`InOut`）が `TypeEnv` を要る。DEFAULT / CHECK / RETURNING は `eval_const`（`&ExecCtx` だけ）で足りる |
 | D5-5 | `SubLinkOutput` の評価 | 評価器は「副問い合わせの現在の行」`sub_row: Option<&Row>` を持つ。`eval_with_sub_row(expr, row, sub_row, ctx)` を `pub(crate)` で提供し、`subplan.rs` が Any / All の `test` に使う | `test` は外側の行（`Column(Local)`）と副問い合わせの行（`SubLinkOutput`）の両方を参照する |
 | D5-6 | InitOnce の範囲 | Scalar / Exists は 1 つの値を、Any / All は副問い合わせの全行（`Vec<Row>`）を保持する。どの種類でも 1 回だけ実行する | 00 は InitOnce の対象種類を限定していない。非相関で等値でない `x < ALL (SELECT ...)` も 1 回の実行で済ませる |
-| D5-7 | Hashed の意味 | PostgreSQL の `ExecHashSubPlan` と同じ**正確な三値論理**（NULL を含む行は別に保持し、NULL を含む probe は「部分一致」を調べる）。単一キーでは 00 の簡約（一致 → true、不一致で NULL 行あり or lhs が NULL → NULL、それ以外 false、空集合は常に false）と一致する | 複数列 `(a, b) IN (SELECT x, y ...)` は簡約だと誤る。`(1, NULL) IN (SELECT 2, 5)` は false、`(1, 2) IN (SELECT 1, NULL)` は NULL（検証済み） |
+| D5-7 | Hashed の意味 | PostgreSQL の `ExecHashSubPlan` と同じ**正確な三値論理**（NULL を含む行は別に保持し、NULL を含む probe は「部分一致」を調べる）。単一キーでは次の簡約と同じ結果になる（一致 → true、不一致で NULL 行あり or lhs が NULL（集合が空でないとき）→ NULL、それ以外 false、空集合は常に false）。**この簡約は 00 には書かれていない**（00 §9.3 の `Hashed` のコメントは構造だけ。レビュー対応 R-13）。仕様の正本はこの章の §4.2.5 の `set` / `null_rows` / `full_rows` による正確な三値論理で、02-D17 / 02 §3.7.3 の「NULL を含むときは `test` を行ごとに評価する経路に落とす」方式は採らない（同じ結果になるが、複数列で全行を `test` で走査する O(n) の経路が `findPartialMatch` と同じ線形走査になるだけで、構造が違う。11 §7.1 の C-10 で `SubPlanStates` は 05 を採用済み） | 複数列 `(a, b) IN (SELECT x, y ...)` は簡約だと誤る。`(1, NULL) IN (SELECT 2, 5)` は false、`(1, 2) IN (SELECT 1, NULL)` は NULL（検証済み） |
 | D5-8 | NestedLoopJoin の向き | `outer` = 論理プランの left、`inner` = right。出力は `outer ++ inner`。FULL は実行できない（`Error::internal`）。入れ替えが必要なら planner が Project で並べ直す | 00 の「出力は常に左 ++ 右」を NLJ にも当てはめる。RIGHT は planner が LEFT に直す |
 | D5-9 | HashJoin の一般化 | 「probe 側の保存」と「build 側の保存」の 2 つの印で全種類（INNER / LEFT / FULL / SEMI / ANTI × `build_is_left`）を 1 つのアルゴリズムで扱う（§5.15）。SEMI / ANTI も `build_is_left = true` を実装する（planner は使わない） | 場合分けの重複を避け、結合アルゴリズムの相互比較テストで全組み合わせを網羅できる |
 | D5-10 | 集約の共通部品 | `executor/agg.rs` の `AggSet`（FILTER → 引数評価 → NULL 除外 → DISTINCT → 遷移）を Aggregate / HashAggregate / GroupAggregate が共有する | 3 ノードで意味を揃える |
@@ -60,7 +60,7 @@ M4 の executor の契約です。式評価（`eval`）、サブプラン、物�
 | D5-17 | RETURNING の評価行 | INSERT / UPDATE は格納した**新しい行**（全ユーザー列）、DELETE は**削除した古い行**。式は `PhysCol::Local(i)` = 対象表の i 番目のユーザー列だけを参照する（00 §7、§8 の約束）。FROM 句の表の列を参照する RETURNING は analyzer が `0A000` にする | 00 の `BoundReturning` は対象表の Var だけ |
 | D5-18 | RETURNING つき DML | ノードは遅延実行（`next` ごとに入力 1 行を処理して RETURNING の行を 1 つ返す）。session は `None` が返るまで必ず読み切る | PostgreSQL の ModifyTable と同じ。読み切らないと文が完了しない |
 | D5-19 | CHECK 制約の評価順 | 名前の昇順（PostgreSQL の `ExecRelCheck` が名前順に並べた `ccname` の順に評価する。未検証: 並べ替えの箇所）。`RowChecker::new` が整列する | 複数の CHECK に違反する行でどの制約名が報告されるかを揃える |
-| D5-20 | 相関のある MATERIALIZED CTE | 実行しない。`PhysicalQuery.ctes[i]` が `free_params` を持つ場合は、最初の `next` で `Error::internal`。planner が `0A000` で拒否する（確認事項 05-Q5） | 共有ストアを複数の `CteScan` が使うため、`rewind` ごとの作り直しが難しい。実用上まれ |
+| D5-20 | 相関のある共有 CTE（`MATERIALIZED` の明示・揮発性） | 実行しない（04-D4 が `0A000` にするのは `MATERIALIZED` の明示と揮発性。それ以外の相関 CTE は 04 がインラインするので `ctes` に来ない。レビュー対応 R-05）。`PhysicalQuery.ctes[i]` が `free_params` を持つ場合は、最初の `next` で `Error::internal`。planner が `0A000` で拒否する（確認事項 05-Q5） | 共有ストアを複数の `CteScan` が使うため、`rewind` ごとの作り直しが難しい。実用上まれ |
 | D5-21 | `generate_series` | `int4`・`int8` の 2 引数・3 引数。NULL 引数は 0 行、`step = 0` は 22023、`step` の向きと逆なら 0 行、桁あふれは「そこで終わり」（エラーにしない。検証済み） | PostgreSQL と同じ |
 | D5-22 | 課金の保持と解放 | 課金は文の終わりまで保持するのが原則。例外として (a) 再構築の前に自分の課金を返す、(b) `rewindable = false` のノードは入力を読み切った時点で自分の課金を返す（§8.3） | 実メモリより多めに数える（安全側）が、直列に並ぶ Sort・HashJoin の合計で上限を超えるのを避ける |
 
@@ -76,8 +76,10 @@ pub trait Executor {
     fn next(&mut self, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>>;
     fn rewind(&mut self, ctx: &mut ExecCtx<'_>) -> Result<()>;
     fn rows_affected(&self) -> u64 { 0 }
-    /// EXPLAIN ANALYZE 用の累計値。("Rows Removed by Filter", n) など。既定は空（00 への変更提案 05-P2）
-    fn extra_stats(&self) -> Vec<(&'static str, u64)> { Vec::new() }
+    /// EXPLAIN ANALYZE の計測の受け口（10 §3.10。11 §7.1 の C-2 で 05 の `extra_stats` / `BuildOptions` 方式を廃止し 10 の方式に統一。
+    /// レビュー対応 R-28）。既定は何もしない。`Filter`・`SeqScan`・`IndexScan`・`NestedLoopJoin`・`NestedLoopParam`・`HashJoin` が
+    /// override し、述語が false の行を `instr.add_removed(id, FilterCounter::Filter | JoinFilter, 1)` で数える
+    fn set_counters(&mut self, _id: usize, _instr: &Rc<instrument::Instrumentation>) {}
 }
 
 /// 00 §10 の ExecCtx のフィールドに加えて、この章が前提にするヘルパ
@@ -87,11 +89,12 @@ impl ExecCtx<'_> {
 }
 
 /// 文の開始時に session が作る、問い合わせごとの状態
+/// （C-10: `ExecCtx::new(env, txn, query)`（02 §3.7.2）が正。`ExecEnv` が `mem_limit` と `instr` を持つ。`QueryState` は `ExecCtx::new` の内部の補助）
 pub struct QueryState { pub params: Vec<Datum>, pub mem: MemBudget, pub subplans: SubPlanStates, pub ctes: CteStates }
 impl QueryState {
     /// params = vec![Datum::Null; query.n_params]、mem = MemBudget::new(mem_limit)。
-    /// subplans / ctes はスロットだけ作り、Executor は最初に使うときに build する
-    pub fn new(query: &PhysicalQuery, mem_limit: usize, opts: &BuildOptions) -> QueryState;
+    /// subplans / ctes はスロットだけ作り、Executor は最初に使うときに build する（計測が要るときは `ctx.instr` を見て `build_instrumented`）
+    pub(crate) fn new(query: &PhysicalQuery, mem_limit: usize) -> QueryState;
 }
 
 // 式評価の文脈（M3 の EvalCtx に追加。05-P3）
@@ -107,20 +110,16 @@ pub struct EvalCtx<'a> {
 
 ```rust
 // executor/build.rs（P0 が足場を置き、各担当が自分のノードの分岐を埋める）
-#[derive(Clone, Default)]
-pub struct BuildOptions { pub instrument: Option<Arc<instrument::InstrumentSink>> }
-
 /// 00 §10 の署名。subplans を持たない単体テスト用（SubLink は「パラメータ依存」とみなす）
 pub fn build(plan: &PhysicalPlan) -> BoxedExecutor;
-/// 本番の入口。root を `PlanScope::Root`、rewindable = false で build する
-pub fn build_query(query: &PhysicalQuery, opts: &BuildOptions) -> BoxedExecutor;
+/// 本番の入口。root を rewindable = false で build する。計測（EXPLAIN ANALYZE）は 10 §3.10 の `executor::instrument::build_instrumented`
+/// （各ノードを `Instrumented` で包み、`set_counters` を呼ぶ）。`exec_id` は `planner::physical::assign_exec_ids` の 1 つの通し番号
+/// （根、`subplans` の昇順、`ctes` の昇順）。05 の `BuildOptions` / `PlanScope` / `NodeKey` / `extra_stats` は採らない（C-2）
+pub fn build_query(query: &PhysicalQuery) -> BoxedExecutor;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PlanScope { Root, SubPlan(SubPlanId), Cte(usize) }       // instrument.rs と共有（10 章が定義）
-
-pub(crate) struct BuildEnv<'a> { pub query: Option<&'a PhysicalQuery>, pub opts: &'a BuildOptions, /* 先行順の通し番号 Cell<u32> */ }
+pub(crate) struct BuildEnv<'a> { pub query: Option<&'a PhysicalQuery>, pub instr: Option<&'a Rc<instrument::Instrumentation>> /* 先行順の通し番号は ExecIdCursor */ }
 /// rewindable: このノードが（親または祖先によって）rewind されうるか
-pub(crate) fn build_scoped(plan: &PhysicalPlan, scope: PlanScope, env: &BuildEnv<'_>, rewindable: bool) -> BoxedExecutor;
+pub(crate) fn build_scoped(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> BoxedExecutor;
 
 /// 外から値を受ける ParamId の集合。reads - bound。
 ///   reads : 木の式に現れる PhysCol::Param、および木の中の SubLink(id) について
@@ -152,7 +151,7 @@ enum SubPlanCache {
     Hashed(HashedSubPlan),
 }
 impl SubPlanStates {
-    pub fn new(query: &PhysicalQuery, opts: &BuildOptions) -> SubPlanStates;
+    pub fn new(query: &PhysicalQuery) -> SubPlanStates;
     fn take(&mut self, id: SubPlanId, query: &PhysicalQuery) -> Result<(BoxedExecutor, bool)>;   // Unbuilt なら build、Lent なら internal
     fn put_back(&mut self, id: SubPlanId, exec: BoxedExecutor, started: bool);
 }
@@ -169,7 +168,7 @@ pub struct HashedSubPlan {
 // executor/nodes/cte_scan.rs（X2）
 pub struct CteStates { slots: Vec<CteSlot> }
 struct CteSlot { exec: SlotExec, rows: Vec<Row>, done: bool, free: bool /* free_params が空か */ }
-impl CteStates { pub fn new(query: &PhysicalQuery, opts: &BuildOptions) -> CteStates; }
+impl CteStates { pub fn new(query: &PhysicalQuery) -> CteStates; }
 ```
 
 ### 3.4 集約の部品
@@ -305,7 +304,7 @@ eval_sublink(id, row, ctx):
 ```rust
 fn with_subplan<R>(ctx: &mut ExecCtx<'_>, id: SubPlanId,
                    f: impl FnOnce(&mut BoxedExecutor, &mut bool /* started */, &mut ExecCtx<'_>) -> Result<R>) -> Result<R> {
-    let (mut exec, mut started) = ctx.subplans.take(id, ctx.query)?;   // Unbuilt なら build_scoped(.., PlanScope::SubPlan(id), rewindable = true)
+    let (mut exec, mut started) = ctx.subplans.take(id, ctx.query)?;   // Unbuilt なら build_scoped(.., rewindable = true)（`ctx.instr` が Some なら build_instrumented）
     let r = f(&mut exec, &mut started, ctx);
     ctx.subplans.put_back(id, exec, started);
     r
@@ -395,7 +394,7 @@ else:                                                            // probe に NU
     return false
 ```
 
-「部分一致」: 全キー列 `i` について `probe[i]` が NULL、`row[i]` が NULL、または `cmp_datum(probe[i], row[i]) == Equal`（= 確定した不一致の列がない）。`n_keys == 1` では、probe が NULL なら集合が空でない限り部分一致、probe が非 NULL なら `null_rows` が空でなければ部分一致になる（00 の簡約と同じ）。複数列は `null_rows` / `full_rows` を線形走査する（PostgreSQL の `findPartialMatch` と同じ O(n)）。
+「部分一致」: 全キー列 `i` について `probe[i]` が NULL、`row[i]` が NULL、または `cmp_datum(probe[i], row[i]) == Equal`（= 確定した不一致の列がない）。`n_keys == 1` では、probe が NULL なら集合が空でない限り部分一致、probe が非 NULL なら `null_rows` が空でなければ部分一致になる（D5-7 の単一キーの簡約と同じ。00 にこの簡約はない）。複数列は `null_rows` / `full_rows` を線形走査する（PostgreSQL の `findPartialMatch` と同じ O(n)）。
 
 実機（検証済み。`u` = {(2,5), (1,NULL)}）: `(1,NULL) IN (SELECT 2,5)` = false、`(1,NULL) IN (SELECT 1,5)` = NULL、`(1,NULL) IN (SELECT 2,NULL)` = false、`(NULL,NULL) IN (SELECT 1,1)` = NULL、`(1,2) IN (SELECT 1,NULL)` = NULL、`(3,2) IN (SELECT 1,NULL)` = false、`(1,NULL) IN (空)` = false、`(1,2) IN (SELECT x,y FROM u)` = NULL、`(2,5) IN (...)` = true、`(1,3) IN (...)` = NULL、`(3,3) IN (...)` = false。
 
@@ -410,7 +409,7 @@ else:                                                            // probe に NU
 - **メモリ**: 溜める行（ソート・ハッシュ表・Materialize・集約状態・DISTINCT の集合・CTE ストア・Hashed の集合）は `ctx.mem.charge` で課金する（§8）。
 - **rewind の型**: ノードが「溜めた結果を持つ」とき、`reuse`（D5-3）が true なら読みの位置だけを先頭に戻し、子を `rewind` しない。false なら溜めた結果を捨て（課金を返し）、子を `rewind` して未構築に戻す。溜めた結果を持たないノードは、子を `rewind` して自分の状態を初期化する。
 - **NULL**: 各節に書く。結合キー・DISTINCT・GROUP BY・集合演算の「等しい」は `HashKey` / `cmp_datum` の意味（NULL どうしは等しい）。結合キーだけは NULL が一致しない（§5.15）。
-- **フィルタの数え方**: filter を持つノードは、落とした行数を `extra_stats` の `("Rows Removed by Filter", n)` として累計する（`rewind` でも 0 に戻さない）。
+- **フィルタの数え方**: filter を持つノード（`SeqScan`・`IndexScan`・`Filter`）は、落とした行数を `set_counters` で受けた `Instrumentation` の `add_removed(id, FilterCounter::Filter, n)` に足す（`instr` が `None` なら数えない。`rewind` でも 0 に戻さない）。結合（`NestedLoopJoin`・`NestedLoopParam`・`HashJoin`）の `join_filter` / `residual` は `FilterCounter::JoinFilter`（10 §3.10）。
 
 ### 5.1 Result
 
@@ -477,7 +476,7 @@ next:
 - ヒープの可視性判定は `fetch` が行う（インデックスは MVCC を知らない）。UPDATE で旧版・新版の両方が索引されていても、可視な版だけが返る。同じ文の UPDATE が書いた新版はコマンド ID で見えない（Halloween 対策は M2 §5.5 と同じ）。
 - 順序: `direction` どおりの索引順（キーが同じなら TID の順。Backward は逆）。
 - `rewind`: `scan = None`、`empty = false`（次の `next` でキーを再評価して `begin_scan`。NestedLoopParam の inner では毎回 `Param` が変わる）。
-- メモリ: 課金なし（B+Tree が葉ごとにまとめる TID は小さい）。`extra_stats`: `("Rows Removed by Filter", n)`。
+- メモリ: 課金なし（B+Tree が葉ごとにまとめる TID は小さい）。`set_counters` で `Rows Removed by Filter` を数える（§5.0）。
 
 ### 5.5 FunctionScan（`generate_series`）
 
@@ -516,7 +515,7 @@ next:
 - 比較: キーごとに `cmp_with_nulls(a, b, key.descending, key.nulls_first)`。**安定ソート**（`sort_by`）。PostgreSQL のソートは安定でないが、同順位の並びに依存するテストは書かない（ORDER BY の完全指定）。キー式は入力行を読んだ時点で 1 回評価する。
 - 課金: 行ごとに `estimate_row_bytes(&row) + estimate_row_bytes(&key)`。
 - `rewind`: `reuse` なら位置を 0 に戻す（行は複製して返す）。そうでなければ破棄して子を `rewind`。`rewindable = false` のとき、返す行は `std::mem::take` で取り出して複製を避け、最後の行を返した時点で課金を返す（D5-22）。
-- NULL: キーの NULL は `nulls_first` に従って先頭か末尾（ASC の既定は NULLS LAST、DESC の既定は NULLS FIRST）。`extra_stats`: `("Sort Space Used (bytes)", 課金額)`。
+- NULL: キーの NULL は `nulls_first` に従って先頭か末尾（ASC の既定は NULLS LAST、DESC の既定は NULLS FIRST）。`Sort Space Used` は出さない（10-D10-6）。
 
 ### 5.9 Unique
 
@@ -587,7 +586,7 @@ next:
 
 - NULL: `join_filter` が NULL なら不一致（落とす）。ANTI は NULL を「一致」に数えない（`NOT EXISTS` の意味）。`NOT IN` は ANTI にならない（planner が変換しない）。
 - `rewind`: `outer.rewind`、`outer_row = None`。`inner_dirty` は維持する（inner が途中の可能性があるので、次の外側の行で必ず `rewind`）。
-- `extra_stats`: `("Rows Removed by Join Filter", n)`。課金なし（inner の Materialize が課金する）。
+- `set_counters`: `Rows Removed by Join Filter`（`FilterCounter::JoinFilter`）。課金なし（inner の Materialize が課金する）。
 
 ### 5.14 NestedLoopParam
 
@@ -679,7 +678,7 @@ probe（next）: 状態 = (cur: Option<Row>, bucket: Option<u32>, pos, cur_match
 - 出力順: probe の順、各 probe 行の中は bucket の順（= build の挿入順）。終了段は build の挿入順。
 - NULL キー: ビルド側で NULL を含む行は table に入れない。プローブ側で NULL を含む行は bucket を引かない（不一致扱い。PP の kind なら不一致行として出る）。
 - `rewind`: `reuse(B)` なら table と rows を保持し、`matched` をすべて false に戻し、P を `rewind`、probe の状態を初期化。`reuse(B)` が false なら構築し直す（課金を返し、B と P の両方を `rewind`）。
-- メモリ: ビルド行と表の課金は上のとおり。`rewindable = false` なら終了段が終わった時点で課金を返す。`extra_stats`: `("Rows Removed by Join Filter", n)`（residual で落とした一致候補）。
+- メモリ: ビルド行と表の課金は上のとおり。`rewindable = false` なら終了段が終わった時点で課金を返す。`set_counters`: `Rows Removed by Join Filter`（residual で落とした一致候補。`FilterCounter::JoinFilter`）。
 - check_interrupts: 構築 1 行ごと、probe 1 行ごと、bucket の候補 1 つごと。
 
 ### 5.16 Aggregate（GROUP BY なし）
@@ -755,7 +754,7 @@ next:
     if pos < slot.rows.len(): pos += 1; return slot.rows[pos-1].clone()
     if slot.done: return None
     check_interrupts
-    exec = take（Unbuilt なら build_scoped(ctx.query.ctes[cte], PlanScope::Cte(cte), rewindable = true)）; r = exec.next(ctx); put_back
+    exec = take（Unbuilt なら build_scoped(ctx.query.ctes[cte], rewindable = true)）; r = exec.next(ctx); put_back
     None → slot.done = true; None
     Some(r) → charge(estimate_row_bytes(&r)); slot.rows.push(r.clone()); pos += 1; Some(r)
 rewind: pos = 0（共有ストアは触らない。他の CteScan の進み方に影響しない）
@@ -1044,16 +1043,16 @@ PostgreSQL の `out of memory` は `DETAIL: Failed on request of size N in memor
 
 ## 9. EXPLAIN ANALYZE の計測の差し込み口
 
-`instrument.rs` の本体（`InstrumentSink`、`NodeCounters`、整形）は `10-explain-copy-compat.md`（E1）が書く。この章は「build が計測ラッパーを入れる」規約を定める。
+`instrument.rs` の本体（`Instrumentation`、`NodeCounters`、`Instrumented`、`build_instrumented`、整形）は `10-explain-copy-compat.md` §3.10（E1）が書く。**11 §7.1 の C-2 の決定により、この節は 10 の方式に統一した**（以前の `BuildOptions.instrument` / `PlanScope` / `NodeKey` / `Executor::extra_stats` / `ExplainNode.phys_id` の方式は廃止。レビュー対応 R-28）。この章が決めるのは executor 側の約束だけ。
 
-1. `BuildOptions.instrument` が `Some` のとき、`build_scoped` は各ノードを作った直後に `instrument::wrap(inner, key)` で包む。`None` のときは何も包まない（通常の実行にオーバーヘッドを足さない）。
-2. `key = NodeKey { scope: PlanScope, index: u32 }`。`index` は `PhysicalPlan` の**先行順**（親、子の順）の通し番号で、スコープ（`Root`、`SubPlan(id)`、`Cte(i)`）ごとに 0 から数える。`ExplainNode`（`PhysicalQuery.explain`、`SubPlanDef.explain`）は同形・同じ子の順序なので、同じ番号で突き合わせる。
-3. ラッパーの `next` は、時間の計測（`TIMING` が有効のとき）、返した行数の加算、`None` を返した時点の記録を行い、`rewind` は `loops += 1`。`rows_affected` と `extra_stats` は内側に委ねる。
-4. サブプランと CTE の Executor は遅延 `build` されるので、`SubPlanStates::new` / `CteStates::new` が `BuildOptions` を保持し、`build_scoped` に渡す。一度も実行されなかったノード（`loops = 0`）は `(never executed)` と出す（10 章）。
-5. `ExplainNode` に実行ノードのない合成ノード（PostgreSQL の `Hash` など）を入れる場合は、`ExplainNode.phys_id: Option<u32>`（合成ノードは None）で対応づける（00 への変更提案 05-P4）。
+1. `ExecCtx.instr: Option<Rc<Instrumentation>>` が `Some` のとき、`build_instrumented`（10 §3.10）が各ノードを `Instrumented` で包み、`Executor::set_counters(id, &instr)` を呼ぶ。`None` のときは何も包まない（通常の実行にオーバーヘッドを足さない）。
+2. `exec_id` は `planner::physical::assign_exec_ids`（10 §3.2）の通し番号 1 つ（根の先行順、続けて `subplans` の昇順、`ctes` の昇順）。`ExplainNode.exec_id` と同じ番号で突き合わせる。合成ノード（`Hash` など）は中身の `exec_id` を借りるので、`phys_id` は要らない。
+3. `Instrumented` の `next` / `rewind` の意味は 10 §3.10。`rows_affected` は内側に委ねる。
+4. サブプランと CTE の Executor は遅延 `build` されるので、`SubPlanStates` / `CteStates` が最初に使うときに `ctx.instr` を見て `build_instrumented` を呼ぶ。一度も実行されなかったノード（`loops = 0`）は `(never executed)` と出す（10 章）。
+5. `set_counters` を実装するノードと担当: `Filter`・`SeqScan`（P0-c。既存ノードの `PhysExpr` 化と一緒に。+0.1 日）、`NestedLoopJoin`・`NestedLoopParam`・`HashJoin`（X1。+0.3 日）、`IndexScan`（X3。+0.1 日）。ほかのノードは既定の何もしない実装でよい。
 6. EXPLAIN ANALYZE の DML は実際に実行する（PostgreSQL と同じ。トランザクションの扱いは session）。`rows_affected` と RETURNING は通常どおり。
 
-追加の計測値は `extra_stats()` の名前で渡す。M4 で出すのは `Rows Removed by Filter`（SeqScan / IndexScan / Filter）、`Rows Removed by Join Filter`（NLJ / NLP / HashJoin の residual）、`Sort Space Used (bytes)`（Sort）。`MemBudget::peak()` は EXPLAIN ANALYZE の末尾の情報に使ってよい。
+追加の計測値は `Instrumentation::add_removed` で渡す。M4 で出すのは `Rows Removed by Filter`（SeqScan / IndexScan / Filter）と `Rows Removed by Join Filter`（NLJ / NLP / HashJoin の residual）だけ（`Sort Space Used` は出さない。10-D10-6）。`MemBudget::peak()` は EXPLAIN ANALYZE の末尾の情報に使ってよい。
 
 ---
 
@@ -1148,10 +1147,10 @@ Rust の `AggState` 単体テストは、各 `AggKind` の初期値・遷移・N
 
 | 担当 | ファイル | 中身 | 日数 |
 |---|---|---|---|
-| X1 | `executor/subplan.rs`、`nodes/{nested_loop,hash_join,materialize}.rs` | SubLink の評価（§4.2）と `SubPlanStates`、NLJ / NLP、HashJoin（§5.15）、Materialize、結合の相互比較テスト | 5 |
+| X1 | `executor/subplan.rs`、`nodes/{nested_loop,hash_join,materialize}.rs` | SubLink の評価（§4.2）と `SubPlanStates`、NLJ / NLP、HashJoin（§5.15）、Materialize、結合の相互比較テスト、NLJ / NLP / HashJoin の `set_counters`（+0.3） | 5.3 |
 | X2 | `executor/{agg,mem}.rs`、`types/hash.rs`、`nodes/{aggregate,hash_aggregate,group_aggregate,unique,append,hash_setop,cte_scan,function_scan}.rs`、Sort・Distinct への課金の追加 | 集約（§6）、`MemBudget`、ハッシュ、集合演算、CTE、`generate_series`、`CteStates` | 5 |
-| X3 | `executor/dml.rs`、`nodes/{index_scan,insert,update,delete}.rs`、`test_util` の `FakeIndexStore` と `FakeStore::fetch` | §5.4、§7 | 4 |
-| P0（02 章） | `executor/{mod,build,eval}.rs`、既存ノード（Result / Values / SeqScan（filter）/ Filter / Project / Sort / Distinct / Limit）の `PhysExpr` 化と `rewind` 化、`BuildOptions` / `QueryState` / `free_params` / `build_scoped` の足場、`ExecCtx` の拡張、`eval_with_sub_row` と `subplan::eval_sublink` のスタブ | 足場。X1〜X3 はそのスタブの中身を書く | （02 章に含まれる） |
+| X3 | `executor/dml.rs`、`nodes/{index_scan,insert,update,delete}.rs`、`test_util` の `FakeIndexStore` と `FakeStore::fetch` | §5.4、§7、`IndexScan` の `set_counters`（+0.1） | 4.1 |
+| P0（02 章） | `executor/{mod,build,eval}.rs`、既存ノード（Result / Values / SeqScan（filter）/ Filter / Project / Sort / Distinct / Limit）の `PhysExpr` 化と `rewind` 化、`QueryState` / `free_params` / `build_scoped` の足場、`ExecCtx` の拡張、`eval_with_sub_row` と `subplan::eval_sublink` のスタブ、`Filter`・`SeqScan` の `set_counters`（+0.1） | 足場。X1〜X3 はそのスタブの中身を書く | （02 章に含まれる。P0 は 5.1 日） |
 | E1（10 章） | `executor/instrument.rs` | §9 | （10 章に含まれる） |
 
 - 依存: X1・X2・X3 はすべて P0 に依存。X2 は T1（numeric の橋渡し）に、X3 は B1・B2（`IndexStore`）に依存する（未完成の間は `FakeIndexStore` で進める）。
@@ -1221,8 +1220,8 @@ Rust の `AggState` 単体テストは、各 `AggKind` の初期値・遷移・N
   - 理由: 副問い合わせの中に volatile 関数（`random()`、`nextval`）があると誤る。判定には関数の volatility の情報が要る。
   - 変えたい場合の影響: planner が「副問い合わせが immutable / stable だけ」を `SubPlanDef` に持たせれば、X1 が 1 エントリの結果キャッシュを足せる（+0.5 日）。同じ外側の値が続くデータで速くなる。
 
-- **[05-Q10] 計測の対応づけのための `ExplainNode.phys_id`**
-  - 仮決め: 合成ノードを持つ場合だけ必要（§9 の 5）。
+- **[05-Q10] 計測の対応づけは 10 の `exec_id` と `set_counters` に統一する**（11 §7.1 の C-1・C-2。以前は `ExplainNode.phys_id`）
+  - 仮決め: 合成ノードは中身の `exec_id` を借りる。`Rows Removed by ...` は `Filter`・`SeqScan`・`IndexScan`・結合が `set_counters` で数える（§9）。
   - 理由: 00 は ExplainNode が PhysicalPlan と同形としているが、PostgreSQL の `Hash` ノードなどを出すなら同形でなくなる。
   - 変えたい場合の影響: 同形を厳守するなら 10 章が `Hash` ノードを `Hash Join` の詳細行（出力文字列）として偽装する必要がある（E1 の負担）。
 
@@ -1233,10 +1232,10 @@ Rust の `AggState` 単体テストは、各 `AggKind` の初期値・遷移・N
 | # | 対象 | 提案 | 理由 |
 |---|---|---|---|
 | 05-P1 | `PhysicalPlan`（00 §9.2） | `children(&self) -> Vec<&PhysicalPlan>`、`exprs(&self) -> Vec<&PhysExpr>`（そのノード自身の式。filter・keys・params・returning など）、`bound_params(&self) -> Vec<ParamId>`（NestedLoopParam が束縛するもの）を足す。`uses_params()` は残す。executor は `free_params` を使う（D5-3） | `free_params` と先行順の通し番号（§9）の両方が木の走査を要する。`uses_params()` は SubLink を越えられない |
-| 05-P2 | `Executor`（00 §10） | `fn extra_stats(&self) -> Vec<(&'static str, u64)> { Vec::new() }` を既定実装つきで足す | EXPLAIN ANALYZE の追加の計測値（Rows Removed by Filter など） |
+| 05-P2 | `Executor`（00 §10） | **採らない**（11 §7.4）。代わりに 10 の `set_counters`（既定は何もしない）を足す | C-2 |
 | 05-P3 | `EvalCtx`（M3 §4.9 / 00 §10 の `eval_ctx`） | `type_env: &'a TypeEnv<'a>` と `params: &'a [Datum]` を足す | キャスト（`InOut`）が `TypeEnv` を要る。`eval_const` が `Param` を読めるようにする |
-| 05-P4 | `ExplainNode`（00 §9.3） | `phys_id: Option<u32>` を足す（合成ノードは None） | 計測値との突き合わせ（§9 の 5） |
-| 05-P5 | `executor::build`（00 §10） | `build_query(&PhysicalQuery, &BuildOptions)`、`BuildOptions`、`QueryState` を足す。`build(plan)` は単体テスト用に残す | `free_params` に `PhysicalQuery` が要る。計測の差し込み口 |
+| 05-P4 | `ExplainNode`（00 §9.3） | **採らない**（C-1）。10 の `exec_id` を使う | 計測値との突き合わせ |
+| 05-P5 | `executor::build`（00 §10） | `build_query(&PhysicalQuery)` を足す（`BuildOptions` は採らない。`QueryState` は `ExecCtx::new` の内部。C-2・C-10）。`build(plan)` は単体テスト用に残す | `free_params` に `PhysicalQuery` が要る |
 | 05-P6 | `IndexStore::insert`（00 §13.2） | 変更なし。ただし、23505 の `detail` は付けても付けなくてもよいと 06 章に伝える（D5-16） | 責任の分担 |
 | 05-P7 | `PhysicalPlan::NestedLoopJoin`（00 §9.2） | 注記を足す: `outer` は論理プランの left、`inner` は right（D5-8） | 「出力は左 ++ 右」の解釈の統一 |
 | 05-P8 | 04 章への依頼 | 相関のある MATERIALIZED CTE を `0A000` にする（D5-20）。`PhysicalPlan::Insert/Update/Delete.checks` の整列は executor が行うので、planner は順序を気にしなくてよい | 実行の前提 |

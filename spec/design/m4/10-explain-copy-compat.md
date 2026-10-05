@@ -761,7 +761,7 @@ Append
 **8. サブクエリ（InitPlan / SubPlan）** ✔
 
 ```
-EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = (SELECT max(a) FROM u2);          -- 非相関のスカラー
+EXPLAIN (COSTS OFF) SELECT * FROM t WHERE b = (SELECT max(b) FROM u2);          -- 非相関のスカラー（u2 には列 a がない。`max(a)` は外側の t.a に解決され 42803 になる。レビュー対応 R-23）
 Seq Scan on t
   Filter: (b = (InitPlan 1).col1)
   InitPlan 1
@@ -1481,7 +1481,7 @@ pub enum CopyOptionValue { Word(String), String(String), Integer(i64), List(Vec<
 | 条件 | SQLSTATE | メッセージ |
 |---|---|---|
 | `direction = To`、`source` が `File` / `Program` | `0A000` | `COPY TO is not supported yet` / `COPY from a file is not supported` / `COPY from a program is not supported` （PostgreSQL は権限があればファイルを読む。yuzhu は常に拒否） |
-| 対象が存在しない | `42P01` | `relation "nosuch" does not exist`（位置あり） |
+| 対象が存在しない | `42P01` | `relation "nosuch" does not exist`（**位置なし**。ErrorResponse に `P` フィールドがない。[実機] PG17.11 の `copy nosuch from stdin` と `copy public.nosuch (a) from stdin` で確認。`tests/compat/copy` は psql の出力そのもの（LINE 行とカレット）を比べるので、LINE 行を出さない。レビュー対応 R-22） |
 | 対象がビュー / シーケンス（M4 でビューは作れないが `CREATE SEQUENCE` はある） | `42809` | `cannot copy to sequence "sq9"`（ビューは `cannot copy to view "v"`） |
 | 列リストに存在しない列 | `42703` | `column "zz" of relation "cp" does not exist` |
 | 列リストに同じ列が 2 回 | `42701` | `column "a" specified more than once` |
@@ -1493,7 +1493,7 @@ pub enum CopyOptionValue { Word(String), String(String), Integer(i64), List(Vec<
 
 | 名前 | 値 | 動作 | エラー |
 |---|---|---|---|
-| `format` | `text`（既定）、`csv`、`binary` | `text` のみ。`csv` / `binary` は `0A000`（`COPY format "csv" is not supported yet`）。`foo` は `22023 COPY format "foo" not recognized`（位置は値） | |
+| `format` | `text`（既定）、`csv`、`binary` | `text` のみ。`csv` / `binary` は `0A000`（`COPY format "csv" is not supported yet`）。`foo` は `22023 COPY format "foo" not recognized`（**位置は option の名前（`format`）を指す**。値ではない。[実機] PG17.11: `log_verbosity`、`on_error`、`encoding` の不正な値も名前を指す。レビュー対応 R-22） | |
 | `freeze` | ブール（省略 = true） | §5.6 | |
 | `delimiter` | 1 バイトの文字列 | 既定はタブ | 1 バイトでない・空: `0A000 COPY delimiter must be a single one-byte character`（PostgreSQL は `0A000`）。改行・復帰: `22023 COPY delimiter cannot be newline or carriage return`。`\` `.` 英数字 `\r` `\n`: `22023 COPY delimiter cannot be "x"`（text 形式で使えないのは `\`、`.`、`0-9`、`a-z`、`A-Z`） |
 | `null` | 文字列 | 既定は `\N` | 改行・復帰を含む: `22023 COPY null representation cannot use newline or carriage return`。区切り文字を含む: `22023 COPY delimiter character must not appear in the NULL specification` |
@@ -1564,7 +1564,7 @@ pub struct CopyOptions {
 - **FREEZE の検査は `G` を送った後**（`G` の直後に `E 55000` と `Z`。PostgreSQL の `BeginCopyFrom` が `G` を送り、続く `CopyFrom` が検査する順 [実機]）。
 - 拡張クエリ（`P` `B` `E`）からの COPY は M5。
 
-**サーバ → クライアントのメッセージ**（J）: `BackendMessage::CopyInResponse { format: u8, column_formats: &[i16] }`（タイプ `G`、長さ = 4 + 1 + 2 + 2n）。
+**サーバ → クライアントのメッセージ**（J）: `BackendMessage::CopyInResponse { format: u8, column_formats: Vec<i16> }`（タイプ `G`、長さ = 4 + 1 + 2 + 2n。プロトコル上の Int16 の並び）。`ResultSink::copy_in_response(&mut self, format: u8, column_formats: &[i16])`（00 §14.5）が `column_formats.to_vec()` でメッセージを作る。列形式の型は**シンクとメッセージで `i16` に統一**（レビュー対応 R-15。以前は 00 が `&[u8]`）。
 
 **クライアント → サーバのメッセージ**（J）:
 
@@ -1608,7 +1608,7 @@ fn run_from(&mut self, pending: PendingQuery, sink: &mut dyn ResultSink) -> io::
 ```
 
 - `run_from` の内容は M3 の `run_statements` のループ（`self.state == Failed` の検査、暗黙トランザクションの開始、`statement_timeout` の締め切りの設定、`exec_statement`、出力の送信、`command_complete`）と同じ。違いは次だけ。
-  - `exec_statement` が `Ok` を返した結果が「COPY IN の開始」（`ExecOutcome::CopyIn(CopyIn)`。タグを返す代わりに）のとき: `sink.copy_in_response(0, &vec![0; ncols])`、`self.copy = Some(CopyState { copy, pending: PendingQuery { next: i + 1, .. } })` を設定し、**`statement_timeout` の締め切りを消さずに** `Ok(())` で戻る。暗黙トランザクションはコミットせず、`flush_parameter_status` もしない。
+  - `exec_statement` が `Ok` を返した結果が「COPY IN の開始」（`ExecOutcome::CopyIn(CopyIn)`。タグを返す代わりに）のとき: `sink.copy_in_response(0, &vec![0i16; ncols])`、`self.copy = Some(CopyState { copy, pending: PendingQuery { next: i + 1, .. } })` を設定し、**`statement_timeout` の締め切りを消さずに** `Ok(())` で戻る。暗黙トランザクションはコミットせず、`flush_parameter_status` もしない。
   - FREEZE の検査は、`copy_in_response` を送った後に `copy.check_freeze(&self.txn)` として行い、失敗したら通常のエラー処理（`report_error`。`self.copy = None`）。
 - `exec_statement` の `Statement::Copy`: `write_statement_tag` が `Some("COPY FROM")`（書き込みロックを取る、読み取り専用の検査）。バリアの下で `analyze_copy` → `copy::begin`（`RelHandle` の組み立て）まで行い、`ExecOutcome::CopyIn` を返す。**ストレージバリアはここで手放す**（待ち中に持たない）。
 - **各メッセージでのバリア**: `copy_data` / `copy_done` は、`exec_data_statement` の 1〜2、4〜5（書き込みロックは取得済み。共有バリア、スナップショット、`StatementCatalog`）をそのメッセージの間だけ行う。`ExecCtx.query` には `PhysicalQuery::empty()`（サブプランなし）を渡す。
@@ -1898,6 +1898,72 @@ FROM pg_catalog.pg_database d
 ORDER BY 1;
 ```
 
+**`\ds`**（シーケンス一覧。レビュー対応 R-25。**psql 17.11 に対して `psql -E` で採取した全文**。`\dt` とは別の SQL で、`relkind IN ('S','')`、**`pg_am` の結合がない**）:
+
+```sql
+SELECT n.nspname as "Schema",
+  c.relname as "Name",
+  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as "Type",
+  pg_catalog.pg_get_userbyid(c.relowner) as "Owner"
+FROM pg_catalog.pg_class c
+     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('S','')
+      AND n.nspname <> 'pg_catalog'
+      AND n.nspname !~ '^pg_toast'
+      AND n.nspname <> 'information_schema'
+  AND pg_catalog.pg_table_is_visible(c.oid)
+ORDER BY 1,2;
+```
+
+出力は `Schema | Name | Type | Owner` の 4 列（`public | rv_t_g_seq | sequence | postgres`）。SERIAL と IDENTITY の暗黙のシーケンスも並ぶ。
+
+**`\d シーケンス`**（`\d rv_seq_x`。上と同じく採取した全文。名前の解決 → 属性 → シーケンスの値 → 所有列の 4 本。`c.oid = '127612'` は文字列リテラルと oid の比較で、OID は実行ごとに変わる）:
+
+```sql
+-- 1 名前の解決（\d tbl の 1 本目と同じ）
+SELECT c.oid,
+  n.nspname,
+  c.relname
+FROM pg_catalog.pg_class c
+     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relname OPERATOR(pg_catalog.~) '^(rv_seq_x)$' COLLATE pg_catalog.default
+  AND pg_catalog.pg_table_is_visible(c.oid)
+ORDER BY 2, 3;
+-- 2 属性（\d tbl の 2 本目と同じ。シーケンスの relam は NULL で LEFT JOIN は NULL）
+SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, c.relhastriggers, c.relrowsecurity, c.relforcerowsecurity, false AS relhasoids, c.relispartition, '', c.reltablespace, CASE WHEN c.reloftype = 0 THEN '' ELSE c.reloftype::pg_catalog.regtype::pg_catalog.text END, c.relpersistence, c.relreplident, am.amname
+FROM pg_catalog.pg_class c
+ LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)
+LEFT JOIN pg_catalog.pg_am am ON (c.relam = am.oid)
+WHERE c.oid = '127612';
+-- 3 シーケンスの値
+SELECT pg_catalog.format_type(seqtypid, NULL) AS "Type",
+       seqstart AS "Start",
+       seqmin AS "Minimum",
+       seqmax AS "Maximum",
+       seqincrement AS "Increment",
+       CASE WHEN seqcycle THEN 'yes' ELSE 'no' END AS "Cycles?",
+       seqcache AS "Cache"
+FROM pg_catalog.pg_sequence
+WHERE seqrelid = '127612';
+-- 4 所有する列（Owned by: public.rv_t.id の元。IDENTITY は deptype 'i'）
+SELECT pg_catalog.quote_ident(nspname) || '.' ||
+   pg_catalog.quote_ident(relname) || '.' ||
+   pg_catalog.quote_ident(attname),
+   d.deptype
+FROM pg_catalog.pg_class c
+INNER JOIN pg_catalog.pg_depend d ON c.oid=d.refobjid
+INNER JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+INNER JOIN pg_catalog.pg_attribute a ON (
+ a.attrelid=c.oid AND
+ a.attnum=d.refobjsubid)
+WHERE d.classid='pg_catalog.pg_class'::pg_catalog.regclass
+ AND d.refclassid='pg_catalog.pg_class'::pg_catalog.regclass
+ AND d.objid='127612'
+ AND d.deptype IN ('a', 'i')
+```
+
+出力（PostgreSQL 17.11）: `Sequence "public.rv_seq_x"` の見出しの下に `Type | Start | Minimum | Maximum | Increment | Cycles? | Cache` の表（`bigint | 1 | 1 | 9223372036854775807 | 1 | no | 1`）、SERIAL / IDENTITY のシーケンスは続けて `Owned by: public.rv_t.id`。`\d tbl` の 6〜10 のような配列・拡張統計の問い合わせは**送られない**ので、`\d シーケンス` は配列の最小実装なしで動く（必要なのは `pg_sequence`、`format_type(oid, NULL)`、`pg_depend` と `pg_attribute` の結合、`quote_ident`、`'127612'` と oid の比較、`'pg_catalog.pg_class'::regclass`）。
+
 **任意**（`\dt+` `\du` `\df`）:
 
 ```sql
@@ -1936,7 +2002,7 @@ WHERE pg_catalog.pg_function_is_visible(p.oid)
 ORDER BY 1, 2, 4;
 ```
 
-**`\d tbl`**（任意。10 本。11 本目（外部キー）と 12 本目（トリガ）は表にフラグが立っているときだけ）: 1 表名の解決（`c.relname OPERATOR(pg_catalog.~) '^(tt)$' COLLATE pg_catalog.default AND pg_catalog.pg_table_is_visible(c.oid)`）、2 表の属性（`WHERE c.oid = '18400'` — **文字列リテラルと oid の比較**）、3 列（`format_type`、スカラーサブクエリの `pg_get_expr(d.adbin, d.adrelid, true)`、`pg_collation` と `pg_type` のサブクエリ、`attidentity`、`attgenerated`）、4 インデックス（`pg_get_indexdef(i.indexrelid, 0, true)`、`pg_get_constraintdef(con.oid, true)`、`LEFT JOIN pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))`）、5 CHECK、6 行レベルセキュリティ（`pol.polroles = '{0}'`、`array(select rolname ... = any (pol.polroles) ...)`）、7 拡張統計、8 出版物（UNION 3 本、`string_agg`、`generate_series`、`pr.prattrs::pg_catalog.int2[]`、`prattrs[s]`）、9・10 継承。**6 と 8 は配列型・`ANY`・`regclass` が解析できないと失敗する**ので、M4 の範囲では `\d tbl` は動かない部分がある（確認事項 [10-Q6]）。全文は `tests/compat/psql/` の期待出力の生成時に採取する（§8.3）。
+**`\d tbl`**（任意。10 本。11 本目（外部キー）と 12 本目（トリガ）は表にフラグが立っているときだけ）: 1 表名の解決（`c.relname OPERATOR(pg_catalog.~) '^(tt)$' COLLATE pg_catalog.default AND pg_catalog.pg_table_is_visible(c.oid)`）、2 表の属性（`WHERE c.oid = '18400'` — **文字列リテラルと oid の比較**）、3 列（`format_type`、スカラーサブクエリの `pg_get_expr(d.adbin, d.adrelid, true)`、`pg_collation` と `pg_type` のサブクエリ、`attidentity`、`attgenerated`）、4 インデックス（`pg_get_indexdef(i.indexrelid, 0, true)`、`pg_get_constraintdef(con.oid, true)`、`LEFT JOIN pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))`）、5 CHECK、6 行レベルセキュリティ（`pol.polroles = '{0}'`、`array(select rolname ... = any (pol.polroles) ...)`）、7 拡張統計、8 出版物（UNION 3 本、`string_agg`、`generate_series`、`pr.prattrs::pg_catalog.int2[]`、`prattrs[s]`）、9・10 継承。**実機で採取した SQL を M4 の型・関数・カタログで解析できるかを突き合わせると、次の 3 本が通らない**（レビュー対応 R-18。以前の記述は「6 と 8 の 2 本」だった）: **6（行レベルセキュリティ）**は `pol.polroles = '{0}'`・`array(select rolname ... = any (pol.polroles))` が配列型・`ANY`・`array(select ...)` を要する。**7（拡張統計）**は `'d' = any(stxkind)`（`"char"[]` 列への `ANY`）、`stxrelid::regclass`、**`stxnamespace::regnamespace::text`（`regnamespace` 型は M4 にない）**、`pg_get_statisticsobjdef_columns(oid)` を要する。**8（出版物）**は `pr.prattrs::pg_catalog.int2[]`・`prattrs[s]`・`string_agg`・`generate_series` に加えて **`pg_relation_is_publishable()`** を要する。**さらに 3（列）が参照する `pg_catalog.pg_collation`（M2 の `schema.rs` にない）と、6〜10 が参照する空のカタログ表（`pg_policy`、`pg_statistic_ext`、`pg_publication`、`pg_publication_rel`、`pg_publication_namespace`、`pg_inherits`）は、00 §11.5 と 07 §3.1 が追加する 9 カタログに含まれず、作る担当がいない**ので、**`\d tbl` は列の表示（3 本目）の時点で失敗する**（以前の「索引・CHECK・既定値の表示までは動く」は成り立たない）。調査 `pg-compat-tools.md` §5 は「中身が空のカタログ表を PG17 の列構成で作る」を M4 の A 優先としていたが、設計は割り当てていなかった。**M4 の完了条件ではないので割り当てを任意の WP にした**（§6.3 の「`\d tbl` の見積り」）。全文は `tests/compat/psql/` の期待出力の生成時に採取する（§8.3）。
 
 ### 6.2 必要な機能と、各テスト
 
@@ -1948,6 +2014,7 @@ ORDER BY 1, 2, 4;
 | `pg_am`: `heap`（oid 2、`amtype = 't'`）と `btree`（403、`'i'`）の 2 行。**`pg_class.relam`**: テーブルは 2（heap）、インデックスは 403（btree）、シーケンスは 0 | `\dt` `\di` | 07 | `pg_am.slt` |
 | `pg_index`（`indexrelid`、`indrelid`、…） | `\di` | 07 | `dt_di.slt` |
 | `pg_namespace` と、`public` の所有者が `pg_database_owner`（oid 6171）であること（`\dn` の `Owner` 列が PostgreSQL 17 と同じ `pg_database_owner`） | `\dn` | 07（M2 の bootstrap の確認） | `dn.slt` |
+| `pg_sequence`（`seqtypid`・`seqstart`・`seqmin`・`seqmax`・`seqincrement`・`seqcycle`・`seqcache`）、`pg_catalog.format_type(oid, NULL)`、`pg_depend` と `pg_attribute` の結合、`quote_ident`（`\ds` と `\d シーケンス`。レビュー対応 R-25。`\ds` は `\dt` と別の SQL で `relkind IN ('S','')`、`pg_am` の結合なし） | `\ds` `\d シーケンス` | 07（`pg_sequence`・`pg_depend` のカタログ）、08（行の値）、09（`format_type`・`quote_ident`） | `ds.slt`、`d_seq.slt` |
 | `pg_catalog.pg_get_userbyid(oid)`、`pg_catalog.pg_table_is_visible(oid)`、`pg_catalog.pg_encoding_to_char(int)`、`pg_catalog.array_length(anyarray, int)`、`pg_catalog.array_to_string`（`datacl` が NULL でも動く） | 全部 | 09 | `functions.slt` |
 | `LEFT JOIN`（1 SELECT に 2〜4 個）、列の別名つきの SELECT 句、`ORDER BY 1,2` | 全部 | 03 | `dt_di.slt` |
 | 単純な `CASE c.relkind WHEN 'r' THEN ... END`（`"char"` と unknown リテラルの比較） | `\dt` | 09 | `case_relkind.slt` |
@@ -1965,7 +2032,7 @@ ORDER BY 1, 2, 4;
 | コマンド | 追加で必要 | 備考 |
 |---|---|---|
 | `\dt+` | `pg_size_pretty(bigint)`、`pg_table_size(oid)`（ヒープのブロック数 × 8192。PostgreSQL は TOAST・FSM・VM を含むので Size 列は一致しない。テストは Size 列を伏せる）、`obj_description(oid, text)`（`pg_description` は空。章 07） | 関数は SQL で呼べればよい |
-| `\d tbl` | §6.1 の 10 本が通る: 配列型（`oid[]`・`int2[]` の演算、`= ANY`、`array(select ...)`、添字）は M5 なので、**6 と 8 の本が通らない**。`\d tbl` を M4 で動かすには「配列のキャストと `ANY` の最小実装」が要る（確認事項 [10-Q6]）。それ以外は `pg_get_indexdef`、`pg_get_constraintdef`、`pg_get_expr`（pretty = true）、`format_type`、`regclass` / `regtype` のキャストと、中身が空のカタログ表（`pg_policy`、`pg_statistic_ext`、`pg_publication*`、`pg_inherits`）が要る | 動くのは「索引・CHECK・既定値の表示」まで |
+| `\d tbl` | §6.1 の 10 本が通る（レビュー対応 R-18・R-19）。必要なもの: (1) **空のカタログ表**を PG17 の列構成で作る（`pg_collation`（`default` 100・`C` 950・`POSIX` 951 の実データ）、`pg_policy`、`pg_statistic_ext`、`pg_publication`、`pg_publication_rel`、`pg_publication_namespace`、`pg_inherits`、`pg_partitioned_table`（pgbench のパーティション確認も使う）。担当は C1（任意の WP **C1b**、約 1.0 日。07 §9）、(2) **配列の最小実装**（`oid[]`・`int2[]`・`"char"[]` の `= ANY`、`array(select ...)`、添字、`::int2[]`、`'{0}'` との比較。約 5 日。09 の範囲）、(3) **`regnamespace` 型**（`stxnamespace::regnamespace::text`。`regclass` / `regtype` と同じ形で約 0.3 日。T3）、(4) 関数 `pg_get_statisticsobjdef_columns(oid)`、`pg_relation_is_publishable(regclass)`（空のカタログなので固定の結果。T3 約 0.2 日）、(5) `pg_get_indexdef`、`pg_get_constraintdef`、`pg_get_expr`（pretty = true）、`format_type`、`regclass` / `regtype` のキャスト（E1・T3）。**合計の見積り: 約 7 日**（(2) 5 + (1) 1.0 + (3)(4) 0.5 + 結合 0.5）。M4 では実施せず、実施するときも `\d tbl` の完全な一致は目標にしない | 動かすには上の全部が要る。部分的には動かない（列の表示の時点で `pg_collation` がなく失敗する） |
 | `\df` | `pg_get_function_result`、`pg_get_function_arguments`。ユーザー定義関数がない間は `pg_catalog` を除外するので 0 行 | 結果が 0 行でも解析を通ること |
 | `\du` | `pg_roles`（ビューまたは仮想表）。M2 で対応済み | |
 
@@ -2009,7 +2076,7 @@ insert into pgbench_accounts(aid,bid,abalance,filler) select aid, (aid - 1) / 10
 | パーティションの確認: `select o.n, p.partstrat, pg_catalog.count(i.inhparent) from pg_catalog.pg_class as c join pg_catalog.pg_namespace as n on (n.oid = c.relnamespace) cross join lateral (select pg_catalog.array_position(pg_catalog.current_schemas(true), n.nspname)) as o(n) left join pg_catalog.pg_partitioned_table as p on (p.partrelid = c.oid) left join pg_catalog.pg_inherits as i on (c.oid = i.inhparent) where c.relname = 'pgbench_accounts' and o.n is not null group by 1, 2 order by 1 asc limit 1` | **続行する**（「パーティションなし」とみなす）。**ErrorResponse を返して接続が使えれば良い** [実機: 偽のサーバで、この問い合わせに `0A000` を返しても pgbench は次の文へ進んだ] |
 | `vacuum pgbench_branches`、`vacuum pgbench_tellers`、`truncate pgbench_history` | 警告を出して続行（失敗しても可。ただし M4 では何もせず成功させる） |
 
-**パーティション確認の問い合わせは `CROSS JOIN LATERAL`（M4 では `0A000`）を含むのでパースの時点で失敗する。これは想定どおりの動きで、pgbench は続行する。** pgbench のログに `pgbench: error: ERROR:  ...` と `(ignoring this error and continuing anyway)` が出るが、完走には影響しない [実機]。
+**パーティション確認の問い合わせは `CROSS JOIN LATERAL`（M4 では `0A000`）を含むのでパースの時点で失敗する。これは想定どおりの動きで、pgbench は続行する。** pgbench は**ログに何も出さずに続行**し、終了コードは 0 [実機。レビュー対応 R-24]: `pg_partitioned_table` の SELECT を REVOKE した別ロールで `pgbench -c 1 -t 5`（17.11）を流すと、パーティション確認の問い合わせは permission denied で失敗するが、pgbench は何も出さずに続行した。`pgbench: error: ERROR: ...` や `(ignoring this error and continuing anyway)` は出ない（後者を出すのは `tryExecuteStatement` を使う vacuum / truncate の経路だけ）。完走には影響しない。ログの文言を期待するテストは書かない。
 
 本体（`-M simple`。`\set` は pgbench が値を計算し、`:aid` などをリテラルに置き換えてから送る）:
 
@@ -2046,7 +2113,7 @@ tests/compat/
 ├── run.sh           tests/compat/run.sh --target pg|yuzhu [suite ...]  （suite = psql | pgbench。省略は全部）
 ├── lib.sh           接続先の起動（PG は sandbox/pg.sh または tests/pg.sh、yuzhu は tests/yuzhu.sh）、DB の作成、正規化
 ├── psql/
-│   ├── dt.sql  dn.sql  di.sql  l.sql  dtplus.sql(任意)  d_tbl.sql(任意)   psql -X に流すスクリプト（メタコマンドを含む）
+│   ├── dt.sql  dn.sql  di.sql  ds.sql  d_seq.sql  l.sql  dtplus.sql(任意)  d_tbl.sql(任意)   psql -X に流すスクリプト（メタコマンドを含む。ds.sql は `\ds`、d_seq.sql は SERIAL / IDENTITY / 単独のシーケンスへの `\d シーケンス`。R-25）
 │   └── expected/*.out                        PostgreSQL 17 で生成した出力（git に入れる）
 ├── copy/
 │   ├── *.sql                                 COPY のデータを `\.` で含む psql スクリプト（text 形式の解析、エラーの CONTEXT、FREEZE、続きの文）
@@ -2079,7 +2146,7 @@ tests/compat/
 | `explain/deparse_plan.slt` | §4.9 の `Plan` の表: `EXPLAIN (COSTS OFF) SELECT * FROM t WHERE <式>` の `Filter:` 行 | 両方（畳み込みや並べ替えが PostgreSQL と違う行は `onlyif yuzhu`） |
 | `explain/format_type.slt` | `format_type` の表（§4.8） | 両方 |
 | `copy/errors.slt` | **`G` の前に失敗する**もの: 存在しない表・列、`42701`、option の誤り（§5.1 の表）、読み取り専用（`25006`）、`COPY TO` / CSV の `0A000`（yuzhu のみ） | 両方 / yuzhu |
-| `psql/dt.slt`、`dn.slt`、`di.slt`、`l.slt` | §6.1 の SQL を、自分の表（`psql_t_*`）に絞って流す。`catalog_relkind.slt`、`pg_am.slt`、`case_relkind.slt`、`relkind_in.slt`、`regex_names.slt`、`name_ops.slt`、`functions.slt`（§6.2 の各行） | 両方 |
+| `psql/dt.slt`、`dn.slt`、`di.slt`、`ds.slt`、`d_seq.slt`、`l.slt` | §6.1 の SQL（`\ds` と `\d シーケンス` を含む。`d_seq.slt` は 4 本を `c.oid` を自分のシーケンスの OID に置き換えて流す。08 の `psql/ds.slt` と同じファイル）を、自分の表（`psql_t_*`）に絞って流す。`catalog_relkind.slt`、`pg_am.slt`、`case_relkind.slt`、`relkind_in.slt`、`regex_names.slt`、`name_ops.slt`、`functions.slt`（§6.2 の各行） | 両方 |
 
 - COPY のデータを送るテストは sqllogictest ではできない（`tests/compat/copy/`。§8.3）。
 - EXPLAIN の出力は 1 行 1 結果行なので `query T` で比べる。時刻・メモリなどの値を含むものは使わない（`TIMING OFF, SUMMARY OFF`）。
@@ -2101,7 +2168,7 @@ SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize 
 
 | スイート | 内容 |
 |---|---|
-| `psql/` | psql 17 の `\dt` `\dn` `\di` `\l`（と任意の `\dt+` `\d tbl`）の出力を、PostgreSQL と yuzhu で比べる。空の DB に `compat_*` の表（主キー、UNIQUE、通常のインデックス、複数スキーマ）を作ってから流す |
+| `psql/` | psql 17 の `\dt` `\dn` `\di` `\ds` `\l` と `\d シーケンス`（と任意の `\dt+` `\d tbl`）の出力を、PostgreSQL と yuzhu で比べる。空の DB に `compat_*` の表（主キー、UNIQUE、通常のインデックス、複数スキーマ）を作ってから流す |
 | `copy/` | psql スクリプトでデータを `\.` つきで流し、PostgreSQL と yuzhu の出力（`COPY n` と、エラーの `ERROR:` `CONTEXT:`）を比べる。ケース: `\t` `\N` `\\` `\x41` `\101` の復元、`\r\n` の行末、`\.` の途中終了（`22\tx\t5\.\n`）、`end-of-copy marker corrupt`、`literal newline found in data`、列数の過不足、列リスト、`NULL 'NA'` と `DELIMITER '\|'`、旧構文の `WITH NULL AS`、`COPY ...; SELECT` の続き、FREEZE の可否（`begin; truncate; copy ... freeze; commit`）、`HEADER`、NOT NULL・CHECK・UNIQUE・型変換のエラーの CONTEXT、`\copy t from file` |
 | `pgbench/` | §7.3 |
 
@@ -2144,8 +2211,13 @@ pub struct InertGuc {
     pub kind: InertKind,
 }
 pub static INERT_GUCS: &[InertGuc];
-/// PostgreSQL に存在するが SET できない（postmaster / sighup / internal）名前。SET は 55P02、SHOW は既定値
-pub static RESTART_ONLY_GUCS: &[&str];
+/// PostgreSQL に存在するが SET できない名前。SET は 55P02、SHOW は既定値。2 種類（`pg_settings.context`）:
+///  (a) postmaster / sighup / internal: 文言 `parameter "x" cannot be changed without restarting the server`（internal は `parameter "x" cannot be changed`）
+///  (b) backend / superuser-backend（接続の開始後は変えられない）: 文言 `parameter "x" cannot be set after connection start`
+///      （`set_config()` も同じ。レビュー対応 R-16。`SET` / `set_config` ともに 55P02）
+pub static RESTART_ONLY_GUCS: &[RestartOnlyGuc];
+pub struct RestartOnlyGuc { pub name: &'static str, pub reason: RestartReason }
+pub enum RestartReason { Postmaster, Sighup, Internal, AfterConnectionStart }
 ```
 
 **`SET name = value` の規則**（PostgreSQL 17 [実機]）:
@@ -2153,21 +2225,21 @@ pub static RESTART_ONLY_GUCS: &[&str];
 | 種類 | 受け付ける値 | エラー（SQLSTATE `22023`） |
 |---|---|---|
 | `Bool` | `true` / `false` / `on` / `off` / `yes` / `no` / `1` / `0` と、一意に決まる接頭辞（`parse_bool`。M1 の `settings::parse_bool` を使う）。`SHOW` は `on` / `off` | `parameter "geqo" requires a Boolean value` |
-| `Int` | 整数、または単位つきの文字列（`'5MB'`、`'1s'`、`'1h'`）。単位のある設定で単位なしの整数は基準の単位（`work_mem` は kB、`statement_timeout` は ms）。小数は不可（単位つきで割り切れれば可: `1.5MB` = 1536kB）。メモリの単位 `B` `kB` `MB` `GB` `TB`、時間の単位 `us` `ms` `s` `min` `h` `d` | 範囲外: `63 kB is outside the valid range for parameter "work_mem" (64 kB .. 2147483647 kB)`（単位のないものは `0 is outside the valid range for parameter "default_statistics_target" (1 .. 10000)`）。形が不正: `invalid value for parameter "work_mem": "abc"` |
+| `Int` | 整数、または単位つきの文字列（`'5MB'`、`'1s'`、`'1h'`）。単位のある設定で単位なしの整数は基準の単位（`work_mem` は kB、`statement_timeout` は ms）。**小数は受け付けて、基準の単位の整数に最も近い値へ丸める**（レビュー対応 R-17。[実機] PG17.11: `set default_statistics_target = 5.5` は 6、`'5.4'` は 5、`set statement_timeout = 1.5` は 2ms、`'0.4ms'` は 0、`set work_mem = 100.4` は 100kB、`1.5MB` = 1536kB。丸めは `rint`（**半端は偶数へ**。[実機] 5.5 → 6、1.5 → 2、**2.5 → 2**。「0 から遠い方へ」ではない）。丸めた後の値で範囲を検査する）。メモリの単位 `B` `kB` `MB` `GB` `TB`、時間の単位 `us` `ms` `s` `min` `h` `d` | 範囲外: `63 kB is outside the valid range for parameter "work_mem" (64 kB .. 2147483647 kB)`（単位のないものは `0 is outside the valid range for parameter "default_statistics_target" (1 .. 10000)`）。形が不正: `invalid value for parameter "work_mem": "abc"` |
 | `Real` | 小数 | 範囲外: `-1 is outside the valid range for parameter "random_page_cost" (0 .. 1.79769e+308)`。形が不正: `invalid value for parameter "random_page_cost": "x"` |
-| `Enum` | 一覧のどれか（大文字小文字を区別しない。引用符つき可）。`on` / `off` / `true` / `false` / `yes` / `no` / `1` / `0` を受け付ける enum（`synchronous_commit` など）は `on` / `off` との同義語を PostgreSQL の表に合わせる（M4 では `wal_compression`、`constraint_exclusion` の `on` / `off` と `true` / `false` / `yes` / `no`） | `invalid value for parameter "synchronous_commit": "foo"` + HINT `Available values: local, remote_write, remote_apply, on, off.` |
+| `Enum` | 一覧のどれか（大文字小文字を区別しない。引用符つき可）。`on` / `off` / `true` / `false` / `yes` / `no` / `1` / `0` を受け付ける enum（`synchronous_commit` など）は `on` / `off` との同義語を PostgreSQL の表に合わせる（M4 では `wal_compression`、`constraint_exclusion` の `on` / `off` と `true` / `false` / `yes` / `no`）。**保存と `SHOW` は正規名**（レビュー対応 R-26。同義語は、その enum の表の中で**同じ値を持つ最初に載っている名前**に正規化する。[実機] `set wal_compression = on`（`'yes'` / `'true'` / `'1'` も）の後の `SHOW` は **`pglz`**（一覧 `{pglz,lz4,zstd,on,off}` で `on` は `pglz` と同じ値で、`pglz` が先）、`set wal_compression = off` / `'no'` は `off`、`set backslash_quote = 'true'` は `on`、`constraint_exclusion = 'yes'` は `on`）。入力をそのまま保存しない。`InertKind::Enum` に `(名前, 値の ID)` の表と隠れた同義語の表を持たせ、`SHOW` は値の ID から最初の名前を引く | `invalid value for parameter "synchronous_commit": "foo"` + HINT `Available values: local, remote_write, remote_apply, on, off.` |
 | `Str` | 任意の文字列（検査しない） | |
 
 - **`SHOW` の表示**（`Int` / `Real` で単位があるもの）: 基準の単位の値を、**割り切れる最大の単位**で表示する。メモリ: `B` → `kB`（1024）→ `MB` → `GB` → `TB`（`1024kB` は `1MB`、`1500kB` は `1500kB`、`1.5MB` は `1536kB`）。時間: `us` → `ms`（1000）→ `s` → `min`（60）→ `h` → `d`（`vacuum_cost_delay = 0.5` は `500us`）。`Block8Kb`（`effective_cache_size`、`temp_buffers`）は 8kB 単位の整数で保存し、メモリの表示規則を適用する（`4GB`）。0 は `0`（単位なし）。
 - **カスタム名**（`.` を含む名前。`my.custom`）は M1 のとおり任意（`is_custom`）。
 - **未知の名前**: `42704 unrecognized configuration parameter "nosuch_guc"`。`enable_foo` のような `enable_` で始まる未知の名前も同じ。
-- **`RESTART_ONLY_GUCS`**: `max_connections`、`shared_buffers` など PostgreSQL では `SET` できないもの（`SELECT name FROM pg_settings WHERE context IN ('postmaster', 'sighup', 'internal')` の 182 件。M1〜M3 の `ReadOnly` と同じ扱い）: `SET` は `55P02 parameter "max_connections" cannot be changed without restarting the server`（`internal` は `parameter "x" cannot be changed`）。実装は PostgreSQL 17 の一覧を `settings.rs` に静的に持つ（名前だけ。`SHOW` は M1〜M3 の `ReadOnly` の項目だけ値を返し、他は既定値を返す。値は `postgresql.conf` の既定）。
+- **`RESTART_ONLY_GUCS`**: `max_connections`、`shared_buffers` など PostgreSQL では `SET` できないもの。(a) `SELECT name FROM pg_settings WHERE context IN ('postmaster', 'sighup', 'internal')` の 182 件（M1〜M3 の `ReadOnly` と同じ扱い）: `SET` は `55P02 parameter "max_connections" cannot be changed without restarting the server`（`internal` は `parameter "x" cannot be changed`）。(b) **`context` が `backend` / `superuser-backend` の 6 件**（`ignore_system_indexes`、`post_auth_delay`、`jit_debugging_support`、`jit_profiling_support`、`log_connections`、`log_disconnections`。レビュー対応 R-16）: [実機] PG17.11 は `SET` も `set_config()` も **`55P02 parameter "x" cannot be set after connection start`**。以前は (b) の 6 件を `INERT_GUCS`（SET を受け付ける側）に載せていたが誤り。合計 **188 件**（182 + 6）。実装は PostgreSQL 17 の一覧を `settings.rs` に静的に持つ（名前だけ。`SHOW` は M1〜M3 の `ReadOnly` の項目だけ値を返し、他は既定値を返す。値は `postgresql.conf` の既定）。
 - `SET` の対象が `superuser` 文脈の項目でも、単一の管理者ロールだけなので常に許す。
 - `transaction_timeout` は M3 の `42704` をやめ、`Int { Ms, 0, 2147483647 }` の保存だけにする（D10-8）。
 
-**一覧**（`name = 既定値`。単位は基準の単位。PostgreSQL 17.11 の `pg_settings` から採取。`user` と `superuser` と `backend` の文脈のうち、M1〜M3 の `SETTINGS` と意味を持つものを除いた 168 件）:
+**一覧**（`name = 既定値`。単位は基準の単位。PostgreSQL 17.11 の `pg_settings` から採取。`user` と `superuser` の文脈（`backend` / `superuser-backend` は SET できないので一覧に入れない）のうち、M1〜M3 の `SETTINGS` と意味を持つものを除き、さらに `backend` / `superuser-backend` の 6 件（上の `RESTART_ONLY_GUCS` の (b)）を除いた **162 件**。以前の 168 件は 6 件を含んでいた）:
 
-**Bool**（60）:
+**Bool**（55）:
 
 ```
 allow_in_place_tablespaces=off  allow_system_table_mods=off  array_nulls=on  check_function_bodies=on  debug_pretty_print=on
@@ -2175,16 +2247,16 @@ debug_print_parse=off  debug_print_plan=off  debug_print_rewritten=off  enable_a
 enable_gathermerge=on  enable_group_by_reordering=on  enable_incremental_sort=on  enable_indexonlyscan=on  enable_memoize=on
 enable_mergejoin=on  enable_parallel_append=on  enable_parallel_hash=on  enable_partition_pruning=on  enable_partitionwise_aggregate=off
 enable_partitionwise_join=off  enable_presorted_aggregate=on  enable_tidscan=on  escape_string_warning=on  event_triggers=on
-exit_on_error=off  geqo=on  ignore_checksum_failure=off  ignore_system_indexes=off  jit=on
-jit_debugging_support=off  jit_dump_bitcode=off  jit_expressions=on  jit_profiling_support=off  jit_tuple_deforming=on
-lo_compat_privileges=off  log_connections=off  log_disconnections=off  log_duration=off  log_executor_stats=off
+exit_on_error=off  geqo=on  ignore_checksum_failure=off  jit=on
+jit_dump_bitcode=off  jit_expressions=on  jit_tuple_deforming=on
+lo_compat_privileges=off  log_duration=off  log_executor_stats=off
 log_lock_waits=off  log_parser_stats=off  log_planner_stats=off  log_replication_commands=off  log_statement_stats=off
 parallel_leader_participation=on  quote_all_identifiers=off  row_security=on  synchronize_seqscans=on  trace_notify=off
 trace_sort=off  track_activities=on  track_counts=on  track_io_timing=off  track_wal_io_timing=off
 transform_null_equals=off  update_process_title=on  wal_init_zero=on  wal_recycle=on  zero_damaged_pages=off
 ```
 
-**Int**（54。`name = 既定 [単位] [最小..最大]`）:
+**Int**（53。`name = 既定 [単位] [最小..最大]`）:
 
 ```
 backend_flush_after=0 [8kB 0..256]  client_connection_check_interval=0 [ms 0..2147483647]  commit_delay=0 [0..100000]
@@ -2197,7 +2269,7 @@ log_parameter_max_length=-1 [B -1..1073741823]  log_parameter_max_length_on_erro
 logical_decoding_work_mem=65536 [kB 64..2147483647]  maintenance_io_concurrency=10 [0..1000]  maintenance_work_mem=65536 [kB 64..2147483647]
 max_parallel_maintenance_workers=2 [0..1024]  max_parallel_workers=8 [0..1024]  max_parallel_workers_per_gather=2 [0..1024]
 max_stack_depth=2048 [kB 100..2147483647]  min_parallel_index_scan_size=64 [8kB 0..715827882]  min_parallel_table_scan_size=1024 [8kB 0..715827882]
-post_auth_delay=0 [s 0..2147]  scram_iterations=4096 [1..2147483647]  tcp_keepalives_count=9 [0..2147483647]
+scram_iterations=4096 [1..2147483647]  tcp_keepalives_count=9 [0..2147483647]
 tcp_keepalives_idle=7200 [s 0..2147483647]  tcp_keepalives_interval=75 [s 0..2147483647]  tcp_user_timeout=0 [ms 0..2147483647]
 temp_buffers=1024 [8kB 100..1073741823]  temp_file_limit=-1 [kB -1..2147483647]  transaction_timeout=0 [ms 0..2147483647]
 vacuum_buffer_usage_limit=2048 [kB 0..16777216]  vacuum_cost_limit=200 [1..10000]  vacuum_cost_page_dirty=20 [0..10000]
@@ -2319,7 +2391,7 @@ session_preload_libraries=''  temp_tablespaces=''  timezone_abbreviations=Defaul
 - **[10-Q3] `BUFFERS` `WAL` `SETTINGS` `MEMORY` `SERIALIZE` を受け付けて無視する**（D10-7）。理由: pgAdmin・DBeaver が付ける。変えたい場合: 出さないままで拒否（`0A000`）にすると、それらのツールの EXPLAIN が使えない。
 - **[10-Q4] `FORMAT JSON` / `XML` / `YAML` を `0A000` にする**。仮決め: M4 はテキストのみ（要件の D-20）。理由: JSON は pgAdmin・DBeaver・explain.depesz.com が使うが、M4 の範囲外。変えたい場合: `ExplainNode` から JSON を出す整形を足す（約 2 日。構造は同じなので `format.rs` に出力関数を足すだけ）。
 - **[10-Q5] COPY の失敗の後に即座に `E` と `Z` を返し、後続の `d` `c` `f` を無視する**（D10-11）。FREEZE の検査は `G` を送った後（PostgreSQL と同じ順）。理由: PostgreSQL と同じ。変えたい場合: 「CopyDone まで受信して捨ててから `E`」にすると、データを送らないクライアントがハングする。
-- **[10-Q6] `\d tbl` は M4 の完了条件に入れない**（D-24 のとおり任意）。仮決め: 動くのは「索引・CHECK・既定値の表示」まで。`\d tbl` が送る 10 本のうち、配列型（`oid[]`・`int2[]`・`= ANY`・`array(select ...)`・添字）を使う 2 本（行レベルセキュリティと出版物）が M5 の配列の実装まで通らない。理由: 配列の最小実装は M5 の範囲（`00 §3`）。変えたい場合: 「配列リテラルのキャストと `ANY` の最小実装」を M4 に足す（約 5 日。章 09 の範囲）。
+- **[10-Q6] `\d tbl` は M4 の完了条件に入れない**（D-24 のとおり任意）。仮決め: `\d tbl` は M4 では動かない（任意。完了条件に入れない）。`\d tbl` が送る 10 本のうち、**3 本**（6 行レベルセキュリティ、7 拡張統計、8 出版物）が M4 の型・関数で解析できず、さらに 3（列）が引く `pg_collation` と空のカタログ表を作る担当が設計になかった（レビュー対応 R-18・R-19）ので、**`\d tbl` は M4 では動かない**（以前の「索引・CHECK・既定値の表示までは動く」は誤り）。理由: 配列の最小実装は M5 の範囲（`00 §3`）。変えたい場合: §6.3 の `\d tbl` の見積り（約 7 日: 配列の最小実装 5 + 空のカタログ表 1.0 + `regnamespace` と 2 関数 0.5 + 結合 0.5）を M4 に足す。
 - **[10-Q7] COPY の CSV・バイナリ・`TO`・`WHERE`・`ON_ERROR` を M5 にする**（D10-12）。理由: M4 の目的（pgbench の初期化とリストア）に不要。変えたい場合: CSV は約 3 日、`TO STDOUT` は約 1〜2 日、`WHERE` は約 0.5 日。pg_dump のリストア（`psql -f` で流す出力は COPY FROM STDIN のテキスト形式）は M4 で通る。
 - **[10-Q8] `transaction_timeout` を受け付けて保存だけにする**（D10-8）。仮決め: M3 の「`42704`」を上書き。理由: pg_dump 17 が接続直後に `SET transaction_timeout = 0` を送る。変えたい場合: `42704` のままだと pg_dump 17 が接続できない（M6 の対象だが、`psql -f` で流すダンプにも `SET transaction_timeout = 0;` が入る）。
 - **[10-Q9] 混合幅の整数演算子の有無で、式の表示が変わる**。仮決め: 章 09 が `int2`/`int4`/`int8` の混合幅の比較・算術演算子を持つ前提で、`bi > 5` は `(bi > 5)` と出す。理由: PostgreSQL がそうする。変えたい場合: 演算子がなければ `Cast` が入って `(bi > '5'::bigint)`（`Plan`）になり、EXPLAIN の期待値が PostgreSQL と違う（機能には影響しない）。

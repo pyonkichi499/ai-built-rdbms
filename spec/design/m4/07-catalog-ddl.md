@@ -546,8 +546,12 @@ impl CatalogStore {
     /// ALTER TABLE ADD PRIMARY KEY / UNIQUE: create_index（spec.constraint = Some、mark_table_indexed = true）に加えて、
     /// spec.primary なら key 列の pg_attribute.attnotnull を true にする（update_attribute。すでに true の列は更新しない）
     pub fn add_constraint(&self, w: &WriteCtx, snap: &Snapshot, spec: &NewIndex, table: &TableDef) -> Result<()>;
-    /// シーケンス: pg_class(S)・pg_attribute（3 列 + システム列）・pg_sequence・pg_depend（owned_by があれば）。08 の ddl/sequence.rs が呼ぶ
+    /// シーケンス: pg_class(S)・pg_attribute（3 列 + システム列）・pg_sequence・pg_depend（params.owned_by と owned_by_deptype が Some のとき）。08 の ddl/sequence.rs が呼ぶ
     pub fn create_sequence(&self, w: &WriteCtx, snap: &Snapshot, spec: &NewSequence) -> Result<()>;
+    /// ALTER SEQUENCE: pg_sequence の行を更新する（seqtypid・seqstart・seqincrement・seqmax・seqmin・seqcache・seqcycle。owned_by は pg_depend なので触らない）。
+    /// 08 §5.5 が呼ぶ（レビュー対応 R-08。08 が C1 に求めていた `update_sequence_params`。`drop_sequence` / `drop_default` は
+    /// `drop_objects`（DropKind::Sequence / AttrDefault）が行うので作らない）
+    pub fn update_sequence_params(&self, w: &WriteCtx, snap: &Snapshot, oid: Oid, p: &SequenceParams) -> Result<()>;
     /// plan.items のオブジェクトの行をすべて消す（§6.3 の drop_objects の手順）。消したリレーションのファイルの場所を返す（呼び出し側が pending_unlinks に積む）。
     /// M2 の drop_table を置き換える。DROP INDEX もこれ（`plan_drop` の items が `DropKind::Index` 1 つ + その行）。専用の drop_index メソッドは作らない
     pub fn drop_objects(&self, w: &WriteCtx, snap: &Snapshot, plan: &DropPlan) -> Result<Vec<RelFileLocator>>;
@@ -942,10 +946,15 @@ create_table(ctx, b: &BoundCreateTable) -> "CREATE TABLE"
   4. OID: oids = db.catalog.allocate_table_oids(alloc, &TableOidRequest { n_attrdefs, n_checks, n_index_constraints })?
        （table → attrdef（列順）→ CHECK（b.checks の順）→ 索引制約ごとに（索引、制約）。シーケンスの OID は 08 が手順 6 で後から取る。§3.10）
   5. w = ctx.write_ctx()?
-  6. シーケンス（b.sequences の順。08）: for s in &b.sequences:
-       seq_oid = ddl::sequence::create_sequence_for_table(ctx, &w, s, TableRef { oid: oids.table, namespace: nsp })?
-       （08 が、OID の採番・名前の決定・ファイル作成・SequenceStore::init・CatalogStore::create_sequence（pg_class(S)・pg_attribute・pg_sequence・
-        pg_depend の「シーケンス → 列」の a / i）までを行い、OID を返す。表の行はまだないので pg_depend は表の OID を指すだけでよい）
+  4b. シーケンスの OID（b.sequences の順。08 §5.7 の B。レビュー対応 R-07。名前は解析時に 08 が `catalog::naming::choose_relation_name` で決め終えている）:
+       seq_oids[i] = db.catalog.get_new_relation_oid(alloc)?（表・索引・制約の OID の後に取る）
+       列の補正（08 §5.7 の C）: SERIAL の列の default = nextval('{seq_oid}'::regclass) のテキスト、not_null = true。IDENTITY の列は identity と not_null = true
+       （この補正は create_table が b.columns のコピーに対して行う。手順 8 以降の columns は補正後）
+  6. シーケンス（b.sequences の順。08）: for (i, s) in b.sequences.iter().enumerate():
+       ddl::sequence::create_with_oid(ctx, s, seq_oids[i], Some((oids.table, attnum_of(s))))?
+       （08 §5.4 の関数。ファイル作成（pending_creates）・SequenceStore::init（SEQ_LOG）・CatalogStore::create_sequence
+        （pg_class(S)・pg_attribute・pg_sequence、`NewSequence.owned_by_deptype` が Some のときの「シーケンス → 列」の a / i の pg_depend）までを行う。
+        表の行はまだないので pg_depend は表の OID を指すだけでよい。`create_sequence_for_table` という別の関数は作らない）
   7. 表のファイル: table_locator = (DEFAULTTABLESPACE_OID, db.oid, RelFileNumber(oids.table))。ctx.create_file(&w, table_locator)?
   8. 暫定の TableDef を作る（表の行がまだ見えないので、IndexHandle を作るためだけに使う）:
        provisional = TableDef { oid: oids.table, namespace: nsp, schema: b.schema, name: b.name, kind: Table, locator: table_locator,
@@ -963,7 +972,7 @@ create_table(ctx, b: &BoundCreateTable) -> "CREATE TABLE"
                      columns（opclass、opfamily、descending = false、nulls_first = false）, unique: true, primary, constraint: Some(IndexConstraintRef { oid: oids.index_constraints[i].1, name: name_i }) }
        e. ctx.create_file(&w, d.locator)?、indexes.init_index(&w, &IndexHandle::from_def(&d, &provisional))?（メタページと空のルート葉。BTREE_PAGES）
  10. 追加の依存 extra_depends:
-       - 手順 6 のシーケンス s（owned_by = 列 a）で、列 a に既定値がある（SERIAL）なら (attrdef(列 a の oid), relation(seq_oid), 0, Normal)
+       - 手順 4b のシーケンス s（owned_by = 列 a）で、列 a に既定値がある（SERIAL）なら (attrdef(列 a の oid), relation(seq_oids[i]), 0, Normal)
        - b.default_refs の各 (attnum, rel_oid)（同じ組は 1 つに）: (attrdef(attnum の oid), relation(rel_oid), 0, Normal)
  11. db.catalog.create_table(&w, snap, &NewTable { oid, namespace, name, owner: ctx.role_oid, columns: b.columns.clone(), checks, attrdef_oids, constraint_oids,
                                                    indexes: [NewIndex { .. stats: EMPTY_INDEX_STATS }], extra_depends })?
@@ -1143,7 +1152,8 @@ truncate(ctx, b: &BoundTruncate) -> "TRUNCATE TABLE"
             indexes.init_index(&w, &handle)?                  // 空の索引（メタページと空のルート葉。BTREE_PAGES）
             pg_class の更新は relfilenode / relpages / reltuples を 1 回の update_class_row で（truncate_relation）
   4. b.restart_identity: 各表 T について db.catalog.owned_sequences(snap, T.oid) の各シーケンスを
-       ddl::sequence::restart_to_start(ctx, seq_oid)?（08。SequenceStore::reset(.., restart_with = Some(start))）
+       ddl::sequence::restart_owned_by_table(ctx, T.oid)?（08 §5.6。表が所有するシーケンス（a / i）ごとに SequenceStore::reset(.., restart_with = Some(start))。
+       `owned_sequences` の呼び出しは 08 の側が行うので、ここで 1 本ずつ restart する必要はない。レビュー対応 R-07）
      シーケンスの更新はトランザクショナルではなくその場の上書き（08 の方針。PostgreSQL は ROLLBACK で戻る。差分: [07-Q9]）
   5. b.cascade は無視する（外部キーがない）。b.restart_identity = false（CONTINUE IDENTITY）が既定
   6. ctx.mark_catalog_dirty(); Ok("TRUNCATE TABLE")
@@ -1313,7 +1323,7 @@ choose_relation_name(name1, name2, label, nsp, is_constraint, lookup, taken):
         pass += 1; modlabel = format!("{label}{pass}")           // "key1"、"key2"、"idx1" …（label の後ろに数字）
 ```
 
-- `choose_constraint_name` も同じ形で、衝突の判定は `lookup.constraint_exists(nsp, name) || taken.contains(name)`（リレーションの名前は見ない）。CHECK の自動名（`t_a_check`、衝突で `t_a_check1`）は、**M2 では同じ表の中の名前だけを見ていた（`used`）。M4 では名前空間の全制約（`constraint_exists`）を見る**（PostgreSQL と同じ。`analyzer/ddl.rs` の CHECK の命名を `choose_constraint_name` に置き換える。N 担当への依頼。小さい変更）。
+- `choose_constraint_name` も同じ形で、衝突の判定は `lookup.constraint_exists(nsp, name) || taken.contains(name)`（リレーションの名前は見ない）。CHECK の自動名（`t_a_check`、衝突で `t_a_check1`）は、**M2 では同じ表の中の名前だけを見ていた（`used`）。M4 では名前空間の全制約（`constraint_exists`）を見る**（PostgreSQL と同じ。`analyzer/ddl.rs` の CHECK の命名を `choose_constraint_name` に置き換える。`analyzer/ddl.rs` の持ち主 Q1 への依頼。小さい変更。レビュー対応 R-09）。
 - `taken` は「同じ文の中で先に決めたが、まだカタログから見えない名前」（§5.1 の手順 9）。
 
 #### 5.10.2 `ChooseIndexName` と列名
@@ -1816,6 +1826,8 @@ M3 の層 1 のクラッシュ試験に **DDL のワークロード**を足し�
 | C1-7 | `analyzer/ddl_constraint.rs`（PK / UNIQUE の解析、統合）、`bootstrap.rs` の確認、`tests/slt/m4/{catalog,constraint,index}` のうち K が書かない分の補助、統合テスト | `analyzer/ddl_constraint.rs`、`bootstrap.rs`、`tests/` | 0.5 |
 | | **合計** | | **7.0** |
 
+**レビュー対応・統合での追加**（11 §4.1 の確定表が正）: `CatalogStore::update_sequence_params`（08 の ALTER SEQUENCE。R-08）+0.2 日、`analyzer/ddl_index.rs`（CREATE INDEX / DROP INDEX / DROP TABLE / TRUNCATE / VACUUM / ALTER TABLE の解析。11 §7.3 の G-1）+1.0 日で、**C1 は 8.2 日**。任意: `\d tbl` のための空のカタログ表（10 §6.3 の「C1b」。R-19）+1.0 日（完了条件ではない）。
+
 **並列化**: C1-1 → C1-2 → C1-3 は直列（読み書きの API の土台）。C1-4（`plan_drop`、`naming`）は C1-1 の型ができれば並行できる。C1-5・C1-6・C1-7 は C1-2・C1-4 の後。**B2 が `IndexStore::build` / `init_index` を実装する前でも、C1 は `FakeIndexStore`（何もしない）で DDL の単体テストを書ける**（実際の索引を使う統合テストは B2 の後）。
 
 **他の担当への依存**（C1 が待つ・待たれるもの）:
@@ -1880,7 +1892,7 @@ M3 の層 1 のクラッシュ試験に **DDL のワークロード**を足し�
 6. **§11.5 追加するカタログ**: `pg_description` は**空**、`pg_language` は 3 行（`lanvalidator = 0`）と確定する。`pg_class` の `reltype` は 0。
 7. **§13.1 `TableStore::tuple_state`**: 「`own` は呼び出し側のトランザクションの XID。**自分が挿入して削除していない版は `Live`**、自分が削除した版は `DeletedBySelf`。`InsertInProgress(x)` / `DeleteInProgress(x)` は `x != own` のときだけ」と契約を足す（§5.2.1）。
 8. **§13.2 `IndexStore::build`**: C1 は `BuildUnique::No` でしか呼ばない（D07-7、[07-Q4]）。`BuildUnique::Yes` の意味は 06 が決める。06 に `storage::btree::cmp_keys(index: &IndexHandle, a: &[Datum], b: &[Datum]) -> Ordering`（木の順序そのもの）の公開を依頼する（C1 のソートが使う。なければ `cmp_with_nulls` を列ごとに使う）。
-9. **§4 モジュール構成**: `catalog/naming.rs`（`make_object_name` を analyzer から移す）、`catalog/depend.rs`、`catalog/check.rs`（テスト用）、`ddl/vacuum.rs`、`analyzer/ddl_constraint.rs`（C1 が書く。00 §17 の C1 の範囲に足す）を足す。
+9. **§4 モジュール構成**: `catalog/naming.rs`（`make_object_name` を analyzer から移す。移すのは C1、`analyzer/ddl.rs` 側の削除と呼び出しは Q1。§12.2）、`catalog/depend.rs`、`catalog/check.rs`（テスト用）、`ddl/vacuum.rs`、`analyzer/ddl_constraint.rs`（C1 が書く。00 §17 の C1 の範囲に足す）を足す。
 10. **§15.3 SQLSTATE**: 追加は不要（`DEPENDENT_OBJECTS_STILL_EXIST` は 00 にある）。ただし `42939`（`role name "none" is reserved`）は S1 が `RESERVED_NAME` として足す。
 11. **§12.1 型**: この章は `int2vector`（22）・`_int2`（1005）の行を 09 に要求する（§3.8）。
 
@@ -1889,8 +1901,9 @@ M3 の層 1 のクラッシュ試験に **DDL のワークロード**を足し�
 | 宛先 | 依頼 |
 |---|---|
 | `06-btree.md`（B1・B2・H4） | (a) `catalog/opclass.rs` の `default_opclass(type_oid)` は、**`varchar` → `text_ops`、`regclass` / `regtype` / `regproc` → `oid_ops`** のバイナリ互換の解決まで含めてもよい（C1 は `resolve_opclass` の中で補っているので、06 が入れたら C1 の `coercible_index_type` を消す）。(b) `AMOPS` の演算子はすべて `builtin::OPERATORS` に実在させ、`AMPROCS` の関数は `builtin::PROCS` に実在させる（§3.7、§3.8 の 30 個の `pg_proc` の行）。(c) `BtreeStore` が**リレーションごとのメモリ上の状態**（ルートのキャッシュなど）を持つなら、`unlink_storage` と TRUNCATE での新しい relfilenode への切り替えで無効になること。持たない前提で C1 は書く（コミットの unlink は `TableStore::unlink_storage` 1 本。M3 §5.3）。(d) `IndexHandle::from_def` が `IndexDef.columns[i].opfamily` を使って比較関数を引くこと。(e) `begin_scan_all` が全ユーザー列を返し、`tuple_state` が §12.1 の 7 の契約であること。(f) `IndexStore::init_index` / `build` が WAL を書いた LSN まで、コミットの flush で永続化されること（M3 の通常のコミットの経路でよい）。 |
-| `08-sequence-serial.md`（Q1） | (a) `ddl::sequence::create_sequence_for_table(ctx, w, &BoundCreateSequence, TableRef) -> Result<Oid>`（§5.1 の手順 6）と `ddl::sequence::restart_to_start(ctx, seq_oid)`（§5.6 の手順 4）を提供する。(b) シーケンスのカタログの行は `CatalogStore::create_sequence`（§4.3）で書く（`pg_class`（`S`）、`pg_attribute`、`pg_sequence`、`pg_depend`）。(c) `DROP SEQUENCE` は `catalog::depend::plan_drop` を呼ぶ（SERIAL: `DETAIL: default value for column id of table o1 depends on sequence o1_id_seq`、IDENTITY: `cannot drop sequence s1_g_seq because column g of table s1 requires it`）。(d) SERIAL の列の既定値の `pg_depend`（`pg_attrdef` → シーケンス、`n`）は C1 が書く（`NewTable.extra_depends`）。08 は書かない。 |
-| `03-parser-analyzer.md`（S1、N1〜N3） | (a) AST: `DropTable.cascade`、`DropIndex { names, if_exists, concurrently, cascade }`、`CreateIndex { name: Option<Ident>, table, unique, if_not_exists, concurrently, method: Option<Ident>, columns（式・opclass・`COLLATE`・ASC / DESC・NULLS）, include, options, where }`、`AlterTable { name, if_exists, only, action: AddConstraint(TableConstraint) \| OwnerTo(RoleSpec) \| Other }`、`Truncate { tables, restart_identity, cascade, only }`、`Vacuum { vacuum: bool, options: Vec<(Ident, Option<String>)>, targets: Vec<(ObjectName, Vec<Ident>)> }`、列制約・表制約の `PRIMARY KEY` / `UNIQUE` の `WITH (..)`・`DEFERRABLE`・`INCLUDE` など、`CREATE TABLE ... WITH (..)`。(b) `0A000` の文言（§6.9、§7.3）。(c) `resolve_table` を `relation_kind` で書き換え、索引・シーケンスの指定を §4.6 の `42809` にする。(d) CHECK の自動名を `catalog::naming::choose_constraint_name` に置き換える。(e) `analyze_create_table` から `analyze_index_constraints`（§6.9）を呼び、解析済みの既定値から `collect_regclass_refs` で `default_refs` を集める。(f) `DROP TABLE` で `relation_kind` が索引・シーケンスのとき `42809`（§4.6）。 |
+| `08-sequence-serial.md`（Q1） | (a) **`ddl::sequence::create_with_oid(ctx, &BoundCreateSequence, oid, Option<(Oid, i16)>) -> Result<()>`**（§5.1 の手順 6。OID は 07 が手順 4b で先に採る。名前は解析時に決まっている）と **`ddl::sequence::restart_owned_by_table(ctx, table_oid)`**（§5.6 の手順 4）を提供する（レビュー対応 R-07。以前の `create_sequence_for_table` / `restart_to_start` は 08 に存在しない名前だった。`pg_depend` の `ObjectAddress` / `NewDepend` / `DependType`、`CatalogStore::{record_dependency, delete_dependencies, dependents_of, references_of, describe_object}`、`plan_drop` / `drop_objects` は **07 の `catalog/depend.rs` と `CatalogStore`** を使い、08 が書いていた `ddl/depend.rs` の `record` / `dependents_of` / `dependencies_of` / `delete_dependencies` / `describe` は作らない。R-08）。(b) シーケンスのカタログの行は `CatalogStore::create_sequence`（§4.3）で書く（`pg_class`（`S`）、`pg_attribute`、`pg_sequence`、`pg_depend`）。(c) `DROP SEQUENCE` は `catalog::depend::plan_drop` を呼ぶ（SERIAL: `DETAIL: default value for column id of table o1 depends on sequence o1_id_seq`、IDENTITY: `cannot drop sequence s1_g_seq because column g of table s1 requires it`）。(d) SERIAL の列の既定値の `pg_depend`（`pg_attrdef` → シーケンス、`n`）は C1 が書く（`NewTable.extra_depends`）。08 は書かない。 |
+| `03-parser-analyzer.md`（S1、N1〜N3） | (a) AST: `DropTable.cascade`、`DropIndex { names, if_exists, concurrently, cascade }`、`CreateIndex { name: Option<Ident>, table, unique, if_not_exists, concurrently, method: Option<Ident>, columns（式・opclass・`COLLATE`・ASC / DESC・NULLS）, include, options, where }`、`AlterTable { name, if_exists, only, action: AddConstraint(TableConstraint) \| OwnerTo(RoleSpec) \| Other }`、`Truncate { tables, restart_identity, cascade, only }`、`Vacuum { vacuum: bool, options: Vec<(Ident, Option<String>)>, targets: Vec<(ObjectName, Vec<Ident>)> }`、列制約・表制約の `PRIMARY KEY` / `UNIQUE` の `WITH (..)`・`DEFERRABLE`・`INCLUDE` など、`CREATE TABLE ... WITH (..)`。(b) `0A000` の文言（§6.9、§7.3）。(c) `resolve_table` を `relation_kind` で書き換え、索引・シーケンスの指定を §4.6 の `42809` にする（`analyzer/resolve.rs`。N1）。**(d)〜(f) は `analyzer/ddl.rs` の持ち主（11 §4.2 では Q1）の作業で、N1〜N3 ではない**（レビュー対応 R-09。以前はここに書いていたが N1〜N3 は `ddl.rs` を持たず日数もなかった。下の `08-sequence-serial.md` の行に移した）。(f) `DROP TABLE` / `DROP INDEX` / `TRUNCATE` / `VACUUM` / `ALTER TABLE` の解析は C1 の `analyzer/ddl_index.rs`（11 §7.3 の G-1）。 |
+| `analyzer/ddl.rs` の持ち主 Q1（`08-sequence-serial.md` と共同。レビュー対応 R-09） | (d) CHECK の自動名を `catalog::naming::choose_constraint_name` に置き換える（M2 の `used` を廃止）。(e) `analyze_create_table` から `analyze_index_constraints`（C1 の `analyzer/ddl_constraint.rs`、§6.9）を呼び、解析済みの既定値から `collect_regclass_refs`（C1 の `ddl/depend.rs`）で `default_refs` を集める。(g) **`make_object_name` は C1 が `catalog/naming.rs` に移す**（C1 が作る）。Q1 は `analyzer/ddl.rs` からその定義を削除して `catalog::naming::make_object_name` を呼ぶ。暗黙のシーケンスの名前は `catalog::naming::choose_relation_name(表名, Some(列名), "seq", nsp, false, &lookup, &taken)`（`lookup` は `CatalogReader` を包む `NameLookup`、`taken` は同じ文の中で先に決めた名前）。08 が `analyzer/ddl.rs` に別の `choose_relation_name` を定義することはしない（二重定義の解消）。Q1 の日数に +0.5 日（11 §4.1）。 |
 | `09-types-functions.md`（T1〜T3） | `int2vector` と `int2[]` の入出力（`{1,2}`、`1 2`）、`regclass` リテラルの入出力、`quote_identifier`、`format_type_name`、`pg_get_*` の関数。AMOPS に出てくる比較演算子（date / timestamp / timestamptz の相互を含めるかは 09 が決め、含めなければ 06 に伝えて `AMOPS` から外す）。 |
 | `10-explain-copy-compat.md`（E1、O1、S） | (a) E1: `pg_get_indexdef` と `pg_get_constraintdef` は `CatalogReader::index_by_oid` / `constraint_by_oid` / `table_by_oid` で書く。(b) O1: `TRUNCATE` の後の COPY は、TRUNCATE で更新された `TableDef`（新しい `locator`）から `RelHandle` を作る（`catalog_dirty` で `bypass_cache` になり、読み直される）。(c) S: §6.11 の session の作業、`Notice::new` の `pub(crate)` 化。 |
 | `11-tests-plan.md`（K、Z、R2） | §8 のテストの一覧を集約する。`consistency.slt`（SQL 版）を全スイートの最後に流すこと、クラッシュ試験の DDL のワークロード（§8.5）。 |

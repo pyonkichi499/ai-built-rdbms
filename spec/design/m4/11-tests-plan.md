@@ -5,7 +5,7 @@ M4 の担当 **K**（共有テスト）、**R2**（クラッシュ試験の追�
 - 前提（必読）: `00-contracts.md`、`01〜10` 章（この章は**それらを読んだうえで最後に**書いた）、`spec/design/m3.md` §7〜§10（書式の手本と、M3 のテスト基盤）、`tests/README.md`、`tests/run.sh`、`QUESTIONS.md`、`PROGRESS.md`
 - 調査（根拠）: `spec/research/m4-query.md` §9・§10、`research-slt.md`、`pg-compat-tools.md` §6、`m4-btree.md` §9.2
 - 正解の基準は PostgreSQL 17。実機（`sandbox/pg.sh start`、`127.0.0.1:55432`）で確かめたものは「（実測）」、確かめていないものは「（未検証）」と書く。
-- **この章の執筆時点で `01-scope-decisions.md` は読めなかった**（他章と並行して書かれていて未完だった）。M4 の完了条件と範囲は 00 §2・§3・§17 と各章の「範囲」から組み立てた（§1.3）。01 の内容がこの章と食い違う場合は、範囲と完了条件は 01 が、テストの形はこの章が優先する。
+- **`01-scope-decisions.md` はこの章の執筆時点では未完だった**（他章と並行して書かれていた。レビュー対応 R-01 で作成済み）。M4 の完了条件と範囲は **01 が正**で、§1.3 は 01 §3 と同じ表（01 の確定: 条件 5 に `\ds` と `\d シーケンス`、条件 6 を固定シードの 0 件 + 長時間の一度の完走に、全体を `tests/done-check.sh` でローカル判定）。食い違う場合は、範囲と完了条件は 01 が、テストの形はこの章が優先する。
 - 他の章への参照は、章のファイル名と概念名で書く（`00 §1.2` の 6）。
 
 ---
@@ -19,7 +19,7 @@ M4 の担当 **K**（共有テスト）、**R2**（クラッシュ試験の追�
 | テスト全体 | 層と置き場所、`tests/slt/m4/` のディレクトリとファイルの全一覧（各章のテスト節の合成）、接頭辞の表、`onlyif` / `skipif` の規約、slt の lint、`plan_variants` の生成、`tests/restart/m4` と `tests/run.sh` の拡張、`tests/compat`（psql・pgbench・COPY）、isolation の追加、クラッシュ試験 層 1 のワークロード 6〜8・不変条件 I13〜I16・変異テスト、差分ランダムテスト、PostgreSQL 回帰テストの取り込み、Rust の単体テストの一覧（章ごと）、CI のジョブ、環境要件（tzdata ほか） |
 | 実装の分担と工数 | 00 §17 の担当表を各章の分担表と突き合わせた**確定版**、ファイル所有の衝突の確認と共有ファイルの区画割り、依存の順序・並列度・最長経路、フェーズ分け |
 | 未検証の点 | 全章の「未検証の点」を重複を除いて集約し、実装前に確かめる順に並べたもの |
-| 確認事項 | 全章の確認事項を `M4-Q1` からの通し番号に振り直した集約（仮決め・理由・変えたい場合の影響）。`QUESTIONS.md` への転記の依頼 |
+| 確認事項 | 全章の確認事項を `M4-Q1` からの通し番号に振り直した集約は **`99-questions.md` に移した**（§6 は参照だけ。レビュー対応 R-01） |
 | 整合性レビュー | 章をまたぐ矛盾（署名・名前・OID・SQLSTATE・ファイル所有・担当不在）の洗い出しと決定、各章の「00 への変更提案」の採否表 |
 | M5 以降の宿題 | 00 §19 と各章から集めた一覧 |
 
@@ -32,7 +32,7 @@ M4 の担当 **K**（共有テスト）、**R2**（クラッシュ試験の追�
 
 ### 1.3 完了の判定（M4 を終えたと言える条件）
 
-00 §2（D-24、D-25）と各章の「範囲」から、**テストで機械的に判定できる形**にした。1〜9 がすべて通ったときに M4 を完了とする（`PROGRESS.md` に結果を書く）。
+**正本は `01-scope-decisions.md` §3**（レビュー対応 R-01、R-29）。ここはテストの側から見た同じ表。**すべてローカル（claude-sandbox）で `tests/done-check.sh`（K4。§3.10）が実行して判定する**（実装エージェントは push も CI の起動もできないため。CI のジョブは同じコマンドを回す参考）。1〜9 がすべて通ったときに M4 を完了とする（`PROGRESS.md` に結果を書く）。
 
 | # | 条件 | 判定するもの | CI のジョブ（§3.10） |
 |---|---|---|---|
@@ -40,11 +40,11 @@ M4 の担当 **K**（共有テスト）、**R2**（クラッシュ試験の追�
 | 2 | `tests/run.sh --target pg` が `tests/slt`（m1〜m4）で通る（**期待値が PostgreSQL 17 で正しい**）。`tests/run.sh --target yuzhu` も通る（`slt-yuzhu` の `continue-on-error` を外す） | 共有 slt（約 120 ファイルを追加） | `slt-pg`、`slt-yuzhu` |
 | 3 | `tests/run.sh --target {pg,yuzhu} --restart` と `--crash` が、`tests/restart` と `tests/restart/m3` と `tests/restart/m4` のすべてのシナリオで通る | 再起動・クラッシュをまたぐ永続性（インデックス・シーケンス・DDL） | `restart-pg`、`restart-yuzhu` |
 | 4 | isolation の全 spec（M3 の 6 本 + M4 の 2 本）が pg と yuzhu で通る | MVCC と索引・シーケンスの可視性 | `isolation` |
-| 5 | `tests/compat/run.sh --target {pg,yuzhu}` が通る: psql 17 の `\dt` `\dn` `\di` `\l` の出力が PostgreSQL と一致、`pgbench -i`（既定と `-I dtGvp`）と `pgbench -c 4 -T 30 -M simple` が完走し不変条件が成り立つ、COPY の psql スクリプトの出力が一致（00 D-24、D-25） | 周辺ツール互換 | `compat-pg`、`compat-yuzhu` |
-| 6 | 差分ランダムテスト（§3.7）の**固定シード集合**で、yuzhu 対 PostgreSQL の差分が 0 件。差分が出たものは原因を `tests/tools/difftest/KNOWN.md` に書いた範囲だけを許す。夜間の長時間実行が連続 7 回で未解決の差分 0 件 | 結果の一致 | `fuzz-pr`、`nightly` |
+| 5 | `tests/compat/run.sh --target {pg,yuzhu}` が通る: psql 17 の `\dt` `\dn` `\di` `\ds` `\l` と `\d シーケンス` の出力が PostgreSQL と一致、`pgbench -i`（既定と `-I dtGvp`）と `pgbench -c 4 -T 30 -M simple` が完走し不変条件が成り立つ、COPY の psql スクリプトの出力が一致（00 D-24、D-25） | 周辺ツール互換 | `compat-pg`、`compat-yuzhu` |
+| 6 | 差分ランダムテスト（§3.7）の**固定シード集合**で、yuzhu 対 PostgreSQL の差分が 0 件。差分が出たものは原因を `tests/tools/difftest/KNOWN.md` に書いた範囲だけを許す。**固定シード 1〜32（各 2,000 問い合わせ）で差分 0 件、かつ長時間実行（シード 1001〜1004、各 200,000 問い合わせ）が各 1 回完走して未解決の差分 0 件**（以前の「夜間の長時間実行が連続 7 回」は、実装側が CI を起動できず、1 回の失敗で連続が途切れ、シードが日付で変わって再現できないので廃止。レビュー対応 R-29、01 の D01-2） | 結果の一致 | `fuzz-pr`（固定シード）。長時間実行は `done-check.sh` |
 | 7 | クラッシュ試験 層 1 のワークロード 1〜8 が全クラッシュ点で I1〜I16 を満たし、変異テストが**すべて検出される**（§3.6） | 耐久性と構造の原子性 | `crash-sim` |
 | 8 | `EXPLAIN (COSTS OFF)` の書式の一致を確かめる slt（`explain/format.slt`、`explain/deparse_*.slt`）と `plan_variants`（`enable_*` を変えて同じ結果）が pg と yuzhu で通る | プランの書式と最適化の安全性 | `slt-pg`、`slt-yuzhu` |
-| 9 | `QUESTIONS.md` に §6 の確認事項が転記され、`PROGRESS.md` が M4 完了の状態になっている | 運用 | — |
+| 9 | `QUESTIONS.md` に `99-questions.md` の確認事項が転記され、`PROGRESS.md` が M4 完了の状態になっている | 運用 | — |
 
 参考（合否の条件にしない）: pgbench の TPS・レイテンシ（`PROGRESS.md` に記録。`06-btree.md` §7.15）、PostgreSQL 回帰テストの取り込み結果（§3.8。差分の一覧を作るのが目的）。
 
@@ -298,12 +298,12 @@ EXPLAIN のファイルは 10 §8.2 のとおり（先頭に `skipif yuzhu` で 
 | KD-17 | `TEMP` / `UNLOGGED` シーケンス、`ALTER SEQUENCE RENAME` / `SET SCHEMA`、`ALTER TABLE` の `ADD PRIMARY KEY` / `UNIQUE` / `OWNER TO` 以外は `0A000` | 08-Q6、00 D-12 |
 | KD-18 | `fillfactor = 50.5`（小数）は `22023`。`autovacuum_enabled` などその他の reloptions は `22023` | 07-Q8 |
 | KD-19 | `COPY` の CSV・バイナリ・`TO`・`WHERE`・`ON_ERROR`、`EXPLAIN` の `FORMAT JSON` / `XML` / `YAML` は `0A000` | 10-Q4、10-Q7 |
-| KD-20 | `\d tbl` の配列を使う 2 本の問い合わせは失敗する | 10-Q6 |
+| KD-20 | `\d tbl` は M4 では動かない（実機の SQL 10 本のうち 3 本（行レベルセキュリティ、拡張統計、出版物）が配列・`regnamespace`・関数のために解析できず、さらに `pg_collation` と空のカタログ表を作る担当がない。レビュー対応 R-18・R-19。動かすには約 7 日の任意 WP） | 10-Q6 |
 | KD-21 | `GROUP BY (SELECT ...)` の式を SELECT に書き直すと `42803`（PostgreSQL は構造の等しい副問い合わせを一致とみなす） | 03 §8、02-Q10 |
 | KD-22 | 同じ `CREATE TABLE` が作るシーケンスの名前を DEFAULT に書くと `42P01`。同じ文の 2 つの暗黙のシーケンスの名前の衝突を避ける（上位互換） | 08-Q10、08-Q13 |
-| KD-23 | 相関のある MATERIALIZED CTE、外側の列を参照する揮発性の CTE は `0A000` | 05-Q5、04-Q11、02-Q5 |
+| KD-23 | 外側の列を参照する CTE のうち、`MATERIALIZED` の明示と揮発性のものは `0A000`（それ以外はインラインで通る。R-05） | 05-Q5、04-Q11、02-Q5 |
 | KD-24 | `generate_series(numeric, ...)` / 日時版 / `generate_series(1, 10.5)` は `42883`。FROM 句の `generate_series` 以外の関数は `0A000` | 09、03-Q11 |
-| KD-25 | `EXPLAIN` のプランの選び方（インデックスを小さな表でも使う、`Hash Right Join` の向きなど）と InitPlan の位置・番号 | 04 §2.2、04-Q7 |
+| KD-25 | `EXPLAIN` のプランの選び方（インデックスを小さな表でも使う、`Hash Right Join` の向きなど）と SubPlan の番号（InitPlan の位置はその階層の根で PostgreSQL と同じ。R-06） | 04 §2.2、04-Q7 |
 | KD-26 | `RETURNING` に FROM / USING の列を使うと `0A000`（`RETURNING` 自体が M4 後半・任意） | 05-Q4、03-Q14 |
 | KD-27 | SELECT 句の集合返却関数は `0A000` | 00 §3 |
 | KD-28 | `transaction_timeout` は受け付けるだけで強制しない | 10-Q8 |
@@ -699,7 +699,7 @@ target/release/difftest run --level m4 \
 ```
 
 - **固定シード（PR ごと。`fuzz-pr`）**: `--seed 1..8`、各 `--queries 2000`（合計 16,000 問い合わせ。2〜3 分）。`--level m4` と、DML 列のモード、プラン変種のモード。差分があれば失敗。
-- **夜間（`nightly`）**: シードを日付から決め（`--seed $(date +%Y%m%d)`）、`--queries 200000`。失敗したシードをログに残す。連続 7 回で未解決の差分 0 件が完了条件の 1 つ（§1.3 の 6）。
+- **長時間実行（`done-check.sh` と夜間 `nightly`）**: 完了条件（§1.3 の 6）は固定シード 1001〜1004、各 `--queries 200000` を**各 1 回**完走して未解決の差分 0 件（再現できるシード固定）。夜間ジョブ（CI。push 後にホストで回す）は日付由来のシード（`--seed $(date +%Y%m%d)`）で `--queries 200000` を流し、失敗したシードをログに残す（参考。完了条件ではない。レビュー対応 R-29）。
 - **失敗時**: 最小化され、`fail-<seed>-<round>-<n>.sql`（そのまま流せるスクリプト。先頭のコメントに `reproduce:` のコマンド、`reason:`、両サーバの結果）が `--out` に出る。CI は `--out` をアーティファクトとして保存する。**再現手順**: `difftest replay --ref ... --test ... fail-*.sql`（または `psql -f`）、元のラウンド全体は `reproduce:` の行（`--seed S --start-round R --rounds 1 --level m4 ...`）。
 - **失敗の分類**（レビュー時）: (1) yuzhu のバグ → 修正して、最小化された SQL を `tests/slt/m4/` の該当ファイルにケースとして追加、(2) 未対応（`0A000`）→ 生成器が避けるようにする、(3) PostgreSQL の非決定性 → 比較の規則（§3.7.2）に足す、(4) 既知の差 → `tests/tools/difftest/KNOWN.md` に ID と原因を書く（生成器が避けられないものだけ）。
 
@@ -769,7 +769,7 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | `crash-sim` | `cargo test --release -p yuzhu-core --test crash_sim`（ワークロード 1〜8、固定シード、変異テスト。**120 秒以内**） | 必須（M3 から） | 〜5 分 |
 | `fuzz-pr`（新） | §3.7.4 の固定シード（pg と yuzhu を起動して `difftest run --level m4`） | pg 側のジェネレータの自己検査（pg 対 pg、差分 0）は必須 / yuzhu 対 pg はフェーズ 4 から | 〜10 分 |
 | `docker` | 既存。**`tzdata` を入れたイメージでの smoke test** を足す（`SET TIME ZONE 'Asia/Tokyo'; SELECT now()` が成功） | 必須 | 〜5 分 |
-| 夜間 `nightly.yml`（新） | (1) 層 1 の長時間ランダム実行（シード 480）と proptest 8192 ケース（`#[ignore]`）、(2) 層 2 の `cargo test -p yuzhu-server --test crash_kill9 -- --ignored`（`serial` 列つき。20 回 → 200 回）、(3) `difftest` を `--queries 200000`、(4) `pgbench -c 4 -T 300` と `crash.sh` を 20 回、(5) `tests/imported` の取り込みと実行、(6) 計画時間・性能の測定（`PROGRESS.md` に追記する数値を出す） | 参考（失敗は issue 化。連続 7 回 0 件が完了条件の 1 つ） | 〜2 時間 |
+| 夜間 `nightly.yml`（新） | (1) 層 1 の長時間ランダム実行（シード 480）と proptest 8192 ケース（`#[ignore]`）、(2) 層 2 の `cargo test -p yuzhu-server --test crash_kill9 -- --ignored`（`serial` 列つき。20 回 → 200 回）、(3) `difftest` を `--queries 200000`、(4) `pgbench -c 4 -T 300` と `crash.sh` を 20 回、(5) `tests/imported` の取り込みと実行、(6) 計画時間・性能の測定（`PROGRESS.md` に追記する数値を出す） | 参考（失敗は issue 化。完了条件ではない。完了は `tests/done-check.sh` のローカル実行で判定する。§1.3、レビュー対応 R-29） | 〜2 時間 |
 
 **M3 の CI への追加の要約**: (a) `slt-yuzhu` と `restart-yuzhu` と `isolation(yuzhu)` と `crash-sim` の対象に m4 が加わる、(b) 新しいジョブ `slt-lint` `compat-*` `fuzz-pr` `nightly`、(c) `slt-pg` に `z_final` が加わり、`slt-yuzhu` の起動に `-c yuzhu.validate_plans=on`、(d) `docker` ジョブに tzdata の確認、(e) `continue-on-error` の外し方（フェーズ 4 で yuzhu 側を外す。1 つずつ: slt → restart → isolation → compat → fuzz）。
 
@@ -800,22 +800,22 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | 担当 | 00 | 章の見積り | 確定 | 範囲（編集するファイル。00 から変わる点だけ太字） | 章 |
 |---|---|---|---|---|---|
 | **A 基盤** | 1.5 | 02: 1.5（02 の分は約 1.0。他章の型が加わる） | **2.0** | 00 §17 のとおり。**追加**: `Cast.implicit`（10）、`CastMethod::Env`（09）、`ExplainNode` の拡張（10、§7.1 C-1）、`TypeEnv.names` / `OidNames`（09）、`DebugKnobs` の 4 項目（06、08）、`sqlstate` の 11 定数（§7.2）、`PhysicalQuery::single` / `empty`、`BoundQuery::walk_exprs`（03）、`FnKind::Set`・`SessionValueKind`（09） | 02 |
-| **P0 パイプライン移行** | 5 | 02: 5.0（P0-b 0.5、P0-c 1.8、P0-d 1.4、P0-e 1.3） | 5.0 | 00 のとおり。**段階ごとに担当を解放する**（02 §5.1: P0-a → S1・H4・B1・T・K、P0-b → B2・C1、P0-c → X1〜X3、P0-d → N1〜N3、P0-e → L1・L2・E1）。P0-b が `StorageStack.index` / `seq` と `Cluster::indexes()` / `sequences()` を足す（02-P14）。**`yuzhu-fuzz-sql/` のスタブは置かない**（D11-6）。`catalog/builtin.rs` の区画のコメントを置く（§4.2） | 02 |
+| **P0 パイプライン移行** | 5 | 02: 5.0（P0-b 0.5、P0-c 1.8、P0-d 1.4、P0-e 1.3）、05: `Filter`・`SeqScan` の `set_counters` +0.1（C-2。レビュー対応 R-28） | **5.1** | 00 のとおり。**段階ごとに担当を解放する**（02 §5.1: P0-a → S1・H4・B1・T・K、P0-b → B2・C1、P0-c → X1〜X3、P0-d → N1〜N3、P0-e → L1・L2・E1）。P0-b が `StorageStack.index` / `seq` と `Cluster::indexes()` / `sequences()` を足す（02-P14）。**`yuzhu-fuzz-sql/` のスタブは置かない**（D11-6）。`catalog/builtin.rs` の区画のコメントを置く（§4.2） | 02 |
 | **S1 パーサ** | 3 | 03: 1.8、10: 1.0（07・08・09 の構文は章が日数を書いていない） | **5.0** | `sql/*` の M4 分すべて。内訳: 03 の分 1.8、10（EXPLAIN・COPY の構文）1.0、07（CREATE INDEX・ALTER TABLE・TRUNCATE・VACUUM・WITH オプション）1.0、08（シーケンス・IDENTITY・OVERRIDING）0.8、09（型名・日時キーワード・`SessionValueKind`）0.4（07・08・09 の分はこの章の見積り）。順序: 03 → 07 → 08 → 10 → 09 | 03、07〜10 |
 | **N1 解析: FROM** | 4 | 03: 4 | **4.3** | 00 のとおり。**P0 の後の `analyzer/{expr,coerce}.rs` の持ち主**（T1・T2・T3・Q1 の依頼を受ける。+0.3）。`analyzer/dml.rs` の IDENTITY の規則の呼び出し（08 §4.9）と 42809（07） | 03 |
 | **N2 解析: 集約** | 4 | 03: 4 | 4.0 | 00 のとおり（`agg.rs`、`select.rs` の `analyze_select`）。`analyze_query` の骨格は P0-d が置く | 03 |
 | **N3 解析: サブクエリ** | 5 | 03: 5 | 5.0 | 00 のとおり（`sublink.rs` `setop.rs` `cte.rs`）。`select.rs` には触らない（§4.2） | 03 |
 | **L1 論理プラン** | 6 | 04: 約 6.5（任意 0.3 を含む） | **6.2**（+0.3 任意） | `planner/{build,rules/*,util,print(論理),validate(論理),mod(plan・PlanTrace)}.rs`、`rules/testutil.rs`。`yuzhu-core/tests/plan_golden/` は L1 と L2 の共同 | 04 |
 | **L2 物理化** | 5 | 04: 約 6.8（必須 5.9、任意 0.9）。10: explain_tree に 2 日 | **6.9**（+0.9 任意） | `planner/{physicalize,index_select,size,explain_tree,print(物理),validate(物理)}.rs`。explain_tree は 04 が 1.0、10 が 2.0 と見積もったので 2.0 を採る（必須 5.9 + 1.0）。任意: 内側 Index Scan の Nested Loop（0.5）、ソートの省略（0.4） | 04、10 |
-| **X1 実行: 結合** | 5 | 05: 5 | 5.0 | 00 のとおり。**P0 の後の `executor/eval.rs` の持ち主**（SubLink の分岐。T2 の `Cast(Env)` と `session_value` は P0-c が実装済み） | 05 |
+| **X1 実行: 結合** | 5 | 05: 5.3（NLJ・NLP・HashJoin の `set_counters` +0.3） | **5.3** | 00 のとおり。**P0 の後の `executor/eval.rs` の持ち主**（SubLink の分岐。T2 の `Cast(Env)` と `session_value` は P0-c が実装済み） | 05 |
 | **X2 実行: 集約** | 5 | 05: 5 | 5.0 | 00 のとおり | 05 |
-| **X3 実行: 索引と DML** | 4 | 05: 4 | 4.0 | 00 のとおり（`dml.rs` の `RowChecker` / `RowBuilder` を O1 が使う。C-10） | 05 |
+| **X3 実行: 索引と DML** | 4 | 05: 4.1（`IndexScan` の `set_counters` +0.1） | **4.1** | 00 のとおり（`dml.rs` の `RowChecker` / `RowBuilder` を O1 が使う。C-10） | 05 |
 | **H4 ヒープ拡張** | 1.5 | 06: 1.5 | 1.5 | `storage/heap/*`、`heap_store.rs`、`page.rs`（**追加のみ**。`init_special` ほか。06 §4.2）。最初の 0.3 日で `page.rs` の追加を出す（B1・Q1 が使う） | 06 |
 | **B1 B+Tree 本体** | 6 | 06: 6 | 6.0 | 00 のとおり | 06 |
 | **B2 B+Tree 走査・構築** | 5 | 06: 5 | 5.0 | 00 のとおり。**最初に `opclass.rs` の表を出す**（L2・C1 が使う。06 §8 の進め方 2） | 06 |
 | **M3 の持ち主への依頼** | — | 06: C 0.3 | **0.6** | M3 の C: `PinnedBuffer::{read_tree, write_tree}`、`BufferPool::extend_tree`（06 §4.3）、`page_mut_hint()` が呼んだ時点で dirty（08）。M3 の W2 / R: `wal/dump.rs` の `describe` 呼び出し、`recovery::dispatch` の `Btree` / `Seq`、`Wal::redo_lsn()` が起動直後から値を返す（06・08）。M3 の A: `DebugKnobs` の追加（A の内数） | 06、08 |
-| **C1 カタログと DDL** | 7 | 07: 7.0 | **8.0** | 00 のとおり + `catalog/{naming,depend,check}.rs`、`ddl/vacuum.rs`、`analyzer/ddl_constraint.rs`（07）。**加えて `analyzer/ddl_index.rs`（新）: CREATE INDEX / DROP INDEX / DROP TABLE（behavior）/ TRUNCATE / VACUUM / ALTER TABLE の解析（AST → `Bound*`。07 §4.6 が型を決めたが、解析を書く担当が 00 にも 07 にもなかった。§7.3 の G-1）。+1.0** | 07 |
-| **Q1 シーケンス** | 5 | 08: 5.0 | **5.3** | 00 のとおり + `catalog/seq_params.rs`、`executor/seq.rs`、`txn/manager.rs` の追加（`wal_flush_upto` ほか。00 §16 のとおり 08 が持ち主）。**`catalog/builtin.rs` の `sequence` 区画に `nextval` ほかの 5 行を足す**（09 に書かれていない。§7.3 の G-2）。`analyzer/ddl.rs` の `resolve_type_name` / `KNOWN_UNSUPPORTED_TYPES`（09 の依頼。ファイルの持ち主として。+0.3） | 08、09 |
+| **C1 カタログと DDL** | 7 | 07: 7.0 + `update_sequence_params` 0.2（レビュー対応 R-08） | **8.2** | 00 のとおり + `catalog/{naming,depend,check}.rs`、`ddl/vacuum.rs`、`analyzer/ddl_constraint.rs`（07）。**加えて `analyzer/ddl_index.rs`（新）: CREATE INDEX / DROP INDEX / DROP TABLE（behavior）/ TRUNCATE / VACUUM / ALTER TABLE の解析（AST → `Bound*`。07 §4.6 が型を決めたが、解析を書く担当が 00 にも 07 にもなかった。§7.3 の G-1）。+1.0** | 07 |
+| **Q1 シーケンス** | 5 | 08: 5.0 + `analyzer/ddl.rs` の 07 からの依頼 0.5（R-09） | **5.8** | 00 のとおり + `catalog/seq_params.rs`、`executor/seq.rs`、`txn/manager.rs` の追加（`wal_flush_upto` ほか。00 §16 のとおり 08 が持ち主）。**`catalog/builtin.rs` の `sequence` 区画に `nextval` ほかの 5 行を足す**（09 に書かれていない。§7.3 の G-2）。`analyzer/ddl.rs` の `resolve_type_name` / `KNOWN_UNSUPPORTED_TYPES`（09 の依頼。ファイルの持ち主として。+0.3） | 08、09 |
 | **T1 numeric** | 3 | 09: 3 | 3.0 | 00 のとおり | 09 |
 | **T2 日時と char(n)** | 4 | 09: 4 | 4.0 | 00 のとおり。`settings.rs` の `DateTimeSettings` と `Settings::type_env`（S と共同。区画を分ける。§4.2） | 09 |
 | **T3 関数・集約・正規表現** | 5 | 09: 5 | 5.0（+0.3 任意） | 00 のとおり。**`CatalogNames` は `catalog/reader.rs`（C1）ではなく新しい `catalog/names.rs` に置く**（09 は `reader.rs` の末尾と書いたが、そのファイルの持ち主は C1）。最初に `AGGREGATES` を出す（N2 が使う）。任意: `pg_size_pretty` `pg_table_size` `obj_description` `pg_function_is_visible`（`\dt+` `\df`。10 の依頼。G-3） | 09 |
@@ -824,11 +824,11 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | **S セッション** | 4 | 10: 3（COPY の状態 1.5、`exec_explain` 0.5、`INERT_GUCS` 1.0） | **4.5** | 00 のとおり + 07 §6.11（DDL の振り分け、`in_transaction_block`）、08（`SeqSession` の配線、`end_statement`）、09（`TypeEnv` の組み立て）、04・02（`PlannerSettings`・`yuzhu.validate_plans`）。10 の 3.0 + 約 1.5 | 02、04、07〜10 |
 | **J サーバ** | 1.5 | 10: 1.5 | 1.5 | 00 のとおり | 10 |
 | **R2 クラッシュ試験の追加** | 3 | 06・07・08 のワークロードと不変条件 | **5.0** | `yuzhu-core/tests/crash_sim/*`。ワークロード 6・7・8、I13〜I16、変異テスト（§3.6）。ハーネスの追加要求（§3.6.3）。内訳: WL6 + I13・I14 1.5、WL7 + I15 + 変異 1.5、WL8 + I16 1.0、ハーネスと変異の整備 1.0。**前提: M3 の T がハーネスを仕上げていること** | 06〜08、11 |
-| **K 共有テスト** | 10 | 03: 3、10: 3（残りは章が日数を書いていない） | **24.0**（K1 3.0 + K2 7.5 + K3 7.0 + K4 6.5。§4.5） | `tests/slt/m4/*`、`tests/compat/*`、`tests/restart/m4/*`、`tests/isolation/specs/*`、`tests/tools/slttools/*`、`tests/gen/*`、`tests/imported/*`、`tests/run.sh`、`.github/workflows/*`、**`Dockerfile`・`sandbox/Dockerfile`（tzdata。D11-10）** | 02〜10、11 |
+| **K 共有テスト** | 10 | 03: 3、10: 3（残りは章が日数を書いていない） | **24.3**（K1 3.0 + K2 7.5 + K3 7.0 + K4 6.8。§4.5。K4 に完了判定のローカルスクリプト `tests/done-check.sh` +0.3） | `tests/slt/m4/*`、`tests/compat/*`、`tests/restart/m4/*`、`tests/isolation/specs/*`、`tests/tools/slttools/*`、`tests/gen/*`、`tests/imported/*`、`tests/run.sh`、`.github/workflows/*`、**`Dockerfile`・`sandbox/Dockerfile`（tzdata。D11-10）** | 02〜10、11 |
 | **Z 差分ランダムテスト** | 4 | — | **4.5** | **`tests/tools/difftest/*`**（00 の `yuzhu-fuzz-sql/` ではない。D11-6） | 11 |
-| 合計 | 115.5 | | **140.3**（任意を含めて 141.8） | | |
+| 合計 | 115.5 | | **141.8**（任意を含めて 143.3。初版 140.3 にレビュー対応の +1.5: P0 +0.1、X1 +0.3、X3 +0.1、C1 +0.2、Q1 +0.5、K4 +0.3） | | |
 
-**増えた理由**（00 との差 +24.8 日）: K（00 の 10 日は各章が書いたテストの量に足りない。+14）、S1（07・08・10 の構文が加わった。+2）、R2（3 つのワークロード。+2）、L2（explain_tree。+1.9）、C1（索引・TRUNCATE・VACUUM の解析。+1）、E1（pretty。+1）、A（+0.5）、S（+0.5）、Z（difftest の仕上げ。+0.5）、N1・Q1・L1（+0.8）、M3 の持ち主への依頼（+0.6）。**最長経路は変わらない**（§4.3）ので、期間はほぼ 00 の見込みのまま（約 21〜23 日）。
+**増えた理由**（00 との差 +26.3 日。内訳の最後の「レビュー対応」+1.5 日を含む）: K（00 の 10 日は各章が書いたテストの量に足りない。+14）、S1（07・08・10 の構文が加わった。+2）、R2（3 つのワークロード。+2）、L2（explain_tree。+1.9）、C1（索引・TRUNCATE・VACUUM の解析。+1）、E1（pretty。+1）、A（+0.5）、S（+0.5）、Z（difftest の仕上げ。+0.5）、N1・Q1・L1（+0.8）、M3 の持ち主への依頼（+0.6）、レビュー対応（set_counters の担当の割り当て、シーケンス連携と命名の担当、完了判定スクリプト。+1.5）。**最長経路は変わらない**（§4.3）ので、期間はほぼ 00 の見込みのまま（約 21〜23 日）。
 
 ### 4.2 ファイル所有の衝突の確認
 
@@ -881,8 +881,8 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | E1（deparse） | 2.0 | 〜7.5 | A の `Expr<C,Q>`。`explain` の整形と `instrument` は P0-c の後。`explain_tree` との結合は L2 の後（〜14.0） |
 | O1 | 2.0 | 8.2 | `LineReader` は独立。`CopyIn` は P0-d と X3 の `dml.rs` の後 |
 | Q1 | 2.0 | 9.0 | `storage/sequence.rs` は独立（2.0〜3.5）。`analyzer/ddl.rs` は P0-d の後、`ddl/sequence.rs` は C1 の `CatalogStore` / `depend` の後 |
-| C1 | 3.0 | 11.0 | P0-b と B2 の `opclass.rs`。`analyzer/ddl_index.rs` は P0-d の後 |
-| X1 / X2 / X3 | 4.3 | 9.3 / 9.3 / 8.3 | P0-c。X2 は T1 の numeric（5.0）、X3 は B1・B2（実物は 8.3。それまで `FakeIndexStore`） |
+| C1 | 3.0 | 11.2 | P0-b と B2 の `opclass.rs`。`analyzer/ddl_index.rs` は P0-d の後 |
+| X1 / X2 / X3 | 4.3 | 9.6 / 9.3 / 8.4 | P0-c。X2 は T1 の numeric（5.0）、X3 は B1・B2（実物は 8.3。それまで `FakeIndexStore`） |
 | N1 / N2 / N3 | 5.7 | 10.0 / 9.7 / 10.7 | P0-d。N2 は T3 の `AGGREGATES`、N1 は C1 の `primary_key()`（N2 の関数従属） |
 | L1 / L2 | 7.0 | 13.2 / 13.9 | P0-e。L2 のインデックス選択は B2 の `opclass.rs`（3.0 で済み） |
 | S | 2.0 | 〜13.5 | `INERT_GUCS` と設定は独立。COPY の状態は O1 の `CopyIn`（7.2）の後、`exec_explain` は L2 / E1 の後、DDL の振り分けは C1 の後 |
@@ -891,7 +891,7 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 **最長経路**: A（2.0）→ P0（5.0。〜7.0）→ L2（6.9。〜13.9）→ 結合（フェーズ 4。約 5 日）→ 完了判定（約 2 日）で**約 21〜23 日**（00 の 20〜25 日と同じ）。2 番目に長いのは P0 → N3（〜10.7）→ L1（〜13.2）、3 番目は B1（〜8.3）→ C1 / X3 の結合（〜11）→ R2（〜13.5）。
 
-**並列度**: 最大で約 19 の担当が同時に動く（5.7〜8.3 日。L1・L2・N1〜N3・X1〜X3・B1・B2・C1・Q1・E1・O1・S・T3・K1〜K4・Z）。平均は 140 日 / 21 日で約 6.7。M3 の実装が `dev` に統合される前に P0 を始めない（02 §7）ことが、全体の開始の前提。
+**並列度**: 最大で約 19 の担当が同時に動く（5.7〜8.3 日。L1・L2・N1〜N3・X1〜X3・B1・B2・C1・Q1・E1・O1・S・T3・K1〜K4・Z）。平均は 142 日 / 21 日で約 6.7。M3 の実装が `dev` に統合される前に P0 を始めない（02 §7）ことが、全体の開始の前提。
 
 ### 4.4 フェーズ分け
 
@@ -899,9 +899,9 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 |---|---|---|---|
 | **0 足場** | 0〜2 | A が型と ★ のスタブ。K4 が `tests/run.sh` の拡張・lint・CI の骨組みを PostgreSQL に対して先に作る | 既存の `cargo test`・`tests/run.sh --target yuzhu`（m1〜m3）が変わらず通る |
 | **1 基礎** | 2〜7 | P0-b〜e。並列に S1・H4・B1・B2（opclass）・T1〜T3・E1（deparse）・O1（`LineReader`）・Q1（`storage/sequence.rs`）・K1〜K4・Z | **`tests/slt/m1`〜`m3` が yuzhu で通る**（P0 の完了条件。02 §5.1 の各段階の条件）。`validate` が全テストで通る |
-| **2 機能** | 4.3〜11 | X1〜X3、N1〜N3、L1、L2、C1、Q1、E1（explain）、O1（`CopyIn`）。**各担当は自分のディレクトリの slt を yuzhu で通す**（進捗は `tests/run.sh --target yuzhu tests/slt/m4/<dir>` で見える） | 各担当の単体テストが通る。結合のない範囲（式・型・単一表の索引なし）の slt が yuzhu で通る |
-| **3 結合** | 10〜14 | S・J。索引の実物（X3 と C1 と B1・B2）、シーケンス（Q1 と S）、COPY（O1 と S と J）、EXPLAIN（L2・E1・S）が繋がる。R2 のワークロード、`tests/compat`、Z の yuzhu 対 PostgreSQL。**CI の `nightly` を開始** | `tests/slt/m4` の過半が yuzhu で通る。`pgbench -i` が完走する。`\dt` が動く |
-| **4 完成** | 14〜21+ | 失敗の洗い出しと修正（各担当が自分のディレクトリ・機能を直す）。**CI の yuzhu 側を 1 つずつ必須にする**（slt → restart → isolation → compat → fuzz）。夜間を 7 回連続で通す | §1.3 の 1〜9 がすべて通る |
+| **2 機能** | 4.3〜14.0（**L1・L2 の終了 13.2・13.9 まで含める**。レビュー対応 R-31。以前は 4.3〜11 で、表 §4.3 の L1・L2 の終了と重なっていた） | X1〜X3（〜9.6）、N1〜N3（〜10.7）、C1（〜11.2）、Q1、E1（explain）、O1（`CopyIn`）、L1（〜13.2）、L2（〜13.9）。**各担当は自分のディレクトリの slt を yuzhu で通す**（進捗は `tests/run.sh --target yuzhu tests/slt/m4/<dir>` で見える） | **関門は担当ごと**（フェーズ全体の日付ではなく、その担当の終了日）: X1〜X3・N1〜N3・C1・Q1 は 11.2 日までに各自の単体テストが通り、結合のない範囲（式・型・単一表）の slt が yuzhu で通る。L1・L2 は 14.0 日までに `plan_golden` と各ルールの単体テストが通る。**各結合（フェーズ 3 の段）は、その段の前提の担当が終わってから始める** |
+| **3 結合** | 10〜14（段ごとに前提の担当の終了後に開始） | S・J。**段**: (a) 索引の維持と一意性（X3 + C1 + B1・B2。〜11.2）→ INSERT / UPDATE / DELETE と PK / UNIQUE の slt、(b) シーケンス・SERIAL（Q1 + S。〜11.2）、(c) COPY（O1 + S + J。〜11.2）、(d) **プランナを使う問い合わせ（JOIN・集約・サブクエリ・EXPLAIN・索引スキャンの選択）は L1・L2 の終了（13.9）の後**に結合する。R2 のワークロード（B1・Q1・C1 の後）、`tests/compat`、Z の yuzhu 対 PostgreSQL（段 d の後）。**CI の `nightly`（参考）を開始** | 段 (a)〜(c) は 11.2〜12 日、段 (d) は 14 日までに: `tests/slt/m4` の過半が yuzhu で通る。`pgbench -i` が完走する。`\dt` が動く |
+| **4 完成** | 14〜21+ | 失敗の洗い出しと修正（各担当が自分のディレクトリ・機能を直す）。**CI の yuzhu 側を 1 つずつ必須にする**（slt → restart → isolation → compat → fuzz。push 後にホストで）。完了判定は **`tests/done-check.sh` のローカル実行**（夜間の連続 7 回は求めない。レビュー対応 R-29） | §1.3 の 1〜9 がすべて通る |
 
 ### 4.5 K・R2・Z の分担
 
@@ -912,7 +912,7 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | **K1** | `tests/slt/m4/{join,agg,subquery,setop,cte,dml}`（24 ファイル） | 3.0 | 03 の下書き 11 ファイルを整える（`sq_` → `sb_`、`onlyif` / `skipif` の規約、PostgreSQL での再確認）+ 下書きのない 13 ファイル（05 の `agg/` 7、`cross_inner` `row_in` `in_contexts` `recursive_syntax` `insert_select` `returning`） |
 | **K2** | `tests/slt/m4/{catalog,constraint,index,ddl,seq}`（46 ファイル）+ `tests/restart/m4` のシナリオ 17 個 | 7.5 | 07・06・08 のテスト節。`slttools large-keys`（K4）を使う |
 | **K3** | `tests/slt/m4/{types,explain,copy,psql,plan_variants,mem}`（46 ファイル）+ `tests/gen/plan_variants/*.tpl` + `slttools plan-variants`（実体は K4 と共同）+ `tests/tools/slttools` の `pgregress` + `tests/imported` | 7.0 | types 1.0、explain・psql・copy 2.5、plan_variants と mem 1.5、pgregress の取り込み 2.0 |
-| **K4** | `tests/run.sh` の拡張、`tests/compat/*`（psql・copy・pgbench・crash）、`tests/isolation/specs` の 2 本、`tests/tools/slttools`（`lint` `plan-variants` `large-keys` `consistency`）、`z_final/`、`KNOWN-DIFFS.md`、`tests/README.md`、`.github/workflows/*`、`Dockerfile` と `sandbox/Dockerfile` の tzdata | 6.5 | run.sh 0.5、compat 3.0、slttools 1.5、isolation 0.3、CI と Dockerfile 0.7、KNOWN-DIFFS と README 0.5 |
+| **K4** | **`tests/done-check.sh`（完了判定のローカルスクリプト。§1.3 の 1〜8 を順に実行して表で報告する。+0.3）**、`tests/run.sh` の拡張、`tests/compat/*`（psql・copy・pgbench・crash）、`tests/isolation/specs` の 2 本、`tests/tools/slttools`（`lint` `plan-variants` `large-keys` `consistency`）、`z_final/`、`KNOWN-DIFFS.md`、`tests/README.md`、`.github/workflows/*`、`Dockerfile` と `sandbox/Dockerfile` の tzdata | **6.8** | run.sh 0.5、compat 3.0、slttools 1.5、isolation 0.3、CI と Dockerfile 0.7、KNOWN-DIFFS と README 0.5、`done-check.sh` 0.3 |
 
 **K の最初の作業（K4。フェーズ 0）**: (1) 既存の `tests/slt/m1`〜`m3` と `tests/restart` に `slttools lint` を走らせて違反を直す（M2-Q22 の後始末。`z_final/no_leftovers.slt` の前提）、(2) `tests/run.sh` の `mode` 対応、(3) `tests/slt/m4/z_final/` と `KNOWN-DIFFS.md` の骨組み、(4) CI の `slt-lint` ジョブ。K1〜K3 は (1) の後に最初のファイルを置く。
 
@@ -922,16 +922,16 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 | 区分 | 日数 |
 |---|---|
-| 基盤とパイプライン（A、P0） | 7.0 |
+| 基盤とパイプライン（A、P0） | 7.1 |
 | 構文と解析（S1、N1〜N3） | 18.3 |
 | プランナ（L1、L2） | 13.1 |
-| 実行（X1〜X3） | 14.0 |
+| 実行（X1〜X3） | 14.4 |
 | ストレージ（H4、B1、B2、M3 への依頼） | 13.1 |
-| カタログ・DDL・シーケンス（C1、Q1） | 13.3 |
+| カタログ・DDL・シーケンス（C1、Q1） | 14.0 |
 | 型・関数（T1〜T3） | 12.0 |
 | EXPLAIN・COPY・セッション・サーバ（E1、O1、S、J） | 16.0 |
-| テスト（R2、K、Z） | 33.5 |
-| **合計**（任意を除く） | **140.3**（§4.1 の表の合計と一致。任意の 1.5 日（L1 0.3 + L2 0.9 + T3 0.3）を含めると 141.8） |
+| テスト（R2、K、Z） | 33.8 |
+| **合計**（任意を除く） | **141.8**（§4.1 の表の合計と一致。任意の 1.5 日（L1 0.3 + L2 0.9 + T3 0.3）を含めると 143.3。`\d tbl` の任意の WP（約 7 日。10 §6.3）は含めない） |
 
 見積りの粗さは M3 と同じ（AI の実装エージェント 1 本が、設計書だけを読んで書き、PostgreSQL / 共有テストで確かめるまでの日数）。**不確かさが大きいのは、P0（M1〜M3 のコードの作り直し）、L1・L2（ルール）、K（PostgreSQL での期待値の確認）**。
 
@@ -992,7 +992,7 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | U28 | `ALTER SEQUENCE` を `OWNED BY` だけで呼んだときに状態を触らないこと。IDENTITY のオプション（`OWNED BY none` / `LOGGED`）。`VACUUM s` / `ANALYZE s` の WARNING の文言。`DROP SEQUENCE` の DETAIL の並び（OID 昇順） | 08 §9 |
 | U29 | 一意性検査で等値の連続が非常に長いとき（死んだ版が数万件）の性能（`pgbench_branches`）。`_bt_findsplitloc` との性能特性の差。WAL の量（全画像方式） | 06 §9 |
 | U30 | `fetch_dirty` の `HeapTupleSatisfiesDirty` の細部（xmin が自分で xmax が他人、`HEAP_XMAX_LOCK_ONLY`、MultiXact）は M4 では起きない。M5 で M3 の可視性と照合 | 06 §9 |
-| U31 | `BufferPool` の大きさ: 分割が最大 `3h + 1` ページをピンする。`shared_buffers >= 16` で高さ 5 の最悪が入る。高さ 6 以上は `no unpinned buffers available` | 06 §9 |
+| U31 | `BufferPool` の大きさ: 分割が最大 `3h + 1` ページをピンし、06 §4.3 は余裕込みで `shared_buffers >= 3h + 4` を想定する。`shared_buffers >= 16` で足りるのは h <= 4。高さ 5 以上の最悪は `no unpinned buffers available`（06 §9。レビュー対応 R-10） | 06 §9 |
 
 **解析・プラン（N1〜N3・L1・L2・P0）**
 
@@ -1043,198 +1043,17 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 ## 6. 確認事項
 
-ユーザーの不在中に仮決めしたことの**全章の集約**です。各章の `[章番号-Q番号]` を `M4-Q1` からの通し番号に振り直しました（順序: 02、03、04、05、06、07、08、09、10、11。01 は §6.3）。各項目に「仮決め」「理由」「変えたい場合の影響」を書きます。**★ はディスク形式に関わるもの**（実装の前に決めるのが望ましい。06-Q1・Q2・Q3・Q4・Q6・Q9、07-Q1・Q2、08-Q1・Q2・Q3、09-Q1 の 12 件）。章の間で食い違っていたものは「**→ C-n**」と書き、§7.1 の決定に従います。
+**全章の確認事項の集約は `99-questions.md`（`M4-Q1` からの通し番号）に移した**（レビュー対応 R-01。以前はこの節が持っていた）。この章（11）の確認事項は 99 の **M4-Q127〜Q141**、01 章は **M4-Q142〜Q147**、レビュー対応で追加した分は **M4-Q148〜Q158**。各章の `[章番号-Q番号]` と M4-Q の対応は 99 の各項目の見出しに書いてある。**ディスク形式に関わる ★ の 12 件**（M4-Q52・Q53・Q54・Q55・Q57・Q60・Q72・Q73・Q90・Q91・Q92・Q104）は実装の前に決めるのが望ましい。章の間で食い違っていたものは「→ C-n」と書き、§7.1 の決定に従う。
 
-### 6.1 各章の確認事項（通し番号）
-
-**02 パイプラインの作り直し（M4-Q1〜Q10）**
-
-- **M4-Q1 [02-Q1] 外部結合の NULL 側の `ColId` を再発行しない**: 仮決め: `Join` の NULL 側の列は同じ `ColId`。結合より上の `Column(c)` は null 拡張後の値を指す。理由: 再発行すると結合の上のすべての式の `ColId` を書き換える。PG の `varnullingrels` 相当は結合の位置から判定できる。影響: `Join.null_cols` を足す方式は build・押し下げ・外部結合の簡約・刈り込み・`validate` が増え約 +1.5 日。
-- **M4-Q2 [02-Q2] 移行を下から行う（executor → analyzer → planner）**: 仮決め: 各段階の隣に一時アダプタ（`planner/legacy.rs`）。理由: アダプタが自明な構造変換で済む。影響: 上からは約 +1 日（旧型向けの `physicalize` が使い捨て）。
-- **M4-Q3 [02-Q3] `uses_params()` は `SubLink` を含む部分木で常に true**: 仮決め: 00 の定義に足す。理由: `PhysExpr` の `SubLink` は `SubPlanId` だけで `Param` 参照が見えない。影響: `uses_params(&self, q)` に署名を変えると +0.5 日。**→ C-6**（executor の溜めた結果の再利用は 05 の `free_params` で決める。`uses_params()` は単体テスト用の保守的な判定として残る）。
-- **M4-Q4 [02-Q4] 外側レベルの集約は `0A000`**: 仮決め: `(SELECT sum(t.a) FROM u) FROM t` の形は `0A000`。理由: PG は集約を外側の問い合わせに所属させる。必要性が低く複雑。影響: 集約の所属レベルを決めて外側の `has_agg` を立てる処理を 03・04 に足す約 +3 日（KD-8）。
-- **M4-Q5 [02-Q5] 外側の列を参照する CTE は `0A000`**: 仮決め: `MATERIALIZED` でなくても `0A000`（参照 1 回の非 `MATERIALIZED` はインライン展開されるので出ない）。理由: 1 回だけ実行して共有する設計と `Param` による再実行は両立しない。影響: `CteStates` を `Param` の変化で作り直す約 +1.5 日（KD-23）。
-- **M4-Q6 [02-Q6] 導出表の列名は内側の名前のまま、`Subquery Scan` ノードを持たない**: 仮決め: EXPLAIN の式が `s.x` でなく内側の名前で出る。理由: PG もプルアップされた導出表は内側の名前。影響: 論理・物理に `SubqueryScan` を足す約 +1.5 日（04・10 に波及）。
-- **M4-Q7 [02-Q7] デバッグビルドで `validate` を常時実行し、隠し設定 `yuzhu.validate_plans`**: 仮決め: リリースは既定 off。`PlannerSettings.validate_plans`。理由: 全テストで不変条件が検査される。影響: 環境変数にする・常時 on にする（性能の計測が要る）。CI の `slt-yuzhu` は on で起動する。
-- **M4-Q8 [02-Q8] Join RTE を指す `Var` を Bound に残さず、アナライザが展開する**: 仮決め: USING / NATURAL の併合列と `j.*` は式に展開。理由: `build` と `validate` が単純。影響: `build` が展開する方式は 03・04 に波及し約 +1 日。03-Q2 と同じ決定。
-- **M4-Q9 [02-Q9] `levels_up` の数え方**: 02 の仮決め: 1 つの `BoundQuery`（本体が Values / SetOp でも）が 1 レベル。**→ C-3: 03 の D3-20（rtable を持つスコープだけを数える）を採る**。02 の §3.4.2 と `validate` の B1 を直す。理由: 03（生成側）と 04（消費側）が一致している。影響: 02 の方式に揃えると 03（N3）の書き直し約 +0.5 日と 04 の `scopes` の積み方の変更。
-- **M4-Q10 [02-Q10] `SubLink` を含む式の `same_as` が常に不一致**: 仮決め: `GROUP BY (SELECT ...)` を SELECT に書き直すと `42803`（PG は通す。KD-21）。理由: 副問い合わせの木の等価判定が M4 の必要性に見合わない。影響: `BoundQuery` の構造的な等価判定を 03 に足す約 +1 日。
-
-**03 パーサとアナライザ（M4-Q11〜Q27）**
-
-- **M4-Q11 [03-Q1] FULL JOIN の `0A000` はプランナが出す**: 仮決め: アナライザは判定せず、プランナが「ハッシュ可能な等値がない FULL」を `0A000`（PG と同じ文言）。`ON true` の FULL は PG が通すが yuzhu は通さない（KD-2。**→ C-19**）。理由: PG もプランナが出す。影響: アナライザで判定するなら 04 と重複する分類を足す約 +0.5 日。
-- **M4-Q12 [03-Q2] 結合の別名 `Var` は解析時に展開する**: 仮決め: Bound に Join RTE を指す `Var` は現れない。理由: GROUP BY の検査・出力列の由来・04 が単純。影響: 04 が展開する約 +1 日 + 約 +0.5 日。
-- **M4-Q13 [03-Q3] 関数従属は主キーだけ。許された `Var` を `group_by` の末尾に足す**: 仮決め: `pg_depend` には記録しない（UNIQUE NOT NULL は対象外。実測）。理由: 実機の挙動。影響: 足さないなら 05 の `Aggregate` に代表行の保持（約 1 日）。
-- **M4-Q14 [03-Q4] 外側のスコープに属する集約は `0A000`**: M4-Q4 と同じ決定（KD-8）。影響: 約 +2 日。
-- **M4-Q15 [03-Q5] LATERAL は `0A000`。診断は PG と同じ**: 仮決め: 明示はパーサ、関数引数の暗黙の LATERAL はアナライザ。理由: LATERAL は M5〜M6。pgbench のパーティション確認は失敗してよい。影響: 参照を許して 04 が相関パラメータ付き NestedLoop で実行する 3〜4 日（KD-3）。
-- **M4-Q16 [03-Q6] `WITH ... INSERT/UPDATE/DELETE` とデータ変更 CTE は `0A000`**: 仮決め: パーサが拒否。`INSERT ... SELECT` の中の WITH は動く。理由: `BoundUpdate` / `BoundDelete` に `ctes` の欄がない。影響: `ctes` を足し 04・05 に各 1 日（KD-4）。
-- **M4-Q17 [03-Q7] `WITH RECURSIVE` の構文は受理し、再帰参照だけ `0A000`**: 理由: ORM が `RECURSIVE` を付けて非再帰の CTE を送る。影響: 全面的に `0A000` にするなら 0.1 日。
-- **M4-Q18 [03-Q8] 行値は IN / ANY / ALL サブクエリの左辺だけ（M4 後半・任意）**: 理由: 00 §6.2 が `test` の形を決めている。影響: 受理しないなら 0.1 日 + 0.3 日が減る。
-- **M4-Q19 [03-Q9] `ANY` / `ALL` の配列形は `0A000`**: 理由: 配列は M5。psql の `\d tbl` の 2 本が失敗（KD-9・KD-20）。影響: 最小の配列と `ANY(array)` の `Expr` 変種が要る 3 日（00 の変更）。
-- **M4-Q20 [03-Q10] `COLLATE` は `"C"` / `"POSIX"` / `"default"` だけ受理して無視**: 理由: 照合順序は C だけ。psql が `COLLATE pg_catalog.default` を使う。`42P21` は検出しない。影響: 式に collation の欄が要る（M5 以降）。
-- **M4-Q21 [03-Q11] FROM 句の関数は `FnKind::Set`（`generate_series`）だけ**: 理由: `FunctionScan` は集合返却だけ。影響: スカラー関数を 1 行の関数スキャンにする約 0.7 日（KD-24）。
-- **M4-Q22 [03-Q12] `IS DISTINCT FROM` は `0A000` のまま**: 理由: 00 の `ExprKind` に変種がない。影響: `ExprKind::IsDistinctFrom` を足す（式の走査・評価・deparse で各 0.2 日。**M4 後半の任意項目として推奨**。KD-5）。
-- **M4-Q23 [03-Q13] JOIN の別名（`USING ... AS j`、`(t JOIN u ON ..) AS j`）は `0A000`**: 理由: ORM がまれにしか生成しない。影響: 約 0.5 日（余力があれば入れてよい。KD-10）。
-- **M4-Q24 [03-Q14] RETURNING は解析を実装し、`RETURNING_ENABLED` で解禁する**: 仮決め: 解禁は X3 と 04 の対応後。対象表の列だけ（KD-26）。理由: 00 D-26（M4 後半・任意）。影響: FROM の列を許すなら `BoundReturning` を作り直し 04 が入力に載せる 2 日。
-- **M4-Q25 [03-Q15] 全行参照（`count(t)`、`select t from t`）は `0A000`**: 理由: 複合型が要る（M5 以降）。
-- **M4-Q26 [03-Q16] 未対応の集約名は `0A000 aggregate function X is not supported yet`**: 仮決め: `string_agg` `array_agg` `stddev` ほか PG の組み込みで `AGGREGATES` にないもの（KD-7）。理由: `42883` と区別でき、M5 での追加が分かりやすい。
-- **M4-Q27 [03-Q17] エラーの DETAIL / HINT は主要なものだけ**: 仮決め: 近い名前の HINT は出さない。理由: 編集距離の実装が要る。影響: 約 1 日。
-
-**04 プランナとルールベース最適化（M4-Q28〜Q41）**
-
-- **M4-Q28 [04-Q1] `ColId` をパススルーで引き継ぐ**: 仮決め: `Get` → `Project` の単純な参照 → `Aggregate` の group key は同じ `ColId`。計算列だけ新しい ID。理由: 押し下げ・派生表の展開・Semi 化・相関参照が付け替えなしでできる。影響: 「ノードごとに新しい ID」にすると R3 が置換表を持ち回り、L1・L2 の大半に影響。
-- **M4-Q29 [04-Q2] 相関のある `IN` を `EXISTS` の形で結合化する**: 理由: PG 17 も Semi 結合にする（実測）。M4 は LATERAL がないので `EXISTS` の形に直せるものだけ。影響: 変換しないなら分岐を消すだけ（結果は同じ）。
-- **M4-Q30 [04-Q3] 左結合の ON の中の `EXISTS` を引き上げない**: 影響: `try_pull` に右の子を足す約 +0.3 日。
-- **M4-Q31 [04-Q4] 内側 Index Scan の Nested Loop の採否の定数**（`ROWS_PER_BLOCK_EST = 100`、`probe_cost`）: 理由: 統計がないので `nblocks` と述語の個数だけ。影響: 定数だけ（結果は変わらない）。
-- **M4-Q32 [04-Q5] ビルド側は `estimate` の小さいほう、同点は右**: 影響: 定数・規則だけ。
-- **M4-Q33 [04-Q6] ソートの省略は条件つき（M4 後半・任意）**: 仮決め: 述語で選んだ索引の順序で足りるとき、直上が `Limit` のとき、`enable_sort = off` のときだけ。理由: 全索引走査はヒープへのランダムアクセスが増える。影響: 04 §7.4 の (b) の条件。
-- **M4-Q34 [04-Q7] InitPlan / SubPlan の EXPLAIN の位置と番号**: 仮決め: 式を持つノードの下、番号は物理化した順。PG は最上位ノード（KD-25）。影響: `assemble` の置き場所と採番だけ（`onlyif yuzhu` の期待値）。
-- **M4-Q35 [04-Q8] `ExplainNode` に `plan_id`（と `width`）を足し、`PhysicalPlan` と同形にしない**: 仮決め: `Hash` の合成・`Filter` の併合・`Project` の透過。**→ C-1: 名前は `exec_id`（10 に従う）**。影響: 同形にすると EXPLAIN の見た目が PG から少し離れる（`onlyif yuzhu` の期待値だけ）。
-- **M4-Q36 [04-Q9] リテラルのキャストを（Stable でも）計画時に畳む**: 理由: DateStyle・TimeZone・カタログは文の間は固定。影響: M5 の Extended Query でプランをキャッシュするなら設定が変わったときの再計画が要る。
-- **M4-Q37 [04-Q10] プランをキャッシュしない**: M4 は文ごとに計画。M5 で再計画の仕組みを足す。
-- **M4-Q38 [04-Q11] 外側の列を参照する共有 CTE はインライン、揮発性なら `0A000`**: 理由: M4 の executor は `CteScan` の再実行を持たない。影響: 共有を許すなら `CteScan` の作り直しと `uses_params` への CTE の算入。
-- **M4-Q39 [04-Q12] 計画の再帰の深さの上限 `MAX_PLAN_DEPTH = 500`（`54001`）**: 影響: 定数だけ。スタックサイズ（J）と合わせる。
-- **M4-Q40 [04-Q13] 従属列は group key に足す**: 理由: グループ内で一定なので意味が変わらず、追加の集約が要らない（03-Q3 と同じ）。
-- **M4-Q41 [04-Q14] `EXISTS` を `ANY` に直してハッシュ化しない**: 仮決め: 引き上げられない相関 `EXISTS` は `Rescan`。PG は等値の相関ならハッシュ化 SubPlan。影響: `plan_sublink` に変換を足す約 +0.5 日。
-
-**05 実行ノードと DML（M4-Q42〜Q51）**
-
-- **M4-Q42 [05-Q1] メモリの課金は文の終わりまで保持し、`rewindable = false` のノードだけ枯渇で返す**: 理由: 二重計上を避ける複雑な管理を作らず、安全側に数える。影響: 厳密な追跡は `Executor` に `release` を足し全ノード変更（+1 日）。
-- **M4-Q43 [05-Q2] 溜めた結果の再利用判定に `free_params` を使う（00 の `uses_params()` は使わない）**: 理由: `uses_params()` は `SubLink` の `SubPlanDef.params` を見られず、再利用を誤る。**→ C-6**。影響: `uses_params()` を使うなら `SubLink` を含むノードを保守的に「依存」にする（正しさは保たれるが遅い）。
-- **M4-Q44 [05-Q3] 23505 の DETAIL を `dml.rs` が補う**: 仮決め: B+Tree は `23505` と `s` / `t` / `n` だけ（06-Q8 と同じ決定）。理由: `IndexStore::insert` に `TypeEnv` がない。影響: B+Tree が作るなら `IndexStore::insert` に `&TypeEnv` を足す（00 §13.2 の変更）。
-- **M4-Q45 [05-Q4] RETURNING は対象表の列だけ**: 仮決め: FROM / USING の列を参照する RETURNING は `0A000`（KD-26）。影響: RETURNING の式を入力の `Project` に出す形に変える +1 日（02・04・X3）。
-- **M4-Q46 [05-Q5] 相関のある MATERIALIZED CTE を拒否する**: 仮決め: planner が `0A000`。executor は内部エラー（KD-23）。影響: `CteSlot` に世代番号 +1 日。
-- **M4-Q47 [05-Q6] `NestedLoopJoin` の outer は left、inner は right**: 理由: 「出力は左 ++ 右」を NLJ にも適用。影響: INNER の入れ替え用に `outer_is_right` を足す。
-- **M4-Q48 [05-Q7] `HashSetOp` に UNION も実装する**: planner は使わない。影響: 削除してよい。
-- **M4-Q49 [05-Q8] `HashAggregate` の出力はグループの初出順**: 理由: テストが安定する（PG は不定なので PG と比べる slt は `ORDER BY`）。影響: 順序を変えると yuzhu だけの期待値が変わる。
-- **M4-Q50 [05-Q9] 相関のある副問い合わせの結果を、パラメータが前回と同じなら再利用する最適化はしない**: 理由: volatile 関数があると誤る。影響: planner が immutable / stable だけを `SubPlanDef` に持たせれば 1 エントリのキャッシュを足せる +0.5 日。
-- **M4-Q51 [05-Q10] 計測の対応づけのための `ExplainNode.phys_id`**: **→ C-1・C-2: 採用しない（10 の `exec_id` と `set_counters` に統一）**。05 の仮決め: 合成ノードを持つ場合だけ必要。影響: 05 §9 の `BuildOptions.instrument` / `PlanScope` / `NodeKey` / `extra_stats` を 10 の方式に置き換える（X1〜X3 の各ノードが `set_counters` を実装。約 +0.3 日）。
-
-**06 B+Tree（M4-Q52〜Q71）**
-
-- **M4-Q52 [06-Q1] ★ ピボットの境界の向き（左の全項目 < 区切り <= 右の全項目）**: 仮決め: 区切り = 右ページの最初の項目そのもの。PG は逆。理由: 切り詰めない M4 では「TID の最下位を 1 引く」特例が要らず、検査器が単純。M5 の suffix truncation とも矛盾しない。影響: 降下・moveright・検査器を反転。ディスク形式（ピボットの TID の意味）が変わるので実装の前なら半日、後なら initdb のやり直し。
-- **M4-Q53 [06-Q2] ★ 空のインデックスでもルート葉を作る（メタの `root = 1`）**: 仮決め: 00 D-7 のとおり（`init_index` がメタ + 空の葉の 2 ページを `BTREE_PAGES`（`INIT`）で書く）。理由: 挿入の途中でルートを作る分岐と REDO が要らない。影響: 遅延作成にすると `BTREE_PAGES` の理由が 1 つ増え、07 の `EMPTY_INDEX_STATS` が変わる（+0.5 日）。
-- **M4-Q54 [06-Q3] ★ 構造変更は全画像の 1 レコード `BTREE_PAGES`。ブロック数は `3h + 1`、静的な高さの上限は作らない**: 仮決め: 必要なブロック数が 32 を超えたときだけ `54000`。00 §13.4 の `2h + 3` と調査の `3h + 2` は不正確（**→ C-13**）。理由: 未完了の分割という状態がなくクラッシュ試験の分岐が増えない。影響: PG 方式（`INCOMPLETE_SPLIT`）は +M。
-- **M4-Q55 [06-Q4] ★ ピボットの形（切り詰めなし、葉タプル + 8 バイト、TID は末尾の 6 バイト、high key の `block = 0`、-∞ ピボットは 8 バイト）**: 理由: 大きさが `S + 8` と定まり、`BT_MAX_ITEM_SIZE` で「high key + データ 2 件」が保証できる。影響: 切り詰めを入れるのは +3 日（ページ形式は変わらない）。
-- **M4-Q56 [06-Q5] 分割点の規則（バイト数が均等。右端の葉への末尾への追記だけ左を 90% まで詰める）**: 理由: 単純で決定的。影響: `choose_split` だけ（ディスク形式は変わらない）。
-- **M4-Q57 [06-Q6] ★ 一括構築の詰め方（葉を全部作ってから上のレベル、葉 90%・内部 70%、32 枚ずつ `BTREE_PAGES`）**: 理由: 確保が常に末尾への追加で、レコードが連続したブロックになる。影響: nbtsort のように全レベル並行は +1 日（ブロック番号が飛ぶ）。
-- **M4-Q58 [06-Q7] バッファプールへの依頼（`read_tree` / `write_tree` / `extend_tree`）**: 仮決め: M3 の debug 検査（ブロック番号の昇順）を B+Tree には適用しない口を足す（0.3 日）。影響: 昇順に合わせるには分割で全ページを昇順にラッチし直す +1 日。
-- **M4-Q59 [06-Q8] 23505 の DETAIL は B+Tree が付けない**: M4-Q44 と同じ決定。影響: B+Tree が作るなら `UniqueCheck::Check` と `BuildUnique::Yes` に `&TypeEnv` を足す。
-- **M4-Q60 [06-Q9] ★ `datetime_ops` に型をまたぐ行を入れない**: 仮決め: `date` `timestamp` `timestamptz` の同じ型どうしだけ（`pg_amop` が PG より 30 行、`pg_amproc` が 6 行少ない）。理由: 型をまたぐ比較は `TimeZone` に依存し `CmpFn`（純粋）に環境を渡せない。09 がその演算子を作らない。影響: 作るなら 06 に最大 30 行と `CmpFn` の署名変更（+1.5 日。09-Q4 と同時）。
-- **M4-Q61 [06-Q10] `fetch_dirty` / `tuple_state` は「自分以外の実行中のトランザクション」を持たない**: 理由: 単一ライターなので clog が実行中の他者の XID は中断の残骸。影響: M5 で実行中の判定を足す（B+Tree の呼び出し側は変わらない）。
-- **M4-Q62 [06-Q11] 項目を消さないことの影響**: 仮決め: 同じキーの UPDATE を繰り返すと死んだ版の項目が増え続け、一意性検査と等値スキャンが全部をヒープで確かめる。理由: 削除は WAL・スキャンとの連動・ヒントビットが要り M5 の VACUUM と一緒。影響: pgbench の完走はするが TPS が低い。緩和は簡易削除（+2〜3 日）。
-- **M4-Q63 [06-Q12] `BuildStats.levels` はルートの `level`（葉だけの木は 0）**: 理由: 07 の `EMPTY_INDEX_STATS` に合わせる。影響: 表示（`pg_class`）だけ。
-- **M4-Q64 [06-Q13] `pg_opclass` の OID（`bool_ops` 10003 など 10000 番台）**: 仮決め: PG 17.11 の実機の値を写す。テストは名前で結合して比べる。影響: なし（`builtin_hash` が変わるので initdb のやり直し）。
-- **M4-Q65 [06-Q14] ページの破損の SQLSTATE は `XX001`**: 理由: `error.rs` に `XX002` がなく REINDEX もない。影響: `INDEX_CORRUPTED` を足す 0.1 日。
-- **M4-Q66 [06-Q15] CREATE INDEX は全件をメモリに持つ**: 理由: 外部ソートは M6。影響: 上限を設けるなら 07 の `build_from_heap` が `53200` を返す。
-- **M4-Q67 [06-Q16] 分割の原子性を壊す変異用の `DebugKnobs`（任意）**: 理由: 「1 レコードで書く」ことをクラッシュ試験で守る。影響: 作らないなら変異テストの 1 行を省く（B1 +0.3 日）。
-- **M4-Q68 [06-Q17] 一意性検査: 最初の葉の保持と、等値の連続の全件確認**: 理由: M5 の形に合わせつつ M4 は単純に。影響: M5 で右の葉を取ってから最初の葉を外す・`WaitFor` で待つ・簡易削除。
-- **M4-Q69 [06-Q18] 比較は項目を `Datum` に復号してから行う**: 理由: 型ごとの比較規則を `cmp_datum` に一本化（00 §4.3 の 2）。影響: 性能が問題なら整数・text だけバイト列比較を足す。
-- **M4-Q70 [06-Q19] PostgreSQL が圧縮して入る値が `54000` になる**: 理由: M2-Q11（TOAST なし）の帰結。差として許容し、共有テストは圧縮されない値だけ（KD-15）。影響: 圧縮は TOAST と一緒に M5 以降。
-- **M4-Q71 [06-Q20] `default_opclass` にバイナリ互換の解決を含める**: 仮決め: `varchar` → `text_ops`、`regclass` / `regtype` / `regproc` → `oid_ops`。理由: 型と opclass の対応を 1 か所に。影響: 07 の `resolve_opclass` が補うだけ。
-
-**07 カタログと DDL（M4-Q72〜Q89）**
-
-- **M4-Q72 [07-Q1] ★ カタログの追加と行の値**: 仮決め: 9 カタログ（`pg_index` `pg_depend` `pg_sequence` `pg_language` `pg_opfamily` `pg_opclass` `pg_amop` `pg_amproc` `pg_description`（空））。`reltype` は 0。`pg_depend` は §3.6 の表だけ。理由: 00 D-23。M4 に `DROP SCHEMA` と外部キーがない。影響: 名前空間と CHECK の列の依存を足すと書き込みが増える（後から足せる。`CATALOG_VERSION_NO` を上げて initdb）。
-- **M4-Q73 [07-Q2] ★ `int2[]` / `int2vector` のディスク形式**: 仮決め: `Datum::Int2Vector`（varlena + `i16` LE。PG の配列ヘッダなし）。理由: M4 は 1 次元の `int2` 配列だけ。影響: M5 で PG の形式にすると `conkey` / `indkey` の読み直しと initdb。
-- **M4-Q74 [07-Q3] 1 コマンドで同じカタログ行を 2 度更新しない**: 理由: `cid` が文の終わりでしか進まず、同じコマンドで挿入した行は見えない。影響: `command_counter_increment` を DDL の途中で呼べるようにする +0.5 日（M2 / M3 のコマンド ID の不変条件に触る）。
-- **M4-Q75 [07-Q4] 一意索引の構築の重複検出は C1 が行う（`BuildUnique::No`）**: 理由: 死んだ版を索引に入れるので、隣接比較だけの検出は UPDATE した行を誤検出する。影響: `build` に `live: bool` を足す（06 の変更。工数は同じ）。
-- **M4-Q76 [07-Q5] `OWNER TO` を実装する**: 仮決め: 00 D-12 の「何もしない」を変える（ロールを検証し `relowner` を更新）。理由: `\dt` の Owner が誤る。実装は小さい（+0.25 日）。影響: 何もしない（ロールの存在検査だけ）に戻せる。
-- **M4-Q77 [07-Q6] `ANALYZE` はトランザクションブロックの中でも成功する**: 仮決め: 00 D-11 の「両方 `25001`」を変える（実測は `VACUUM` だけ `25001`）。影響: なし（PG と同じにしてあるだけ）。
-- **M4-Q78 [07-Q7] DROP の依存: `pg_depend` の閉包と二重の網**: 影響: 直接のキーだけにすると `DROP TABLE ... CASCADE` の連鎖と M5 の外部キーを後で作り直す。
-- **M4-Q79 [07-Q8] `WITH (...)` の reloptions は `fillfactor`（表・索引）と `deduplicate_items`（索引）だけ**: 仮決め: ほかは `22023`。`fillfactor=50.5` は `22023`（KD-18）。影響: `autovacuum_enabled` などを受け付けて捨てる名前の一覧 +0.1 日（M5 の pg_dump のリストアで必要になる可能性が高い）。
-- **M4-Q80 [07-Q9] `TRUNCATE ... RESTART IDENTITY` のシーケンスの更新はトランザクショナルでない**: 理由: 08 のその場の上書き（M4-Q94 と同じ決定。KD-11）。影響: `SequenceStore::reset` を新しい relfilenode 方式にする（08 +0.5 日）。
-- **M4-Q81 [07-Q10] `ALTER TABLE ... DROP CONSTRAINT` を M4 に入れない**: 仮決め: PRIMARY KEY の索引は `DROP TABLE` でしか消せない。影響: `DROP CONSTRAINT [IF EXISTS] name` は +0.5 日（CHECK の削除は +0.25 日）。
-- **M4-Q82 [07-Q11] `CREATE INDEX CONCURRENTLY` / `DROP INDEX CONCURRENTLY` を通常と同じに動かす**: 理由: ORM のマイグレーションが付けても動く。影響: `0A000` にすると ORM が失敗する。
-- **M4-Q83 [07-Q12] `relhasindex` を `DROP INDEX` で下ろさない**: 理由: PG は VACUUM が下ろす。M4 の VACUUM は何もしない。影響: 下ろすなら PG と違う値が見える（KD-14）。
-- **M4-Q84 [07-Q13] 索引の `relpages` は空でも 2、`reltuples` は構築した件数。表の `relpages` / `reltuples` は更新しない**: 影響: `ANALYZE` が更新する（M5）。
-- **M4-Q85 [07-Q14] 索引・シーケンスの名前を `table()` で引くと `None`**: 仮決め: DML / SELECT で索引を指定したときの `42809 cannot open relation "x"`（実測）を返すのが望ましい（アナライザ側 = N1 の作業）。
-- **M4-Q86 [07-Q15] `name` 型の列の索引の `atttypid` は `name` のまま（PG は `cstring`）**: 影響: `\d` には影響しない（KD-16）。
-- **M4-Q87 [07-Q16] 自動名を実行時に決める**: 仮決め: 00 の `BoundIndexConstraint.name: String` を `Option<String>` にする。理由: 同じ文の中の衝突の解決。影響: 解析時に決めるとアナライザが文内の名前を覚える責任が増える。
-- **M4-Q88 [07-Q17] CHECK の自動名の衝突判定を名前空間の全制約に広げる**: 理由: PG の `ChooseConstraintName`。影響: 同じ表の中だけに戻せる（まれな差）。
-- **M4-Q89 [07-Q18] クラッシュで中断した DDL の孤児ファイルを掃除しない**: 理由: M3 の D15、M3-Q5。影響: 大きな表への CREATE INDEX の途中のクラッシュで数百 MB の孤児ファイル。起動時の掃除は M5。
-
-**08 シーケンスと SERIAL / IDENTITY（M4-Q90〜Q103）**
-
-- **M4-Q90 [08-Q1] ★ シーケンスのページとタプルの形**: 仮決め: PG と同じ構造（special 8 バイト `SEQ_MAGIC = 0x1717`、タプル 1 個 57 バイト、`xmin = Xid::FROZEN`、`t_ctid = (0,1)`）。理由: `SELECT * FROM シーケンス` が通常のヒープ走査で動き、`xmin = 2` と `ctid = (0,1)` も PG と同じ。影響: 形を変えると別の実行ノードが要る（+1 日）。
-- **M4-Q91 [08-Q2] ★ `SEQ_LOG` の形**: 仮決め: ブロック 1 個、`WILL_INIT`、タプル全体、メインデータなし。REDO は無条件に上書き。理由: PG と同じ。REDO が単純で FPW の対象外。影響: 差分レコードにすると REDO が LSN の順序に依存し FPW が要る（+1 日）。
-- **M4-Q92 [08-Q3] ★ SERIAL の DEFAULT の保存形式**: 仮決め: `pg_attrdef.adbin` に `nextval('<oid>'::regclass)`。`pg_get_expr` が名前に戻す。利用者が書いた DEFAULT は M2 のとおり。理由: 名前の変更・検索パスの影響を受けない。影響: すべての DEFAULT を正規形にすると deparse に OID 形式のモード（+0.5 日）。
-- **M4-Q93 [08-Q4] ROLLBACK では flush しない**: 理由: 中断した値は外から見えない前提（PG と同じ保証）。影響: 中断でも `finish_without_xid` 相当で flush する（工数ほぼ 0。I15 が強まる）。
-- **M4-Q94 [08-Q5] `ALTER SEQUENCE` はその場で書き換える（状態はロールバックされない）**: 仮決め: `log_cnt` は常に 0。`TRUNCATE ... RESTART IDENTITY` も同じ（KD-11）。理由: 00 の `reset` と D-9。PG の方式は M5 の表ロックなしでは払い出しが失われうる。影響: 新しい relfilenode 方式（+2 日）は M5 のロックが要る。
-- **M4-Q95 [08-Q6] `TEMPORARY` / `UNLOGGED` シーケンス、`ALTER SEQUENCE RENAME` / `SET SCHEMA` は `0A000`**: 影響: RENAME は +0.25 日（KD-17）。
-- **M4-Q96 [08-Q7] 他のセッションの先取りを全部捨てる（`reset_generation`）**: 影響: シーケンスごとの世代にできる +0.25 日。
-- **M4-Q97 [08-Q8] 払い出した値を覆う WAL の LSN をページの LSN で決める（PostgreSQL の穴を塞ぐ）**: 理由: PG の方式は他トランザクションの未 flush の `SEQ_LOG` に依存した払い出しがクラッシュで重複しうる。影響: 「自分が書いた分」に戻すと PG と同じ穴（層 1 の変異試験が検出する）。
-- **M4-Q98 [08-Q9] ユーザーが書いた DEFAULT の `regclass` は書いたままのテキスト（遅延束縛）**: 理由: M2 の「DEFAULT は SQL テキスト」（Q-006）を変えない。影響: 検索パスを変えると別のシーケンスを引きうる（M4-Q92 の正規形で直る）。
-- **M4-Q99 [08-Q10] 同じ `CREATE TABLE` が作るシーケンスの名前を DEFAULT に書くと `42P01`**: 理由: DEFAULT の解析を `ddl` の途中に移す必要があり価値が低い（KD-22）。影響: +0.5 日（07 の構造に影響）。
-- **M4-Q100 [08-Q11] `pg_get_serial_sequence` は任意（M4 後半）**: 影響: 必須にすると +0.25 日。
-- **M4-Q101 [08-Q12] IDENTITY の `SEQUENCE NAME` は採用、`OWNED BY` / `LOGGED` は `0A000`**: 理由: pg_dump の出力が使うのは `SEQUENCE NAME`。
-- **M4-Q102 [08-Q13] 同じ文の 2 つの暗黙のシーケンスの名前の衝突を避ける**: 理由: PG の上位互換（KD-22）。影響: `taken` を空にすれば PG と同じ。
-- **M4-Q103 [08-Q14] `ALTER SEQUENCE` のあとの `log_cnt` は常に 0**: 理由: PG の方式はクラッシュで払い出した値が戻りうる。影響: `SELECT * FROM s` の `log_cnt` が一致する代わりにその穴を持つ。
-
-**09 型・関数・集約・正規表現（M4-Q104〜Q113）**
-
-- **M4-Q104 [09-Q1] ★ numeric のディスク形式は 00 §12.3 の固定ヘッダ**: 仮決め: `ndigits` `weight` `sign` `dscale` + 桁。PG の short / long ヘッダ形式は採らない（調査との食い違いは 00 を採る）。理由: M2-Q2 でタプルヘッダが PG と違いサイズ互換の意味がない。影響: PG 形式にすると `encode_numeric` / `decode_numeric` の書き直し約 0.5 日と `tuple.rs` のテストの更新。
-- **M4-Q105 [09-Q2] `interval` を M5 に回し、`timestamp - timestamp` を `42883` にする**: 理由: M4 の完了条件が使わず、`interval` の連鎖（`Datum`・比較・ハッシュ・ディスク形式・`IntervalStyle`・演算子・集約）が大きい（KD-1）。影響: 入れるなら約 +3 日（`extract` なども入れて約 +4 日）。
-- **M4-Q106 [09-Q3] 日時リテラルはアナライザでなくプランナの畳み込みで評価する**: 理由: `analyze(stmt, catalog)` の署名に `TypeEnv` がない（署名変更は全担当に波及）。影響: `analyze` に `&TypeEnv` を足すと解析時に評価できる（呼び出しは `session.rs` と `testing.rs` だけ）。
-- **M4-Q107 [09-Q4] 型をまたぐ日時の比較演算子を作らない**: 理由: `BuiltinOperator.func` が純粋関数。影響: `OpFn::{Pure, Env}` を足し 30 行を入れる（`ts_col < now()` が索引で使える。06-Q9 と同時。約 +1.5 日）。
-- **M4-Q108 [09-Q5] 正規表現の後方参照と先読みは `0A000`**: 理由: 後方参照は線形時間で解けない（KD-13）。影響: ステップ数の上限つきバックトラック版の併設約 +2 日。
-- **M4-Q109 [09-Q6] `pg_typeof` は引数を評価しない**: 理由: `BuiltinFn` が型を受け取らない（KD-12）。影響: 約 +0.5 日。
-- **M4-Q110 [09-Q7] DEFAULT の `'now'::timestamp` は毎回評価される**: 理由: 保存時に畳むには deparse した定数を書き戻す必要（Q-006）。影響: 約 +1 日。
-- **M4-Q111 [09-Q8] `TypeEnv.names` で reg* の名前表示を一本化する（00 の P-1）**: 理由: `regclass::text` が出力段以外でも動く必要。影響: 出力段だけだと `regclass::text` が数字になり `\d tbl` と ORM が壊れる。
-- **M4-Q112 [09-Q9] `round(float8)` などの float8 版を入れる**: 理由: `round(2)` が PG では `double precision`。影響: 入れないと numeric を返して PG と型が違う（費用は約 0.3 日）。
-- **M4-Q113 [09-Q10] `timestamp(p)` の p が 7 以上のときの `WARNING` を出さない**: 理由: アナライザに通知の経路がない（KD-12）。影響: アナライザの出力に `warnings` を足す約 0.5 日。
-
-**10 EXPLAIN・deparse・COPY・互換（M4-Q114〜Q126）**
-
-- **M4-Q114 [10-Q1] `ExplainNode` を PostgreSQL の表示用の木にする**: 仮決め: `PhysicalPlan` と同形にせず、`Project` / `Filter` を吸収し `Hash` を足す。計測は `exec_id`（**→ C-1 で全章の基準にする**）。影響: 同形にすると EXPLAIN の期待値の大半を yuzhu 専用にする。
-- **M4-Q115 [10-Q2] ANALYZE の出力を `actual` と `Rows Removed` だけにする**: 理由: `Sort Method` `Buckets` `Memory Usage` は実装依存。影響: 各ノードが追加の計測を持つ約 1〜2 日。
-- **M4-Q116 [10-Q3] `BUFFERS` `WAL` `SETTINGS` `MEMORY` `SERIALIZE` を受け付けて無視する**: 理由: pgAdmin・DBeaver が付ける。影響: `0A000` にするとそれらのツールの EXPLAIN が使えない。
-- **M4-Q117 [10-Q4] `FORMAT JSON` / `XML` / `YAML` を `0A000` にする**: 影響: JSON を足す約 2 日（KD-19）。
-- **M4-Q118 [10-Q5] COPY の失敗の後に即座に `E` と `Z` を返し、後続の `d` `c` `f` を無視する**: 理由: PG と同じ。影響: 「CopyDone まで受信して捨ててから `E`」はデータを送らないクライアントがハングする。
-- **M4-Q119 [10-Q6] `\d tbl` は M4 の完了条件に入れない**: 仮決め: 動くのは索引・CHECK・既定値の表示まで。配列を使う 2 本が M5 まで通らない（KD-20）。影響: 配列の最小実装を M4 に足す約 5 日（09 の範囲）。
-- **M4-Q120 [10-Q7] COPY の CSV・バイナリ・`TO`・`WHERE`・`ON_ERROR` を M5 にする**: 影響: CSV 約 3 日、`TO STDOUT` 約 1〜2 日、`WHERE` 約 0.5 日（KD-19）。
-- **M4-Q121 [10-Q8] `transaction_timeout` を受け付けて保存だけにする**: 仮決め: M3 の「`42704`」を上書き。理由: pg_dump 17 が `SET transaction_timeout = 0` を送る（KD-28）。影響: `42704` のままだと pg_dump 17 と `psql -f` のダンプが通らない。
-- **M4-Q122 [10-Q9] 混合幅の整数演算子の有無で式の表示が変わる**: 仮決め: `int2` / `int4` / `int8` の混合幅の演算子がある前提で `bi > 5` は `(bi > 5)`。**実測: 既存の `builtin.rs` にすでにある（45 行）ので 09 の追加は不要**。影響: なければ `Cast` が入って表示が PG と違う。
-- **M4-Q123 [10-Q10] `pretty`（括弧の最小化）を作る**: 理由: psql の `\d tbl` と SQLAlchemy の reflection が使う。影響: 作らなければ `pretty = true` でも非 pretty の出力（約 1 日の節約）。
-- **M4-Q124 [10-Q11] pgbench のパーティション確認の失敗に頼る**: 仮決め: `CROSS JOIN LATERAL` が `0A000` でも pgbench は続行（偽のサーバで確認）。影響: 将来の版が中止するようになったら LATERAL の最小実装が要る。
-- **M4-Q125 [10-Q12] COPY の 1 行の長さの上限を 64 MiB にする（`54000`）**: 影響: 値を変えるだけ。
-- **M4-Q126 [10-Q13] `tests/slt/m4/psql/` は自分の表に絞った問い合わせ、`tests/compat/psql/` は psql の出力そのもの**: 理由: slt の DB は共有され他のテストの表が残る（M2-Q22）。
-
-### 6.2 この章（11）の確認事項（M4-Q127〜Q141）
-
-- **M4-Q127 [11-Q1] 差分ランダムテストは新しい `yuzhu-fuzz-sql` ではなく既存の `tests/tools/difftest` を仕上げて使う**（D11-6、**→ C-5**）: 仮決め: 00 §4 の `yuzhu-fuzz-sql` は作らない。理由: 約 4,300 行の独立したツールがすでにあり、言語非依存のテストツールは `tests/` に置く（CLAUDE.md）。ただしコミットされた状態はビルドが通らない（実測）。影響: 00 のとおりワークスペースの `yuzhu-fuzz-sql` にするなら `tests/tools/difftest` の移動と `postgres` クレートのワークスペースへの追加（+0.5 日）。difftest を捨てると +約 6 日。
-- **M4-Q128 [11-Q2] 工数の増加（115.5 → 140.3 日）と K の 4 分割**（D11-11）: 仮決め: K を K1〜K4（24 日）、S1 5 日、R2 5 日、L2 6.9 日、C1 8 日、E1 6 日。理由: 各章が書いたテスト・機能の量が 00 の見積りを超えた。影響: 最長経路は変わらない（約 21〜23 日）が、担当を絞ると期間が延びる。
-- **M4-Q129 [11-Q3] slt のディレクトリに `ddl/` `mem/` `z_final/` を足す**（D11-2）: 理由: `consistency.slt` を最後に流す、`onlyif yuzhu` 専用の `mem/` を見落とさない。影響: 00 §18 の一覧に 3 つ足すだけ。
-- **M4-Q130 [11-Q4] 既知の差分の規約**（D11-3）: 仮決め: `# KNOWN-DIFF: KD-<n>` を必須とし、`KNOWN-DIFFS.md`（初期 29 項目）と lint で管理する。理由: M4 は既知の差が多く、`skipif` の外し忘れを防ぐ。影響: 規約をやめると `skipif yuzhu` が増え続ける。
-- **M4-Q131 [11-Q5] `plan_variants` はテンプレートから 2 段階で生成し、生成物をコミットする**（D11-4）: 理由: 同じ問い合わせ群を 10 通りの設定で流すので手書きは保守できない。期待値は PostgreSQL で 1 回だけ作る。影響: 手書きにすると保守が破綻する。実行時に生成するとランナーに依存する。
-- **M4-Q132 [11-Q6] 再起動シナリオの `mode` ファイルと `NN-*.mode`、`tests/run.sh` の拡張**（D11-5、**→ C-9**）: 理由: 08 のシーケンスは正常停止とクラッシュで期待値が違い、`seq-mixed-restart` は 1 つのシナリオの中で停止の方法が変わる。影響: ディレクトリを `restart` / `crash` で分けるだけにすると mixed が書けない。
-- **M4-Q133 [11-Q7] PostgreSQL 回帰テストの取り込みは `tests/imported/pg_regress/`（`tests/slt` の外）に生成し、夜間だけ流して合否にしない**（D11-7）: 理由: 数千文で毎回の CI が遅くなる。取り込みは一致した文だけを機械的に選ぶ。影響: 合否にすると PostgreSQL の挙動の細部への追従で M4 が終わらない。
-- **M4-Q134 [11-Q8] クラッシュ試験にワークロード 8（DDL）と不変条件 I16（カタログの整合）、`LossyIndexStore` の変異を足す**（D11-8）: 理由: 07 の依頼。どの不変条件にも検出する変異が最低 1 つある状態にする。影響: 足さないと DDL の WAL の抜けを層 1 が検出しない。
-- **M4-Q135 [11-Q9] CI のゲート: pg 側は常に必須、yuzhu 側はフェーズ 4 の開始から必須**（D11-9）: 理由: 実装前に yuzhu 側を必須にすると毎回赤くなる。影響: 早く必須にすると PR が通らない期間ができる。
-- **M4-Q136 [11-Q10] 環境: tzdata を 3 か所に明示、psql / pgbench は 17 系、Python を使わず Rust のツール**（D11-10、D11-13）: 理由: 実行用 `Dockerfile` に tzdata がない、sandbox に `python3` と `uv` がない（実測）。影響: `sandbox/Dockerfile` に `python3` を足せば 09 の `.py` のままでよい（イメージの再ビルドが要る）。
-- **M4-Q137 [11-Q11] compat テストは `postgres` データベースの `public` だけで動かす**（**→ C-12**、KD-29）: 理由: `CREATE DATABASE` / `CREATE SCHEMA` は M5。10 §7.4 の `createdb` と「複数スキーマ」は動かない。影響: M5 で `createdb` を使う構成に戻せる。
-- **M4-Q138 [11-Q12] isolation の 2 本と `pgbench/crash.sh` を足す**（D11-14、D11-15）: 理由: 読み手が書き手を待たないこと・シーケンスが戻らないこと・実プロセスの `kill -9` で pgbench の不変条件（原子性）が保たれること。影響: 足さなくても完了条件は満たせるが、索引・シーケンスの結合の検証が薄くなる。
-- **M4-Q139 [11-Q13] M4 の完了条件は §1.3 の 9 項目（01 が未読）**: 仮決め: 機械的に判定できる形。理由: 00 の D-24・D-25 と各章の範囲から組み立てた。影響: 01 が違う条件を定めたら 01 に従う。
-- **M4-Q140 [11-Q14] 担当不在だった作業の割り当て**（§7.3 の G-1〜G-4）: 仮決め: CREATE INDEX / DROP INDEX / TRUNCATE / VACUUM / ALTER TABLE の解析（`analyzer/ddl_index.rs`）は C1 に +1.0 日、`nextval` 系の関数の行は Q1、`pg_get_*` の関数の行は E1、`\dt+` 用の関数は T3（任意）。理由: どの章も担当を書いていなかった。影響: 別の担当に移すと日数が移る。
-- **M4-Q141 [11-Q15] 章間の食い違いの決め方と、その結果（C-1〜C-20）**（D11-1）: 仮決め: 実機 > 実装の持ち主の章 > ディスク形式の定義の持ち主 > 横断契約（00・02）> 00。理由: 実装者が迷わない。影響: 決定を変えたい食い違いは §7.1 の「変えたい場合」に書いた。
-
-### 6.3 QUESTIONS.md への転記の依頼と、01 章の項目
-
-**転記の依頼**: この章は `QUESTIONS.md` を編集しない（書くのは `spec/design/m4/` 配下の 1 ファイルだけ）。統合時に、次を `QUESTIONS.md` の末尾に**「M4 の設計で仮決めしたこと（`spec/design/m4/`）」**として転記してください。
-
-1. §6.1 と §6.2 の項目を `M4-Q1`〜`M4-Q141` の ID のまま、各 3 点（仮決め・理由・変えたい場合の影響）で。ディスク形式に関わる ★（**M4-Q52・Q53・Q54・Q55・Q57・Q60・Q72・Q73・Q90・Q91・Q92・Q104** の 12 件）は先頭にまとめ、「実装の前に決めるのが望ましい」と添える。
-2. 先頭に次の要約を置く（ユーザーが最初に見るもの）: (a) M4 の設計は 11 章（`spec/design/m4/00`〜`11`）。M4 は Q-010〜Q-014 を含む。Q-010（64 ビット XID）は M2 で実現済みで M4 の作業なし、Q-011（numeric）は D-3、Q-012（COPY・char(n)・timestamp）は D-4〜D-6 と D-25、Q-013（作り直し）は D-1・D-2、Q-014（MultiXact の簡易版）は M5。(b) 工数は約 140 日（00 の見積りより増加。最長経路は約 21〜23 日）。(c) 00 を変える提案が 102 件（各章 92 件 + この章 10 件）あり、§7.4 と §9 の表のとおり採否を決めた。(d) 章の間の食い違い 20 件を §7.1 で決めた。
-3. 既存の項目への注記: M2-Q8（psql の `\dt` は M4）→ M4 で `\dt` `\dn` `\di` `\l` を完了条件に（D-24）。M3 の「`transaction_timeout` は `42704`」（`m3.md` §1.2）→ M4-Q121 で上書き。M2-Q9（`pg_get_expr` の正規形）→ D-21 で解決。M2-Q22（slt の後始末）→ `slttools lint` と `z_final/no_leftovers.slt` で解決。
-
-**01 章の項目**: `01-scope-decisions.md` は執筆時点で読めなかった。01 に確認事項があれば、`[01-Qn]` のまま **M4-Q142 以降**に同じ形式で追加する（番号が既存の項目に影響しないよう末尾にした）。
+`QUESTIONS.md` への転記の依頼は 99 §6。この章は `QUESTIONS.md` を編集しない（書くのは `spec/design/m4/` 配下の Markdown だけ）。
 
 ---
 
 ## 7. 整合性レビュー
 
-01 を除く全章（00、02〜10）を突き合わせた結果。**決め方は D11-1**（実機 > 実装の持ち主の章 > ディスク形式の定義の持ち主 > 横断契約（00・02）> 00）。00 は直さず、決定を「00 への変更提案の採否」（§7.4）と「各章を直す箇所」として残す。**この節で決めたことが各章の本文と食い違う場合は、この節が正**（実装者は該当の章の本文を、ここで決めた形に読み替える）。
+01 を除く全章（00、02〜10）を突き合わせた結果（01 は後から作成。レビュー対応 R-01。01 の内容はこの節と矛盾しない）。**この節の書いた時点では 00 を直さなかったが、レビュー対応 R-02 で、主要な決定（C-1・C-3・C-5・C-6・C-11・C-13・C-14・C-16・C-18・C-23・C-24・C-27・C-29・C-30）と §7.4 の採否は 00 の本文に直接反映した**（00 §1.4 の一覧）。反映していないものは、引き続き**この節が正**（実装者は 00 の該当箇所を読み替える）。**決め方は D11-1**（実機 > 実装の持ち主の章 > ディスク形式の定義の持ち主 > 横断契約（00・02）> 00）。00 は直さず、決定を「00 への変更提案の採否」（§7.4）と「各章を直す箇所」として残す。**この節で決めたことが各章の本文と食い違う場合は、この節が正**（実装者は該当の章の本文を、ここで決めた形に読み替える）。
 
-### 7.1 章をまたぐ矛盾と決定（C-1〜C-20）
+### 7.1 章をまたぐ矛盾と決定（C-1〜C-30。C-21〜C-30 はレビュー対応で追加）
 
 **C-1 `ExplainNode` の形と名前（00 / 02 / 04 / 05 / 10）**
 - 食い違い: 00 §9.3 は「`PhysicalPlan` と同形・同じ子の順序」。02 §3.6.5 は「`children` の先頭 n 個が `plan.children()` と 1 対 1。`Hash` は `format.rs` が合成」。04（00 への提案 1）は「同形でない。`plan_id: Option<u32>` と `width`」。05（05-P4）は「`phys_id: Option<u32>`」。10（D10-1、10-P1）は「表示用の木。`exec_id: usize` と `width: u32`、`details: Vec<ExplainDetail>`、合成ノード（`Hash`、`Append`、`Subquery Scan`）は木に入れ、計測値は `exec_id` で借りる」。
@@ -1244,14 +1063,14 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 **C-2 EXPLAIN ANALYZE の計測の仕組みと通し番号（02 / 05 / 10）**
 - 食い違い: 05 §9 は `BuildOptions.instrument: Option<Arc<InstrumentSink>>`、`instrument::wrap(inner, key)`、`NodeKey { scope: PlanScope, index }`（スコープごとの番号）、`Executor::extra_stats()`。10 §3.10 は `Instrumentation` + `NodeCounters`、`Executor::set_counters(id, &Rc<Instrumentation>)`、`ExecCtx.instr`、`executor::build_instrumented`、**全体で 1 つの `exec_id`**（根、`subplans` の昇順、`ctes` の昇順）。02 §3.6.4 の通し番号は 10 と同じ（先行順、根 → サブプラン → CTE）。05 は `PlanScope` を「10 が定義する」と書いたが 10 には定義がない。
-- **決定: 10 の方式に統一する**。`Executor::set_counters`（既定は何もしない）、`ExecCtx.instr: Option<Rc<Instrumentation>>`、`Instrumented`、全体の `exec_id`（`planner::physical::assign_exec_ids`。L2 と executor が共有）。05 の `BuildOptions` / `PlanScope` / `NodeKey` / `extra_stats` / 05-P2 / 05-P4 は採らない。各ノードの `Rows Removed by ...` は 10 のとおり、`Filter`・`SeqScan`・`IndexScan`・`NestedLoopJoin`・`NestedLoopParam`・`HashJoin` が `set_counters` を実装して `instr.add_removed` を呼ぶ（X1〜X3 の各ノード +約 0.3 日）。`Sort Space Used` は出さない（10-D10-6）。`build_scoped`（05 §3.2）は 1 つの構築関数のまま、`instr` を `BuildEnv` が持つ。
+- **決定: 10 の方式に統一する**。`Executor::set_counters`（既定は何もしない）、`ExecCtx.instr: Option<Rc<Instrumentation>>`、`Instrumented`、全体の `exec_id`（`planner::physical::assign_exec_ids`。L2 と executor が共有）。05 の `BuildOptions` / `PlanScope` / `NodeKey` / `extra_stats` / 05-P2 / 05-P4 は採らない。各ノードの `Rows Removed by ...` は 10 のとおり、`Filter`・`SeqScan`・`IndexScan`・`NestedLoopJoin`・`NestedLoopParam`・`HashJoin` が `set_counters` を実装して `instr.add_removed` を呼ぶ。**担当と日数（レビュー対応 R-28。以前は「X1〜X3 の各ノード +約 0.3 日」で `Filter` と `SeqScan` の持ち主がなかった）**: `Filter`・`SeqScan` は P0 が置く既存ノードなので **P0-c が実装（+0.1 日）**、`NestedLoopJoin`・`NestedLoopParam`・`HashJoin` は **X1（+0.3 日）**、`IndexScan` は **X3（+0.1 日）**。合計 +0.5 日を §4.1 の確定表に入れた（P0 5.1、X1 5.3、X3 4.1。総計 141.8 日）。05 章の旧方式（`BuildOptions` / `PlanScope` / `NodeKey` / `extra_stats`）は 05 §3.1・§3.2・§9・§14 から**削除済み**。`Sort Space Used` は出さない（10-D10-6）。`build_scoped`（05 §3.2）は 1 つの構築関数のまま、`instr` を `BuildEnv` が持つ。
 - 直す章: 05 §3.1・§3.2・§9・§14。10 は変更なし。
 - 変えたい場合: 05 の方式（スコープごとの番号）に統一すると 10 の `Instrumentation` が `Vec<Vec<NodeCounters>>` になり、`ExplainNode` がスコープを持つ。
 
-**C-3 `levels_up` の数え方（02 / 03 / 04）**
+**C-3 `levels_up` の数え方（02 / 03 / 04）**（レビュー対応 R-04 で 04 の `BoundSetExpr::Values` の扱いを直した）
 - 食い違い: 02-D1 は「1 つの `BoundQuery`（本体が Values / SetOp でも）が 1 レベル。集合演算の腕・CTE 本体・導出表・副問い合わせ式はそれぞれ入れ子の `BoundQuery`」。03-D3-20 は「rtable を持つスコープ（`BoundSelect`、DML、Values の行）の入れ子だけを数え、`BoundQuery` は数えない（集合演算の腕・CTE 本体は兄弟）。`CteRef.levels_up` は `BoundQuery` を数える」。04 §4.1 は「`BoundSelect` の入れ子の深さ（導出表の `BoundQuery` も 1 段。副問い合わせの query も 1 段）」。
-- **決定: 03 の D3-20 に統一する**（03 が生成し 04 が消費する。2 章が一致している）。02 の §3.4.2 と `BoundQuery::validate` の B1、00 §6.1 のコメントを 03 の定義に書き直す（02-Q9 の影響の見積りは 02 の書き直しのみ）。**集合演算の腕から外側の列を参照するケース**が両者で違う値になるので、`subquery/correlated.slt`（§3.2.2）と差分ランダムテストの相関副問い合わせ（§3.7.3）が確かめる。
-- 直す章: 00 §6.1、02 §3.4.2・§6.1（B1）・§10-1。
+- **決定: 03 の D3-20 に統一する**（03 が生成し 04 が消費する）。**ただし 2 章は一致していなかった**（レビュー対応 R-04）: 03 §3.2.1・D3-20 は「`BoundSetExpr::Values` の行は rtable が空の 1 スコープ（`select (values (t.a)) from t` の `t.a` は `levels_up = 1`）」を求めるが、04 の §4.1・§5.6 は Values でスコープを積まなかった。**04 §4.1 の前提の行と §5.6 の Values の処理を直した**（積む）。修正担当は L1。02 の §3.4.2 と `BoundQuery::validate` の B1、00 §6.1 のコメントを 03 の定義に書き直す（02-Q9 の影響の見積りは 02 の書き直しのみ）。**集合演算の腕から外側の列を参照するケース**が両者で違う値になるので、`subquery/correlated.slt`（§3.2.2）と差分ランダムテストの相関副問い合わせ（§3.7.3）が確かめる。
+- 直す章: 00 §6.1、02 §3.4.2・§6.1（B1）・§10-1、**04 §4.1・§5.6（R-04。反映済み）**。
 - 変えたい場合: 02 に揃えると 03（N3）と 04 の `scopes` の積み方を直す（約 +0.5 日）。
 
 **C-4 `min` / `max` の値が等しいときの代表（05 / 09）**
@@ -1320,6 +1139,29 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 **C-20 `analyze_query` の持ち主（03 の N2 / N3）**: 03 §7 は N2 に `select.rs`、N3 に「`analyze_query` の統合 0.5 日」を割り当てたが、`analyze_query` は `select.rs` にある。**決定**: `analyze_query` の骨格（WITH・集合演算・Values・Nested の振り分け）は P0-d が置き、N3 は `setop.rs` / `cte.rs` / `sublink.rs` の中だけを書く。N3 の 0.5 日は分岐の動作確認。`select.rs` は N2 だけが編集する（§4.2）。
 
+**C-21 InitPlan と SubPlan の ExplainNode 上の置き場所（04 / 10）**（レビュー対応 R-06）
+- 食い違い: 04 §2.2・§8・04-Q7 は「InitPlan を式を持つノードの下」、10 §3.4 の 5・§3.11 の 8・§14.2 は「その問い合わせ階層の根の `ExplainNode`」。C-1 は `ExplainNode` の形だけを決めていた。
+- **決定: 10 に従う（PostgreSQL と同じ）**。InitPlan は、そのメモを持つノードが属する問い合わせ階層（主問い合わせ・各 CTE の本体・各 SubPlan の本体）の根の子（普通の子の前）。SubPlan は式を表示したノードの子（普通の子の後）。`assemble` は木ごとに呼ぶので階層の根を知っている（10 §14.2 の依頼は満たされる）。04 §2.2・§8.2・04-Q7 を直した。
+- 変えたい場合: 式を持つノードの下に付ける方式に戻すと `onlyif yuzhu` の期待値が増える。
+
+**C-22 外側の列を参照する CTE（02 / 04 / 05）**（R-05）: 04-D4 は「共有が要る相関 CTE は常にインライン（揮発性だけ `0A000`）」、02 P8・05 D5-20・M4-Q5・Q46・KD-23 は「`MATERIALIZED` でも `0A000`」。**決定: 共有に意味がある場合だけ `0A000`（`MATERIALIZED` の明示、揮発性）。それ以外（`Default` で参照が複数、非揮発）はインライン**。04 の `decide` を直し、02・05 の文言を合わせた。
+
+**C-23 DISTINCT ON の Sort keys と `Unique`（00 / 03 / 04）**（R-03）: 03 §3.2.4 は `order ++ 未出の ON の式` を求めるが、04 §5.5 は「order、空なら ON の式」で、04 §7.6.2 は「Sort の keys が ON の式で始まらなければ `Error::internal`」。00 §9.2 の `Unique` のコメントは存在しない `prefix_len` と「Project で先頭に出す」を前提にしていた。**決定: 03 に従う**。04 §5.5 の keys を `order ++ positions[k..]`、§7.6.2 の検査を「先頭 `positions.len()` 個の key の集合が ON の式の集合と一致」に直し、00 §9.2 の `Unique` を `key_cols`（入力の列位置。順不同。Project を挟まない）に直した。`distinct on (a, b) ... order by a` が内部エラー・誤結果にならない。
+
+**C-24 結合の出力の並びと内側 Index Scan の入れ替え（00 / 02 / 04 / 05）**（R-14）: 04 §7.1・§7.5.3 は INNER の入れ替えで出力が右 ++ 左になりうるとし補正を書かない。00 §9.2・05 D5-8・02 §3.6.1 は「outer は論理 left で固定。入れ替えるなら planner が Project で並べ直す」。**決定: 00・05 に従う**。入れ替えるときは `NestedLoopParam` の上に左 ++ 右へ戻す `Project` を必ず置き、`Phys.layout` は常に左 ++ 右。EXPLAIN では Project は透過。
+
+**C-25 USING / NATURAL の併合列（02 / 03）**（R-12）: 02 §3.4.3 は INNER を常に `Left(j)`、03 §3.2.2 は PostgreSQL の `buildMergedJoinVar`（非キャストの側を選ぶ）。**決定: 03（実機）**。02 の表を直した（`t(a int2) JOIN u(a int4) USING (a)` は `Right(0)`）。
+
+**C-26 ハッシュ化 SubPlan の NULL（02 / 05）**（R-13）: 05 D5-7・§4.2.5 は存在しない「00 の簡約」を参照し、02-D17・§3.7.3 は「NULL を含むときは `test` を行ごとに評価する」別の機構と `HashedSet`。**決定: 05（C-10 の `SubPlanStates`）。`HashedSubPlan { set, null_rows, full_rows }` の正確な三値論理が正本**。02-D17・§3.7.3 を読み替えの注記に直し、05 の「00 の簡約」の記述を訂正した。
+
+**C-27 `check_interrupts` の位置（00 / 02 / 05）**（R-11）: 02 §3.7.4 の規則 2 は「子の `next` を呼ぶループは葉が検査するのでループ側は呼ばなくてよい」、00 §4.3 の 4 と 05 §5.0 の (b) は「入力を 1 行読むたびに」。**決定: 00・05 に従う**（`Materialize` の読み直しや `Values` / `Result` 上のループなど、葉に届かない経路があるため）。02 §3.7.4 の規則 2 を直し、X1〜X3 は 05 に従う。
+
+**C-28 シーケンス連携の API と命名・依存関係（07 / 08）**（R-07、R-08、R-09）: 07 が 08 に求める `create_sequence_for_table` / `restart_to_start`、08 が C1 に求める `drop_sequence` / `drop_default` / `ddl/depend.rs` の API / 独自の `NewSequence`、08 の `analyzer/ddl.rs` の `choose_relation_name` は互いの章に存在しなかった。**決定**: (1) **シーケンスの作成は 08 の `ddl::sequence::create_with_oid(ctx, &BoundCreateSequence, oid, Option<(Oid, i16)>)`**（OID は 07 §5.1 の手順 4b で先に採る。名前は解析時に決まる）、TRUNCATE は `restart_owned_by_table`。(2) **依存関係と DROP は 07 の `catalog/depend.rs`（`ObjectAddress` / `NewDepend` / `DependType` / `plan_drop` / `drop_objects`）と `CatalogStore`**。08 の `ddl/depend.rs` は作らず、`NewSequence` は 07 の定義（`owned_by_deptype` つき）、C1 に足すのは `update_sequence_params` だけ。(3) **命名は `catalog/naming.rs`（C1）の 1 つ**。08 は `analyzer/ddl.rs` から呼ぶだけ。`analyzer/ddl.rs` の持ち主は Q1（N1〜N3 ではない）で、07 からの依頼分 +0.5 日を Q1 に足した。
+
+**C-29 `copy_in_response` の列形式の型（00 / 10）**（R-15）: 00 §14.5 の `column_formats: &[u8]` と 10 §5.2 の `Vec<i16>` が不一致。**決定: `&[i16]`（シンク）と `Vec<i16>`（メッセージ）**。00 と 10 を直した。
+
+**C-30 依存の向きの例外（00 / 04 / 10）**（R-30）: 00 §4.1 は「下位は上位を `use` しない」とするが、`planner::rules::const_fold` → `executor::eval::eval_const`（04-3。§7.4 で例外として採用済み）と、`deparse::stored` → `analyzer`（10 §4.8 の `pg_get_expr` が parse → analyze → deparse する）が破る。**決定: 2 つだけを 00 §4.1 の例外として明記**（`deparse::stored` は `analyzer` より後ろの段に置く。`deparse` の他の部分は `expr` と `catalog` だけに依存）。
+
 ### 7.2 署名・名前・OID・SQLSTATE の確認
 
 **SQLSTATE（`error.rs` の `sqlstate` に追加するもの。11 個。D11-12）**: 00 §15.3 の 6 個と、他章が足した 5 個。重複して足さない（既存の `INVALID_ROW_COUNT_IN_LIMIT_CLAUSE` `2201W`、`INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE` `2201X` などは `error.rs` に既にある）。
@@ -1358,7 +1200,7 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 ### 7.4 各章の「00 への変更提案」の採否
 
-**採否の記号**: ○ = 採用、△ = 条件つき・修正して採用、× = 採用しない（理由と代替を書く）。同じ内容の提案は 1 行にまとめた。**00 は直さない**（この表を統合時に反映する）。
+**採否の記号**: ○ = 採用、△ = 条件つき・修正して採用、× = 採用しない（理由と代替を書く）。同じ内容の提案は 1 行にまとめた。**00 への反映状況**: 主要なものは 00 に反映済み（00 §1.4）。反映していないものはこの表が正（レビュー対応 R-02）。
 
 **02**（14 件）
 
@@ -1517,7 +1359,7 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 
 ## 9. 00 への変更提案（この章の分）
 
-**00 は直さず**、統合時に反映してもらう。署名と名前は変えず、足す・明確にするだけ。
+統合時に反映する（P11-1〜P11-6 などは、レビュー対応 R-02 で 00 に反映済み。00 §1.4）。署名と名前は変えず、足す・明確にするだけ。
 
 | # | 場所 | 提案 | 理由 |
 |---|---|---|---|
@@ -1528,6 +1370,6 @@ M3 までのジョブ（`rust` `slt-pg` `slt-yuzhu` `docker` `restart-pg` `resta
 | P11-5 | §18（crash_sim） | ワークロード 8（DDL）、不変条件 I16（カタログの整合）、`LossyIndexStore` の変異、ワークロードごとの `shared_buffers`（6 は 24）、CI の時間の目安 | D11-8、06-11 |
 | P11-6 | §15.3 | SQLSTATE の追加を §7.2 の 11 個に（00 の 6 個 + `22007` `22008` `22009` `54001` `42939`） | 09-P2、04-9、07-10 |
 | P11-7 | §13・`debug_knobs.rs` | `DebugKnobs` に `btree_split_in_two_records`（任意）、`seq_ignore_foreign_wal`、`seq_redo_skip_if_page_newer`、`seq_no_force_log` | 06-10、08 |
-| P11-8 | §2（決定の一覧） | 章間の食い違いの決め方（D11-1）と C-1〜C-20 の結果を、各章の本文の読み替えとして「§2 の末尾」に注記する | D11-1 |
+| P11-8 | §2（決定の一覧） | 章間の食い違いの決め方（D11-1）と C-1〜C-30 の結果を（レビュー対応 R-02 で 00 の本文に主要なものを直接反映した。§0 の 00 §1.4 に一覧）、各章の本文の読み替えとして「§2 の末尾」に注記する | D11-1 |
 | P11-9 | §3（範囲）の後 | 新しい節「M4 の完了の判定」として §1.3 の 9 項目を追加（01 が定める場合は 01 を優先） | §1.3 |
 | P11-10 | §20 | 00 から変えた点は `spec/design/m4-changes.md` に記録する運用。この章の §7.4 で「△」「×」とした提案（02-1、02-8〜10、04-1、04-3、05-P2、05-P4、05-P5、08-8、10-4 ほか）は、各章の本文も読み替えが要る点として記録する | 00 §20 |

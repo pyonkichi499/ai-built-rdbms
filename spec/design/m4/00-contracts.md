@@ -1,6 +1,8 @@
 # yuzhu M4 契約（00-contracts）
 
-M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 12 個のファイル（この文書と 01〜11 章）に分けて並列に書かれ、並列に実装されます。章をまたぐ名前・型・トレイト・定数・モジュール構成・OID・SQLSTATE・ディスク形式は、**この文書に書いたものが唯一の正**です。各章はこの文書に従い、足りないものは追加してよいが、ここにある署名と名前は変えません（変えたい場合は各章末尾の「00 への変更提案」に理由とともに書き、統合時に反映する）。
+M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 14 個のファイル（この文書と 01〜11 章、98 レビュー対応、99 確認事項、README の索引）に分けて並列に書かれ、並列に実装されます。章をまたぐ名前・型・トレイト・定数・モジュール構成・OID・SQLSTATE・ディスク形式は、**この文書に書いたものが唯一の正**です。各章はこの文書に従い、足りないものは追加してよいが、ここにある署名と名前は変えません（変えたい場合は各章末尾の「00 への変更提案」に理由とともに書き、統合時に反映する）。
+
+**統合版であること（レビュー対応 R-02）**: 各章の実機調査で 00 の初版から変える必要が生じたものは、`11-tests-plan.md` §7 の C-1〜C-20 と §7.4 の採否表で決めた。**この文書は、それらを反映した統合版**に直してある（§1.4 に反映の一覧）。反映の対象は、`yuzhu-fuzz-sql` の廃止、`ExplainNode`（表示用の木）、`levels_up` の数え方、B+Tree の構造変更のブロック数、VACUUM / ANALYZE・OWNER TO、DISTINCT ON の `Unique`、`copy_in_response` の型、`Cast.implicit` と `CastMethod::Env`、`Settings::type_env` の署名、担当表の確定版、依存の向きの例外。**それでも本文が食い違うときの優先順位は 11 §2 の D11-1（実機 > 実装の持ち主の章 > ディスク形式の定義の持ち主 > 横断契約（00・02）> 00）に従う**。M4 の範囲と完了条件は `01-scope-decisions.md` が正。
 
 - 要件定義: <https://claude.ai/code/artifact/9381e901-9f2a-49a4-9bb2-479295dde6e2>
 - 前提（必読）: `spec/design/m1.md`、`m1-changes.md`、`m2.md`、`m2-changes.md`、`m3.md`（M2 と M3 は**実装が進行中**。この文書は M3 の設計どおりに完成した状態を前提にする）、`QUESTIONS.md`、`PROGRESS.md`
@@ -26,7 +28,10 @@ M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 12 個�
 | `08-sequence-serial.md` | シーケンス、SERIAL、IDENTITY | Q1 |
 | `09-types-functions.md` | numeric・日時・char(n)・regclass などの統合、正規表現、集約関数の表、関数 | T1、T2、T3 |
 | `10-explain-copy-compat.md` | EXPLAIN と deparse、COPY FROM STDIN、psql の `\dt`、pgbench、互換テスト | E1、O1、J、S |
-| `11-tests-plan.md` | テスト全体、実装の分担と工数、未検証の点、確認事項（全章の集約） | K、Z |
+| `11-tests-plan.md` | テスト全体、実装の分担と工数、未検証の点、整合性レビュー（C-1〜C-30）、M5 への宿題 | K、Z |
+| `98-review-response.md` | レビュー対応（指摘の実在確認、反映先、一部反映の理由） | — |
+| `99-questions.md` | 確認事項の集約（仮決めの一覧。M4-Q1〜Q158） | — |
+| `README.md` | 索引（章の一覧、読む順、実装の分担と工数の要約） | — |
 
 ### 1.2 書き方の規則（全章共通）
 
@@ -53,6 +58,32 @@ M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 12 個�
 | ライターロック | M2 の単一ライターロック（書き込むトランザクションは同時に 1 つ） |
 | 担当 | 並列実装の区切り（§17）。章の書き手ではなく、実装者の単位 |
 
+### 1.4 統合版への反映の一覧（レビュー対応 R-02）
+
+11 §7 の決定を 00 の本文に直接反映した箇所。**ここに載っていない C-n と、11 §7.4 で「△」「×」とした提案は、11 の記述が正**（実装者は 00 の該当箇所を読み替える）。
+
+| 決定 | 00 の反映箇所 |
+|---|---|
+| C-1（`ExplainNode` は表示用の木、`exec_id`・`width`） | §4 の `explain_tree.rs`、§9.3 |
+| C-3（`levels_up` はスコープ単位） | §6.1 の `Var.levels_up` |
+| C-5（`yuzhu-fuzz-sql` を作らない） | §4 の構成図・§4.2・§17 の Z・§18 |
+| C-6（`free_params`。`uses_params()` は残す） | §4.3 の 5 |
+| C-13（`3h + 1`） | §13.4 |
+| C-14（`Cast.implicit`、`CastMethod::Env`） | §6.2 の `Cast` |
+| C-16（`ANALYZE` はブロック内で成功、`OWNER TO` はロールを検証） | §2 の D-11・D-12 |
+| C-18（`Settings::type_env` の署名） | §14.2 |
+| C-23（DISTINCT ON の `Unique`） | §9.2 の `Unique` |
+| C-24（結合の出力の並びと INL の入れ替え） | §9.2 の `NestedLoopJoin` のコメント |
+| C-27（`check_interrupts` は入力 1 行ごと） | §4.3 の 4 |
+| C-29（`copy_in_response` の列形式は `i16`） | §14.5 |
+| C-30（依存の向きの例外 2 か所） | §4.1 |
+| 11 §4.1（担当表の確定、追加ファイルの持ち主） | §4 の新しいファイル、§17、§18 |
+| 11 の D11-2・D11-5・D11-8（slt のディレクトリ、restart の mode、ワークロード 8・I16） | §18 |
+| 01（範囲・決定・完了条件・保証） | §2、§3、§17 の最後の注 |
+
+**未反映（11 を正とする）**: C-2（計測の仕組み。05 の旧方式は 05 から削除済みで、00 の `Executor` に `set_counters` と `ExecCtx.instr` を足す 10 の提案が正）、C-4（`min` / `max` の等しいときの代表）、C-7〜C-10、C-12、C-15、C-17、C-19〜C-22、C-25、C-26、C-28、署名の細部（`HashKey`・`AggKind` ほか）。
+
+
 ---
 
 ## 2. 決定の一覧
@@ -71,8 +102,8 @@ M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 12 個�
 | D-8 | PRIMARY KEY / UNIQUE は「一意インデックス + `pg_constraint`」。検査は行ごとに即時。一意性検査の API は他トランザクションの待ち（`WaitFor`）を返せる形にするが、M4 では起きない | — |
 | D-9 | シーケンスは relkind `S` の 1 ページのリレーション。MVCC を使わずその場で上書き。WAL は `SEQ` rmgr、`SEQ_LOG_VALS = 32`。コミット時の WAL flush は `Transaction.wal_flush_upto` で行う | — |
 | D-10 | SERIAL / IDENTITY は解析段階で「シーケンス + DEFAULT + NOT NULL + 所有関係」に書き換える | — |
-| D-11 | `TRUNCATE` は新しい relfilenode を作る方式（PostgreSQL と同じ。ロールバック可能）。`VACUUM` / `ANALYZE` は何もせず成功（トランザクションブロック内は `25001`） | — |
-| D-12 | `ALTER TABLE` は `ADD [CONSTRAINT n] PRIMARY KEY / UNIQUE` と `OWNER TO`（何もしない）だけ。それ以外は `0A000` | — |
+| D-11 | `TRUNCATE` は新しい relfilenode を作る方式（PostgreSQL と同じ。ロールバック可能）。`VACUUM` / `ANALYZE` は何もせず成功。**トランザクションブロック内で `25001` になるのは `VACUUM` だけ。`ANALYZE` は成功する**（実機。11 §7.1 の C-16、07-D） | — |
+| D-12 | `ALTER TABLE` は `ADD [CONSTRAINT n] PRIMARY KEY / UNIQUE` と `OWNER TO`（**ロールを検証して `relowner` を更新する**。C-16）だけ。それ以外は `0A000` | — |
 | D-13 | 結合は HashJoin（INNER / LEFT / RIGHT / FULL / SEMI / ANTI）、NestedLoopJoin（内側を Materialize）、NestedLoopParam（内側のインデックス検索）。マージ結合は作らない。RIGHT は論理プラン構築で LEFT に直す | — |
 | D-14 | 集約は HashAggregate、Aggregate（GROUP BY なし）、GroupAggregate（`enable_hashagg = off` のとき、Sort + 逐次集約）。集約関数は `BuiltinAggregate` の静的な表で引く | Q-011 |
 | D-15 | サブクエリは PostgreSQL と同じ範囲の書き換え（WHERE 最上位の AND にある `EXISTS` / `IN` / `NOT EXISTS` を SEMI / ANTI 結合に）と、残りは SubPlan / InitPlan / ハッシュ化 SubPlan | — |
@@ -84,7 +115,7 @@ M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 12 個�
 | D-21 | 式の逆変換（deparse）を `deparse/` に置き、EXPLAIN と `pg_get_expr` が共有する。`pg_get_expr` は保存テキストを parse → analyze → deparse して返す（保存形式は変えない。M2-Q9 の移行をこの方式で行う） | M2-Q9 |
 | D-22 | 正規表現（`~`、`~*`、`!~`、`!~*`）は手書きのエンジン（`types/regex.rs`）。`regex` クレートは使わない | M2-Q8 |
 | D-23 | カタログの追加は §11.5 の表。カタログ自体のインデックスは作らない | — |
-| D-24 | psql 17 の `\dt`、`\dn`、`\di`、`\l` が動くことを M4 の完了条件にする。`\d tbl`、`\dt+`、`\df`、`\du` は任意 | M2-Q8 |
+| D-24 | psql 17 の `\dt`、`\dn`、`\di`、`\ds`、`\l` と `\d シーケンス` が動くことを M4 の完了条件にする（`\ds` と `\d シーケンス` は 10 §6.1 に採取した SQL。R-25）。`\dt+`、`\df`、`\du` は任意。**`\d tbl` は M4 では動かない任意項目**（10 §6.3。R-18・R-19） | M2-Q8 |
 | D-25 | `pgbench -i` と、組み込みスクリプト（tpcb-like）の `-M simple` での完走（`-c 4 -T 30`）を M4 の完了条件にする | Q-012 |
 | D-26 | `UPDATE ... FROM` / `DELETE ... USING` を入れる。`RETURNING`（INSERT / UPDATE / DELETE）は M4 の**後半・任意**（Bound と物理プランには欄を用意し、未実装の間は `0A000`） | — |
 | D-27 | `Error` に `schema` / `table` / `column` / `constraint` / `context` を足し、ErrorResponse の `s` `t` `c` `n` `W` フィールドで送る | — |
@@ -113,7 +144,7 @@ M4 設計書（`spec/design/m4/`）の**共通の契約**です。M4 は 12 個�
 | 関数 | `now()` `current_timestamp` `current_date` `localtimestamp` `transaction_timestamp()` `statement_timestamp()` `clock_timestamp()`、numeric の `round` `trunc` `ceil` `ceiling` `floor` `abs` `sign`、`pg_typeof`、`pg_get_expr`（正規形）、正規表現演算子 |
 | EXPLAIN | `EXPLAIN [ANALYZE] [VERBOSE] [COSTS] stmt`、`EXPLAIN (option [value], ...) stmt` |
 | 設定 | `enable_*`、`work_mem` 系、`yuzhu.query_mem_limit`、PostgreSQL にあって意味を持たない GUC を受け付けて保存するだけの一覧 |
-| ツール | psql の `\dt` `\dn` `\di` `\l`、pgbench の `-i` と tpcb-like（`-M simple`） |
+| ツール | psql の `\dt` `\dn` `\di` `\ds` `\l` と `\d シーケンス`、pgbench の `-i` と tpcb-like（`-M simple`） |
 
 **M4 では対応しない（実行すると `0A000`）**: `WITH RECURSIVE`、`LATERAL`、ウィンドウ関数、`GROUPING SETS` / `ROLLUP` / `CUBE`、`INSERT ... ON CONFLICT`、`MERGE`、`CREATE VIEW`、`ALTER TABLE` の上記以外、`DEFERRABLE` 制約、式インデックス・部分インデックス・`INCLUDE`・`NULLS NOT DISTINCT`、`interval` / `time` / `timetz`、配列型（int2vector と int2[] を除く）、`FOREIGN KEY`（M5）、`COPY TO` / CSV / バイナリ（M5）、`SELECT` 句の集合返却関数、`FOR UPDATE` / `FOR SHARE`、`TABLESAMPLE`、集約内の `ORDER BY`、`string_agg` / `array_agg`（M5）。
 
@@ -125,11 +156,11 @@ M3 の構成（`m3.md` 第 2 節）からの変更を示す。`★` は新規、
 
 ```
 impl/rust/
-├── Cargo.toml                           △ members に yuzhu-fuzz-sql を追加
+├── Cargo.toml                           （変更しない。差分ランダムテストは tests/tools/difftest。D11-6、C-5）
 └── crates/
     ├── yuzhu-numeric/                   既存（変更しない。不足があれば章 09 が追加を提案する）
     ├── yuzhu-datetime/                  既存（同上）
-    ├── yuzhu-fuzz-sql/                  ★ 差分ランダムテストの生成器（dev 用の bin。依存は yuzhu-core のみ + postgres）
+    ├── （yuzhu-fuzz-sql は作らない。差分ランダムテストは tests/tools/difftest に既にある独立の Cargo プロジェクトを仕上げて使う。11 D11-6、C-5）
     ├── yuzhu-core/
     │   ├── Cargo.toml                   △ yuzhu-numeric、yuzhu-datetime をパス依存に追加
     │   └── src/
@@ -138,7 +169,7 @@ impl/rust/
     │       ├── expr/                    ★ 式の木（§6）
     │       │   ├── mod.rs               Expr<C,Q>、ExprKind、ID の型、AggCall、SubLinkKind
     │       │   └── walk.rs              走査と書き換えの補助（walk、try_map）、lower_single_rel
-    │       ├── deparse/                 ★ 式 → SQL テキスト（EXPLAIN と pg_get_expr が共有。章 10）
+    │       ├── deparse/                 ★ 式 → SQL テキスト（EXPLAIN と pg_get_expr が共有。章 10）。stored.rs の pg_get_expr は sql::parse_expr → analyzer → deparse を呼ぶ（§4.1 の例外 2）
     │       ├── types/
     │       │   ├── mod.rs               △ OID 定数（§12.1）、TypeEnv
     │       │   ├── datum.rs             △ Datum の変種（§12.2）、cmp_datum の拡張
@@ -159,6 +190,7 @@ impl/rust/
     │       │   ├── schema.rs            △ カタログの追加（§11.5）
     │       │   ├── rows.rs              △ 初期行の追加
     │       │   ├── store.rs             △ インデックス・制約・シーケンス・依存関係の書き込み
+    │       │   ├── seq_params.rs / naming.rs / depend.rs / check.rs / names.rs   ★ シーケンスのパラメータ（Q1）、自動命名（C1。make_object_name もここ）、依存関係（C1）、制約の検査（C1）、CatalogNames（T3）。11 §4.2
     │       │   ├── cache.rs             △ TableDef に indexes を含める
     │       │   └── reader.rs            △ CatalogReader の追加メソッド
     │       ├── analyzer/
@@ -179,7 +211,8 @@ impl/rust/
     │       │   ├── physicalize.rs       ★ 論理プラン → 物理プラン
     │       │   ├── index_select.rs      ★ インデックス選択
     │       │   ├── physical.rs          △ 旧 plan.rs。PhysicalPlan、PhysicalQuery（§9）
-    │       │   └── explain_tree.rs      ★ 物理プランと同形の ExplainNode の構築（章 10 と共同）
+    │       │   ├── explain_tree.rs      ★ 表示用の ExplainNode の構築（物理プランと同形ではない。章 10 と共同。C-1）
+    │       │   └── util.rs / size.rs / print.rs / validate.rs   ★ 補助（04 §3.2、§3.6）。rules/testutil.rs は #[cfg(test)]
     │       ├── executor/
     │       │   ├── mod.rs               △ Executor に rewind、ExecCtx の拡張（§10）
     │       │   ├── build.rs / eval.rs   △ PhysExpr を評価する
@@ -188,6 +221,7 @@ impl/rust/
     │       │   ├── subplan.rs           ★ SubPlan / InitPlan の状態と評価
     │       │   ├── dml.rs               ★ insert_with_indexes、update_with_indexes（INSERT・UPDATE・COPY が共有）
     │       │   ├── instrument.rs        ★ EXPLAIN ANALYZE の計測
+    │       │   ├── seq.rs               ★ nextval / currval / setval / lastval の実行（Q1。章 08）
     │       │   └── nodes/               △ 追加: nested_loop.rs、hash_join.rs、materialize.rs、aggregate.rs、hash_aggregate.rs、group_aggregate.rs、unique.rs、append.rs、hash_setop.rs、cte_scan.rs、function_scan.rs、index_scan.rs
     │       ├── storage/
     │       │   ├── mod.rs               △ TableStore の追加、IndexStore（§13）、RelHandle に indexes
@@ -234,6 +268,7 @@ error, types::{mod, datum, cmp, hash, regex, numeric, datetime, bpchar, io, ops,
 ```
 
 - `planner::physical` は `executor` が使う。`executor` は `planner::logical` を知らない。
+- **この図の向きの例外（2 か所だけ。レビュー対応 R-30）**。(1) **`planner::rules::const_fold` が `executor::eval::eval_const` を 1 か所だけ呼ぶ**（`EvalCtx::for_constant_folding` を使う。11 §7.4 の 04-3。`executor` は `planner::physical` を使うので `planner` ⇄ `executor` が相互参照になるが、使う型は `physical`（下位）と `eval`（式の評価）に限り、`executor::build` / `nodes` は `planner` の他の部分を `use` しない。解消は M5 以降に `expr/eval.rs` へ純粋な評価器を移す）。(2) **`deparse::stored`（`pg_get_expr` / `pg_get_constraintdef` / `pg_get_indexdef` の本体）が `sql::parse_expr` → `analyzer::analyze_*` → `deparse` を呼ぶ**（10 §4.8）。`deparse` の他の部分（式の逆変換本体）は `expr` と `catalog` だけに依存し、`stored.rs` だけが `analyzer` に依存する。このため `deparse::stored` は図の `analyzer` より後ろ（`ddl` / `explain` と同じ段）に置く。これ以外の逆向きの `use` は禁止（`cargo` の循環依存はクレート内なので検出されない。CI の `grep` ベースの検査を K4 が足す）。
 - `expr` は `analyzer`・`planner`・`executor` のどれにも依存しない。`BoundExpr` / `LExpr` / `PhysExpr` の**型別名は定義する側のモジュール**（`analyzer::bound`、`planner::logical`、`planner::physical`）に置く。
 - `storage::btree` は `catalog::opclass`（比較関数の静的な表）と `types::cmp` を使う。カタログの行（`catalog::store`）には依存しない。
 - `recovery.rs` の `dispatch` に `RmgrId::Btree` → `storage::btree::wal::redo`、`RmgrId::Seq` → `storage::sequence::redo` を足す（持ち主は M3 の R。M4 の追加は B1 と Q1 が依頼する）。
@@ -241,7 +276,7 @@ error, types::{mod, datum, cmp, hash, regex, numeric, datetime, bpchar, io, ops,
 ### 4.2 外部依存
 
 - `yuzhu-core` の外部クレート依存は**ゼロのまま**。内部のパス依存として `yuzhu-numeric` と `yuzhu-datetime` を足す（どちらも外部依存なし）。
-- `yuzhu-fuzz-sql` は `postgres` クレート（ワークスペースにある dev 用の依存）を使う。`yuzhu-server` は新しい依存を足さない。
+- `yuzhu-server` は新しい依存を足さない。差分ランダムテスト（`tests/tools/difftest`）は独立の Cargo プロジェクトで、`postgres` クレートを使う（ワークスペースの外）。
 - 正規表現のためのクレートは追加しない（D-22）。
 - 日時のタイムゾーンは `yuzhu-datetime` が `/usr/share/zoneinfo`（TZif）を読む。tzdata がない環境では UTC と固定オフセットだけが使える。CI とコンテナ（`sandbox/`）に tzdata を入れること（章 09 と 11 が確認する）。
 
@@ -252,8 +287,8 @@ M2・M3 の規約（`m2.md` §2、`m3.md` §2）を引き継ぎ、次を足す�
 1. **式の木を型ごとに複製しない**。`Expr<C, Q>` に集約する。新しい式の種類は `expr/mod.rs` の `ExprKind` に 1 回だけ足し、3 つの層の取り扱い（Bound に現れてよいか、論理に、物理に）を 6.4 の表に書く。
 2. **値の比較とハッシュは `cmp_datum` / `types::hash::hash_datum` に集約する**（`Datum` の変種が型を表すので、bpchar・numeric・日時も型を渡さずに正しく動く。§12.2）。比較・ハッシュ・等値判定に使う 2 値は**同じ型**にそろえてから渡す（整数の幅違いは可）。型をそろえるのは演算子解決とプランナ（結合キー・集合演算・ANY の `test`）の責任。NULL の順序は `types::cmp::cmp_with_nulls` を使い、各所で書き直さない。
 3. **B+Tree と sequence のページ変更は M3 規約 1（WAL を書くページ変更の形）に従う**。特に構造変更は、必要な新ページをすべて確保してから、全ページの新しい内容をメモリ上で組み立て、`CriticalSection` の中で一度にバッファへ書き `BTREE_PAGES` を 1 本挿入する。途中で失敗しうる処理を `page_mut()` の後に書かない。
-4. **executor のノードは行ごとに `ctx.check_interrupts()?` を呼ぶ**（ループの長い処理 — ハッシュ表の構築、ソート、集約 — を含む）。
-5. **`rewind` では、パラメータに依存しない子の結果（ソート・ハッシュ表・Materialize）を溜め直さず読み直す**。依存するかどうかは `PhysicalPlan::uses_params()`（木のどこかに `PhysCol::Param` があるか）で、`executor::build` が各ノードを作る時点で決める。
+4. **executor のノードは行ごとに `ctx.check_interrupts()?` を呼ぶ**（ループの長い処理 — ハッシュ表の構築、ソート、集約 — を含む）。**入力を 1 行読むたびに 1 回**、葉に限らずループを持つ全ノードが呼ぶ（02 §3.7.4 の規則 2 もこれに合わせた。レビュー対応 R-11）。
+5. **`rewind` では、パラメータに依存しない子の結果（ソート・ハッシュ表・Materialize）を溜め直さず読み直す**。依存するかどうかは、executor 内部の `free_params(plan, query)`（05 §3.2。`SubPlanDef` と `NestedLoopParam` の束縛を越えて自由な `ParamId` を求める）で、`executor::build` が各ノードを作る時点で決める（C-6）。`PhysicalPlan::uses_params()`（木のどこかに `PhysCol::Param` があるか。`SubLink` を含めば true）は残し、`build(plan)`（単体テスト用）と他の章が使う。
 6. **ID のオーバーフロー**: `ColId` は u32、`RteId` は u16（1 つの SELECT の範囲表は 65535 まで）、`ParamId` / `SubPlanId` は u16。超えたら `54000`。
 7. **panic しない**: `unwrap` / `expect` は「到達しない」ことを型や直前の検査で保証できる箇所に限り、メッセージに理由を書く。到達しうるものは `Error::internal`。
 
@@ -304,7 +339,9 @@ pub struct Var {
     pub rte: RteId,
     /// Rte.columns の 0 始まりの位置。システム列は SYSTEM_COL_BASE + SystemColumn の添字（Ctid=0, Xmin=1, Cmin=2, Xmax=3, Cmax=4, TableOid=5）
     pub col: u16,
-    /// 0 = 同じ SELECT のスコープ。1 以上 = 外側の SELECT（相関参照）
+    /// 0 = 同じスコープ。1 以上 = 外側のスコープ（相関参照）。**数えるのは「rtable を持つスコープ」の入れ子**:
+    /// `BoundSelect`・DML・`BoundSetExpr::Values` の各行（rtable が空の 1 スコープ）。`BoundQuery` は数えない
+    /// （集合演算の腕・CTE 本体は兄弟）。03 の D3-20 が正（C-3、レビュー対応 R-04）
     pub levels_up: u16,
 }
 impl Var {
@@ -337,7 +374,9 @@ pub enum ExprKind<C, Q> {
     Column(C),
     Operator { op: &'static BuiltinOperator, args: Vec<Expr<C, Q>> },
     Function { func: &'static BuiltinFunction, args: Vec<Expr<C, Q>> },
-    Cast { expr: Box<Expr<C, Q>>, method: CastMethod },
+    /// implicit: アナライザが暗黙のキャストを挿入したとき true（10-P3。deparse が根の暗黙のキャストを隠す）。same_as は無視して比べる。
+    /// CastMethod には Env(fn(&[Datum], &TypeEnv) -> Result<Datum>) を足す（09-P3。定数畳み込みしない）。C-14
+    Cast { expr: Box<Expr<C, Q>>, method: CastMethod, implicit: bool },
     CoerceTypmod { expr: Box<Expr<C, Q>>, explicit: bool },
     And(Vec<Expr<C, Q>>),
     Or(Vec<Expr<C, Q>>),
@@ -746,12 +785,15 @@ pub enum PhysicalPlan {
     Filter { input: Box<PhysicalPlan>, predicate: PhysExpr },
     Project { input: Box<PhysicalPlan>, exprs: Vec<PhysExpr> },
     Sort { input: Box<PhysicalPlan>, keys: Vec<SortKey> },
-    /// 入力は整列済み。先頭 prefix_len 列が変わった最初の行だけ通す（DISTINCT ON）
+    /// 入力は整列済み。`key_cols`（入力の列位置。順不同）の値の組が前の行と違う最初の行だけ通す（DISTINCT ON）。
+    /// 入力の Sort の先頭 key_cols.len() 個の key の集合が key_cols の式の集合と一致する（03 が 42P10 で保証し、04 §5.5 が
+    /// `order ++ 未出の ON の式` で整列する）。ON の式が先頭に並ぶ保証も、Project で先頭に出す処理もない（レビュー対応 R-03）
     Unique { input: Box<PhysicalPlan>, key_cols: Vec<usize> },
     Distinct { input: Box<PhysicalPlan> },
     Limit { input: Box<PhysicalPlan>, limit: Option<PhysExpr>, offset: Option<PhysExpr> },
     Materialize { input: Box<PhysicalPlan> },
-    /// 結合の出力は常に「左 ++ 右」（Semi / Anti は左だけ）。outer / inner の入れ替えは内部の事情
+    /// 出力は `outer ++ inner`（Semi / Anti は outer だけ）。`outer` は論理プランの left で固定（05 D5-8）。内側 Index Scan のために
+    /// INNER の左右を入れ替えるときは、planner が上に並べ直しの Project を置いて論理の左 ++ 右に戻す（04 §7.5.3、レビュー対応 R-14）
     NestedLoopJoin { kind: JoinKind, outer: Box<PhysicalPlan>, inner: Box<PhysicalPlan>, join_filter: Option<PhysExpr>, outer_width: usize, inner_width: usize },
     /// inner を params を設定して rewind し直す（インデックス付き NLJ）
     NestedLoopParam { kind: JoinKind, outer: Box<PhysicalPlan>, inner: Box<PhysicalPlan>, params: Vec<(ParamId, PhysExpr)>, join_filter: Option<PhysExpr>, outer_width: usize, inner_width: usize },
@@ -780,7 +822,7 @@ impl PhysicalPlan { pub fn uses_params(&self) -> bool; }   // 木のどこかに
 ```
 
 - 旧 `Update` の `assignments: Vec<(usize, UpdateSource)>` は廃止し、代入式の評価を論理プランの Project に移した（`UPDATE ... FROM` で代入式が FROM 句の列を参照できるようにするため）。
-- `Unique.key_cols` は入力の列位置（DISTINCT ON の式を Project で先頭に出す）。
+- `Unique.key_cols` は入力の列位置（DISTINCT ON の式の位置。順不同。Project は挟まない。レビュー対応 R-03）。
 
 ### 9.3 問い合わせ全体と EXPLAIN 用の木
 
@@ -793,7 +835,7 @@ pub struct PhysicalQuery {
     pub n_params: usize,
     /// 可視出力列
     pub output: Vec<OutputColumn>,
-    /// want_explain のときだけ。root と同形（子の順序も同じ）
+    /// want_explain のときだけ。**表示用の木**（root と同形とは限らない。Hash・Append の合成、Filter の併合、Project の透過。C-1）
     pub explain: Option<ExplainNode>,
 }
 
@@ -816,16 +858,24 @@ pub enum SubPlanStrategy {
     Hashed { probe_keys: Vec<PhysExpr>, build_keys: Vec<PhysExpr> },
 }
 
-/// EXPLAIN の 1 ノード。PhysicalPlan と同じ形・同じ子の順序の木。先行順の通し番号で executor::instrument の計測値と突き合わせる
+/// EXPLAIN の 1 ノード。**表示用の木**（C-1。定義の正本は 10 §3.2）。`exec_id`（`planner::physical::assign_exec_ids` の先行順の
+/// 通し番号。根、subplans の昇順、ctes の昇順）で executor::instrument の計測値と突き合わせる。InitPlan / CTE は
+/// その問い合わせ階層の根のノードの子、SubPlan は式を表示したノードの子（04 §8、レビュー対応 R-06）
 pub struct ExplainNode {
-    /// "Seq Scan on t"、"Hash Join" など
+    /// "Seq Scan on t"、"Hash Join" など。コストと actual は含まない
     pub title: String,
-    /// "Filter: (b > 5)" のような詳細行（ラベルと整形済みの文字列）
-    pub details: Vec<(String, String)>,
-    /// VERBOSE の "Output:" 行
+    /// "Filter: (b > 5)" のような詳細行。出す順に並べる（`Rows Removed by ...` の元 `removed` を持つ）
+    pub details: Vec<ExplainDetail>,
+    /// VERBOSE の "Output:" 行の各要素
     pub output: Vec<String>,
+    /// 通常の子とラベルつきの子（InitPlan / SubPlan / CTE）を、出力する順に並べる
     pub children: Vec<ExplainChild>,
+    /// 計測値の持ち主。合成ノード（Hash など）は中身のノードの番号を借りる
+    pub exec_id: usize,
+    /// コスト欄の width
+    pub width: u32,
 }
+// ExplainDetail / RemovedRows / FilterCounter は 10 §3.2
 pub struct ExplainChild { pub label: Option<String> /* "InitPlan 1" など */, pub node: ExplainNode }
 ```
 
@@ -1194,10 +1244,13 @@ pub trait IndexStore: Send + Sync + std::fmt::Debug {
     /// 新しいインデックスのファイル（作成済み）に、メタページと空のルート葉を書く（BTREE_PAGES）
     fn init_index(&self, w: &WriteCtx, index: &IndexHandle) -> Result<()>;
     /// 項目を 1 つ入れる。key はインデックス列の値（NULL を含みうる）。unique かつ check が Check なら重複を検査する
-    /// （NULL を含むキーは検査しない）。重複は 23505、他トランザクション待ちが必要なら内部エラー（M4）
+    /// （NULL を含むキーは検査しない）。重複は 23505（`s` `t` `n` のフィールドを付けて返す。**DETAIL `Key (a)=(1) already exists.` は
+    /// executor/dml.rs の unique_violation_detail が補う**。C-11）、他トランザクション待ちが必要なら内部エラー（M4）
     fn insert(&self, w: &WriteCtx, index: &IndexHandle, key: &[Datum], tid: Tid, check: UniqueCheck<'_>) -> Result<()>;
     /// 一括構築。init_index 済みの空のインデックスにだけ使える。entries は (key, tid) の昇順に整列済み。
-    /// unique == Yes なら隣接比較で重複を検出する（23505 `could not create unique index`）。ページは 32 枚ずつ BTREE_PAGES で WAL に書く
+    /// unique == Yes は「入力のすべてが生きている版」として、NULL を含まない隣接キーが全列等しければ 23505（DETAIL なし）。
+    /// **C1（CREATE INDEX / ALTER TABLE ADD）は死んだ版の誤検出を避けるため常に No で呼び、重複の検出と DETAIL（`could not create unique index` /
+    /// `Key (a)=(1) is duplicated.`）は C1 が書く**（C-11）。ページは 32 枚ずつ BTREE_PAGES で WAL に書く
     fn build(&self, w: &WriteCtx, index: &IndexHandle, entries: &mut dyn Iterator<Item = (Vec<Datum>, Tid)>, unique: BuildUnique) -> Result<BuildStats>;
     fn begin_scan(&self, index: &IndexHandle, keys: &ResolvedScanKeys, dir: ScanDirection) -> Result<IndexScan>;
     /// 次の TID。葉ごとに一致した TID をまとめてコピーし、ページのラッチ・ピンを持ち越さない
@@ -1250,7 +1303,7 @@ pub const BTREE_PAGES: u8 = 0x10;         // 構造変更・初期化・一括�
 pub const SEQ_LOG: u8 = 0x00;             // blk0 = シーケンスのページ（WILL_INIT、タプル全体）
 ```
 
-- `BTREE_PAGES` のブロック数は最大 32（`MAX_BLOCK_REFS`）。木の高さ h の構造変更は最大 2h + 3 ページ（各レベルで左・右、葉の元の右隣、新ルート、メタ）。h > 14 は `54000`。
+- `BTREE_PAGES` のブロック数は最大 32（`MAX_BLOCK_REFS`）。木の高さ h の構造変更は最大 **3h + 1** ページ（各レベルで左・右・元の右隣、新ルート、メタ。06 §4.3、C-13）。**静的な高さの上限は作らず**、必要なブロック数が 32 を超えたときだけ `54000`。
 - `wal::dump`（`yuzhu-waldump`）が Btree と Seq のレコードを人が読める形で出す。実装は各モジュールの `wal.rs` が `describe(rec) -> String` を提供し、`wal/dump.rs` が呼ぶ。
 - M3 の `WAL_FORMAT_VERSION` は変えない（M3 のサーバが M4 の WAL を読むことは想定しない。D-28）。
 
@@ -1288,7 +1341,7 @@ M3 の `TxnManager::commit` / `abort` のうち XID を持たない経路に `fi
 
 ### 14.2 設定との対応
 
-`Settings` から `PlannerSettings`（§9.1）と `TypeEnv`（§12.4）を作る関数を `settings.rs` に置く: `Settings::planner_settings(&self) -> PlannerSettings`、`Settings::type_env<'a>(&'a self, zones: &'a ZoneDb) -> TypeEnv<'a>`。`ZoneDb` は `Cluster` が 1 つ持つ（`yuzhu_datetime::ZoneDb`）。
+`Settings` から `PlannerSettings`（§9.1）と `TypeEnv`（§12.4）を作る関数を `settings.rs` に置く: `Settings::planner_settings(&self) -> PlannerSettings`、`Settings::type_env<'a>(&'a self, ds: &'a DateTimeSettings, zones: &'a ZoneDb, now: i64, names: Option<&'a dyn OidNames>) -> TypeEnv<'a>`（09-P4。C-18）。`ZoneDb` は `Cluster` が 1 つ持つ（`yuzhu_datetime::ZoneDb`）。
 
 ### 14.3 `RuntimeInfo` の追加（M3 の trait に足す）
 
@@ -1328,7 +1381,9 @@ impl Error {
 
 ```rust
 // session.rs の ResultSink に追加
-fn copy_in_response(&mut self, format: u8 /* 0 = text */, column_formats: &[u8]) -> std::io::Result<()>;
+/// column_formats はプロトコルの Int16 の並び（BackendMessage::CopyInResponse.column_formats: Vec<i16> と同じ型。10 §5.2）。
+/// text 形式では全列 0。呼び出しは `sink.copy_in_response(0, &vec![0i16; ncols])`（レビュー対応 R-15）
+fn copy_in_response(&mut self, format: u8 /* 0 = text */, column_formats: &[i16]) -> std::io::Result<()>;
 
 impl Session {
     /// execute_simple が戻った後に、サーバが CopyData / CopyDone / CopyFail の受信ループに入るかを判定する
@@ -1450,39 +1505,42 @@ pub const GENERATED_ALWAYS: SqlState = SqlState("428C9");
 
 各担当は**自分の範囲のファイルだけ**を編集する（M1〜M3 と同じ）。他の担当の範囲で直すべき点は自分では直さず依頼する。例外は `error.rs` の `sqlstate` への定数の追記だけ。作業中も crate 全体がコンパイルできる状態を保つ。
 
+**この表は 11 §4.1 の確定表を反映した統合版**（レビュー対応 R-02。日数・範囲・追加ファイルの持ち主。初版の合計 115.5 日は **141.8 日**になった。内訳の増加は 11 §4.1）。共有ファイルの区画の規則は 11 §4.2。
+
 **P0 が全員の足場を置く**: A が型を、P0 が ★ のファイルをすべて「関数の署名つきのスタブ」（中身は `Err(Error::not_supported(..))`）として置き、`analyzer/expr.rs` などの分岐点に呼び出しの口（`agg::analyze_agg_call`、`sublink::analyze_sublink` など）を足す。以降の担当はスタブの中身だけを書く。
 
 | 担当 | 範囲（編集してよいファイル） | 依存 | 日数 | 章 |
 |---|---|---|---|---|
-| **A 基盤** | `expr/mod.rs`（型）、`error.rs`、`types/mod.rs`（OID・TypeEnv）、`types/datum.rs`（変種）、`catalog/mod.rs`（型）、`analyzer/bound.rs` と `planner/{logical,physical}.rs`（新しい型を別の名前で足す。旧型は P0 が置き換える）、`storage/mod.rs`（トレイト）、`wal/mod.rs`、`executor/mod.rs`（型）、`lib.rs`、各 `Cargo.toml`、`CATALOG_VERSION_NO` | なし | 1.5 | 02 |
-| **P0 パイプライン移行** | `analyzer/*`（`bound.rs` の置き換え、既存の単一表の解析を `Var` / `BoundQuery` に）、`planner/{mod,build,physicalize}.rs`（既存のノードだけ）、`executor/{mod,build,eval}.rs` と既存の `nodes/*`（`PhysExpr`・`rewind` 化）、`session.rs` の plan 呼び出し、★ のスタブ一式。**完了条件**: `tests/slt/m1`〜`m3` が yuzhu で通る | A | 5 | 02 |
-| **S1 パーサ** | `sql/*` の M4 分すべて（§7.1。問い合わせ・DDL・ユーティリティ・COPY・EXPLAIN・型名） | A（AST の型） | 3 | 03、07、08、09、10 |
-| **N1 解析: FROM** | `analyzer/{from,scope}.rs`、`dml.rs` の FROM / USING、FROM 句の関数 | P0 | 4 | 03 |
+| **A 基盤** | `expr/mod.rs`（型）、`error.rs`、`types/mod.rs`（OID・TypeEnv）、`types/datum.rs`（変種）、`catalog/mod.rs`（型）、`analyzer/bound.rs` と `planner/{logical,physical}.rs`（新しい型を別の名前で足す。旧型は P0 が置き換える）、`storage/mod.rs`（トレイト）、`wal/mod.rs`、`executor/mod.rs`（型）、`lib.rs`、各 `Cargo.toml`、`CATALOG_VERSION_NO`。追加: `Cast.implicit`・`CastMethod::Env`・`ExplainNode` の拡張・`TypeEnv.names`・`DebugKnobs` の追加・`sqlstate` の 11 定数・`PhysicalQuery::{single, empty}`・`BoundQuery::walk_exprs` | なし | 2.0 | 02 |
+| **P0 パイプライン移行** | `analyzer/*`（`bound.rs` の置き換え、既存の単一表の解析を `Var` / `BoundQuery` に）、`planner/{mod,build,physicalize}.rs`（既存のノードだけ）、`executor/{mod,build,eval}.rs` と既存の `nodes/*`（`PhysExpr`・`rewind` 化）、`session.rs` の plan 呼び出し、★ のスタブ一式。`Filter`・`SeqScan` の `set_counters`。**完了条件**: `tests/slt/m1`〜`m3` が yuzhu で通る | A | 5.1 | 02 |
+| **S1 パーサ** | `sql/*` の M4 分すべて（§7.1。問い合わせ・DDL・ユーティリティ・COPY・EXPLAIN・型名） | A（AST の型） | 5.0 | 03、07、08、09、10 |
+| **N1 解析: FROM** | `analyzer/{from,scope}.rs`、`dml.rs` の FROM / USING、FROM 句の関数。P0 の後の `analyzer/{expr,coerce,resolve}.rs` の持ち主 | P0 | 4.3 | 03 |
 | **N2 解析: 集約** | `analyzer/agg.rs`、`select.rs` の GROUP BY / DISTINCT ON / ORDER BY | P0 | 4 | 03 |
 | **N3 解析: サブクエリ** | `analyzer/{sublink,setop,cte}.rs` | P0 | 5 | 03 |
-| **L1 論理プラン** | `planner/{build,rules/*}.rs` | P0 | 6 | 04 |
-| **L2 物理化** | `planner/{physicalize,index_select,explain_tree}.rs` | P0、B2（opclass の表） | 5 | 04 |
-| **X1 実行: 結合** | `executor/subplan.rs`、`nodes/{nested_loop,hash_join,materialize}.rs` | P0 | 5 | 05 |
+| **L1 論理プラン** | `planner/{build,rules/*,util,print,validate}.rs`（論理の分） | P0 | 6.2 | 04 |
+| **L2 物理化** | `planner/{physicalize,index_select,explain_tree,size}.rs`、`print` / `validate` の物理の分 | P0、B2（opclass の表） | 6.9 | 04、10 |
+| **X1 実行: 結合** | `executor/subplan.rs`、`nodes/{nested_loop,hash_join,materialize}.rs`。P0 の後の `executor/eval.rs` の持ち主 | P0 | 5.3 | 05 |
 | **X2 実行: 集約** | `executor/{agg,mem}.rs`、`types/hash.rs`、`nodes/{aggregate,hash_aggregate,group_aggregate,unique,append,hash_setop,cte_scan,function_scan}.rs` | P0、T1（numeric） | 5 | 05 |
-| **X3 実行: インデックスと DML** | `executor/dml.rs`、`nodes/{index_scan,insert,update,delete}.rs` | P0、B1 | 4 | 05 |
+| **X3 実行: インデックスと DML** | `executor/dml.rs`、`nodes/{index_scan,insert,update,delete}.rs` | P0、B1 | 4.1 | 05 |
 | **H4 ヒープ拡張** | `storage/heap/*`、`heap_store.rs`、`page.rs`（追加のみ） | M3 の D、C | 1.5 | 06 |
 | **B1 B+Tree 本体** | `storage/btree/{mod,page,tuple,meta,search,insert,split,wal}.rs`、`storage/index_store.rs` の `init_index` / `insert` | A、H4、M3 の W1・W2 | 6 | 06 |
 | **B2 B+Tree 走査・構築** | `storage/btree/{scan,build,unique,check}.rs`、`catalog/opclass.rs` | B1 | 5 | 06 |
-| **C1 カタログと DDL** | `catalog/{schema,rows,store,cache,reader}.rs`、`ddl/{mod,table,index,constraint,truncate,depend}.rs`、`bootstrap.rs` | A、B2（opclass） | 7 | 07 |
-| **Q1 シーケンス** | `storage/sequence.rs`、`ddl/sequence.rs`、`analyzer/ddl.rs` の SERIAL / IDENTITY、`types/ops.rs` のシーケンス関数 | A、C1 | 5 | 08 |
+| **C1 カタログと DDL** | `catalog/{schema,rows,store,cache,reader,naming,depend,check}.rs`、`ddl/{mod,table,index,constraint,truncate,vacuum,depend}.rs`、`analyzer/{ddl_constraint,ddl_index}.rs`、`bootstrap.rs` | A、B2（opclass） | 8.2 | 07 |
+| **Q1 シーケンス** | `storage/sequence.rs`、`catalog/seq_params.rs`、`executor/seq.rs`、`ddl/sequence.rs`、**`analyzer/ddl.rs` の持ち主**（SERIAL / IDENTITY、型名、07 からの依頼）、`types/ops.rs` と `catalog/builtin.rs` の `sequence` 区画（シーケンス関数）、`txn/manager.rs` の追加 | A、C1 | 5.8 | 08 |
 | **T1 numeric** | `types/numeric.rs`、numeric の演算子・キャスト・関数の行 | A | 3 | 09 |
 | **T2 日時と char(n)** | `types/{datetime,bpchar}.rs`、日時と bpchar の行、`TypeEnv` の組み立て（`settings.rs` の関数は S と共同） | A | 4 | 09 |
-| **T3 関数・集約・正規表現** | `types/{regex,sys,cmp}.rs`、`catalog/builtin.rs` の AGGREGATES と関数、`regclass` / `regtype` | A | 5 | 09 |
-| **E1 EXPLAIN と deparse** | `explain/*`、`deparse/*`、`executor/instrument.rs` | P0、L2 | 5 | 10 |
+| **T3 関数・集約・正規表現** | `types/{regex,sys,cmp}.rs`、`catalog/{builtin(agg-set-sys 区画),names}.rs`、`regclass` / `regtype` | A | 5（任意 +0.3） | 09 |
+| **E1 EXPLAIN と deparse** | `explain/*`、`deparse/*`、`executor/instrument.rs`、`pg_get_constraintdef` / `pg_get_indexdef` の行と本体 | P0、L2 | 6.0 | 10 |
 | **O1 COPY** | `copy/*` | P0、X3 | 4 | 10 |
-| **S セッション** | `session.rs`、`settings.rs`、`engine.rs`、`testing.rs` | A、P0、C1 | 4 | 10 |
+| **S セッション** | `session.rs`、`settings.rs`、`engine.rs`、`testing.rs` | A、P0、C1 | 4.5 | 10 |
 | **J サーバ** | `yuzhu-server/` 全体 | S | 1.5 | 10 |
-| **R2 クラッシュ試験の追加** | `yuzhu-core/tests/crash_sim/*` に B+Tree・シーケンスのワークロード | B1、Q1、M3 の T | 3 | 11 |
-| **K 共有テスト** | `tests/slt/m4/*`、`tests/compat/*`、`tests/restart/m4/*`、`tests/run.sh`、`.github/workflows/ci.yml` | なし（PostgreSQL で先に通せる） | 10 | 11 |
-| **Z 差分ランダムテスト** | `yuzhu-fuzz-sql/` | N1〜N3、X1〜X2 | 4 | 11 |
+| **R2 クラッシュ試験の追加** | `yuzhu-core/tests/crash_sim/*` にワークロード 6〜8（B+Tree・シーケンス・DDL）、不変条件 I13〜I16、変異テスト | B1、Q1、C1、M3 の T | 5.0 | 11 |
+| **K 共有テスト**（K1〜K4 に分割） | `tests/slt/m4/*`、`tests/compat/*`、`tests/restart/m4/*`、`tests/isolation/specs`、`tests/tools/slttools/*`、`tests/gen/*`、`tests/imported/*`、`tests/done-check.sh`、`tests/run.sh`、`.github/workflows/*`、`Dockerfile` と `sandbox/Dockerfile`（tzdata） | なし（PostgreSQL で先に通せる） | 24.3 | 11 |
+| **Z 差分ランダムテスト** | **`tests/tools/difftest/*`**（`yuzhu-fuzz-sql/` は作らない。C-5） | N1〜N3、X1〜X2（最初の 0.5 日は不要） | 4.5 | 11 |
+| M3 の持ち主への依頼 | `PinnedBuffer::{read_tree, write_tree}`、`extend_tree`、`page_mut_hint`、`wal/dump.rs`・`recovery::dispatch` の追加、`Wal::redo_lsn()` ほか（11 §4.1） | — | 0.6 | 06、08 |
 
 - 進め方: (1) A → (2) P0 と、P0 に触れない担当（S1、H4、B1、T1〜T3、K）を並列に開始 → (3) P0 のマージ後に N1〜N3、L1、L2、X1〜X3、C1、E1、O1 を並列に → (4) B2 → L2（インデックス選択）・C1 → Q1 → S・J → (5) 結合して `tests/run.sh --target yuzhu`（m1〜m4）、再起動テスト、クラッシュ試験、`tests/compat`（psql・pgbench）、差分ランダムテストを通す → M4 完了。
-- 工数は AI の実装エージェント 1 本の日数の粗い見積もり。合計は約 120 日、A の後の最長経路は P0 → L1/L2 → E1/S → 結合で約 20〜25 日。
+- 工数は AI の実装エージェント 1 本の日数の粗い見積もり。**合計は 141.8 日**（任意を含めて 143.3 日）、A の後の最長経路は P0 → L2 → 結合 → 完了判定で約 21〜23 日（11 §4.3）。完了の判定は `01-scope-decisions.md` §3 の `tests/done-check.sh`（ローカル）。
 
 ---
 
@@ -1490,12 +1548,13 @@ pub const GENERATED_ALWAYS: SqlState = SqlState("428C9");
 
 | 置き場所 | 内容 | 章 |
 |---|---|---|
-| `tests/slt/m4/{index,constraint,seq,join,agg,subquery,setop,cte,dml,types,copy,explain,psql,plan_variants,catalog}/*.slt` | 共通の SQL テスト（PostgreSQL 17 で期待値を確かめる。M1〜M3 と同じ規則）。EXPLAIN とメモリ上限は `onlyif yuzhu` | 各章、11 |
-| `tests/compat/{run.sh,psql/,pgbench/}` | psql の `\dt` `\dn` `\di` `\l` の出力、`pgbench -i` と tpcb-like の完走と不変条件を PostgreSQL と yuzhu で比べる | 10、11 |
-| `tests/restart/m4/` | 再起動・クラッシュをまたぐテスト（インデックス・シーケンス） | 06、08、11 |
-| `yuzhu-core/tests/crash_sim/` | 層 1 のクラッシュ試験にワークロード 6（インデックス付き表）と 7（シーケンス）、不変条件 I13（インデックスの全 TID 集合 = ヒープの索引されるべき版）、I14（木の構造検査）、I15（シーケンスは払い出した値を二度払い出さない） | 06、08、11 |
+| `tests/slt/m4/{index,constraint,seq,join,agg,subquery,setop,cte,dml,types,copy,explain,psql,plan_variants,catalog,ddl,mem,z_final}/*.slt` | 共通の SQL テスト（PostgreSQL 17 で期待値を確かめる。M1〜M3 と同じ規則）。EXPLAIN とメモリ上限は `onlyif yuzhu`。`ddl/`・`mem/`・`z_final/` は 11 D11-2 | 各章、11 |
+| `tests/compat/{run.sh,psql/,copy/,pgbench/}` | psql の `\dt` `\dn` `\di` `\ds` `\l` と `\d シーケンス` の出力、`pgbench -i` と tpcb-like の完走と不変条件を PostgreSQL と yuzhu で比べる | 10、11 |
+| `tests/restart/m4/<シナリオ>/{mode, NN-*.mode}` | 再起動・クラッシュをまたぐテスト（インデックス・シーケンス・DDL）。`mode` は `restart` / `crash` / `both`（11 D11-5） | 06、07、08、11 |
+| `yuzhu-core/tests/crash_sim/` | 層 1 のクラッシュ試験にワークロード 6（インデックス付き表。`shared_buffers = 24`）、7（シーケンス）、8（DDL）、不変条件 I13（インデックスの全 TID 集合 = ヒープの索引されるべき版）、I14（木の構造検査）、I15（シーケンスは払い出した値を二度払い出さない）、I16（カタログの整合） | 06、07、08、11 |
 | `yuzhu-core/src/storage/btree/check.rs` | 木の検査器。全テストとクラッシュ試験の後に走らせる | 06 |
-| `yuzhu-fuzz-sql/` | 差分ランダムテストの生成器（PostgreSQL と yuzhu の結果を比べる）。固定シードを CI、夜間に多数 | 11 |
+| `tests/tools/difftest/` | 差分ランダムテスト（PostgreSQL と yuzhu の結果を比べる。独立した Cargo プロジェクト。`yuzhu-fuzz-sql` は作らない。C-5）。完了条件は固定シード 1〜32 と長時間 4 本（01 §3）、CI は固定シード、夜間は多数 | 11 |
+| `tests/done-check.sh`、`tests/tools/slttools/`、`tests/gen/`、`tests/imported/`、`tests/isolation/specs`（M4 の 2 本） | 完了判定のローカルスクリプト、slt の lint・生成、plan_variants のテンプレート、PostgreSQL 回帰の取り込み、isolation の追加 | 11 |
 | `yuzhu-core/tests/plan_golden/` | プランナのスナップショットテスト（SQL → 最適化前の論理プラン → 各ルールの後 → 物理プラン） | 04 |
 
 ---

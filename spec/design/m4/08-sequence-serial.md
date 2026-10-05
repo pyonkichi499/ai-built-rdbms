@@ -78,7 +78,7 @@
 | D8-11 | IDENTITY の DEFAULT | `pg_attrdef` に `nextval` を持つ／**DEFAULT を持たない** | **持たない**。`pg_attribute.attidentity`（`a` / `d`）と `pg_depend`（シーケンス → 列、`i`）だけ。`atthasdef = false`。解決は `TableDef.identity_seqs` | PostgreSQL と同じ（実機で `atthasdef = f`、`pg_attrdef` に行なし）。INSERT で「値の指定なし」を `OVERRIDING` と合わせて扱うため、DEFAULT 式が別にあると区別できない |
 | D8-12 | パラメータの検証 | アナライザと `ddl` に別々に書く／1 つの純粋関数 | **`catalog/seq_params.rs` の `init_params`**。CREATE はアナライザ、ALTER は `ddl/sequence.rs`（実行時に現在の状態を読んでから）が呼ぶ | ALTER の `RESTART` と `MINVALUE` / `MAXVALUE` の検査は現在の `last_value` を使うので実行時にしかできない。検査の順序と文言を 1 か所に置く |
 | D8-13 | セッションの状態 | `Session` に直接持つ／`executor/seq.rs` の `SeqSession` | **後者**。`RuntimeInfo` の 4 つのメソッドは `SeqRuntime`（`SeqSession` と `SequenceStore` と `CatalogReader` を借りる）に委ねる | S（`session.rs`）の担当が最小の追加で済む。単体で試験できる |
-| D8-14 | 暗黙のシーケンスの名前 | PostgreSQL の `ChooseRelationName`（既存のカタログだけを見る）／同じ文の中で選んだ名前も避ける | **後者**（PostgreSQL の上位互換）。`make_object_name`（`analyzer/ddl.rs` に既にある）で `<表>_<列>_seq`、衝突したら `seq1`、`seq2` ... | PostgreSQL は長い列名で同じ文の 2 列が同じ名前になっても気づかない（ソースのコメントにある）。M4 では一致させる必要がない |
+| D8-14 | 暗黙のシーケンスの名前 | PostgreSQL の `ChooseRelationName`（既存のカタログだけを見る）／同じ文の中で選んだ名前も避ける | **後者**（PostgreSQL の上位互換）。`catalog::naming::choose_relation_name`（07 §5.10。`make_object_name` もそこへ移る。§6.3）で `<表>_<列>_seq`、衝突したら `seq1`、`seq2` ... | PostgreSQL は長い列名で同じ文の 2 列が同じ名前になっても気づかない（ソースのコメントにある）。M4 では一致させる必要がない |
 | D8-15 | `pg_get_serial_sequence` | 作らない／作る | **任意**（M4 後半）。仕様は §4.5 | ORM が使う。psql・pgbench は使わない |
 
 ### 2.2 調査・実機・00 との食い違い
@@ -655,39 +655,39 @@ pub struct BoundDropSequence {
 
 `BoundCreateTable.sequences`（`00 §7`）は `Vec<BoundCreateSequence>`、各要素の `owner` は `NewTableColumn`。`ColumnDef`（`00 §11.1`）の `identity` を IDENTITY の列で設定する。SERIAL の列の `ColumnDef.default` は**アナライザでは `None`**（`ddl/table.rs` がシーケンスの OID を決めた後に §3.9 のテキストを入れる）。
 
-**カタログのストア**（`07-catalog-ddl.md` が `catalog/store.rs` に実装する。この章が必要とする形）:
+**カタログのストア**（**`07-catalog-ddl.md` の `catalog/store.rs` が正**。レビュー対応 R-08: 以前この章が C1 に求めていた `update_sequence_params` 以外の `drop_sequence` / `drop_default`、独自の `NewSequence`、`ddl/depend.rs` の API は 07 に存在せず、07 の `plan_drop` / `drop_objects` / `catalog/depend.rs` に一本化されているので、この章はそれらを使う）:
 
 ```rust
-pub struct NewSequence { pub oid: Oid, pub namespace: Oid, pub name: String, pub owner: Oid, pub params: SequenceParams }
+// 07 §4.3 の定義（再掲。変更しない）
+pub struct NewSequence {
+    pub oid: Oid, pub name: String, pub namespace: Oid, pub owner: Oid, pub params: SequenceParams,
+    /// SERIAL → Auto、IDENTITY → Internal。params.owned_by が Some のときだけ pg_depend（シーケンス → 列）を書く
+    pub owned_by_deptype: Option<DependType>,
+}
 impl CatalogStore {
-    /// pg_class（§3.8）、pg_attribute（3 + 6 行）、pg_sequence に行を入れる。ファイルは作らない（呼び出し側が先に作る）
+    /// pg_class（§3.8）、pg_attribute（3 + 6 行）、pg_sequence、pg_depend（owned_by があれば）に行を入れる。ファイルは作らない（呼び出し側が先に作る）
     pub fn create_sequence(&self, w: &WriteCtx, snap: &Snapshot, s: &NewSequence) -> Result<()>;
-    /// pg_sequence の行を更新（seqtypid、seqstart、seqincrement、seqmax、seqmin、seqcache、seqcycle）
+    /// ALTER SEQUENCE: pg_sequence の行を更新（seqtypid、seqstart、seqincrement、seqmax、seqmin、seqcache、seqcycle）。07 が C1 の作業として追加した
     pub fn update_sequence_params(&self, w: &WriteCtx, snap: &Snapshot, oid: Oid, p: &SequenceParams) -> Result<()>;
-    /// pg_sequence、pg_attribute、pg_class の行を消す（pg_depend は ddl::depend が消す）
-    pub fn drop_sequence(&self, w: &WriteCtx, snap: &Snapshot, oid: Oid) -> Result<()>;
-    /// DROP SEQUENCE ... CASCADE が消す DEFAULT: pg_attrdef の行を消し、pg_attribute.atthasdef を false にする
-    pub fn drop_default(&self, w: &WriteCtx, snap: &Snapshot, table: Oid, attnum: i16) -> Result<()>;
+    // DROP SEQUENCE は `catalog::depend::plan_drop(.., roots = [ObjectAddress::relation(seq_oid)], behavior, visible)` で閉包を求め
+    // （2BP01 のメッセージはここが作る）、`drop_objects(plan)` が pg_sequence・pg_attribute・pg_class・pg_attrdef（CASCADE のとき。atthasdef を戻す）・
+    // pg_depend の行を消してファイルの場所を返す。`drop_sequence` / `drop_default` は作らない
 }
 ```
 
 `load_table_def` は `relkind = 'S'` の行から `TableDef { kind: Sequence, columns: 3 列, sequence: Some(SequenceParams) }` を作る。`owned_by` は `pg_depend` の `a` / `i`（シーケンスが依存元、`refobjsubid > 0`）から。`TableDef.identity_seqs` は表の `pg_depend`（依存先が表の列、依存元が relkind `S`、deptype `i`）から `(attnum, シーケンスの OID)` を作る。`ColumnDef.identity` は `pg_attribute.attidentity` から。
 
-**`ddl/depend.rs`**（07 が持つ。この章が使う形。名前は 07 と突き合わせる）:
+**依存関係の API は 07 の `catalog/depend.rs` と `CatalogStore`**（レビュー対応 R-08。この章が書いていた `ddl/depend.rs` の `ObjAddr` / `DepType` / `record` / `dependents_of` / `dependencies_of` / `delete_dependencies` / `describe` は作らない）。この章の記述との対応:
 
-```rust
-pub struct ObjAddr { pub classid: Oid, pub objid: Oid, pub objsubid: i32 }
-pub enum DepType { Normal /* n */, Auto /* a */, Internal /* i */ }
-pub fn record(ctx: &mut DdlCtx<'_>, dependent: ObjAddr, referenced: ObjAddr, ty: DepType) -> Result<()>;
-/// referenced に依存する行（pg_depend の refclassid / refobjid が一致。objsubid は問わない）。OID 昇順
-pub fn dependents_of(ctx: &DdlCtx<'_>, referenced: ObjAddr) -> Result<Vec<(ObjAddr, DepType)>>;
-/// dependent が依存する先
-pub fn dependencies_of(ctx: &DdlCtx<'_>, dependent: ObjAddr) -> Result<Vec<(ObjAddr, DepType)>>;
-/// dependent の行のうち、依存先のクラスが ref_class で種類が ty のものを消す（OWNED BY の付け替え）
-pub fn delete_dependencies(ctx: &mut DdlCtx<'_>, dependent: ObjAddr, ref_class: Oid, ty: DepType) -> Result<()>;
-/// 人が読む説明: "default value for column a of table t"、"sequence s"
-pub fn describe(ctx: &DdlCtx<'_>, obj: ObjAddr) -> Result<String>;
-```
+| この章が使っていた名前 | 07 の名前 |
+|---|---|
+| `ObjAddr { classid, objid, objsubid }` | `ObjectAddress { class_id, obj_id, obj_sub }`（`ObjectAddress::relation(oid)` / `column(oid, attnum)`） |
+| `DepType::{Normal, Auto, Internal}` | `DependType::{Normal, Auto, Internal}` |
+| `depend::record(ctx, a, b, ty)` | `catalog.record_dependency(&w, &NewDepend { dependent, referenced, deptype })` |
+| `depend::dependents_of(ctx, a)` | `catalog.dependents_of(snap, a) -> Vec<DependRow>` |
+| `depend::dependencies_of(ctx, a)` | `catalog.references_of(snap, a) -> Vec<DependRow>` |
+| `depend::delete_dependencies(ctx, a, ref_class, ty)`（OWNED BY の付け替え） | `catalog.references_of(snap, seq)` で `referenced.class_id == pg_class` かつ `deptype == ty` の行を選び、`catalog.delete_dependencies(&w, snap, DependFilter::Exact { dependent, referenced })` で 1 行ずつ消す |
+| `depend::describe(ctx, a)` | `catalog.describe_object(snap, a, visible)`（DROP の 2BP01 の説明は `plan_drop` が作る） |
 
 ### 4.9 IDENTITY の規則（`analyzer/ddl.rs`。N1 が INSERT / UPDATE の解析から呼ぶ）
 
@@ -843,7 +843,7 @@ create(ctx, c) → "CREATE SEQUENCE":
   oid = ctx.db.catalog.get_new_relation_oid(ctx.cluster.oid_allocator())?
   create_with_oid(ctx, &c, oid, None)?
 
-create_with_oid(ctx, c, oid, table_ref: Option<(Oid /* 表 */, i16)>):       // CREATE TABLE（ddl/table.rs）も、表の OID が決まった後でこれを呼ぶ
+create_with_oid(ctx, c, oid, table_ref: Option<(Oid /* 表 */, i16)>):       // CREATE TABLE（ddl/table.rs。07 §5.1 の手順 6）も、表とシーケンスの OID が決まった後（手順 4b）でこれを呼ぶ。w はここで取る（同じトランザクションの write_ctx）
   1. locator = RelFileLocator { spc_oid: 1663, db_oid: ctx.db.oid, rel_number: RelFileNumber(oid) }
   2. w = ctx.txn.write_ctx()?
      ctx.cluster.storage().create_storage(&w, locator)?; ctx.txn.pending_creates.push(locator)       // SMGR_CREATE（M3 §5.4）
@@ -852,10 +852,12 @@ create_with_oid(ctx, c, oid, table_ref: Option<(Oid /* 表 */, i16)>):       // 
      if c.initial != SeqState { last_value: c.params.start, log_cnt: 0, is_called: false }:         // CREATE ... RESTART n
         lsn = ctx.cluster.seq().reset(&h, &c.params, Some(c.initial.last_value))?
      ctx.txn.note_wal(lsn)
-  4. ctx.db.catalog.create_sequence(&w, ctx.snapshot, &NewSequence { oid, namespace, name, owner: ctx.role_oid, params })?
-  5. 所有: c.owner が Column{table, attnum}、または table_ref が Some なら
-        depend::record(ctx, ObjAddr{pg_class, oid, 0}, ObjAddr{pg_class, table, attnum}, if c.for_identity { Internal } else { Auto })?
-  6. ctx.txn.catalog_dirty = true
+  4. 所有: owned = c.owner が Column{table, attnum} なら Some((table, attnum))、table_ref が Some なら table_ref。
+        params.owned_by = owned
+        ctx.db.catalog.create_sequence(&w, ctx.snapshot, &NewSequence { oid, namespace, name, owner: ctx.role_oid, params,
+            owned_by_deptype: owned.map(|_| if c.for_identity { DependType::Internal } else { DependType::Auto }) })?
+        （pg_depend の「シーケンス → 列」の行は `create_sequence` が書く。別に record しない。07 §4.3）
+  5. ctx.txn.catalog_dirty = true
 ```
 
 - **`DEFAULT` 式の依存の記録**（`07-catalog-ddl.md` の一般機構。この章が要求する）: 列の DEFAULT を `pg_attrdef` に書いた後、解析済みの DEFAULT 式を走査して、型が `regclass` の `Literal`（`nextval('x'::regclass)` の引数）ごとに `pg_attrdef` の行 → そのリレーションへ `n` の依存を記録する。SERIAL のテキスト（§3.9）も、利用者が書いた `DEFAULT nextval('s')` も同じ経路（PostgreSQL は DEFAULT 式の中の関係への依存をすべて記録する。実機で `DROP SEQUENCE` が `2BP01` になることを確認）。
@@ -892,11 +894,11 @@ alter(ctx, a) → "ALTER SEQUENCE":
 
 `process_owned_by`（PostgreSQL の `process_owned_by`。CREATE と ALTER が共有）:
 
-**どちらの形でも先に**: ユーザーが書いた OWNED BY（`for_identity = false`）で、シーケンスが IDENTITY に所有されている（`dependencies_of` に `i` がある）なら `0A000 cannot change ownership of identity sequence`、DETAIL `Sequence "{seq}" is linked to table "{table}".`（`OWNED BY NONE` も同じ。実機で確認）。
+**どちらの形でも先に**: ユーザーが書いた OWNED BY（`for_identity = false`）で、シーケンスが IDENTITY に所有されている（`catalog.references_of(seq)` に `deptype == Internal` の行がある）なら `0A000 cannot change ownership of identity sequence`、DETAIL `Sequence "{seq}" is linked to table "{table}".`（`OWNED BY NONE` も同じ。実機で確認）。
 
 | 入力 | 動作・エラー |
 |---|---|
-| `OWNED BY NONE` | `delete_dependencies(seq, pg_class, a)`（既存の所有を外す） |
+| `OWNED BY NONE` | 既存の所有を外す（`references_of(seq)` のうち pg_class への `Auto` の行を `delete_dependencies(Exact)` で消す。§4.8 の対応表） |
 | `OWNED BY [schema.]table.column` | 表を引く（なければ `42P01 relation "x" does not exist`）。表でない（シーケンス・インデックス）→ `42809 sequence cannot be owned by relation "{x}"`、DETAIL `This operation is not supported for {sequences|indexes}.`。シーケンスと表が別の名前空間 → `55000 sequence must be in same schema as table it is linked to`。列がない → `42703 column "{c}" of relation "{t}" does not exist`。OK なら既存の `a` の依存を外して新しい `a` を記録する。所有者の検査（`55000 sequence must have same owner as table it is linked to`）は M4 では 1 ロールなので起きない |
 
 - `ALTER SEQUENCE ... AS type`: `init_params` が `min` / `max` を新しい型に合わせて調整する（§6.2。実機: `int` + `INCREMENT -1` を `AS smallint` にすると `min = -32768`、`max = -1`。最大が元の型の最大のままなら新しい型の最大に）。
@@ -908,28 +910,22 @@ alter(ctx, a) → "ALTER SEQUENCE":
 
 アナライザ（`analyze_drop_sequence`）: 名前ごとに `relation_kind`。なければ `42P01 sequence "{name}" does not exist`（`IF EXISTS` なら NOTICE（SQLSTATE 00000）`sequence "{name}" does not exist, skipping` で `missing` に積む）。Sequence でなければ `42809 "{name}" is not a sequence`、HINT `Use DROP TABLE to remove a table.`（表）／`Use DROP INDEX to remove an index.`（インデックス）。
 
-`ddl/sequence.rs` の `drop`（`DROP SEQUENCE a, b [CASCADE]`）:
+`ddl/sequence.rs` の `drop`（`DROP SEQUENCE a, b [CASCADE]`。**閉包の計算・2BP01・NOTICE・行の削除は 07 の `plan_drop` / `drop_objects` に任せる**。レビュー対応 R-08）:
 
 ```text
 drop(ctx, d) → "DROP SEQUENCE":
-  全対象について先に検査し、1 つでも失敗したら何も消さずにエラーにする（PostgreSQL は全対象の依存を集めて 1 回で報告する）:
-    for t in d.targets:
-       deps_of_self = depend::dependencies_of(t)       // このシーケンスが依存する先
-       if deps_of_self に Internal がある:             // IDENTITY のシーケンス（CASCADE でも落とせない）
-          2BP01 `cannot drop sequence {s} because column {c} of table {t} requires it`、HINT `You can drop column {c} of table {t} instead.`
-       dependents = depend::dependents_of(ObjAddr{pg_class, t.oid, 0})                // 'n' の依存元 = pg_attrdef の行
-       restricted なのに dependents が空でない:
-          2BP01 `cannot drop sequence {s} because other objects depend on it`、
-          DETAIL: dependents を OID 昇順に 1 行ずつ `{describe} depends on sequence {s}`（改行区切り。100 行を超えたら `and {N} other objects (see server log for list)`）、
-          HINT `Use DROP ... CASCADE to drop the dependent objects too.`
-  実行（検査を通ったもの）:
-    for t in d.targets:
-       for (obj, _) in dependents（CASCADE のとき）: catalog.drop_default(w, snap, 表, attnum)?; depend の行（その attrdef を依存元とするもの）を消す
-       depend の行（t を依存元とするもの、依存先とするもの）を消す
-       catalog.drop_sequence(w, snap, t.oid)?
-       ctx.txn.pending_unlinks.push(t.locator)                     // ファイルはコミット時に消す（M3 §5.3 の手順 3）
-    ctx.txn.catalog_dirty = true
-  CASCADE で消したものがあれば NOTICE（SQLSTATE 00000）:
+  roots = d.targets.map(|t| ObjectAddress::relation(t.oid))
+  plan = catalog::depend::plan_drop(&ctx.db.catalog, ctx.snapshot, &roots, if d.cascade { Cascade } else { Restrict }, &visible)?
+     // 全対象を 1 回で検査する（1 つでも失敗したら何も消さない。PostgreSQL は全対象の依存を集めて 1 回で報告する）。07 §5.8.1 が次を作る:
+     //  - IDENTITY のシーケンス（pg_depend の deptype = Internal でシーケンス → 列）: CASCADE でも落とせない
+     //      2BP01 `cannot drop sequence {s} because column {c} of table {t} requires it`、HINT `You can drop column {c} of table {t} instead.`
+     //  - RESTRICT で依存元（'n' の pg_attrdef の行）がある:
+     //      2BP01 `cannot drop sequence {s} because other objects depend on it`、DETAIL は OID 昇順に 1 行ずつ `{describe} depends on sequence {s}`
+     //      （100 行を超えたら `and {N} other objects (see server log for list)`）、HINT `Use DROP ... CASCADE to drop the dependent objects too.`
+  locators = ctx.db.catalog.drop_objects(&w, ctx.snapshot, &plan)?      // pg_sequence・pg_attribute・pg_class・（CASCADE の）pg_attrdef と atthasdef・pg_depend
+  for l in locators: ctx.txn.pending_unlinks.push(l)                    // ファイルはコミット時に消す（M3 §5.3 の手順 3）
+  ctx.txn.catalog_dirty = true
+  plan.cascaded があれば NOTICE（SQLSTATE 00000）:
     1 個: `drop cascades to default value for column {c} of table {t}`
     2 個以上: `drop cascades to {N} other objects`、DETAIL: 各 `drop cascades to {describe}` を改行区切り
 ```
@@ -950,7 +946,7 @@ for (i, col) in ct.columns:                       // attnum = i + 1
      （M2 の KNOWN_UNSUPPORTED_TYPES から serial 系を外す）
   2. serial でなければ型を解決する（既存）。serial なら col の型 := int2 / int4 / int8
   3. serial なら制約の並びの**末尾**に「DEFAULT（シーケンス）」と「NOT NULL」を足した扱いにする（利用者の制約との衝突を PostgreSQL と同じ文言で検出するため）:
-       name = choose_relation_name(schema, 表名, 列名, "seq")                    // §6.3
+       name = catalog::naming::choose_relation_name(表名, Some(列名), "seq", nsp, false, &lookup, &taken)    // §6.3（07 §5.10）
        sequences.push(BoundCreateSequence { name, params: init_params(as_type = 型, Create).params, owner: NewTableColumn { attnum, serial_default: true }, for_identity: false, .. })
   4. 制約を順に処理（saw_nullable / saw_default / saw_identity）:
        NULL        : saw_nullable && is_not_null → 42601 `conflicting NULL/NOT NULL declarations for column "{c}" of table "{t}"`。is_not_null = false
@@ -989,7 +985,7 @@ CREATE TABLE の列（アナライザ。§5.7 の手順 4 の IDENTITY）:
     options の SeqOption を SeqOptions にする。As があれば 42601 `conflicting or redundant options`（PostgreSQL は型を表す AS を先頭に足すため、利用者の AS が重複扱い。実機で確認）、
        OwnedBy / persistence 系は 0A000、SequenceName は採用（スキーマ修飾なしなら表と同じ名前空間）
     out = init_params(&opts with as_type = 列の型, for_identity = true, Create)?
-    名前: SequenceName があればそれ、なければ choose_relation_name(schema, 表名, 列名, "seq")
+    名前: SequenceName があればそれ、なければ catalog::naming::choose_relation_name(表名, Some(列名), "seq", nsp, false, &lookup, &taken)（§6.3）
     sequences.push(BoundCreateSequence { owner: NewTableColumn { attnum, serial_default: false }, for_identity: true, .. })
     col.identity = Some(when の IdentityKind)、saw_identity = true
     暗黙の NOT NULL: saw_nullable && !is_not_null → 42601 `conflicting NULL/NOT NULL declarations ...`。is_not_null = true
@@ -1029,7 +1025,7 @@ UPDATE の規則（`identity_update_rule`。**WHERE に当たる行がなくて�
 | `ALTER TABLE s ADD ...` | `42809 ALTER action ADD CONSTRAINT cannot be performed on relation "s"`、DETAIL `This operation is not supported for sequences.`（07） |
 | `DROP TABLE s` | `42809 "s" is not a table`、HINT `Use DROP SEQUENCE to remove a sequence.`（07）。`DROP INDEX s` は `"s" is not an index`、同じ HINT |
 | `VACUUM s` / `ANALYZE s` | M4 は何もしない（PostgreSQL は `WARNING: skipping "s" --- cannot vacuum non-tables or special system tables`）。07 が決める |
-| psql `\ds` | `pg_class` の `relkind IN ('S','')` の行。`Schema`・`Name`・`Type = sequence`・`Owner`（`pg_get_userbyid(relowner)`）。**IDENTITY と SERIAL のシーケンスも並ぶ**。実機の SQL は `10-explain-copy-compat.md` が確かめる |
+| psql `\ds` | `pg_class` の `relkind IN ('S','')` の行。`Schema`・`Name`・`Type = sequence`・`Owner`（`pg_get_userbyid(relowner)`）。**IDENTITY と SERIAL のシーケンスも並ぶ**。実機の SQL の全文は `10-explain-copy-compat.md` §6.1（`\ds` と `\d シーケンス`。レビュー対応 R-25）に採取した |
 | psql `\d シーケンス` | `pg_class`（`relam` の LEFT JOIN は NULL）、`pg_sequence`（`format_type(seqtypid, NULL)`、`seqstart`、`seqmin`、`seqmax`、`seqincrement`、`CASE WHEN seqcycle THEN 'yes' ELSE 'no' END`、`seqcache`）、`pg_depend`（`Owned by: public.t.id` の行。`deptype IN ('a','i')`、`quote_ident`） |
 | psql `\d 表` | Default 列に `nextval('t_id_seq'::regclass)`（`pg_get_expr`）。IDENTITY の列は `generated always as identity` / `generated by default as identity`（`attidentity`） |
 
@@ -1156,16 +1152,18 @@ Create なら data.log_cnt = 0
 | ALTER: 現在 `(50, 0, f)` で `MAXVALUE 40` | 22023 `RESTART value (50) cannot be greater than MAXVALUE (40)` |
 | ALTER: `START 20`（`min` 1）の後 `MINVALUE 30` | 22023 `START value (20) cannot be less than MINVALUE (30)` |
 
-### 6.3 `choose_relation_name`（`analyzer/ddl.rs`）
+### 6.3 暗黙のシーケンスの名前（`catalog::naming::choose_relation_name` の呼び方）
 
-PostgreSQL の `ChooseRelationName(relname, colname, "seq", namespace)`。
+**命名関数は 07 §5.10 の `catalog/naming.rs`（C1）に 1 つだけ置く**（レビュー対応 R-09。以前この章は `analyzer/ddl.rs` に別シグネチャの `choose_relation_name(catalog, schema, ..)` と「既にある `make_object_name`」を前提にしていたが、07 は `make_object_name` を `catalog/naming.rs` に移し、`choose_relation_name(name1, name2, label, nsp, is_constraint, lookup, taken)` を持つ）。この章は次の呼び方をするだけで、同じ PostgreSQL の規則（`ChooseRelationName`）の 2 つ目の実装は作らない。
 
 ```rust
-/// 既存の make_object_name（名前を 63 バイトに縮める）で <name1>_<name2>_<label> を作り、
-/// 同じ名前空間のリレーション（表・インデックス・シーケンス）にも taken（同じ文で選んだ名前と、作る表自身の名前）にもなければ採用。
-/// あれば label を label1、label2 ... に変えて繰り返す（PostgreSQL の pass）
-pub(super) fn choose_relation_name(catalog: &dyn CatalogReader, schema: &str, name1: &str, name2: Option<&str>,
-                                   label: &str, taken: &HashSet<String>) -> Result<String>;
+// analyzer/ddl.rs（Q1）
+use crate::catalog::naming::{self, NameLookup};
+/// CatalogReader を包んで NameLookup にする（解析側の lookup。relation_exists は relation_kind、constraint_exists は constraint_name_exists）
+struct ReaderLookup<'a> { catalog: &'a dyn CatalogReader }
+// 暗黙のシーケンス: <表>_<列>_seq、衝突したら seq1、seq2 …。is_constraint = false（シーケンスは制約名と衝突しない）
+let name = naming::choose_relation_name(table_name, Some(col_name), "seq", nsp, false, &ReaderLookup { catalog }, &taken)?;
+taken.insert(name.clone());           // 同じ文の中で先に決めた名前（D8-14）と、作る表自身の名前・制約名を入れておく
 ```
 
 ### 6.4 ファイルごとの内容
@@ -1176,7 +1174,7 @@ pub(super) fn choose_relation_name(catalog: &dyn CatalogReader, schema: &str, na
 | `executor/seq.rs` | §4.4 の `SeqSession` / `SeqRuntime` と `handle_from_def` |
 | `types/ops.rs` | §4.5 の 5 つの関数（`oid_arg(args, i)` で `Datum::Oid` を取り出す小さな補助） |
 | `catalog/seq_params.rs` | §4.7 と §6.2 |
-| `analyzer/ddl.rs`（Q1 の範囲） | `analyze_create_sequence` / `analyze_alter_sequence` / `analyze_drop_sequence`、SERIAL・IDENTITY の処理（§5.7・§5.8）、`choose_relation_name`、`identity_insert_rule` / `identity_update_rule` / `identity_default_expr`、`process_owned_by` の解析側（表と列の解決・検査） |
+| `analyzer/ddl.rs`（Q1 の範囲） | `analyze_create_sequence` / `analyze_alter_sequence` / `analyze_drop_sequence`、SERIAL・IDENTITY の処理（§5.7・§5.8）、`catalog::naming::choose_relation_name` の呼び出し（§6.3。定義は C1 の `catalog/naming.rs`）、`identity_insert_rule` / `identity_update_rule` / `identity_default_expr`、`process_owned_by` の解析側（表と列の解決・検査） |
 | `ddl/sequence.rs` | §5.4〜§5.6 の `create` / `create_with_oid` / `alter` / `drop` / `drop_owned_by_table` / `restart_owned_by_table`、`process_owned_by` の実行側（`pg_depend` の更新） |
 | `txn/manager.rs` | `Transaction.{wal_flush_upto, started_at}`・`note_wal`・`TxnManager::finish_without_xid`（§4.6） |
 | `session.rs`（S。この章が頼む） | `seq_state: RefCell<SeqSession>`、文ごとの `SeqRuntime`、`end_statement` → `note_wal`、`commit_transaction` の XID なしの経路（§5.3）、`started_at` の設定 |
@@ -1285,14 +1283,15 @@ M3 の「追記ログ」のクライアントに `serial` 列（`id`）を足し
 
 ## 8. 実装の分担と工数（Q1）
 
-`00 §17` の Q1（5 日）。依存: A（型）、C1（カタログのストアと `ddl/depend.rs`）。
+`00 §17` の Q1（5 日。11 §4.1 の確定は **5.8 日**: 00 の 5 + `analyzer/ddl.rs` の型名 0.3 + 07 からの依頼 0.5）。依存: A（型）、C1（`CatalogStore`、`catalog/depend.rs`、`catalog/naming.rs`）。
 
 | 作業 | 日数 | 依存 |
 |---|---|---|
 | `storage/sequence.rs`（`SeqStore`、`plan_fetch` と参照実装、ページ・タプル、REDO、`describe`）と単体テスト | 1.5 | A、M3 の C・D・W1（`CriticalSection`、`RecordBuilder`、`Wal`） |
 | `catalog/seq_params.rs`（`init_params`、`parse_seq_int`）と単体テスト | 0.5 | なし |
 | `executor/seq.rs`、`types/ops.rs`、`Transaction` / `TxnManager::finish_without_xid`、`session.rs` への依頼の整理 | 0.75 | A、S |
-| `analyzer/ddl.rs`（SERIAL・IDENTITY、CREATE / ALTER / DROP SEQUENCE の解析、`choose_relation_name`、IDENTITY の規則関数） | 1.0 | P0（解析の足場）、S1（構文） |
+| `analyzer/ddl.rs`（SERIAL・IDENTITY、CREATE / ALTER / DROP SEQUENCE の解析、`naming::choose_relation_name` の呼び出し、IDENTITY の規則関数） | 1.0 | P0（解析の足場）、S1（構文）、C1（`catalog/naming.rs`） |
+| `analyzer/ddl.rs` の 07 からの依頼（CHECK の自動名を `choose_constraint_name` へ、`analyze_index_constraints` の呼び出し、`default_refs` の収集、`make_object_name` の定義の削除。07 §12.2。レビュー対応 R-09） | 0.5 | C1 |
 | `ddl/sequence.rs`（create / alter / drop / 表との連携） | 0.75 | C1（`CatalogStore`、`depend`）、`storage/sequence.rs` |
 | 結合（slt、再起動テスト、psql `\ds`）と R2（crash_sim）への仕様の引き渡し | 0.5 | K、R2 |
 
@@ -1390,7 +1389,7 @@ M3 の「追記ログ」のクライアントに `serial` 列（`id`）を足し
 
 1. **`§13.3`**: `SequenceHandle` に `name: String` を足す。`SeqState` に `PartialEq, Eq` を足す。`SeqRun.wal_lsn` の意味を「その呼び出しの後のページの LSN（払い出した値を覆う `SEQ_LOG` の終端）」と明記する。`SequenceStore` に `fn reset_generation(&self) -> u64;` を足す。`init` の初期状態は `(params.start, 0, false)`、`CREATE SEQUENCE ... RESTART n` は `init` の後の `reset`。`reset` は「RESTART なしなら現在の状態を保ち `log_cnt` を 0 にする」「現在の値を `new_params` の `min` / `max` で再検査する」と意味を決める（署名は変えない）。
 2. **`§14.1`**: `Transaction` に `note_wal(&mut self, lsn: Lsn)` を足す。`started_at` の意味（PostgreSQL のエポックからのマイクロ秒、BEGIN または暗黙のトランザクションの最初の文の開始時に session が設定）。`TxnManager::finish_without_xid` は XID なしの **COMMIT** のときだけ flush する。中断は flush しない（`[08-Q4]`）。
-3. **`§4`（ファイル構成）**: `catalog/seq_params.rs`（純粋関数。`catalog::{mod, builtin, opclass, schema}` と同じ層）と `executor/seq.rs` を足す。`analyzer/ddl.rs` に `choose_relation_name`・IDENTITY の規則関数を置く。
+3. **`§4`（ファイル構成）**: `catalog/seq_params.rs`（純粋関数。`catalog::{mod, builtin, opclass, schema}` と同じ層）と `executor/seq.rs` を足す。`analyzer/ddl.rs` に IDENTITY の規則関数を置く（命名は C1 の `catalog/naming.rs` の `choose_relation_name` を呼ぶ。R-09）。
 4. **`§7`**: `BoundCreateSequence`・`BoundAlterSequence`・`BoundDropSequence`・`SeqOwner`・`OwnedByTarget` のフィールドは §4.8 のとおり。AST（`CreateSequence` など）は §4.8。`BoundCreateTable.sequences[i].owner` は `SeqOwner::NewTableColumn`。
 5. **`§11.1`**: `TableDef.sequence` の `owned_by` は `pg_depend`（`a` / `i`）から。`CatalogReader` に `fn sequence_owned_by_column(&self, table: Oid, attnum: i16) -> Result<Option<Oid>> { Ok(None) }`（任意の `pg_get_serial_sequence` 用）。
 6. **`§11.5`**: `pg_sequence` の列（§3.8）。`pg_depend` の依存に「`DEFAULT` 式の中の `regclass` 定数 → `pg_attrdef` の行からそのリレーションへ `n`」を足す（`§11.6` の「列のデフォルト → シーケンス」の一般化）。
@@ -1403,5 +1402,5 @@ M3 の「追記ログ」のクライアントに `serial` 列（`id`）を足し
    - `recovery::dispatch` に `RmgrId::Seq`、`wal/dump.rs` に `describe` の呼び出し。
    - `DebugKnobs` に `seq_ignore_foreign_wal`・`seq_redo_skip_if_page_newer`・`seq_no_force_log`（いずれも `bool`、既定は無効。§7.4 の変異試験）。
    - `Session`: 文の終わりに `SeqSession::end_statement()` を `Transaction::note_wal` に反映、`commit_transaction` の XID なしの経路で `finish_without_xid`、`seq_state` の保持、`started_at` の設定。
-10. **`§17` の C1（07）への要求**: §4.8 の `CatalogStore` のメソッド（`create_sequence`・`update_sequence_params`・`drop_sequence`・`drop_default`）、`ddl/depend.rs` の API（`record`・`dependents_of`・`dependencies_of`・`delete_dependencies`・`describe`）、CREATE TABLE の手順への差し込み（§5.7 の A〜E）、DROP TABLE から `drop_owned_by_table`、TRUNCATE から `restart_owned_by_table`、シーケンスに対する DROP TABLE / DROP INDEX / CREATE INDEX / TRUNCATE / ALTER TABLE のエラー（§5.9）、`DEFAULT` 式の `regclass` 定数への依存の記録（§5.4）。
+10. **`§17` の C1（07）への要求**（レビュー対応 R-08: 07 が既に持つ API に合わせた。`update_sequence_params` だけが 07 に追加された）: §4.8 の `CatalogStore` のメソッド（`create_sequence`・`update_sequence_params`）、`catalog/depend.rs` の API（`record_dependency`・`dependents_of`・`references_of`・`delete_dependencies`・`describe_object`・`plan_drop` / `drop_objects`）、CREATE TABLE の手順への差し込み（07 §5.1 の手順 4b・6。`create_with_oid`）、DROP TABLE から `drop_owned_by_table`、TRUNCATE から `restart_owned_by_table`、シーケンスに対する DROP TABLE / DROP INDEX / CREATE INDEX / TRUNCATE / ALTER TABLE のエラー（§5.9）、`DEFAULT` 式の `regclass` 定数への依存の記録（§5.4）。
 11. **`§18`（テストの置き場所）**: `tests/slt/m4/seq/` の下のファイルは §7.1。再起動テストは `tests/restart/m4/seq-*`（§7.2）。

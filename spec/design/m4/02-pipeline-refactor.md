@@ -128,7 +128,7 @@ D の欠点と緩和:
 
 | # | 論点 | 決定 | 理由 |
 |---|---|---|---|
-| 02-D1 | `levels_up` の数え方 | **1 つの `BoundQuery`（本体が Select / Values / SetOp のどれでも）が 1 レベル**。`BoundUpdate` / `BoundDelete` の本体も 1 レベル。導出表・副問い合わせ式・集合演算の腕・CTE の本体は、それぞれ入れ子の `BoundQuery`（§3.4.2） | PG の `varlevelsup` と同じ数え方のはず（観測できる振る舞いは確認済み。内部の値は未検証。§8）。スコープの積み方（`analyze_query` ごとに 1 つ積む）と一致して実装が単純 |
+| 02-D1 | `levels_up` の数え方 | **【11 §7.1 の C-3 で 03 の D3-20 に変更。レビュー対応 R-04】rtable を持つスコープの入れ子だけを数える**: `BoundSelect`、`BoundUpdate` / `BoundDelete` の本体、**`BoundSetExpr::Values` の各行（rtable が空の 1 スコープ）**。`BoundQuery` そのもの（本体が Values / SetOp でも）は数えない。集合演算の腕と CTE の本体は兄弟（外側へ 1 段で外の SELECT）。導出表・副問い合わせ式の `BoundSelect` は 1 段（§3.4.2）。以前の案（`BoundQuery` ごとに 1 レベル。本体が SetOp の中間のレベルも数える）は廃止 | PG の `varlevelsup` と同じ数え方のはず（観測できる振る舞いは確認済み。内部の値は未検証。§8）。スコープの積み方（`analyze_query` ごとに 1 つ積む）と一致して実装が単純 |
 | 02-D2 | Join RTE を指す `Var` | **Bound に残さない**。アナライザが `JoinColSource` に従って展開する（§3.4.3）。`build` は Join RTE を知らなくてよい | PG は planner で `flatten_join_alias_vars` する（未検証: ソースの記憶）。M4 は早く（解析時に）展開して、`build` と `validate`（B3）を単純にする |
 | 02-D3 | `try_map` の葉 | `Column` / `Aggregate` / `SubLink` は **f が必ず変換する**（00 のとおり）。`walk` は `SubLink` の `query` に降りない。型を変えない書き換え用に `try_rewrite` を足す（§3.1.4） | 00 の署名は変えず、同じ型の中の書き換え（ColId の置換など）が「葉を clone して返す f」を毎回書かずに済むようにする |
 | 02-D4 | `ColId` の定義 | 各 `ColId` は**ちょうど 1 つのノードが定義する**。同じ ID を再び出力に並べるだけの `(id, Column(id))` はパススルーで、定義ではない。1 つのノードの出力に同じ `ColId` を 2 回並べない（`SELECT b, b` の 2 つ目は新しい ID） | ルールが「どのノードがこの列を作るか」を一意に引けるようにする。書き換え（`substitute`）が全体で安全になる |
@@ -144,7 +144,7 @@ D の欠点と緩和:
 | 02-D14 | 移行の順序 | **下から**（executor → analyzer → planner）。各段階の隣に一時的なアダプタを置く（§5） | アダプタが自明な構造変換だけで済む。上から（analyzer → planner → executor）だと `physicalize` を旧型向けと新型向けの 2 回書くことになる |
 | 02-D15 | DML の入力の形 | `build` が `Project` で作る（§3.5.5）。M2 の `Update.assignments` は廃止 | 00 §9.2 のとおり。UPDATE ... FROM で代入式が FROM の列を参照できる |
 | 02-D16 | `ExecCtx` の作り方と `rewind` | `ExecCtx::new(env, txn, query)` を足す。`rewind` は**未開始のノードにも呼べ**、副作用は「初期状態に戻す」だけ | `ExecCtx { .. }` のリテラルが session・テストに散らばるのを避ける。`Append` などが子を一律に `rewind` できる |
-| 02-D17 | ハッシュ化 SubPlan の NULL | `Hashed` は NULL を含まないキーの完全一致だけを表で引き、**探索キーに NULL がある、または表の行に NULL を含むキーがあるときは `test` を行ごとに評価する経路に落とす**（§3.7.3） | 三値論理を単一の規則で正しくする。多列でも同じ規則 |
+| 02-D17 | ハッシュ化 SubPlan の NULL | **意味は 05 §4.2.5 が正本**（`HashedSubPlan { set, null_rows, full_rows }` による正確な三値論理。レビュー対応 R-13）。02 の当初案「`Hashed` は NULL を含まないキーの完全一致だけを表で引き、探索キーに NULL がある、または表に NULL を含むキーの行があるときは `test` を行ごとに評価する経路に落とす」は採らない（結果は同じ。11 §7.1 の C-10 が `SubPlanStates` の型を 05 に決めたのに合わせた） | 三値論理を単一の規則で正しくする。多列でも同じ規則 |
 | 02-D18 | LIMIT / OFFSET の式 | レベル 0 の `Var` を含まない（`42P10 argument of LIMIT must not contain variables`、確認済み）。外側の `Var`（`levels_up > 0`）と副問い合わせは可（`limit (select 1)` と、`select (select 1 from u limit t.a) from t` の解析はどちらも通る。確認済み） | PG と同じ |
 
 ---
@@ -311,7 +311,7 @@ pub fn lower_single_rel(e: &BoundExpr) -> Result<PhysExpr>;
 
 | # | 不変条件 |
 |---|---|
-| B1 | `Var.levels_up` ≤ その `Var` を含むスコープの外側にあるレベルの数。参照先のレベルは `rtable` を持つ（本体が Select の `BoundQuery`、`BoundUpdate`、`BoundDelete`）。`BoundQuery` の本体が Values / SetOp のレベルは `rtable` を持たないので、そのレベルを指す `Var` は無い |
+| B1 | `Var.levels_up` ≤ その `Var` を含むスコープの外側にあるスコープの数（C-3: `BoundSelect`、DML、`Values` の行の入れ子だけを数える）。参照先のスコープは `rtable` を持つ（`BoundSelect`、`BoundUpdate`、`BoundDelete`）。`Values` の行のスコープは `rtable` を持たないので、そのスコープを指す `Var` は無い |
 | B2 | `Var.rte` < 参照先の `rtable.len()`。`Var.col` < `Rte.columns.len()`（ユーザー列）。システム列（`col >= SYSTEM_COL_BASE`）は `RteKind::Table` にだけ |
 | B3 | `Var` は **Join RTE を指さない**（02-D2） |
 | B4 | `Aggregate` は `BoundSelect.targets` / `having` だけに現れ、`AggCall` の `args` / `filter` の中・`filter`・`group_by`・`rtable` の式・`on`・`limit`・`offset` の中には現れない。`Aggregate` の `args` の `Var` が**すべて**外側（`levels_up > 0`）の集約は無い（02-D9）。`has_agg` は「`Aggregate` がある、または `group_by` が空でない、または `having` がある」と一致する |
@@ -438,9 +438,9 @@ impl BoundQuery {
 
 #### 3.4.2 スコープと `levels_up`
 
-**レベルを作るもの**（02-D1）: 入れ子の各 `BoundQuery`（導出表 `RteKind::Subquery`、副問い合わせ式 `SubLink.query`、集合演算の腕 `left` / `right`、CTE の本体 `BoundCte.query`）と、`BoundUpdate` / `BoundDelete` の本体。`BoundInsert.source` は外側のスコープを持たない独立した問い合わせ（`levels_up` は常に 0 から始まる）。
+**レベルを作るもの**（02-D1。11 §7.1 の C-3 により 03 の D3-20 に従う。R-04）: **rtable を持つスコープ**だけ。入れ子の `BoundSelect`（導出表 `RteKind::Subquery` の本体、副問い合わせ式 `SubLink.query` の本体、集合演算の腕の `BoundSelect`、CTE の本体の `BoundSelect`）、`BoundUpdate` / `BoundDelete` の本体、**`BoundSetExpr::Values` の各行**（rtable が空の 1 スコープ）。`BoundQuery` そのもの（本体が SetOp のとき）は数えない。`BoundInsert.source` は外側のスコープを持たない独立した問い合わせ（`levels_up` は常に 0 から始まる）。
 
-`Var.levels_up = k` は「`Var` を含む式が置かれたレベルから、外側へ `k` 個目のレベルの `rtable`」を指す。本体が Values / SetOp のレベルは `rtable` を持たないが、レベルとしては数える。
+`Var.levels_up = k` は「`Var` を含む式が置かれたスコープから、外側へ `k` 個目のスコープの `rtable`」を指す。`Values` の行のスコープは `rtable` を持たないので、そのスコープを指す `Var` はない（`levels_up = 0` の `Var` は現れない）。
 
 ```sql
 -- t(a, b), u(a, c), v(x)
@@ -457,12 +457,12 @@ SELECT (SELECT 1 FROM (SELECT t.a) s) FROM t
 --  "invalid reference to FROM-clause entry for table "t"" + HINT "To reference that table, you must mark this subquery with LATERAL."（確認済み）
 
 SELECT (SELECT a FROM u UNION SELECT t.a) FROM t
---  右の腕の中の t.a: 腕の BoundQuery（レベル 0）→ 集合演算を本体に持つ BoundQuery（SubLink.query。レベル 1。rtable を持たない）
---  → 外側の SELECT（レベル 2）の順なので levels_up = 2。rtable を持たない中間のレベルも数える
---  PG 17 で通る（確認済み）
+--  右の腕の BoundSelect（レベル 0）→ 外側の SELECT（レベル 1）なので t.a の levels_up = 1。
+--  集合演算を本体に持つ BoundQuery（SubLink.query）は rtable を持たずスコープではないので数えない（C-3。以前の記述は 2）
+--  PG 17 で通る（確認済み）。腕から外側の列を参照するケースは `subquery/correlated.slt` と差分ランダムテストで確かめる
 
 SELECT (VALUES (t.a)) FROM t
---  Values を本体に持つ BoundQuery がレベル 0（rtable なし）、外側の SELECT がレベル 1 なので、t.a = Var { rte: 0, col: 0, levels_up: 1 }
+--  Values の行（rtable が空の 1 スコープ。レベル 0）、外側の SELECT がレベル 1 なので、t.a = Var { rte: 0, col: 0, levels_up: 1 }
 --  PG 17 で通る（確認済み）
 ```
 
@@ -501,7 +501,7 @@ pub enum JoinColSource { Left(u16), Right(u16), Coalesce(u16, u16) }   // 子の
 
 | 結合 | 併合列（USING / NATURAL） | 例（`t(a, b)`, `u(a, c)`） |
 |---|---|---|
-| INNER | 左の列（`Left(j)`） | `t JOIN u USING (a)`: `columns = [a, b, c]`、`sources = [Left(0), Left(1), Right(1)]` |
+| INNER | **非キャストの側を選ぶ**（PG の `buildMergedJoinVar`。03 §3.2.2 と一致。レビュー対応 R-12）: 左の型が併合型（`common`）と同じ（typmod も同じ）なら `Left(j)`、そうでなく右がそうなら `Right(j)`、どちらでもなければ `Left(j)`（左に `Cast`） | `t JOIN u USING (a)`（`a` が同じ型）: `columns = [a, b, c]`、`sources = [Left(0), Left(1), Right(1)]`。`t(a int2)` と `u(a int4)` の INNER USING は併合型が `int4` なので `Right(0)`（Cast なし。`EXPLAIN VERBOSE` の `Output` は `u.a`） |
 | LEFT | 左の列（`Left(j)`） | `t LEFT JOIN u USING (a)`: 同じ。`SELECT a` は `t.a`（`u` に一致が無くても `t.a` の値） |
 | RIGHT | **右の列**（`Right(j)`） | `t RIGHT JOIN u USING (a)`: `sources = [Right(0), Left(1), Right(1)]`。`SELECT a` は `u.a` |
 | FULL | `Coalesce(l, r)` | `t FULL JOIN u USING (a)`: `sources = [Coalesce(0, 0), Left(1), Right(1)]` |
@@ -515,7 +515,7 @@ pub enum JoinColSource { Left(u16), Right(u16), Coalesce(u16, u16) }   // 子の
 | `SELECT *` | `[Coalesce(t.a, u.a), Var(t.b), Var(u.c)]` |
 | `SELECT j.*`（`... AS j`） | 同上 |
 
-- 左右の型が違う（`t(a int4)` と `w(a int2)`）とき、併合列の型は `select_common_type` の結果で、`Rte.columns[i].ty` がそれを持つ。展開した式は、必要な側に `Cast` を付ける（`Coalesce([Var(t.a), Cast(Var(w.a) → int4)])`）。INNER / LEFT / RIGHT でも、選ばれた側の列の型が併合型と違えば `Cast` を付ける。`int2` と `int8` の USING の併合列は `bigint`（確認済み）。
+- 左右の型が違う（`t(a int4)` と `w(a int2)`）とき、併合列の型は `select_common_type` の結果で、`Rte.columns[i].ty` がそれを持つ。展開した式は、必要な側に `Cast` を付ける（`Coalesce([Var(t.a), Cast(Var(w.a) → int4)])`）。INNER は上の表のとおり非キャストの側を選ぶ。LEFT / RIGHT は、選ばれた側（LEFT は左、RIGHT は右）の列の型が併合型と違えば `Cast` を付ける。`int2` と `int8` の USING の併合列は `bigint`（確認済み）。
 - `NATURAL JOIN` は共通名の列を USING とみなす。共通列が 1 つも無ければ `on: None` の `Inner`（直積。確認済み）。
 - この展開があるので、`build` は Join RTE を知らなくてよい。`JoinColSource` は、アナライザが名前解決と `*` の展開に使い、`BoundQuery::validate`（B3）が `Var` が Join RTE を指していないことを検査するときに使う。
 
@@ -730,7 +730,7 @@ id = alloc_subplan()?                           // 新しい SubPlanId。plan �
 - **`SubPlanId` / `ParamId` の採番順は、物理化が子を先に物理化してからノード自身の式を物理化する順（後行順）**で、0 から付ける。決定的で、plan_golden（`04`）が安定する。EXPLAIN の表示番号（`SubPlan 1`）への対応は `10` が決める。
 - 副問い合わせの中の `NestedLoopParam` が束縛する `ParamId` も同じ採番器から取る（文全体で一意）。
 - `PhysicalQuery.n_params` は採番した `ParamId` の数。
-- **CTE の本体**（`PhysicalQuery.ctes[i]`）は外側の列を参照しない（P8。参照する CTE は `MATERIALIZED` でも `0A000`、`03`）。
+- **CTE の本体**（`PhysicalQuery.ctes[i]`）は外側の列を参照しない（P8。**共有が要る CTE**（`MATERIALIZED` の明示、または揮発性）が外側の列を参照するときは 04 が `0A000`（04-D4）。外側の列を参照しても `NOT MATERIALIZED` または非揮発でインラインできる CTE は、インライン展開されて `ctes` に入らないので本体は問い合わせ本体の一部として外側の列を参照してよい。レビュー対応 R-05）。
 
 #### 3.6.4 `uses_params`・`children`・番号付け
 
@@ -857,6 +857,7 @@ enum SubPlanState {
     Hashed(Option<HashedSet>),
 }
 pub enum InitValue { Scalar(Datum), Exists(bool), Rows(Vec<Row>) }
+// レビュー対応 R-13: 正本は 05 §4.2.5 の HashedSubPlan { set, null_rows, full_rows }。下は 02 の当初案（参考）
 pub struct HashedSet { set: HashSet<HashKey>, rows: Vec<Row>, null_rows: Vec<usize> /* キーに NULL を含む行の添字 */ }
 
 impl SubPlanStates { pub fn new(query: &PhysicalQuery) -> SubPlanStates; /* 各 SubPlanDef.plan から executor::build */ }
@@ -883,9 +884,9 @@ pub fn eval_sublink(id: SubPlanId, row: &Row, ctx: &mut ExecCtx<'_>) -> Result<D
 |---|---|---|
 | `Rescan` | なし | ① `def.params` の式を `row` で**すべて評価してから**`ctx.params` に設定する。② `exec.rewind(ctx)`。③ 下の「種類ごとの畳み込み」で結果を出す |
 | `InitOnce` | `None` → `Some(InitValue)` | 初回（`None`）: `params` は空。`exec.rewind(ctx)` して実行し、Scalar → `Scalar(値)`（0 行は NULL、2 行目があれば `21000`）、Exists → `Exists(bool)`、Any / All → `Rows(全行)`（`charge`）を保持して `Some`。2 回目以降: 保持した値を返す（Any / All は `Rows` を `test` で畳む） |
-| `Hashed` | `None` → `Some(HashedSet)` | 初回: 実行して全行を `rows` に溜め、`build_keys`（副問い合わせの行に対する式）がすべて非 NULL の行を `set` に入れる。NULL を含む行の添字を `null_rows` に入れる（`charge`）。評価: `probe_keys` を `row` で評価。**全部非 NULL**なら `set` を引き、見つかれば true。見つからず `null_rows` が空なら false。見つからず `null_rows` があるとき、または `probe_keys` に NULL があるとき（表が空なら false）は、該当する行（`null_rows` の行、または全行）で `test` を `eval_with_sub` して三値で畳む（下） |
+| `Hashed` | `None` → `Some(HashedSet)` | **型と意味は 05 §4.2.5 の `HashedSubPlan`（`set` / `null_rows` / `full_rows`）が正本**（R-13。ここの `HashedSet { set, rows, null_rows }` は読み替える）。初回: 実行して全行を読み、`build_keys` がすべて非 NULL の行を `set` に、NULL を含む行を `null_rows` に入れる（`charge`）。評価: `probe_keys` を `row` で評価し、05 §4.2.5 の探索の擬似コード（空集合 → false、非 NULL の probe は `set` を引いて true、見つからなければ `null_rows` に部分一致があれば NULL、なければ false、probe に NULL があれば部分一致を調べて NULL か false）で三値を返す。`test` は使わない（EXPLAIN 用） |
 
-**種類ごとの畳み込み**（`Rescan` の ③ と、`InitOnce` の `Rows`、`Hashed` のフォールバック。いずれも 1 行ずつ `next` して行う）:
+**種類ごとの畳み込み**（`Rescan` の ③ と、`InitOnce` の `Rows`。いずれも 1 行ずつ `next` して行う。`Hashed` は 05 §4.2.5 の探索）:
 
 | `kind` | 結果 |
 |---|---|
@@ -905,7 +906,7 @@ pub fn eval_sublink(id: SubPlanId, row: &Row, ctx: &mut ExecCtx<'_>) -> Result<D
 `ctx.check_interrupts()` は `InterruptFlag::check`（停止・キャンセル・`statement_timeout`）。次の規則で置く。
 
 1. **葉のノード**（`SeqScan` `IndexScan` `FunctionScan` `Values` `Result` `CteScan`）は、`next` の**呼び出しごとに 1 回**呼ぶ。
-2. **子の `next` を 1 回の反復ごとに呼ぶループ**（`Filter` が条件に合わない行を読み捨てるループ、`Sort` / `Materialize` / `HashAggregate` / `HashJoin` の build の読み込み、`Distinct` / `Unique` / `Limit` の skip）は、葉が検査するので、ループ側は呼ばなくてよい。
+2. **子の `next` を 1 回の反復ごとに呼ぶループ**（`Filter` が条件に合わない行を読み捨てるループ、`Sort` / `Materialize` / `HashAggregate` / `HashJoin` の build の読み込み、`Distinct` / `Unique` / `Limit` の skip）も、**入力を 1 行読むたびに 1 回呼ぶ**（レビュー対応 R-11。00 §4.3 の 4、05 §5.0 の (b) に従う。以前の「葉が検査するのでループ側は呼ばなくてよい」は廃止）。理由: 葉を持たない部分木（`Values` / `Result` の上のループ）、`Materialize` の読み直しのように子の `next` が葉に届かない経路、葉が検査してもループ側の状態を壊さずに中断するためのキャンセル点が各ノードに要ること。費用は原子変数の読み出し 1 回。
 3. **子の `next` を呼ばずに回る長いループ**（溜めた行の上を回るもの。`NestedLoopJoin` の inner が `Materialize` から読み直される内側ループ、`HashJoin` の同じキーの連鎖を回るループ、`HashAggregate` / `Sort` の出力、SubPlan の `Rows` / `Hashed` の行を回るループ）は、**反復ごとに**呼ぶ。
 4. DML ノードは入力 1 行ごとに呼ぶ（M2 のとおり）。
 5. 式の評価（`eval`）の中では呼ばない（`pg_sleep` などは `runtime.check_interrupts` を使う。M3）。
@@ -1258,7 +1259,6 @@ e   AST → analyzer（新 Bound）           → planner（新: build → rules
 | `catalog/opclass.rs` | 00 §11.3 の型、空の `static`（`OPFAMILIES` `OPCLASSES` `AMOPS` `AMPROCS`）、`default_opclass` / `opclass_by_oid` / `opclass_by_name` / `comparator` / `operator_strategy` は `None` | — | B2 が表を埋める |
 | `catalog/builtin.rs` | `BuiltinAggregate`、`AggKind`、`AGGREGATES: &[BuiltinAggregate] = &[]`、`aggregates_named` は空の `Vec` | — | T3 |
 | `catalog/mod.rs`（`CatalogReader`） | 00 §11.2 の 5 メソッドの既定実装（`relation_kind` `index_by_name` `index_by_oid` `relation_name` は `Ok(None)`、`aggregates_named` は静的な表） | — | C1 が `StatementCatalog` で上書き |
-| `yuzhu-fuzz-sql/` | `Cargo.toml`（ワークスペースの member）と `src/main.rs`（`eprintln!` して終了コード 2） | — | Z |
 
 ##### P0-c: executor
 
@@ -1346,7 +1346,7 @@ e   AST → analyzer（新 Bound）           → planner（新: build → rules
 | `rewind_before_start_is_noop` | 未開始のノードに `rewind` を呼んでから読んでも、通常と同じ結果（02-D16） |
 | `dml_rewind_is_internal_error` | `Insert` / `Update` / `Delete` の `rewind` は `XX000` |
 | `every_leaf_checks_interrupts_per_next` | 葉ノードの種類ごとに、キャンセルを要求した状態で `next` を 1 回呼ぶと `57014` |
-| `long_loops_check_interrupts` | §3.7.4 の規則 3 のループ（溜めた行の上を回るもの）に、大きな入力とキャンセル要求を与えると、その `next` の中で `57014` |
+| `long_loops_check_interrupts` | §3.7.4 の規則 2・3 のループ（子を読み続けるもの、溜めた行の上を回るもの）に、大きな入力とキャンセル要求を与えると、その `next` の中で `57014` |
 | `eval_param_and_misplaced_kinds` | `Column(Param(p))` は `ctx.params[p]`、範囲外は `XX000`。`Aggregate` と、`sub` が無い `SubLinkOutput` は `XX000` |
 | `update_node_uses_positions_only` | `Update { n_user_cols, assigned }` が、入力の先頭 `n_user_cols` 列を旧行として複製し、`assigned` の位置だけを入力の列で置き換える。幅が合わない入力は `XX000`（M2 の `malformed_input_rows_are_internal_errors` の後継） |
 | SubPlan の状態遷移（X1 が `eval_sublink` を実装した後。P0 では `#[ignore]` の枠だけ置く） | `InitOnce` が 1 回だけ実行される（読み込み回数）、実行しない分岐では実行されない（遅延）、`Rescan` が外側の行ごとに実行される、`Scalar` の 2 行目で `21000`、`Exists` が最初の行で止まる（子の読み込み回数）、`Hashed` の三値のフォールバック（§3.7.3 の 6 つの組。PG 17 で確認済みの値）、再入で `XX000` |
@@ -1437,8 +1437,8 @@ e   AST → analyzer（新 Bound）           → planner（新: build → rules
   - 仮決め: `(SELECT sum(t.a) FROM u) FROM t` の形は `0A000 outer-level aggregate functions are not supported yet`。
   - 理由: PG は集約を外側の問い合わせに所属させる（確認済み）。必要性が低く、アナライザの集約の検査と `build` の段の扱いが複雑になる。
   - 変えたい場合の影響: 集約の所属レベルを `levels_up` の最小値で決め、外側の `BoundSelect` の `has_agg` を立てる処理を `03`（N2）と `build` に足す。約 +3 日。
-- **[02-Q5] 外側の列を参照する CTE は `0A000`（P8）**
-  - 仮決め: CTE の本体が外側の問い合わせの列を参照する（副問い合わせの中の `WITH`）場合は、`MATERIALIZED` でなくても `0A000`。`PhysicalQuery.ctes` のプランは外側で束縛された `Param` を使わない。
+- **[02-Q5] 外側の列を参照する共有 CTE は `0A000`（P8。レビュー対応 R-05 で「`MATERIALIZED` の明示と揮発性」に限定し 04-D4 と一致させた）**
+  - 仮決め: CTE の本体が外側の問い合わせの列を参照する（副問い合わせの中の `WITH`）場合のうち、共有が要るもの（`MATERIALIZED` の明示、揮発性）は `0A000`。共有が要らないもの（`materialize = Default` で参照が複数・非揮発）はインラインする（04-D4）。`PhysicalQuery.ctes` のプランは外側で束縛された `Param` を使わない。
   - 理由: CTE を 1 回だけ実行して共有する設計（`CteScan`）と、`Param` による再実行は両立しない。非 `MATERIALIZED` で参照が 1 回の CTE はインライン展開されるので、実用上はほとんど出ない。
   - 変えたい場合の影響: `CteStates` を `Param` の変化で作り直す状態遷移に拡張する（約 +1.5 日）。
 - **[02-Q6] 導出表の列名は内側の名前のまま、`Subquery Scan` ノードを持たない**
@@ -1454,9 +1454,9 @@ e   AST → analyzer（新 Bound）           → planner（新: build → rules
   - 理由: `build` と `validate` が単純になる（`build` は Join RTE を知らない）。PG は planner で `flatten_join_alias_vars` するが、M4 では 1 回の展開で足りる。
   - 変えたい場合の影響: `Var` が Join RTE を指してよいことにして、`build` が展開する（`JoinColSource` を使う。型の違いの `Cast` を `build` が作るために、カタログの型変換の表が `build` に要る）。`03` と `04` に波及し、約 +1 日。
 - **[02-Q9] `levels_up` の数え方（02-D1）**
-  - 仮決め: 1 つの `BoundQuery`（本体が Values / SetOp で `rtable` を持たなくても）が 1 レベル。
-  - 理由: アナライザのスコープの積み方（`analyze_query` ごとに 1 つ）と一致し、PG の `varlevelsup` とも一致するはず（§8 の未検証）。
-  - 変えたい場合の影響: `rtable` を持つレベルだけを数える方式にすると、`Var` の値は小さくなるが、アナライザのスコープの積み方とずれる。`03`（N3）の書き直し。約 +0.5 日。
+  - 仮決め（**11 §7.1 の C-3 / R-04 で 03 の D3-20 に変更**）: **rtable を持つスコープ**（`BoundSelect`、DML、`Values` の行）だけを数える。`BoundQuery` は数えない（集合演算の腕・CTE 本体は兄弟）。当初案は「`BoundQuery` ごとに 1 レベル」。
+  - 理由: 生成側の 03（アナライザ）と消費側の 04（`Builder.scopes`）がこの数え方で一致する。
+  - 変えたい場合の影響: 当初案（`BoundQuery` ごとに 1 レベル）に戻すと、03（N3）の書き直しと 04 の `scopes` の積み方の変更（約 +0.5 日）。
 - **[02-Q10] `SubLink` を含む式の `same_as` が常に不一致（§3.1.3）**
   - 仮決め: `GROUP BY (SELECT ...)` の式を SELECT に書き直すと `42803`（PG は通す）。
   - 理由: 副問い合わせの木の等価判定は、`BoundQuery` と `LogicalSubquery` の比較を実装する必要があり、M4 の必要性に見合わない。

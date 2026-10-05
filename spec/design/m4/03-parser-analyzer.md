@@ -1377,7 +1377,7 @@ M1 の `analyzer/tests.rs` のヘルパ（`run`、`err`、`select`、`create`、
 
 ### 6.4 差分ランダムテスト（Z）との接続
 
-`yuzhu-fuzz-sql` の生成器は、第 1.2 節の「入れる」の構文だけを生成する（0A000 になるものは生成しない）。この章に関する特に有効な生成: 等値結合（INNER / LEFT / RIGHT / FULL）の連鎖、`GROUP BY` + 集約 + `HAVING`、`IN` / `NOT IN` / `EXISTS` / スカラー（NULL を含む表）、`UNION` / `INTERSECT` / `EXCEPT`（`ALL` あり・なし）、CTE の参照 0 回・1 回・2 回、`DISTINCT ON`、相関副問い合わせ。出力はソートして比べ、エラーは SQLSTATE を比べる。
+`yuzhu-fuzz-sql`（実体は `tests/tools/difftest`。11 §7.1 の C-5。レビュー対応 R-02）の生成器は、第 1.2 節の「入れる」の構文だけを生成する（0A000 になるものは生成しない）。この章に関する特に有効な生成: 等値結合（INNER / LEFT / RIGHT / FULL）の連鎖、`GROUP BY` + 集約 + `HAVING`、`IN` / `NOT IN` / `EXISTS` / スカラー（NULL を含む表）、`UNION` / `INTERSECT` / `EXCEPT`（`ALL` あり・なし）、CTE の参照 0 回・1 回・2 回、`DISTINCT ON`、相関副問い合わせ。出力はソートして比べ、エラーは SQLSTATE を比べる。
 
 ---
 

@@ -871,7 +871,7 @@ PG の既定は ARE（`REG_ADVANCED`）。`~` / `~*` は部分一致（文字列
 | `( )`、`(?: )` | する | 捕獲は使わない（一致の有無だけ）。`()` は空に一致 |
 | `* + ?` と遅延版 `*? +? ??` | する | 遅延は結果に影響しないので貪欲と同じに扱う。量指定子の直後の量指定子は `quantifier operand invalid`（`a**`、`a{1,2}{3}`） |
 | `{m}` `{m,}` `{m,n}` と遅延版 | する | m, n ≤ 255、m ≤ n（超過は `invalid repetition count(s)`）。**`{` の次が数字でなければ `{` は通常の文字**（`a{x}`、`a{`、`a{,2}` はリテラル。実機で確認）。`{数字` で閉じ括弧がなければ `braces {} not balanced` |
-| ブラケット式 `[...]` | する | 範囲 `a-z`、否定 `[^...]`、先頭の `]` と `-` はリテラル、`[:alpha:]` `[:digit:]` `[:alnum:]` `[:upper:]` `[:lower:]` `[:space:]` `[:blank:]` `[:punct:]` `[:print:]` `[:graph:]` `[:cntrl:]` `[:xdigit:]` `[:word:]`（ASCII のみ）、`[.x.]`（1 文字のみ）、`[=x=]`（その文字）、`[\d]` `[\s]` `[\w]`（ブラケット内では `\D` `\S` `\W` は不可）。`[a-\d]` は `invalid character range` |
+| ブラケット式 `[...]` | する | 範囲 `a-z`、否定 `[^...]`、先頭の `]` と `-` はリテラル、`[:alpha:]` `[:digit:]` `[:alnum:]` `[:upper:]` `[:lower:]` `[:space:]` `[:blank:]` `[:punct:]` `[:print:]` `[:graph:]` `[:cntrl:]` `[:xdigit:]` `[:word:]`（ASCII のみ）、`[.x.]`（1 文字、**または名前つき照合要素**: `[[.hyphen.]]` は `-`、`[[.space.]]` は空白、`[[.period.]]`、`[[.underscore.]]`、`[[.NUL.]]`、`[[.tab.]]`、`[[.newline.]]`、`[[.hyphen-minus.]]`、`[[.solidus.]]`、`[[.tilde.]]`、`[[.DEL.]]`、`[[.zero.]]` など PostgreSQL の `cnames` の表の名前。**名前は大文字小文字を区別する**（`[[.HYPHEN.]]` は無効）。表は実機で全件採取して `types/regex.rs` の静的な表にする）、`[=x=]`（その文字。`[=ab=]` のように複数文字は無効）、`[\d]` `[\s]` `[\w]` に加えて **`[\D]` `[\S]` `[\W]` も受け付ける**（補集合のクラスとして動く。[実機] PG17.11: `'a' ~ '[\D]'` は t、`'1' ~ '[\D]'` は f、`'D' ~ '[\D]'` は t、`'x' ~ '[a-c\D]'` は t、`'5' ~ '[a-c\D]'` は f、`'a' ~ '[^\D]'` は f、`'1' ~ '[^\D]'` は t、`' ' ~ '[\S]'` は f、`'!' ~ '[\W]'` は t。レビュー対応 R-21）。`[a-\d]` は `invalid character range` |
 | `[[:<:]]` `[[:>:]]` | する | `\m` `\M` と同じ |
 | エスケープ（文字） | する | `\a`(7) `\b`(8、**後退文字であって単語境界ではない**) `\B`(`\`) `\cX` `\e`(27) `\f` `\n` `\r` `\t` `\v` `\0` `\ooo`（8 進） `\xhhh`（16 進を可能な限り） `\uhhhh` `\Uhhhhhhhh`。英数字以外の `\X` は X そのもの |
 | エスケープ（クラス） | する | `\d \D \s \S \w \W`（ASCII。`\w` = `[0-9A-Za-z_]`） |
@@ -919,7 +919,7 @@ enum Inst {
 | `a{2,1}`、`x{256}`、`x{1,256}` | `invalid repetition count(s)` |
 | 末尾の `\`、`\q`、`\x`（16 進数字なし） | `invalid escape \ sequence` |
 | `[[:foo:]]` | `invalid character class` |
-| 複数文字の照合要素 `[[.hyphen.]]` | `invalid collating element` |
+| **未定義名**の照合要素（`[[.foo.]]`、`[[.ab.]]`、`[[.HYPHEN.]]`、`[[=ab=]]`） | `invalid collating element`（[実機] PG17.11 で確認。**`[[.hyphen.]]` は有効**で `'a-' ~ '[[.hyphen.]]'` は t、`[[.space.]]` も有効。以前の「複数文字の照合要素は `invalid collating element`」は誤り。レビュー対応 R-20） |
 | `(?z)`、`(?i`（閉じない） | `invalid embedded option` |
 | `\1`、`(a)\2`（存在しないグループ） | `invalid backreference number` |
 | プログラムが大きすぎる | `regular expression is too complex` |
@@ -1088,7 +1088,7 @@ pub trait SetIter { fn next(&mut self) -> Result<Option<Datum>>; }
 - `storage/heap/tuple.rs`（H4 と共同）: §3.5 のバイト例（numeric `1.5`、`-123.456`、`0`、NaN、bpchar、date、timestamp、regclass、int2vector）を `form_tuple` / `deform_tuple` で往復し、バイト列が表と一致。numeric の `ndigits` が 59 以上（4 バイトヘッダ）と未満（1 バイトヘッダ）の境界。
 - `catalog/builtin.rs`: `OPERATORS` の各行の `oprcode`・`com`・`neg` が実機の `pg_operator` と一致するテスト（`tools/gen_procs.sh` と同じ出典から生成した定数表と比べる）。`AGGREGATES` の OID と結果型が実機の `pg_proc` と一致。
 
-### 12.4 差分ランダムテスト（`yuzhu-fuzz-sql`、Z）
+### 12.4 差分ランダムテスト（`yuzhu-fuzz-sql` は作らず `tests/tools/difftest`。11 §7.1 の C-5。Z）
 
 numeric（四則と丸め、`numeric(p,s)` 列への INSERT）、bpchar（比較と連結）、日時（比較、`date ± int`）、集約（`sum` `avg` `min` `max` を numeric・float・int・bpchar に）を生成に含める。float の `sum` / `avg` は誤差の出ない値（整数値、2 進で正確な小数）だけを使う。
 
@@ -1123,7 +1123,7 @@ numeric（四則と丸め、`numeric(p,s)` 列への INSERT）、bpchar（比較
 | 日時の `WARNING`（精度の丸め） | D-9-10 |
 | `min` / `max` の等値のときの代表（float の `-0` と `+0`、bpchar のパディングの違い）の細部 | 実機で numeric（`1.100`）と float（`-0`）を確認。bpchar は `||` 経由の確認のみ |
 | `Datum::as_str` を BpChar に広げた影響 | `Datum::Text` だけを想定している箇所（`planner/mod.rs`、`executor/nodes/distinct.rs`、`catalog/rows.rs`、`catalog/store.rs`）の洗い出しは A / P0 の最初の作業 |
-| 正規表現の ARE の細部 | `\xhhh` の桁数、`[[.x.]]` の名前つき照合要素、`(?x)` の `#` コメントの境界は実機の差分生成器で確かめる（§9.5 のコーパスに含める） |
+| 正規表現の ARE の細部 | `\xhhh` の桁数、`[[.x.]]` の名前つき照合要素（名前の表は実機から採取済みの方針。R-20）、`(?x)` の `#` コメントの境界は実機の差分生成器で確かめる（§9.5 のコーパスに含める） |
 | 計画のキャッシュ（M5） | 日時リテラルの畳み込み結果が `TimeZone` / `DateStyle` に依存する（§4.1） |
 
 ---
