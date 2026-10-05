@@ -1,0 +1,79 @@
+# 集約: 空入力（GROUP BY なしなら 1 行、あれば 0 行）、count は 0 で他は NULL、HAVING だけの問い合わせ
+
+statement ok
+CREATE TABLE ag_e (a int, b int, f float8, n numeric, t text, ok bool)
+
+# GROUP BY なし: 空でも 1 行
+query IIIIIIIIIIIIII
+SELECT count(*), count(a), sum(a), avg(a), min(a), max(a), sum(f), avg(f), sum(n), avg(n), min(t), max(t), bool_and(ok), bool_or(ok) FROM ag_e
+----
+0 0 NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL NULL
+
+query T
+SELECT every(ok) IS NULL FROM ag_e
+----
+t
+
+# GROUP BY あり: 空なら 0 行
+query II
+SELECT a, count(*) FROM ag_e GROUP BY a
+----
+
+# WHERE で全部落としても同じ
+statement ok
+INSERT INTO ag_e VALUES (1, 10, 1.5, 1.5, 'x', true), (2, NULL, NULL, NULL, NULL, NULL)
+
+query II
+SELECT count(*), sum(a) FROM ag_e WHERE a > 100
+----
+0 NULL
+
+query II
+SELECT a, count(*) FROM ag_e WHERE a > 100 GROUP BY a
+----
+
+# HAVING だけ（SELECT に集約がなくても集約問い合わせになる）
+query I
+SELECT 1 FROM ag_e HAVING count(*) > 1
+----
+1
+
+query I
+SELECT 1 FROM ag_e HAVING count(*) > 5
+----
+
+query I
+SELECT 1 FROM ag_e WHERE a > 100 HAVING count(*) = 0
+----
+1
+
+query I
+SELECT 1 FROM ag_e WHERE a > 100 HAVING count(*) > 0
+----
+
+# 全部 NULL の入力: count(col) は 0、他は NULL。count(*) は行数
+query IIII
+SELECT count(*), count(b), sum(b), max(b) FROM ag_e WHERE a = 2
+----
+1 0 NULL NULL
+
+# 定数だけの SELECT 句
+query IT
+SELECT count(*), 'k' FROM ag_e WHERE false
+----
+0 k
+
+# 空のサブクエリ
+query I
+SELECT count(*) FROM (SELECT a FROM ag_e WHERE false) s
+----
+0
+
+# スカラー副問い合わせの中の空集約は NULL
+query I
+SELECT (SELECT sum(a) FROM ag_e WHERE false)
+----
+NULL
+
+statement ok
+DROP TABLE ag_e

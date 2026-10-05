@@ -1,0 +1,229 @@
+# INNER / CROSS / カンマ結合、自己結合、3 表の結合、式での結合、NULL キーは一致しない、派生表との結合
+
+statement ok
+CREATE TABLE jn_a (id int, k int, v text)
+
+statement ok
+CREATE TABLE jn_b (id int, k int, w text)
+
+statement ok
+CREATE TABLE jn_c (k int, z int)
+
+statement ok
+INSERT INTO jn_a VALUES (1, 10, 'a1'), (2, 20, 'a2'), (3, NULL, 'a3'), (4, 10, 'a4')
+
+statement ok
+INSERT INTO jn_b VALUES (1, 10, 'b1'), (2, 30, 'b2'), (3, NULL, 'b3'), (4, 10, 'b4'), (5, 20, 'b5')
+
+statement ok
+INSERT INTO jn_c VALUES (10, 100), (20, 200), (NULL, 999), (10, 101)
+
+# INNER JOIN。NULL キーは一致しない
+query ITT
+SELECT jn_a.id, v, w FROM jn_a JOIN jn_b ON jn_a.k = jn_b.k ORDER BY jn_a.id, w
+----
+1 a1 b1
+1 a1 b4
+2 a2 b5
+4 a4 b1
+4 a4 b4
+
+query ITT
+SELECT jn_a.id, v, w FROM jn_a INNER JOIN jn_b ON jn_a.k = jn_b.k ORDER BY jn_a.id, w
+----
+1 a1 b1
+1 a1 b4
+2 a2 b5
+4 a4 b1
+4 a4 b4
+
+# カンマ結合 + WHERE は INNER JOIN と同じ
+query ITT
+SELECT jn_a.id, v, w FROM jn_a, jn_b WHERE jn_a.k = jn_b.k ORDER BY jn_a.id, w
+----
+1 a1 b1
+1 a1 b4
+2 a2 b5
+4 a4 b1
+4 a4 b4
+
+# NULL = NULL は一致しない（NULL 同士の行は出ない）
+query I
+SELECT count(*) FROM jn_a JOIN jn_b ON jn_a.k = jn_b.k WHERE jn_a.k IS NULL
+----
+0
+
+# CROSS JOIN の件数（検算: 4 * 5 = 20）
+query I
+SELECT count(*) FROM jn_a CROSS JOIN jn_b
+----
+20
+
+query I
+SELECT count(*) FROM jn_a, jn_b
+----
+20
+
+query I
+SELECT count(*) FROM jn_a JOIN jn_b ON true
+----
+20
+
+# CROSS JOIN + WHERE
+query IT
+SELECT jn_a.id, w FROM jn_a CROSS JOIN jn_b WHERE jn_a.id = jn_b.id AND jn_a.id > 2 ORDER BY 1
+----
+3 b3
+4 b4
+
+# 結合の件数の検算: 一致する組の数 = キーごとの (左の件数 * 右の件数) の和
+query I
+SELECT count(*) FROM jn_a JOIN jn_b ON jn_a.k = jn_b.k
+----
+5
+
+query I
+SELECT sum(l.n * r.n)::int FROM
+  (SELECT k, count(*) AS n FROM jn_a WHERE k IS NOT NULL GROUP BY k) l
+  JOIN (SELECT k, count(*) AS n FROM jn_b WHERE k IS NOT NULL GROUP BY k) r ON l.k = r.k
+----
+5
+
+# 自己結合（別名）
+query II
+SELECT x.id, y.id FROM jn_a x JOIN jn_a y ON x.k = y.k AND x.id < y.id ORDER BY 1, 2
+----
+1 4
+
+query II
+SELECT x.id, y.id FROM jn_a x, jn_a y WHERE x.id + 1 = y.id ORDER BY 1
+----
+1 2
+2 3
+3 4
+
+# 自己結合で NULL は一致しない
+query I
+SELECT count(*) FROM jn_a x JOIN jn_a y ON x.k = y.k
+----
+5
+
+# 3 表の結合
+query ITTI
+SELECT jn_a.id, v, w, z FROM jn_a JOIN jn_b ON jn_a.id = jn_b.id JOIN jn_c ON jn_b.k = jn_c.k ORDER BY jn_a.id, z
+----
+1 a1 b1 100
+1 a1 b1 101
+4 a4 b4 100
+4 a4 b4 101
+
+query ITI
+SELECT jn_a.id, w, z FROM jn_a, jn_b, jn_c WHERE jn_a.id = jn_b.id AND jn_b.k = jn_c.k AND jn_a.id = 4 ORDER BY z
+----
+4 b4 100
+4 b4 101
+
+# 括弧つきの結合
+query ITI
+SELECT jn_a.id, w, z FROM jn_a JOIN (jn_b JOIN jn_c ON jn_b.k = jn_c.k) ON jn_a.id = jn_b.id ORDER BY 1, 3
+----
+1 b1 100
+1 b1 101
+4 b4 100
+4 b4 101
+
+# 式での結合
+query II
+SELECT jn_a.id, jn_b.id FROM jn_a JOIN jn_b ON jn_a.id * 2 = jn_b.id + 1 ORDER BY 1
+----
+1 1
+2 3
+3 5
+
+query II
+SELECT jn_a.id, jn_b.id FROM jn_a JOIN jn_b ON jn_a.k + 10 = jn_b.k ORDER BY 1, 2
+----
+1 5
+2 2
+4 5
+
+query II
+SELECT jn_a.id, jn_b.id FROM jn_a JOIN jn_b ON jn_a.k = jn_b.k AND jn_a.id <> jn_b.id ORDER BY 1, 2
+----
+1 4
+2 5
+4 1
+
+# 結合と WHERE の併用
+query ITT
+SELECT jn_a.id, v, w FROM jn_a JOIN jn_b ON jn_a.k = jn_b.k WHERE jn_b.id > 1 AND v <> 'a1' ORDER BY 1, 3
+----
+2 a2 b5
+4 a4 b4
+
+# 条件が定数
+query I
+SELECT count(*) FROM jn_a JOIN jn_b ON false
+----
+0
+
+# 派生表との結合
+query ITI
+SELECT jn_a.id, v, s.n FROM jn_a JOIN (SELECT k, count(*) AS n FROM jn_b GROUP BY k) s ON jn_a.k = s.k ORDER BY jn_a.id
+----
+1 a1 2
+2 a2 1
+4 a4 2
+
+query II
+SELECT s.id, t.id FROM (SELECT id FROM jn_a WHERE id < 3) s CROSS JOIN (SELECT id FROM jn_b WHERE id > 4) t ORDER BY 1
+----
+1 5
+2 5
+
+# 派生表どうしの結合
+query II
+SELECT s.id, t.k FROM (SELECT id, k FROM jn_a) s JOIN (SELECT id, k FROM jn_b) t ON s.id = t.id AND s.k = t.k ORDER BY 1
+----
+1 10
+4 10
+
+# 結合の出力の列順: 左の全列、右の全列
+query IITIIT
+SELECT * FROM jn_a JOIN jn_b ON jn_a.id = jn_b.id WHERE jn_a.id = 1
+----
+1 10 a1 1 10 b1
+
+# 同名の列は修飾が必要
+statement error (42702)
+SELECT id FROM jn_a JOIN jn_b ON jn_a.id = jn_b.id
+
+# GROUP BY / 集約との併用
+query II
+SELECT jn_b.k, count(*) FROM jn_a JOIN jn_b ON jn_a.k = jn_b.k GROUP BY jn_b.k ORDER BY 1
+----
+10 4
+20 1
+
+# 結合キーの型が違う（int と bigint）
+query I
+SELECT count(*) FROM jn_a JOIN (SELECT k::bigint AS k FROM jn_b) s ON jn_a.k = s.k
+----
+5
+
+# 存在しない列・表
+statement error (42703)
+SELECT * FROM jn_a JOIN jn_b ON jn_a.nosuch = jn_b.k
+
+statement error (42P01)
+SELECT * FROM jn_a JOIN jn_nosuch ON true
+
+# ON の型エラー
+statement error (42804)
+SELECT * FROM jn_a JOIN jn_b ON jn_a.id
+
+statement error (42883)
+SELECT * FROM jn_a JOIN jn_b ON jn_a.v = jn_b.id
+
+statement ok
+DROP TABLE jn_a, jn_b, jn_c

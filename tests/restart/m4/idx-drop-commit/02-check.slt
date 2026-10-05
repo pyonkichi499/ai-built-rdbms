@@ -1,0 +1,33 @@
+# フェーズ 2: 索引はなく、表のデータは無事。他の索引は使える。再作成できる。
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'm4r\_id\_%' ORDER BY relname
+----
+m4r_id_b
+m4r_id_t
+m4r_id_t_pkey
+
+query IIII
+SELECT id, a, b, 0 FROM m4r_id_t ORDER BY id
+----
+1 1 10 0
+2 2 20 0
+3 3 30 0
+4 3 40 0
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT id FROM m4r_id_t WHERE b = 30
+----
+3
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+CREATE INDEX m4r_id_a ON m4r_id_t (a)
+
+statement count 1
+INSERT INTO m4r_id_t VALUES (5, 3, 50)

@@ -1,0 +1,9 @@
+# フェーズ 3: コミットした CREATE SEQUENCE は残り、次は 34。DROP SEQUENCE をコミットして kill -9。
+
+query I
+SELECT nextval('m4r_sr_s')
+----
+34
+
+statement ok
+DROP SEQUENCE m4r_sr_s

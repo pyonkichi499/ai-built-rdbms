@@ -1,0 +1,25 @@
+# フェーズ 1: CREATE INDEX / CREATE TABLE ... PRIMARY KEY を ROLLBACK する。
+
+statement ok
+CREATE TABLE m4r_ir_keep (id int, v int)
+
+statement count 3
+INSERT INTO m4r_ir_keep VALUES (1, 10), (2, 20), (3, 30)
+
+statement ok
+BEGIN
+
+statement ok
+CREATE INDEX m4r_ir_keep_v ON m4r_ir_keep (v)
+
+statement ok
+CREATE TABLE m4r_ir_new (id int PRIMARY KEY, v int UNIQUE)
+
+statement count 1
+INSERT INTO m4r_ir_new VALUES (1, 1)
+
+statement ok
+CREATE INDEX m4r_ir_new_i ON m4r_ir_new (v, id)
+
+statement ok
+ROLLBACK

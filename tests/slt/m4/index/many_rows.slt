@@ -1,0 +1,242 @@
+# 数万行の INSERT・UPDATE・DELETE の後、索引走査の結果が全走査と一致する（同じ問い合わせを 2 通りの設定で流す）
+
+statement ok
+CREATE TABLE idx_mr_t (id int PRIMARY KEY, k int, s text)
+
+statement ok
+CREATE INDEX idx_mr_k ON idx_mr_t (k)
+
+statement ok
+CREATE INDEX idx_mr_s ON idx_mr_t (s)
+
+statement count 30000
+INSERT INTO idx_mr_t SELECT g, (g * 7919) % 1000, 's' || lpad((g % 3000)::text, 5, '0') FROM generate_series(1, 30000) g
+
+statement count 10000
+UPDATE idx_mr_t SET k = k + 1000 WHERE id % 3 = 0
+
+statement count 5000
+DELETE FROM idx_mr_t WHERE id % 6 = 1
+
+statement count 3000
+INSERT INTO idx_mr_t SELECT g, g % 50, 'new' || g FROM generate_series(30001, 33000) g
+
+statement error (23505)
+INSERT INTO idx_mr_t VALUES (30001, 0, 'dup')
+
+# 全走査（索引走査を無効にする）
+statement ok
+SET enable_indexscan = off
+
+statement ok
+SET enable_bitmapscan = off
+
+query I
+SELECT count(*) FROM idx_mr_t
+----
+28000
+
+query III
+SELECT count(*), sum(id), max(k) FROM idx_mr_t WHERE k = 100
+----
+20 318000 100
+
+query III
+SELECT count(*), min(id), max(id) FROM idx_mr_t WHERE k BETWEEN 10 AND 20
+----
+830 148 32970
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE k > 1990
+----
+90
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE k < 5
+----
+380
+
+query I
+SELECT id FROM idx_mr_t WHERE id BETWEEN 1000 AND 1012 ORDER BY id
+----
+1000
+1001
+1002
+1004
+1005
+1006
+1007
+1008
+1010
+1011
+1012
+
+query I
+SELECT id FROM idx_mr_t ORDER BY id DESC LIMIT 5
+----
+33000
+32999
+32998
+32997
+32996
+
+query I
+SELECT id FROM idx_mr_t ORDER BY id LIMIT 5 OFFSET 20000
+----
+24002
+24003
+24004
+24005
+24006
+
+query IT
+SELECT k, s FROM idx_mr_t WHERE s = 's00008' ORDER BY k, id
+----
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE s >= 's02990' AND s < 't'
+----
+90
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE s LIKE 'new3%'
+----
+3000
+
+query II
+SELECT k, count(*) FROM idx_mr_t WHERE k IN (0, 1, 1001, 1999) GROUP BY k ORDER BY k
+----
+0 80
+1 70
+1001 10
+1999 10
+
+query II
+SELECT id, k FROM idx_mr_t ORDER BY k DESC, id DESC LIMIT 3
+----
+27321 1999
+24321 1999
+21321 1999
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+RESET enable_bitmapscan
+
+# 索引走査（全走査を無効にする）
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM idx_mr_t
+----
+28000
+
+query III
+SELECT count(*), sum(id), max(k) FROM idx_mr_t WHERE k = 100
+----
+20 318000 100
+
+query III
+SELECT count(*), min(id), max(id) FROM idx_mr_t WHERE k BETWEEN 10 AND 20
+----
+830 148 32970
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE k > 1990
+----
+90
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE k < 5
+----
+380
+
+query I
+SELECT id FROM idx_mr_t WHERE id BETWEEN 1000 AND 1012 ORDER BY id
+----
+1000
+1001
+1002
+1004
+1005
+1006
+1007
+1008
+1010
+1011
+1012
+
+query I
+SELECT id FROM idx_mr_t ORDER BY id DESC LIMIT 5
+----
+33000
+32999
+32998
+32997
+32996
+
+query I
+SELECT id FROM idx_mr_t ORDER BY id LIMIT 5 OFFSET 20000
+----
+24002
+24003
+24004
+24005
+24006
+
+query IT
+SELECT k, s FROM idx_mr_t WHERE s = 's00008' ORDER BY k, id
+----
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+352 s00008
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE s >= 's02990' AND s < 't'
+----
+90
+
+query I
+SELECT count(*) FROM idx_mr_t WHERE s LIKE 'new3%'
+----
+3000
+
+query II
+SELECT k, count(*) FROM idx_mr_t WHERE k IN (0, 1, 1001, 1999) GROUP BY k ORDER BY k
+----
+0 80
+1 70
+1001 10
+1999 10
+
+query II
+SELECT id, k FROM idx_mr_t ORDER BY k DESC, id DESC LIMIT 3
+----
+27321 1999
+24321 1999
+21321 1999
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+DROP TABLE idx_mr_t

@@ -1,0 +1,72 @@
+# フェーズ 2: 再起動後、カタログ・索引走査・一意性が保たれている。さらに変更する。
+
+query TTT
+SELECT conname, contype::text, conkey::text FROM pg_constraint WHERE conrelid = 'm4r_ic_t'::regclass ORDER BY conname
+----
+m4r_ic_t_k_key u {2}
+m4r_ic_t_pkey p {1}
+
+query T
+SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'm4r_ic_t'::regclass ORDER BY c.relname
+----
+m4r_ic_t_k_key
+m4r_ic_t_pkey
+m4r_ic_vw
+m4r_ic_w
+
+query TTI
+SELECT d.classid::regclass::text, d.deptype::text, count(*) FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid IN (SELECT indexrelid FROM pg_index WHERE indrelid = 'm4r_ic_t'::regclass) GROUP BY 1, 2 ORDER BY 1, 2
+----
+pg_class a 3
+pg_class i 2
+
+# psql の \di の SQL
+query TTTT
+SELECT n.nspname, c.relname, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'i' THEN 'index' END, c2.relname FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace LEFT JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid LEFT JOIN pg_catalog.pg_class c2 ON i.indrelid = c2.oid WHERE c.relkind IN ('i') AND c.relname LIKE 'm4r\_ic\_%' AND pg_catalog.pg_table_is_visible(c.oid) ORDER BY 1, 2
+----
+public m4r_ic_t_k_key index m4r_ic_t
+public m4r_ic_t_pkey index m4r_ic_t
+public m4r_ic_vw index m4r_ic_t
+public m4r_ic_w index m4r_ic_t
+
+statement ok
+SET enable_seqscan = off
+
+query II
+SELECT id, w FROM m4r_ic_t WHERE w >= 200 ORDER BY w DESC
+----
+6 600
+5 500
+3 300
+2 200
+
+query I
+SELECT id FROM m4r_ic_t WHERE k = 30
+----
+3
+
+query I
+SELECT id FROM m4r_ic_t WHERE v = 'b' AND w = 200
+----
+2
+
+statement ok
+RESET enable_seqscan
+
+statement error (23505)
+INSERT INTO m4r_ic_t VALUES (7, 20, 'dup k', 1)
+
+statement error (23505)
+INSERT INTO m4r_ic_t VALUES (2, 21, 'dup id', 1)
+
+statement count 1
+INSERT INTO m4r_ic_t VALUES (7, 70, 'g', 700)
+
+statement count 1
+UPDATE m4r_ic_t SET k = 31, w = 301 WHERE id = 3
+
+statement count 1
+DELETE FROM m4r_ic_t WHERE id = 1
+
+statement count 1
+INSERT INTO m4r_ic_t VALUES (8, 10, 'reuse k', 800)

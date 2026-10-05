@@ -1,0 +1,115 @@
+# 集約の結果型（pg_typeof）: sum / avg / min / max / count / bool、43 行の AGGREGATES
+
+statement ok
+CREATE TABLE ag_ty (
+  i2 smallint, i4 int, i8 bigint, f4 real, f8 double precision, n numeric, n2 numeric(8,3),
+  t text, v varchar(5), c char(3), d date, ts timestamp, tz timestamptz, o oid, b bool
+)
+
+statement ok
+INSERT INTO ag_ty VALUES
+  (1, 2, 3, 1.5, 2.5, 1.25, 1.250, 'a', 'b', 'c', '2024-01-01', '2024-01-01 10:00:00', '2024-01-01 10:00:00+00', 5, true),
+  (2, 3, 4, 2.5, 3.5, 2.50, 2.500, 'b', 'c', 'd', '2024-02-01', '2024-02-01 10:00:00', '2024-02-01 10:00:00+00', 6, false)
+
+# count
+query TT
+SELECT pg_typeof(count(*)), pg_typeof(count(t)) FROM ag_ty
+----
+bigint bigint
+
+# sum
+query TTTTTT
+SELECT pg_typeof(sum(i2)), pg_typeof(sum(i4)), pg_typeof(sum(i8)), pg_typeof(sum(f4)), pg_typeof(sum(f8)), pg_typeof(sum(n)) FROM ag_ty
+----
+bigint bigint numeric real double precision numeric
+
+# avg
+query TTTTTT
+SELECT pg_typeof(avg(i2)), pg_typeof(avg(i4)), pg_typeof(avg(i8)), pg_typeof(avg(f4)), pg_typeof(avg(f8)), pg_typeof(avg(n)) FROM ag_ty
+----
+numeric numeric numeric double precision double precision numeric
+
+# sum(numeric(8,3)) は typmod なしの numeric
+query TT
+SELECT pg_typeof(sum(n2)), pg_typeof(min(n2)) FROM ag_ty
+----
+numeric numeric
+
+# 値
+query TTTTTT
+SELECT sum(i2)::text, sum(i4)::text, sum(i8)::text, sum(f4)::text, sum(f8)::text, sum(n)::text FROM ag_ty
+----
+3 5 7 4 6 3.75
+
+# min / max は引数と同じ型
+query TTTTTTTT
+SELECT pg_typeof(min(i2)), pg_typeof(min(i4)), pg_typeof(min(i8)), pg_typeof(min(f4)), pg_typeof(min(f8)), pg_typeof(min(n)), pg_typeof(min(t)), pg_typeof(min(o)) FROM ag_ty
+----
+smallint integer bigint real double precision numeric text oid
+
+query TTTTT
+SELECT pg_typeof(max(c)), pg_typeof(max(d)), pg_typeof(max(ts)), pg_typeof(max(tz)), pg_typeof(max(i8)) FROM ag_ty
+----
+character date timestamp without time zone timestamp with time zone bigint
+
+# varchar は text に解決される
+query T
+SELECT pg_typeof(max(v)) FROM ag_ty
+----
+text
+
+# bool
+query TTT
+SELECT pg_typeof(bool_and(b)), pg_typeof(bool_or(b)), pg_typeof(every(b)) FROM ag_ty
+----
+boolean boolean boolean
+
+# sum(int8) は numeric なので bigint の上限を超えても桁あふれしない
+query T
+SELECT sum(x)::text FROM (VALUES (9223372036854775807::bigint), (1::bigint)) v(x)
+----
+9223372036854775808
+
+query T
+SELECT pg_typeof(sum(x)) FROM (VALUES (9223372036854775807::bigint), (1::bigint)) v(x)
+----
+numeric
+
+# リテラル（int4 / numeric / bigint の推論）
+query TTT
+SELECT pg_typeof(sum(1)), pg_typeof(sum(1.5)), pg_typeof(sum(10000000000)) FROM ag_ty
+----
+bigint numeric numeric
+
+query TTT
+SELECT pg_typeof(avg(1)), pg_typeof(avg(1.5)), pg_typeof(avg(1.5e0::float8)) FROM ag_ty
+----
+numeric numeric double precision
+
+# 結果型が出力列の型になる（派生表を通しても保たれる）
+query T
+SELECT pg_typeof(s) FROM (SELECT sum(i4) AS s FROM ag_ty) x
+----
+bigint
+
+# 型のない引数は解決できない / 合う型がない
+statement error (42883)
+SELECT sum(b) FROM ag_ty
+
+statement error (42883)
+SELECT sum(t) FROM ag_ty
+
+statement error (42883)
+SELECT avg(d) FROM ag_ty
+
+statement error (42883)
+SELECT bool_and(i4) FROM ag_ty
+
+statement error (42883)
+SELECT sum() FROM ag_ty
+
+statement error (42883)
+SELECT min(b) FROM ag_ty
+
+statement ok
+DROP TABLE ag_ty

@@ -1,0 +1,73 @@
+# psql が使うカタログ関数: pg_get_userbyid、pg_table_is_visible、pg_encoding_to_char、array_length、array_to_string
+
+query T
+SELECT pg_catalog.pg_get_userbyid(10)
+----
+postgres
+
+query T
+SELECT pg_catalog.pg_get_userbyid(6171)
+----
+pg_database_owner
+
+query ?
+SELECT pg_catalog.pg_table_is_visible('pg_class'::regclass)
+----
+t
+
+query ?
+SELECT pg_catalog.pg_table_is_visible('pg_class'::regclass::oid)
+----
+t
+
+statement ok
+CREATE TABLE psql_t_fn (id int)
+
+query ?
+SELECT pg_catalog.pg_table_is_visible(c.oid) FROM pg_class c WHERE c.relname = 'psql_t_fn'
+----
+t
+
+query T
+SELECT pg_catalog.pg_encoding_to_char(6)
+----
+UTF8
+
+query T
+SELECT pg_catalog.pg_encoding_to_char(d.encoding) FROM pg_database d WHERE d.datname = 'postgres'
+----
+UTF8
+
+# datacl が NULL でも動く
+query T
+SELECT CASE WHEN pg_catalog.array_length(d.datacl, 1) = 0 THEN '(none)' ELSE pg_catalog.array_to_string(d.datacl, E'\n') END FROM pg_database d WHERE d.datname = 'postgres'
+----
+NULL
+
+query I
+SELECT count(*) FROM pg_database d WHERE pg_catalog.array_length(d.datacl, 1) IS NULL AND d.datname = 'postgres'
+----
+1
+
+query T
+SELECT pg_catalog.quote_ident('abc'), pg_catalog.quote_ident('Abc'), pg_catalog.quote_ident('a b')
+----
+abc "Abc" "a b"
+
+query T
+SELECT pg_catalog.quote_ident('select') || '.' || pg_catalog.quote_ident('t1')
+----
+"select".t1
+
+query ?
+SELECT pg_catalog.current_database() = 'postgres' AND pg_catalog.current_setting('server_version_num')::int >= 160000
+----
+t
+
+query T
+SELECT pg_catalog.format_type(23, NULL)
+----
+integer
+
+statement ok
+DROP TABLE psql_t_fn

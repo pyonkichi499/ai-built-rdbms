@@ -1,0 +1,29 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_begin a_next b_next a_roll b_next b_last
+step a_begin: BEGIN;
+step a_next: SELECT nextval('iso_sq') AS s, nextval('iso_sq5') AS s5;
+s|s5
+-+--
+1| 1
+(1 row)
+
+step b_next: SELECT nextval('iso_sq') AS s, nextval('iso_sq5') AS s5;
+s|s5
+-+--
+2| 6
+(1 row)
+
+step a_roll: ROLLBACK;
+step b_next: SELECT nextval('iso_sq') AS s, nextval('iso_sq5') AS s5;
+s|s5
+-+--
+3| 7
+(1 row)
+
+step b_last: SELECT lastval() AS last;
+last
+----
+   7
+(1 row)
+

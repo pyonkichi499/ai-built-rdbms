@@ -1,0 +1,15 @@
+# フェーズ 2: チェックポイントの後に nextval していたので 32 飛ぶ。続けて nextval ×2 → CHECKPOINT のあと kill -9。
+
+query I
+SELECT nextval('m4r_sp_a')
+----
+37
+
+query I
+SELECT nextval('m4r_sp_b') FROM generate_series(1, 2)
+----
+1
+2
+
+statement ok
+CHECKPOINT

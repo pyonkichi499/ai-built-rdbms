@@ -1,0 +1,368 @@
+# char(n) / bpchar: パディング、長さ、比較、連結、LIKE と正規表現、グルーピング、UNIQUE、キャスト
+
+statement ok
+CREATE TABLE ty_bp_t (id int, c char(5), v varchar(5), t text)
+
+statement ok
+INSERT INTO ty_bp_t VALUES (1, 'ab', 'ab', 'ab'), (2, 'ab   ', 'ab   ', 'ab   '), (3, 'abcde', 'abcde', 'abcde'), (4, '', '', ''), (5, NULL, NULL, NULL), (6, 'é', 'é', 'é'), (7, 'あい', 'あい', 'あい')
+
+# パディング（末尾の空白は値の一部だが、length と比較は無視する）
+query IIII
+SELECT id, length(c), char_length(c), octet_length(c) FROM ty_bp_t ORDER BY id
+----
+1 2 2 5
+2 2 2 5
+3 5 5 5
+4 0 0 5
+5 NULL NULL NULL
+6 1 1 6
+7 2 2 9
+
+query IT
+SELECT id, c || '|' FROM ty_bp_t ORDER BY id
+----
+1 ab|
+2 ab|
+3 abcde|
+4 |
+5 NULL
+6 é|
+7 あい|
+
+query IT
+SELECT id, c::text || '|' FROM ty_bp_t ORDER BY id
+----
+1 ab|
+2 ab|
+3 abcde|
+4 |
+5 NULL
+6 é|
+7 あい|
+
+query IT
+SELECT id, c::varchar || '|' FROM ty_bp_t ORDER BY id
+----
+1 ab|
+2 ab|
+3 abcde|
+4 |
+5 NULL
+6 é|
+7 あい|
+
+query IT
+SELECT id, v || '|' FROM ty_bp_t ORDER BY id
+----
+1 ab|
+2 ab   |
+3 abcde|
+4 |
+5 NULL
+6 é|
+7 あい|
+
+# 切り詰めとエラー
+statement ok
+INSERT INTO ty_bp_t (id, c) VALUES (10, 'abc  ')
+
+statement ok
+INSERT INTO ty_bp_t (id, c) VALUES (11, 'abcde     ')
+
+statement error (22001)
+INSERT INTO ty_bp_t (id, c) VALUES (12, 'abcdef')
+
+statement error (22001)
+INSERT INTO ty_bp_t (id, c) VALUES (12, 'abcde x')
+
+statement error (22001)
+INSERT INTO ty_bp_t (id, v) VALUES (12, 'abcdef')
+
+query T
+SELECT 'abcdef'::char(3)
+----
+abc
+
+query TTI
+SELECT 'abcdef'::char(3) || '|', 'ab'::char(4) || '|', length('ab'::char(4))
+----
+abc| ab| 2
+
+query II
+SELECT octet_length('ab'::char(4)), octet_length('éé'::char(4))
+----
+4 6
+
+# 比較: 末尾の空白を無視する
+query ??????
+SELECT 'a'::char(3) = 'a  '::char(3), 'a'::char(3) = 'a '::char(5), 'a'::char(3) < 'a '::char(3), 'a '::char(3) < 'ab'::char(3), 'b'::char(2) > 'a'::char(2), 'a'::char(3) <> 'a'::char(1)
+----
+t t f t t f
+
+query ????
+SELECT 'a'::char(3) <= 'a'::char(1), 'a'::char(3) >= 'a'::char(1), 'abc'::char(3) = 'abd'::char(3), ''::char(3) = ' '::char(3)
+----
+t t f t
+
+# char = text は text の比較（char 側の空白が消える）。varchar = char は bpchar の比較
+query ????
+SELECT 'abc'::char(5) = 'abc'::text, 'abc'::char(5) = 'abc '::text, 'abc '::varchar = 'abc'::char(5), 'abc'::text = 'abc'::char(5)
+----
+t f t t
+
+query TTT
+SELECT pg_typeof('a'::char(3) = 'a'::text), pg_typeof('a'::char(3) || 'b'::char(3)), pg_typeof('a'::char(3) || 'b'::text)
+----
+boolean text text
+
+# 列どうしと定数の比較
+query I
+SELECT id FROM ty_bp_t WHERE c = 'ab' ORDER BY id
+----
+1
+2
+
+query I
+SELECT id FROM ty_bp_t WHERE c = 'ab   ' ORDER BY id
+----
+1
+2
+
+query I
+SELECT id FROM ty_bp_t WHERE c = 'ab'::text ORDER BY id
+----
+1
+2
+
+query I
+SELECT id FROM ty_bp_t WHERE c = v ORDER BY id
+----
+1
+2
+3
+4
+6
+7
+
+query I
+SELECT id FROM ty_bp_t WHERE c = t ORDER BY id
+----
+1
+3
+4
+6
+7
+
+query I
+SELECT id FROM ty_bp_t WHERE c IN ('ab', 'abcde') ORDER BY id
+----
+1
+2
+3
+11
+
+query I
+SELECT id FROM ty_bp_t WHERE c NOT IN ('ab', 'abcde') ORDER BY id
+----
+4
+6
+7
+10
+
+query I
+SELECT id FROM ty_bp_t WHERE c > 'ab' ORDER BY id
+----
+3
+6
+7
+10
+11
+
+query I
+SELECT id FROM ty_bp_t WHERE c BETWEEN 'a' AND 'abc' ORDER BY id
+----
+1
+2
+10
+
+# || は空白を落としてから連結する
+query T
+SELECT 'ab'::char(5) || 'cd'::char(5)
+----
+abcd
+
+query TT
+SELECT 'ab'::char(5) || 'cd', 'x' || 'ab'::char(5)
+----
+abcd xab
+
+# LIKE と正規表現はパディングを含めて照合する
+query ??????
+SELECT 'a'::char(2) LIKE 'a_', 'a '::char(2) LIKE 'a', 'a'::char(2) LIKE 'a', 'a'::char(2) LIKE 'a%', 'a'::char(3) ~ 'a$', 'a'::char(3) ~ 'a *$'
+----
+t f f t f t
+
+query ????
+SELECT 'ab'::char(4) ~ '^ab  $', 'ab'::char(4) ~* 'AB', 'AB'::char(4) ILIKE 'ab%', 'ab'::char(4) NOT LIKE '%b'
+----
+t t t t
+
+query I
+SELECT id FROM ty_bp_t WHERE c LIKE 'ab%' ORDER BY id
+----
+1
+2
+3
+10
+11
+
+query I
+SELECT id FROM ty_bp_t WHERE c LIKE '%b' ORDER BY id
+----
+
+query I
+SELECT id FROM ty_bp_t WHERE c ~ 'b $' ORDER BY id
+----
+
+# ORDER BY / GROUP BY / DISTINCT / min / max
+query IT
+SELECT id, c || '|' FROM ty_bp_t WHERE c IS NOT NULL ORDER BY c, id
+----
+4 |
+1 ab|
+2 ab|
+10 abc|
+3 abcde|
+11 abcde|
+6 é|
+7 あい|
+
+query IT
+SELECT id, c || '|' FROM ty_bp_t ORDER BY c DESC NULLS LAST, id
+----
+7 あい|
+6 é|
+3 abcde|
+11 abcde|
+10 abc|
+1 ab|
+2 ab|
+4 |
+5 NULL
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT c FROM ty_bp_t) d
+----
+7
+
+query I
+SELECT count(*) FROM (SELECT c FROM ty_bp_t GROUP BY c) g
+----
+7
+
+query T
+SELECT min(c) || '|' FROM ty_bp_t
+----
+|
+
+query T
+SELECT max(c) || '|' FROM ty_bp_t
+----
+あい|
+
+query TT
+SELECT pg_typeof(min(c)), pg_typeof(max(c)) FROM ty_bp_t
+----
+character character
+
+query IT
+SELECT count(*), max(c)::text FROM ty_bp_t WHERE c LIKE 'ab%'
+----
+5 abcde
+
+# UNIQUE: 末尾の空白だけが違う値は重複
+statement ok
+CREATE TABLE ty_bp_u (c char(4) UNIQUE, n int)
+
+statement ok
+INSERT INTO ty_bp_u VALUES ('a', 1), ('b ', 2), (NULL, 3), (NULL, 4)
+
+statement error (23505)
+INSERT INTO ty_bp_u VALUES ('a   ', 5)
+
+statement error (23505)
+INSERT INTO ty_bp_u VALUES ('b', 5)
+
+statement ok
+INSERT INTO ty_bp_u VALUES ('ab', 6)
+
+query T
+SELECT c || '|' FROM ty_bp_u WHERE c = 'a' ORDER BY c
+----
+a|
+
+query I
+SELECT n FROM ty_bp_u WHERE c = 'b   ' ORDER BY n
+----
+2
+
+statement ok
+DROP TABLE ty_bp_u
+
+# キャスト
+query TTTT
+SELECT 'ab'::char, 'ab'::char(1), 'ab'::bpchar || '|', 'ab '::bpchar || '|'
+----
+a a ab| ab|
+
+query TTTT
+SELECT pg_typeof('a'::char), pg_typeof('a'::char(3)), pg_typeof('a'::bpchar), pg_typeof('a'::character(2))
+----
+character character character character
+
+query IIT
+SELECT length('a'::char), octet_length('a'::char), 'abc'::char || '|'
+----
+1 1 a|
+
+query TTT
+SELECT cast(true as char(3)) || '|', cast(12 as char(5)) || '|', cast(1.5 as char(6)) || '|'
+----
+tru| 12| 1.5|
+
+query TTT
+SELECT 'abc  '::char(5)::varchar || '|', 'abc'::varchar(5)::char(4) || '|', 'abc  '::text::char(5) || '|'
+----
+abc| abc| abc|
+
+query II
+SELECT length('abc  '::char(5)::varchar), length('abc  '::char(5)::text)
+----
+3 3
+
+# format_type と typmod
+query TTTT
+SELECT format_type(1042, NULL), format_type(1042, 9), format_type(1042, 5), format_type(1042, -1)
+----
+character character(5) character(1) bpchar
+
+query ITI
+SELECT a.attnum, format_type(a.atttypid, a.atttypmod), a.atttypmod FROM pg_attribute a WHERE a.attrelid = 'ty_bp_t'::regclass AND a.attnum > 0 ORDER BY a.attnum
+----
+1 integer -1
+2 character(5) 9
+3 character varying(5) 9
+4 text -1
+
+# typmod のエラー
+statement error (22023)
+SELECT 'a'::char(0)
+
+statement error (22023)
+SELECT 'a'::char(10485761)
+
+statement error (42601)
+SELECT 'a'::char(1,2)
+
+statement ok
+DROP TABLE ty_bp_t

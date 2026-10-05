@@ -1,0 +1,199 @@
+# DROP INDEX: エラー（42704 42809 2BP01 25001 0A000）、IF EXISTS、複数、再作成
+
+statement ok
+CREATE TABLE idx_di_t (a int PRIMARY KEY, b int, c int UNIQUE)
+
+statement ok
+CREATE SEQUENCE idx_di_s
+
+statement ok
+CREATE INDEX idx_di_b ON idx_di_t (b)
+
+statement ok
+CREATE INDEX idx_di_b2 ON idx_di_t (b, a)
+
+statement ok
+CREATE INDEX idx_di_b3 ON idx_di_t (c, b)
+
+# 存在しない
+statement error (42704)
+DROP INDEX idx_di_nosuch
+
+statement error (?s)index "idx_di_nosuch" does not exist
+DROP INDEX idx_di_nosuch
+
+statement ok
+DROP INDEX IF EXISTS idx_di_nosuch
+
+# 種類が違う
+statement error (42809)
+DROP INDEX idx_di_t
+
+statement error (?s)"idx_di_t" is not an index.*HINT: Use DROP TABLE to remove a table\.
+DROP INDEX idx_di_t
+
+statement error (42809)
+DROP INDEX idx_di_s
+
+statement error (?s)"idx_di_s" is not an index.*HINT: Use DROP SEQUENCE to remove a sequence\.
+DROP INDEX idx_di_s
+
+# 制約が所有する索引は DROP INDEX できない（CASCADE でも同じ）
+statement error (2BP01)
+DROP INDEX idx_di_t_pkey
+
+statement error (?s)cannot drop index idx_di_t_pkey because constraint idx_di_t_pkey on table idx_di_t requires it.*HINT: You can drop constraint idx_di_t_pkey on table idx_di_t instead\.
+DROP INDEX idx_di_t_pkey
+
+statement error (2BP01)
+DROP INDEX idx_di_t_c_key CASCADE
+
+statement error (?s)cannot drop index idx_di_t_c_key because constraint idx_di_t_c_key on table idx_di_t requires it.*HINT: You can drop constraint idx_di_t_c_key on table idx_di_t instead\.
+DROP INDEX idx_di_t_c_key CASCADE
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_di\_t\_%' ORDER BY relname
+----
+idx_di_t_c_key
+idx_di_t_pkey
+
+# 失敗した DROP は何も消さない（複数の対象のうち 1 つが失敗）
+statement error (2BP01)
+DROP INDEX idx_di_b, idx_di_t_pkey
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_di\_b%' ORDER BY relname
+----
+idx_di_b
+idx_di_b2
+idx_di_b3
+
+# 通常の DROP INDEX と、複数の対象
+statement ok
+DROP INDEX idx_di_b
+
+statement ok
+DROP INDEX idx_di_b2, idx_di_b3
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_di\_b%' ORDER BY relname
+----
+
+query I
+SELECT count(*) FROM pg_index WHERE indrelid = 'idx_di_t'::regclass
+----
+2
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM pg_class WHERE relname LIKE 'idx\_di\_b%')
+----
+0
+
+# 同じ名前を 2 回
+statement error (42704)
+DROP INDEX idx_di_b
+
+statement error (42704)
+DROP INDEX idx_di_b3, idx_di_b3
+
+# IF EXISTS の複数
+statement ok
+DROP INDEX IF EXISTS idx_di_b, idx_di_b2
+
+# 同じ名前で再作成
+statement ok
+CREATE INDEX idx_di_b ON idx_di_t (b)
+
+statement count 2
+INSERT INTO idx_di_t VALUES (1, 10, 100), (2, 20, 200)
+
+statement ok
+SET enable_seqscan = off
+
+query II
+SELECT a, b FROM idx_di_t WHERE b = 20
+----
+2 20
+
+statement ok
+RESET enable_seqscan
+
+# DROP INDEX の後も表のデータは無事で、一意性は PRIMARY KEY が守る
+statement ok
+DROP INDEX idx_di_b
+
+statement error (23505)
+INSERT INTO idx_di_t VALUES (1, 11, 101)
+
+# DROP INDEX は relhasindex を戻さない（PRIMARY KEY が残っているので t のまま）
+query T
+SELECT relhasindex::text FROM pg_class WHERE oid = 'idx_di_t'::regclass
+----
+true
+
+# 制約を通して DROP する方法（表ごと）
+statement ok
+DROP TABLE idx_di_t
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_di\_t%'
+----
+
+# CONCURRENTLY
+statement ok
+CREATE TABLE idx_di_u (a int, b int)
+
+statement ok
+CREATE INDEX idx_di_u1 ON idx_di_u (a)
+
+statement ok
+CREATE INDEX idx_di_u2 ON idx_di_u (b)
+
+statement ok
+CREATE INDEX idx_di_u3 ON idx_di_u (a, b)
+
+statement ok
+DROP INDEX CONCURRENTLY idx_di_u1
+
+statement ok
+BEGIN
+
+statement error (?s)DROP INDEX CONCURRENTLY cannot run inside a transaction block
+DROP INDEX CONCURRENTLY idx_di_u2
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+DROP INDEX CONCURRENTLY idx_di_u2
+
+statement ok
+ROLLBACK
+
+statement error (0A000)
+DROP INDEX CONCURRENTLY idx_di_u2, idx_di_u3
+
+statement error (?s)DROP INDEX CONCURRENTLY does not support dropping multiple objects
+DROP INDEX CONCURRENTLY idx_di_u2, idx_di_u3
+
+statement error (0A000)
+DROP INDEX CONCURRENTLY idx_di_u2 CASCADE
+
+statement error (?s)DROP INDEX CONCURRENTLY does not support CASCADE
+DROP INDEX CONCURRENTLY idx_di_u2 CASCADE
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_di\_u%' ORDER BY relname
+----
+idx_di_u
+idx_di_u2
+idx_di_u3
+
+statement ok
+DROP SEQUENCE idx_di_s
+
+statement ok
+DROP TABLE idx_di_u

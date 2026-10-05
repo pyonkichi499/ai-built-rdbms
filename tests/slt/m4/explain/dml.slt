@@ -1,0 +1,147 @@
+# DML のプラン: INSERT / UPDATE / DELETE（InitPlan は最上位の Insert / Update / Delete が持つ）
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_d_t (a int, b int, c text)
+
+statement ok
+INSERT INTO ex_d_t SELECT g, g % 5, 'c' || g FROM generate_series(1, 100) g
+
+statement ok
+CREATE TABLE ex_d_u (a int, x text)
+
+statement ok
+INSERT INTO ex_d_u SELECT g, 'x' || g FROM generate_series(1, 30) g
+
+statement ok
+CREATE TABLE ex_d_e (z int)
+
+statement ok
+ANALYZE ex_d_t
+
+statement ok
+ANALYZE ex_d_u
+
+statement ok
+ANALYZE ex_d_e
+
+query T
+EXPLAIN (COSTS OFF) INSERT INTO ex_d_u VALUES (1, 'a')
+----
+Insert on ex_d_u
+  ->  Result
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) INSERT INTO ex_d_u VALUES (1, 'a'), (2, 'b')
+----
+Insert on public.ex_d_u
+  ->  Values Scan on "*VALUES*"
+        Output: "*VALUES*".column1, "*VALUES*".column2
+
+query T
+EXPLAIN (COSTS OFF) INSERT INTO ex_d_u SELECT a, c FROM ex_d_t WHERE b = 1
+----
+Insert on ex_d_u
+  ->  Seq Scan on ex_d_t
+        Filter: (b = 1)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) INSERT INTO ex_d_u SELECT a, c FROM ex_d_t WHERE b = 1
+----
+Insert on public.ex_d_u
+  ->  Seq Scan on public.ex_d_t
+        Output: ex_d_t.a, ex_d_t.c
+        Filter: (ex_d_t.b = 1)
+
+query T
+EXPLAIN (COSTS OFF) UPDATE ex_d_t SET b = b + 1 WHERE a = 5
+----
+Update on ex_d_t
+  ->  Seq Scan on ex_d_t
+        Filter: (a = 5)
+
+query T
+EXPLAIN (COSTS OFF) UPDATE ex_d_t SET b = b + 1 WHERE c = 'c5'
+----
+Update on ex_d_t
+  ->  Seq Scan on ex_d_t
+        Filter: (c = 'c5'::text)
+
+query T
+EXPLAIN (COSTS OFF) UPDATE ex_d_t SET b = (SELECT 1) WHERE a = 1
+----
+Update on ex_d_t
+  InitPlan 1
+    ->  Result
+  ->  Seq Scan on ex_d_t
+        Filter: (a = 1)
+
+query T
+EXPLAIN (COSTS OFF) UPDATE ex_d_t SET b = 0 WHERE a = (SELECT max(z) FROM ex_d_e)
+----
+Update on ex_d_t
+  InitPlan 1
+    ->  Aggregate
+          ->  Seq Scan on ex_d_e
+  ->  Seq Scan on ex_d_t
+        Filter: (a = (InitPlan 1).col1)
+
+query T
+EXPLAIN (COSTS OFF) DELETE FROM ex_d_t WHERE b = 3
+----
+Delete on ex_d_t
+  ->  Seq Scan on ex_d_t
+        Filter: (b = 3)
+
+query T
+EXPLAIN (COSTS OFF) DELETE FROM ex_d_t
+----
+Delete on ex_d_t
+  ->  Seq Scan on ex_d_t
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) DELETE FROM ex_d_t WHERE b = 3
+----
+Delete on public.ex_d_t
+  ->  Seq Scan on public.ex_d_t
+        Output: ctid
+        Filter: (ex_d_t.b = 3)
+
+query T
+EXPLAIN (COSTS OFF) UPDATE ex_d_t SET b = ex_d_u.a FROM ex_d_u WHERE ex_d_u.a = ex_d_t.a AND ex_d_u.x = 'z'
+----
+Update on ex_d_t
+  ->  Hash Join
+        Hash Cond: (ex_d_t.a = ex_d_u.a)
+        ->  Seq Scan on ex_d_t
+        ->  Hash
+              ->  Seq Scan on ex_d_u
+                    Filter: (x = 'z'::text)
+
+query T
+EXPLAIN (COSTS OFF) DELETE FROM ex_d_t USING ex_d_u WHERE ex_d_t.a = ex_d_u.a
+----
+Delete on ex_d_t
+  ->  Hash Join
+        Hash Cond: (ex_d_t.a = ex_d_u.a)
+        ->  Seq Scan on ex_d_t
+        ->  Hash
+              ->  Seq Scan on ex_d_u
+
+statement ok
+DROP TABLE ex_d_t
+
+statement ok
+DROP TABLE ex_d_u
+
+statement ok
+DROP TABLE ex_d_e
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

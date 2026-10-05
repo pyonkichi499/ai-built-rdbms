@@ -1,0 +1,152 @@
+# GROUP BY は入力列が先、ORDER BY / DISTINCT ON は出力列の別名が先。位置番号・定数のエラー
+
+statement ok
+CREATE TABLE ag_t (a int, b int, c text)
+
+statement ok
+INSERT INTO ag_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, NULL, 'z'), (3, 30, 'z')
+
+# 位置番号と別名
+query II
+SELECT a, count(*) FROM ag_t GROUP BY 1 ORDER BY 1
+----
+1 1
+2 1
+3 2
+
+query II
+SELECT a + 0 AS zz, count(*) FROM ag_t GROUP BY zz ORDER BY zz
+----
+1 1
+2 1
+3 2
+
+# 別名が入力列と同名のとき GROUP BY は入力列（b）に解決される: a がグループ化されていない
+statement error column "ag_t.a" must appear in the GROUP BY clause or be used in an aggregate function
+SELECT a AS b, count(*) FROM ag_t GROUP BY b
+
+# 同じ名前でも別名と入力列が同じ列なら通る
+query II
+SELECT a AS a, count(*) FROM ag_t GROUP BY a ORDER BY a
+----
+1 1
+2 1
+3 2
+
+# ORDER BY は出力列の別名が先（出力列 a は ag_t.b、入力列 a ではない）
+query II
+SELECT a AS b, b AS a FROM ag_t ORDER BY a NULLS LAST, b
+----
+1 10
+2 20
+3 30
+3 NULL
+
+# 式の中の別名は見ない
+statement error column "s" does not exist
+SELECT a + b AS s FROM ag_t ORDER BY s + 1
+
+statement error column "k" does not exist
+SELECT a + 1 AS k, count(*) FROM ag_t GROUP BY k + 1
+
+# 同名の出力列が 2 つで式が違えば曖昧
+statement error ORDER BY "x" is ambiguous
+SELECT a AS x, b AS x FROM ag_t ORDER BY x
+
+query II
+SELECT a AS x, a AS x FROM ag_t WHERE a = 1 ORDER BY x
+----
+1 1
+
+# FROM で曖昧な名前は GROUP BY でも曖昧
+statement ok
+CREATE TABLE ag_u (a int)
+
+statement error column reference "a" is ambiguous
+SELECT ag_t.a FROM ag_t, ag_u GROUP BY a
+
+# 範囲外の位置と、整数以外の定数
+statement error GROUP BY position 2 is not in select list
+SELECT a FROM ag_t GROUP BY 2
+
+statement error ORDER BY position 0 is not in select list
+SELECT a FROM ag_t ORDER BY 0
+
+statement error GROUP BY position -1 is not in select list
+SELECT a FROM ag_t GROUP BY -1
+
+statement error non-integer constant in ORDER BY
+SELECT a FROM ag_t ORDER BY 1.5
+
+statement error non-integer constant in ORDER BY
+SELECT a FROM ag_t ORDER BY true
+
+statement error non-integer constant in GROUP BY
+SELECT a FROM ag_t GROUP BY 'a'
+
+# GROUP BY の位置が集約
+statement error aggregate functions are not allowed in GROUP BY
+SELECT count(*) FROM ag_t GROUP BY 1
+
+# HAVING は別名を見ない（c は入力列の text）
+statement error operator does not exist: text > integer
+SELECT count(*) AS c FROM ag_t HAVING c > 1
+
+# ORDER BY の集約・グループ化した式
+query I
+SELECT a FROM ag_t GROUP BY a ORDER BY count(*) DESC, a
+----
+3
+1
+2
+
+query I
+SELECT a FROM ag_t GROUP BY a ORDER BY a + 1
+----
+1
+2
+3
+
+statement error column "ag_t.a" must appear in the GROUP BY clause or be used in an aggregate function
+SELECT a FROM ag_t ORDER BY count(*)
+
+# DISTINCT / DISTINCT ON
+query I
+SELECT DISTINCT a + 1 FROM ag_t ORDER BY a + 1
+----
+2
+3
+4
+
+statement error for SELECT DISTINCT, ORDER BY expressions must appear in select list
+SELECT DISTINCT a FROM ag_t ORDER BY b
+
+query IT
+SELECT DISTINCT ON (a) a, c FROM ag_t ORDER BY a, b DESC NULLS LAST
+----
+1 x
+2 y
+3 z
+
+query IIT
+SELECT DISTINCT ON (a) a, b, c FROM ag_t ORDER BY a, b DESC NULLS LAST
+----
+1 10 x
+2 20 y
+3 30 z
+
+statement error SELECT DISTINCT ON expressions must match initial ORDER BY expressions
+SELECT DISTINCT ON (a) a, b FROM ag_t ORDER BY b
+
+statement error SELECT DISTINCT ON expressions must match initial ORDER BY expressions
+SELECT DISTINCT ON (a, b) a, b FROM ag_t ORDER BY a, c
+
+query I
+SELECT DISTINCT ON (a, a) a FROM ag_t ORDER BY a
+----
+1
+2
+3
+
+statement ok
+DROP TABLE ag_t, ag_u

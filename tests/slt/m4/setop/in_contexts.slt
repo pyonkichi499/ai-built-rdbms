@@ -1,0 +1,241 @@
+# 集合演算が現れる文脈: FROM の派生表・副問い合わせ・INSERT ... SELECT・CTE の本体・腕の中の GROUP BY / 副問い合わせ
+
+statement ok
+CREATE TABLE so_a (id int, g int, v text)
+
+statement ok
+CREATE TABLE so_b (id int, g int, v text)
+
+statement ok
+CREATE TABLE so_dst (id int, g int, v text)
+
+statement ok
+INSERT INTO so_a VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 2, 'c'), (4, NULL, 'd')
+
+statement ok
+INSERT INTO so_b VALUES (3, 2, 'c'), (4, NULL, 'd'), (5, 3, 'e'), (6, 3, 'f')
+
+# FROM の派生表
+query I
+SELECT count(*) FROM (SELECT id FROM so_a UNION SELECT id FROM so_b) s
+----
+6
+
+query I
+SELECT count(*) FROM (SELECT id FROM so_a UNION ALL SELECT id FROM so_b) s
+----
+8
+
+query IT
+SELECT id, v FROM (SELECT id, v FROM so_a INTERSECT SELECT id, v FROM so_b) s ORDER BY id
+----
+3 c
+4 d
+
+query IT
+SELECT s.id, s.v FROM (SELECT id, v FROM so_a EXCEPT SELECT id, v FROM so_b) s ORDER BY id
+----
+1 a
+2 b
+
+# 派生表を別の表と結合
+query ITT
+SELECT s.id, s.v, so_dst.v FROM (SELECT id, v FROM so_a UNION SELECT id, v FROM so_b) s LEFT JOIN so_dst ON so_dst.id = s.id ORDER BY s.id
+----
+1 a NULL
+2 b NULL
+3 c NULL
+4 d NULL
+5 e NULL
+6 f NULL
+
+# 列別名つきの派生表
+query II
+SELECT x, y FROM (SELECT id, g FROM so_a UNION SELECT id, g FROM so_b) s(x, y) WHERE y = 3 ORDER BY x
+----
+5 3
+6 3
+
+# 副問い合わせ（IN / EXISTS / スカラー）
+query I
+SELECT id FROM so_a WHERE id IN (SELECT id FROM so_b UNION SELECT 1) ORDER BY id
+----
+1
+3
+4
+
+query I
+SELECT id FROM so_a WHERE id NOT IN (SELECT id FROM so_b INTERSECT SELECT id FROM so_a) ORDER BY id
+----
+1
+2
+
+query I
+SELECT id FROM so_a WHERE EXISTS (SELECT 1 FROM so_b WHERE so_b.id = so_a.id UNION ALL SELECT 1 WHERE false) ORDER BY id
+----
+3
+4
+
+query I
+SELECT (SELECT max(id) FROM (SELECT id FROM so_a UNION SELECT id FROM so_b) s)
+----
+6
+
+query I
+SELECT (SELECT 7 UNION SELECT 7)
+----
+7
+
+# スカラー副問い合わせの集合演算が 2 行なら 21000
+statement error (21000)
+SELECT (SELECT id FROM so_b UNION SELECT id FROM so_a)
+
+# 副問い合わせの腕から外側の列を参照する
+query IT
+SELECT id, (SELECT v FROM so_b WHERE so_b.id = so_a.id UNION SELECT NULL WHERE false) FROM so_a ORDER BY id
+----
+1 NULL
+2 NULL
+3 c
+4 d
+
+# INSERT ... SELECT
+statement ok
+INSERT INTO so_dst SELECT id, g, v FROM so_a UNION SELECT id, g, v FROM so_b
+
+query I
+SELECT count(*) FROM so_dst
+----
+6
+
+statement ok
+DELETE FROM so_dst
+
+statement ok
+INSERT INTO so_dst SELECT id, g, v FROM so_a UNION ALL SELECT id, g, v FROM so_b
+
+query I
+SELECT count(*) FROM so_dst
+----
+8
+
+statement ok
+DELETE FROM so_dst
+
+# 集合演算の外枠の ORDER BY / LIMIT つき INSERT ... SELECT
+statement ok
+INSERT INTO so_dst (id, v) SELECT id, v FROM so_a UNION SELECT id, v FROM so_b ORDER BY 1 DESC LIMIT 2
+
+query IT
+SELECT id, v FROM so_dst ORDER BY id
+----
+5 e
+6 f
+
+statement ok
+DELETE FROM so_dst
+
+# VALUES の腕を含む INSERT ... SELECT。型は INSERT の列に合わせる
+statement ok
+INSERT INTO so_dst SELECT * FROM (VALUES (10, 1, 'x')) t UNION ALL SELECT 11, 2, 'y'
+
+query ITT
+SELECT id, g, v FROM so_dst ORDER BY id
+----
+10 1 x
+11 2 y
+
+statement ok
+DELETE FROM so_dst
+
+# CTE の本体
+query I
+WITH s AS (SELECT id FROM so_a UNION SELECT id FROM so_b) SELECT count(*) FROM s
+----
+6
+
+query II
+WITH s AS (SELECT id, g FROM so_a EXCEPT SELECT id, g FROM so_b), t AS (SELECT id FROM s INTERSECT SELECT id FROM so_a) SELECT id, (SELECT count(*) FROM t) FROM s ORDER BY id
+----
+1 2
+2 2
+
+# 腕の中の GROUP BY / HAVING / 集約
+query II
+SELECT g, count(*) FROM so_a GROUP BY g UNION ALL SELECT g, count(*) FROM so_b GROUP BY g ORDER BY 1, 2
+----
+1 2
+2 1
+2 1
+3 2
+NULL 1
+NULL 1
+
+query II
+SELECT g, sum(id)::int FROM so_a GROUP BY g HAVING sum(id) > 2 UNION SELECT g, sum(id)::int FROM so_b GROUP BY g HAVING sum(id) > 2 ORDER BY 1, 2
+----
+1 3
+2 3
+3 11
+NULL 4
+
+# 腕の中の副問い合わせ
+query I
+SELECT id FROM so_a WHERE id IN (SELECT id FROM so_b) UNION SELECT id FROM so_b WHERE g = (SELECT max(g) FROM so_b) ORDER BY 1
+----
+3
+4
+5
+6
+
+# 腕の中の WHERE / LIMIT（括弧つき）
+query I
+(SELECT id FROM so_a ORDER BY id LIMIT 2) UNION ALL (SELECT id FROM so_b ORDER BY id DESC LIMIT 1) ORDER BY 1
+----
+1
+2
+6
+
+# 腕の中の JOIN
+query IT
+SELECT a.id, b.v FROM so_a a JOIN so_b b ON a.id = b.id UNION SELECT id, v FROM so_a WHERE id = 1 ORDER BY 1
+----
+1 a
+3 c
+4 d
+
+# 集合演算の結果への集約・DISTINCT
+query I
+SELECT count(DISTINCT g) FROM (SELECT g FROM so_a UNION ALL SELECT g FROM so_b) s
+----
+3
+
+# 3 つ以上: 左結合。INTERSECT は UNION / EXCEPT より優先
+query I
+SELECT id FROM so_a UNION SELECT id FROM so_b EXCEPT SELECT id FROM so_a WHERE id < 3 ORDER BY 1
+----
+3
+4
+5
+6
+
+query I
+SELECT id FROM so_a EXCEPT SELECT id FROM so_a WHERE id < 3 UNION SELECT 99 ORDER BY 1
+----
+3
+4
+99
+
+query I
+SELECT 1 UNION SELECT 2 INTERSECT SELECT 2 ORDER BY 1
+----
+1
+2
+
+query I
+SELECT 1 UNION ALL SELECT 2 INTERSECT SELECT 3 ORDER BY 1
+----
+1
+
+statement ok
+DROP TABLE so_a, so_b, so_dst

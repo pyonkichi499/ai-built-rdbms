@@ -1,0 +1,214 @@
+# regclass / regtype: 入力・出力・キャスト・エラー・to_regclass
+
+query ????
+SELECT 'pg_class'::regclass::oid, 'PG_CLASS'::regclass::oid, '"pg_class"'::regclass::oid, ' pg_class '::regclass::oid
+----
+1259 1259 1259 1259
+
+query ??
+SELECT 'pg_catalog.pg_class'::regclass::oid, 'postgres.pg_catalog.pg_class'::regclass::oid
+----
+1259 1259
+
+query ???
+SELECT '1259'::regclass::oid, '99999999'::regclass::oid, '-'::regclass::oid
+----
+1259 99999999 0
+
+query T
+SELECT 0::regclass::text
+----
+-
+
+query TTT
+SELECT 'pg_class'::regclass::text, '1259'::regclass::text, '99999999'::regclass::text
+----
+pg_class pg_class 99999999
+
+query T
+SELECT pg_typeof('pg_class'::regclass)
+----
+regclass
+
+statement error (42P01)
+SELECT 'nosuch'::regclass
+
+statement error (42P01)
+SELECT 'public.nosuch'::regclass
+
+statement error (42602)
+SELECT ''::regclass
+
+statement error (42602)
+SELECT 'foo bar'::regclass
+
+statement error (42601)
+SELECT 'a.b.c.d'::regclass
+
+# oid との変換と比較
+query ??
+SELECT 1259::oid::regclass, 1259::regclass::oid
+----
+pg_class 1259
+
+query ???
+SELECT 'pg_class'::regclass = 1259::oid, 'pg_class'::regclass = 'pg_class'::regclass, 'pg_class'::regclass < 'pg_attribute'::regclass
+----
+t t f
+
+statement error (42883)
+SELECT 'pg_class'::regclass + 1
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid = '1259'
+----
+1
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.oid = 'pg_class'::regclass
+----
+pg_class
+
+query T
+SELECT relname FROM pg_class WHERE oid = 'pg_attribute'::regclass::oid
+----
+pg_attribute
+
+# ユーザーテーブルと別名の表示
+statement ok
+CREATE TABLE ty_rc_t (id int)
+
+statement ok
+CREATE TABLE "ty_rc_Upper" (id int)
+
+query ?
+SELECT 'ty_rc_t'::regclass::oid = (SELECT oid FROM pg_class WHERE relname = 'ty_rc_t')
+----
+t
+
+query TT
+SELECT 'ty_rc_t'::regclass::text, '"ty_rc_Upper"'::regclass::text
+----
+ty_rc_t "ty_rc_Upper"
+
+statement error (42P01)
+SELECT 'ty_rc_Upper'::regclass
+
+statement error (42P01)
+SELECT 'TY_RC_UPPER'::regclass
+
+query T
+SELECT 'public.ty_rc_t'::regclass::text
+----
+ty_rc_t
+
+# to_regclass は見つからなければ NULL
+query ???
+SELECT to_regclass('ty_rc_t')::text, to_regclass('nosuch') IS NULL, to_regclass('pg_class')::text
+----
+ty_rc_t t pg_class
+
+query ??
+SELECT to_regclass('public.ty_rc_t')::text, pg_typeof(to_regclass('ty_rc_t'))
+----
+ty_rc_t regclass
+
+statement ok
+DROP TABLE ty_rc_t
+
+statement ok
+DROP TABLE "ty_rc_Upper"
+
+query ?
+SELECT to_regclass('ty_rc_t') IS NULL
+----
+t
+
+# regtype
+query ??????
+SELECT 'int4'::regtype::text, 'integer'::regtype::text, 'int'::regtype::text, 'bigint'::regtype::text, 'smallint'::regtype::text, 'text'::regtype::text
+----
+integer integer integer bigint smallint text
+
+query ??????
+SELECT 'float8'::regtype::text, 'double precision'::regtype::text, 'real'::regtype::text, 'boolean'::regtype::text, 'bool'::regtype::text, 'name'::regtype::text
+----
+double precision double precision real boolean boolean name
+
+query ??????
+SELECT 'varchar'::regtype::text, 'character varying'::regtype::text, 'char'::regtype::text, 'character'::regtype::text, 'bpchar'::regtype::text, '"char"'::regtype::text
+----
+character varying character varying character character character "char"
+
+query ??????
+SELECT 'numeric'::regtype::text, 'decimal'::regtype::text, 'timestamp'::regtype::text, 'timestamptz'::regtype::text, 'timestamp with time zone'::regtype::text, 'date'::regtype::text
+----
+numeric numeric timestamp without time zone timestamp with time zone timestamp with time zone date
+
+query ????
+SELECT 'oid'::regtype::text, 'regclass'::regtype::text, 'regtype'::regtype::text, 'pg_catalog.int4'::regtype::text
+----
+oid regclass regtype integer
+
+query ????
+SELECT 'int4'::regtype::oid, 'text'::regtype::oid, 'varchar(10)'::regtype::oid, '23'::regtype::oid
+----
+23 25 1043 23
+
+query ??
+SELECT 'INT4'::regtype::text, '"int4"'::regtype::text
+----
+integer integer
+
+statement error (42704)
+SELECT 'nosuch'::regtype
+
+statement error (42704)
+SELECT 'pg_catalog.nosuch'::regtype
+
+statement error (42601)
+SELECT ''::regtype
+
+query ?
+SELECT 23::oid::regtype::text
+----
+integer
+
+query ?
+SELECT 99999999::oid::regtype::text
+----
+99999999
+
+query T
+SELECT to_regtype('int4')::text
+----
+integer
+
+query ??
+SELECT to_regtype('nosuch') IS NULL, pg_typeof(to_regtype('int4'))
+----
+t regtype
+
+# pg_typeof
+query TTTTT
+SELECT pg_typeof(1), pg_typeof(1::int8), pg_typeof(1.5), pg_typeof('a'), pg_typeof(NULL)
+----
+integer bigint numeric unknown unknown
+
+query TTTT
+SELECT pg_typeof(true), pg_typeof('a'::text), pg_typeof('a'::varchar), pg_typeof(1.5::float8)
+----
+boolean text character varying double precision
+
+query ??
+SELECT pg_typeof(1)::text, pg_typeof(pg_typeof(1))
+----
+integer regtype
+
+# カタログとの結合
+query TT
+SELECT t.typname, t.oid::regtype::text FROM pg_type t WHERE t.oid IN ('int4'::regtype, 'text'::regtype, 'numeric'::regtype) ORDER BY t.oid
+----
+int4 integer
+text text
+numeric numeric

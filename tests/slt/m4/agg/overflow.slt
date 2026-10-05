@@ -1,0 +1,63 @@
+# 浮動小数の集約のオーバーフロー（22003）
+
+statement ok
+CREATE TABLE ag_ov (g int, f4 real, f8 double precision)
+
+statement ok
+INSERT INTO ag_ov VALUES
+  (1, 3.0e38, 1.0e308), (1, 3.0e38, 1.0e308), (1, 3.0e38, 1.0e308), (1, 3.0e38, 1.0e308),
+  (2, 1.0, 1.0), (2, 2.0, 2.0)
+
+statement error (22003)
+SELECT sum(f8) FROM ag_ov WHERE g = 1
+
+statement error (22003)
+SELECT sum(f4) FROM ag_ov WHERE g = 1
+
+statement error (22003)
+SELECT avg(f8) FROM ag_ov WHERE g = 1
+
+# avg(real) は double precision で足すので 3e38 * 4 でもあふれない
+query T
+SELECT (avg(f4) > 1e38)::text FROM ag_ov WHERE g = 1
+----
+true
+
+statement error value out of range: overflow
+SELECT sum(f8) FROM ag_ov WHERE g = 1
+
+# グループごとに計算されるので、あふれるグループがあれば全体が失敗する
+statement error (22003)
+SELECT g, sum(f8) FROM ag_ov GROUP BY g ORDER BY g
+
+# あふれないグループだけなら通る
+query IRR
+SELECT g, sum(f8), avg(f8) FROM ag_ov WHERE g = 2 GROUP BY g
+----
+2 3 1.5
+
+# FILTER で落とせば通る
+query R
+SELECT sum(f8) FILTER (WHERE f8 < 10) FROM ag_ov
+----
+3
+
+# 入力に無限大があるときは結果が無限大でもエラーにならない
+query T
+SELECT sum(x)::text FROM (VALUES ('Infinity'::float8), (1::float8)) v(x)
+----
+Infinity
+
+query T
+SELECT avg(x)::text FROM (VALUES ('Infinity'::float8), (1::float8)) v(x)
+----
+Infinity
+
+# NaN
+query T
+SELECT sum(x)::text FROM (VALUES ('NaN'::float8), (1::float8)) v(x)
+----
+NaN
+
+statement ok
+DROP TABLE ag_ov

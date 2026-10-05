@@ -1,0 +1,300 @@
+# numeric: リテラルの型、四則と scale、丸め関数、NaN / Infinity、比較、グルーピング、型の混合
+# numeric の値は文字列（::text）で比べる（scale の違いを見落とさないため）
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# リテラルの型
+query TTTTT
+SELECT pg_typeof(1.5), pg_typeof(.5), pg_typeof(1e3), pg_typeof(2147483648), pg_typeof(9223372036854775808)
+----
+numeric numeric numeric bigint numeric
+
+query TTT
+SELECT 1.5::text, .5::text, 1e3::text
+----
+1.5 0.5 1000
+
+query TTT
+SELECT 1.50::text, 0.10::text, 100.::text
+----
+1.50 0.10 100
+
+# 四則と scale
+query TTTT
+SELECT (0.1 + 0.2)::text, (1.50 * 2.25)::text, (1.0 / 3)::text, (100::numeric / 3)::text
+----
+0.3 3.3750 0.33333333333333333333 33.3333333333333333
+
+query TTTT
+SELECT (10 / 4.0)::text, (7.0 % 2.5)::text, (-7.5 % 2)::text, (1.5 - 2.25)::text
+----
+2.5000000000000000 2.0 -1.5 -0.75
+
+query TTTT
+SELECT (2.0 * 3)::text, (1.10 + 1.1)::text, (5.00 - 5)::text, (0.001 * 0.001)::text
+----
+6.0 2.20 0.00 0.000001
+
+query TTTT
+SELECT (1 / 3.0)::text, (2 / 3.0)::text, (22 / 7.0)::text, (1.0 / 8)::text
+----
+0.33333333333333333333 0.66666666666666666667 3.1428571428571429 0.12500000000000000000
+
+query TT
+SELECT (-(1.5))::text, (+(1.5))::text
+----
+-1.5 1.5
+
+# 単項演算子と符号つきの定数
+query TT
+SELECT (3 + -1.5)::text, (3 - -1.5)::text
+----
+1.5 4.5
+
+# 丸め関数
+query TTTT
+SELECT round(2.5)::text, round(-2.5)::text, round(3.5)::text, round(0.5)::text
+----
+3 -3 4 1
+
+query TTTT
+SELECT round(1.2345, 2)::text, round(1.235, 2)::text, round(-1.235, 2)::text, round(1234.5678, -2)::text
+----
+1.23 1.24 -1.24 1200
+
+query TTTT
+SELECT trunc(2.9)::text, trunc(-2.9)::text, trunc(1.2399, 2)::text, trunc(1234.5, -2)::text
+----
+2 -2 1.23 1200
+
+query TTTT
+SELECT ceil(1.1)::text, ceil(-1.1)::text, floor(1.9)::text, floor(-1.1)::text
+----
+2 -1 1 -2
+
+query TTTT
+SELECT ceiling(1.0)::text, floor(2.0)::text, ceil(0.0)::text, floor(-0.5)::text
+----
+1 2 0 -1
+
+query TTTT
+SELECT abs(-1.50)::text, abs(1.50)::text, sign(-3.2)::text, sign(0.0)::text
+----
+1.50 1.50 -1 0
+
+query TTT
+SELECT mod(7.5, 2)::text, mod(-7.5, 2)::text, mod(7, 2.5)::text
+----
+1.5 -1.5 2.0
+
+query TTT
+SELECT div(7.5, 2)::text, div(-7.5, 2)::text, div(100, 7)::text
+----
+3 -3 14
+
+query III
+SELECT scale(1.50), scale(100), scale(0.001)
+----
+2 0 3
+
+# 戻り値の型
+query TTTT
+SELECT pg_typeof(round(2.5)), pg_typeof(round(2)), pg_typeof(round(2.5, 1)), pg_typeof(round(2.5::float8))
+----
+numeric double precision numeric double precision
+
+query TTTT
+SELECT pg_typeof(trunc(2)), pg_typeof(ceil(2)), pg_typeof(floor(2.5)), pg_typeof(abs(-2.5))
+----
+double precision double precision numeric numeric
+
+query TTTT
+SELECT pg_typeof(mod(5, 2)), pg_typeof(mod(5.0, 2)), pg_typeof(div(5, 2)), pg_typeof(sign(2))
+----
+integer numeric numeric double precision
+
+# round(2) は float8（0.5 の丸めは偶数ではなく 0 から遠い方へ。float8 は偶数丸め）
+query TT
+SELECT round(2.5::float8)::text, round(3.5::float8)::text
+----
+2 4
+
+query TT
+SELECT round(2)::text, mod(5, 2)::text
+----
+2 1
+
+# NaN / Infinity
+query TTTT
+SELECT 'NaN'::numeric::text, 'Infinity'::numeric::text, '-Infinity'::numeric::text, 'inf'::numeric::text
+----
+NaN Infinity -Infinity Infinity
+
+query TTT
+SELECT ('NaN'::numeric + 1)::text, ('Infinity'::numeric + 1)::text, ('Infinity'::numeric - 'Infinity'::numeric)::text
+----
+NaN Infinity NaN
+
+query ???
+SELECT ('NaN'::numeric = 'NaN'::numeric), ('NaN'::numeric > 1e100), ('Infinity'::numeric < 'NaN'::numeric)
+----
+t t t
+
+query TTT
+SELECT round('NaN'::numeric)::text, trunc('Infinity'::numeric)::text, abs('-Infinity'::numeric)::text
+----
+NaN Infinity Infinity
+
+# ゼロ除算とオーバーフロー
+statement error (22012)
+SELECT 1.5 / 0
+
+statement error (22012)
+SELECT 1.5 % 0
+
+statement error (22012)
+SELECT 'Infinity'::numeric / 0
+
+statement error (22012)
+SELECT div(1.5, 0)
+
+statement error (22003)
+SELECT 1e1000000::numeric
+
+# 比較
+query ????
+SELECT 1.10 = 1.1, 1.10 <> 1.1, 1.5 < 2, 2.5 >= 2.5
+----
+t f t t
+
+query ???
+SELECT 1.0 = 1, 2 > 1.5, 1.5 <= 1
+----
+t t f
+
+query ??
+SELECT 0.1 + 0.2 = 0.3, 1 / 3.0 * 3 = 1
+----
+t f
+
+# ORDER BY / GROUP BY / DISTINCT（1.10 と 1.1 は同じ値）
+statement ok
+CREATE TABLE ty_nb_t (id int, v numeric)
+
+statement ok
+INSERT INTO ty_nb_t VALUES (1, 1.10), (2, 1.1), (3, 2.50), (4, NULL), (5, 'NaN'), (6, -0.5), (7, 2.5), (8, NULL)
+
+query IT
+SELECT id, v::text FROM ty_nb_t ORDER BY v, id
+----
+6 -0.5
+2 1.1
+1 1.10
+7 2.5
+3 2.50
+5 NaN
+4 NULL
+8 NULL
+
+query IT
+SELECT id, v::text FROM ty_nb_t ORDER BY v DESC, id
+----
+4 NULL
+8 NULL
+5 NaN
+3 2.50
+7 2.5
+1 1.10
+2 1.1
+6 -0.5
+
+query IT
+SELECT id, v::text FROM ty_nb_t ORDER BY v NULLS FIRST, id
+----
+4 NULL
+8 NULL
+6 -0.5
+2 1.1
+1 1.10
+7 2.5
+3 2.50
+5 NaN
+
+query I
+SELECT id FROM ty_nb_t WHERE v = 1.1 ORDER BY id
+----
+1
+2
+
+query I
+SELECT count(*) FROM ty_nb_t WHERE v > 1 AND v < 'NaN'
+----
+4
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT v FROM ty_nb_t) d
+----
+5
+
+query I
+SELECT count(*) FROM (SELECT v FROM ty_nb_t GROUP BY v) g
+----
+5
+
+query IT
+SELECT count(*), max(v)::text FROM ty_nb_t WHERE v IN (1.1, 2.5)
+----
+4 2.5
+
+query T
+SELECT v::text FROM ty_nb_t WHERE v IN (1.10, 2.5, -0.5) ORDER BY v, id
+----
+-0.5
+1.1
+1.10
+2.5
+2.50
+
+statement ok
+DROP TABLE ty_nb_t
+
+# 型の混合: numeric + 整数は numeric、numeric + float8 は float8
+query TTTT
+SELECT pg_typeof(1.5 + 1), pg_typeof(1.5 + 1.0::float8), pg_typeof(1 + 1.5), pg_typeof(1.5 + 1::bigint)
+----
+numeric double precision numeric numeric
+
+query ??T
+SELECT 1.5 = 1.5::float8, 0.1 = 0.1::float8, pg_typeof(1.5 < 2::float8)
+----
+t t boolean
+
+query TT
+SELECT (1.5 + 1)::text, (2::int2 * 1.5)::text
+----
+2.5 3.0
+
+query TTT
+SELECT pg_typeof(2 ^ 3), pg_typeof(10 / 4.0), pg_typeof(10 / 4)
+----
+double precision numeric integer
+
+query TT
+SELECT (10 / 4.0)::text, (10 / 4)::text
+----
+2.5000000000000000 2
+
+# numeric と整数・文字列のキャスト
+query TTT
+SELECT 1::numeric::text, '12.50'::numeric::text, 5::numeric(10,3)::text
+----
+1 12.50 5.000
+
+query T
+SELECT pg_typeof(1::numeric)
+----
+numeric
+
+statement ok
+RESET TIME ZONE

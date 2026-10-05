@@ -1,0 +1,87 @@
+# pg_depend: 07 §3.6 の表の全行を deptype ごとに集計して PostgreSQL と比べる
+# （名前空間への依存と CHECK 制約は差分があるので除く）
+
+statement ok
+CREATE TABLE cat_pd_t (id serial PRIMARY KEY, name text UNIQUE, n int CHECK (n > 0), m int DEFAULT 5, k int, j int)
+
+statement ok
+CREATE INDEX cat_pd_idx ON cat_pd_t (k, j)
+
+statement ok
+CREATE INDEX cat_pd_idx2 ON cat_pd_t (k, k)
+
+statement ok
+CREATE TABLE cat_pd_u (a int, b int, UNIQUE (a, b), c int DEFAULT nextval('cat_pd_t_id_seq'::regclass))
+
+statement ok
+CREATE TABLE cat_pd_i (id int GENERATED ALWAYS AS IDENTITY, v int)
+
+query TTTII
+SELECT d.classid::regclass::text, d.refclassid::regclass::text, d.deptype::text, d.refobjsubid, count(*)
+FROM pg_depend d
+WHERE d.refclassid <> 'pg_namespace'::regclass
+  AND ((d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM pg_class WHERE relname LIKE 'cat\_pd\_%'))
+    OR (d.classid = 'pg_constraint'::regclass AND d.objid IN (SELECT oid FROM pg_constraint WHERE conname LIKE 'cat\_pd\_%' AND contype <> 'c'))
+    OR (d.classid = 'pg_attrdef'::regclass AND d.objid IN (SELECT oid FROM pg_attrdef WHERE adrelid IN (SELECT oid FROM pg_class WHERE relname LIKE 'cat\_pd\_%'))))
+GROUP BY 1, 2, 3, 4
+ORDER BY 1, 2, 3, 4
+----
+pg_attrdef pg_class a 1 1
+pg_attrdef pg_class a 3 1
+pg_attrdef pg_class a 4 1
+pg_attrdef pg_class n 0 2
+pg_class pg_class a 1 1
+pg_class pg_class a 5 2
+pg_class pg_class a 6 1
+pg_class pg_class i 1 1
+pg_class pg_constraint i 0 3
+pg_constraint pg_class a 1 2
+pg_constraint pg_class a 2 2
+
+# 既定値 → シーケンスの依存（regclass 定数）は n
+query TTT
+SELECT d.deptype::text, d.refobjid::regclass::text, ad.adrelid::regclass::text FROM pg_depend d JOIN pg_attrdef ad ON ad.oid = d.objid WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = 'cat_pd_t_id_seq'::regclass ORDER BY 3
+----
+n cat_pd_t_id_seq cat_pd_t
+n cat_pd_t_id_seq cat_pd_u
+
+# 索引 → 制約は i、制約ごとに 1 行
+query T
+SELECT count(*) || '' FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_constraint'::regclass AND d.deptype = 'i' AND d.objid IN (SELECT oid FROM pg_class WHERE relname LIKE 'cat\_pd\_%')
+----
+3
+
+# シーケンスの所有: SERIAL は a、IDENTITY は i
+query TTTT
+SELECT c.relname, d.deptype::text, d.refobjid::regclass::text, d.refobjsubid::text FROM pg_depend d JOIN pg_class c ON c.oid = d.objid WHERE d.classid = 'pg_class'::regclass AND c.relkind = 'S' AND c.relname LIKE 'cat\_pd\_%' AND d.refclassid = 'pg_class'::regclass ORDER BY c.relname
+----
+cat_pd_i_id_seq i cat_pd_i 1
+cat_pd_t_id_seq a cat_pd_t 1
+
+# DROP TABLE の後、依存の行が残らない
+statement error (2BP01)
+DROP TABLE cat_pd_t
+
+statement ok
+DROP TABLE cat_pd_u
+
+statement ok
+DROP TABLE cat_pd_t
+
+statement ok
+DROP TABLE cat_pd_i
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_constraint'::regclass AND d.objid NOT IN (SELECT oid FROM pg_constraint)
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_attrdef'::regclass AND d.objid NOT IN (SELECT oid FROM pg_attrdef)
+----
+0

@@ -1,0 +1,36 @@
+# psql 17 の \dn が送る SQL。public の所有者は pg_database_owner（PostgreSQL 15 以降）
+
+query TT
+SELECT n.nspname AS "Name",
+  pg_catalog.pg_get_userbyid(n.nspowner) AS "Owner"
+FROM pg_catalog.pg_namespace n
+WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+ORDER BY 1
+----
+public pg_database_owner
+
+# \dn+ の一部（権限列）。public は NULL 以外になりうるので所有者だけ
+query TT
+SELECT n.nspname, pg_catalog.pg_get_userbyid(n.nspowner)
+FROM pg_catalog.pg_namespace n
+WHERE n.nspname IN ('public', 'pg_catalog', 'information_schema')
+ORDER BY 1
+----
+information_schema postgres
+pg_catalog postgres
+public pg_database_owner
+
+query T
+SELECT n.oid::text FROM pg_catalog.pg_namespace n WHERE n.nspname = 'pg_catalog'
+----
+11
+
+query T
+SELECT n.oid::text FROM pg_catalog.pg_namespace n WHERE n.nspname = 'public'
+----
+2200
+
+query T
+SELECT pg_catalog.pg_get_userbyid(6171)
+----
+pg_database_owner

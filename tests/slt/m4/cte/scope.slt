@@ -1,0 +1,132 @@
+# WITH: スコープ、前の CTE の参照、重複名、列別名、実表との同名、副問い合わせの中の WITH
+
+statement ok
+CREATE TABLE ct_t (a int, b int)
+
+statement ok
+INSERT INTO ct_t VALUES (1, 10), (2, 20), (3, NULL)
+
+# 前の CTE を後の CTE が参照できる。同じ CTE を 2 回参照できる
+query II
+WITH x AS (SELECT a FROM ct_t), y AS (SELECT a + 1 AS a FROM x) SELECT x.a, y.a FROM x JOIN y ON y.a = x.a + 1 ORDER BY 1
+----
+1 2
+2 3
+3 4
+
+query II
+WITH x AS (SELECT a FROM ct_t) SELECT p.a, q.a FROM x AS p, x AS q WHERE p.a = q.a - 1 ORDER BY 1
+----
+1 2
+2 3
+
+# 列別名は先頭から改名（残りは元の名前）。重複した別名も許す
+query II
+WITH x(p) AS (SELECT a, b FROM ct_t) SELECT p, b FROM x ORDER BY p
+----
+1 10
+2 20
+3 NULL
+
+query II
+WITH x(p, p) AS (SELECT a, b FROM ct_t) SELECT * FROM x ORDER BY 1
+----
+1 10
+2 20
+3 NULL
+
+# 実表と同名の CTE は実表を隠す。スキーマ付きなら実表
+query I
+WITH ct_t AS (SELECT 5 AS a) SELECT a FROM ct_t
+----
+5
+
+query I
+WITH ct_t AS (SELECT 5 AS a) SELECT count(*) FROM public.ct_t
+----
+3
+
+# 内側の WITH が同名なら本体では内側が優先。内側の宣言の中の同名参照は外側
+query I
+WITH x AS (SELECT 1 AS a) SELECT * FROM (WITH x AS (SELECT a + 10 AS a FROM x) SELECT * FROM x) s
+----
+11
+
+query I
+WITH x AS (SELECT 1 AS a) SELECT * FROM x WHERE EXISTS (WITH x AS (SELECT 2 AS a) SELECT 1 FROM x WHERE x.a = 2)
+----
+1
+
+# 副問い合わせの中の WITH が外側の列を参照する
+query I
+WITH x AS (SELECT 1 AS v) SELECT (WITH y AS (SELECT v) SELECT * FROM y) FROM x
+----
+1
+
+# MATERIALIZED / NOT MATERIALIZED で結果は変わらない
+query I
+WITH x AS MATERIALIZED (SELECT a FROM ct_t) SELECT count(*) FROM x p, x q WHERE p.a = q.a
+----
+3
+
+query I
+WITH x AS NOT MATERIALIZED (SELECT a FROM ct_t) SELECT count(*) FROM x p, x q WHERE p.a = q.a
+----
+3
+
+# WITH は集合演算全体にかかる。WITH ... VALUES / TABLE
+query I
+WITH x AS (SELECT 1 AS v) SELECT v FROM x UNION ALL SELECT v + 1 FROM x ORDER BY 1
+----
+1
+2
+
+query I
+WITH x AS (SELECT 7 AS v) TABLE x
+----
+7
+
+# CTE の出力の unknown は text
+query T
+WITH x AS (SELECT 'a' AS s) SELECT pg_typeof(s) FROM x
+----
+text
+
+# INSERT ... SELECT の中の WITH
+statement count 3
+INSERT INTO ct_t WITH x AS (SELECT a + 100 AS a, b FROM ct_t) SELECT * FROM x
+
+query II
+SELECT a, b FROM ct_t WHERE a > 100 ORDER BY a
+----
+101 10
+102 20
+103 NULL
+
+# 使われない CTE も解析される（型エラーは出る）
+statement error operator does not exist: boolean \+ integer
+WITH x AS (SELECT true + 1) SELECT 1
+
+# 重複名・前方参照・自己参照・存在しない列別名の数
+statement error WITH query name "x" specified more than once
+WITH x AS (SELECT 1), x AS (SELECT 2) SELECT * FROM x
+
+statement error There is a WITH item named|relation "y" does not exist
+WITH x AS (SELECT * FROM y), y AS (SELECT 1) SELECT * FROM x
+
+statement error relation "x" does not exist
+WITH x AS (SELECT * FROM x) SELECT 1
+
+statement error WITH query "x" has 2 columns available but 4 columns specified
+WITH x(p, q, r, s) AS (SELECT a, b FROM ct_t) SELECT * FROM x
+
+# 同じ CTE を別名なしで 2 回
+statement error table name "x" specified more than once
+WITH x AS (SELECT 1) SELECT * FROM x, x
+
+# スキーマ付きの名前では CTE を引かない
+statement error relation "public.x" does not exist
+WITH x AS (SELECT 1) SELECT * FROM public.x
+
+statement ok
+DROP TABLE ct_t

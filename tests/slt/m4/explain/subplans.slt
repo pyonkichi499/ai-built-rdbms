@@ -1,0 +1,164 @@
+# InitPlan / SubPlan の表示（番号・位置・hashed・EXISTS・ANY / ALL）
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_s_t (a int, b int, c text)
+
+statement ok
+INSERT INTO ex_s_t SELECT g, g % 5, 'c' || g FROM generate_series(1, 100) g
+
+statement ok
+CREATE TABLE ex_s_u (a int, x text)
+
+statement ok
+INSERT INTO ex_s_u SELECT g, 'x' || g FROM generate_series(1, 30) g
+
+statement ok
+CREATE TABLE ex_s_e (z int)
+
+statement ok
+ANALYZE ex_s_t
+
+statement ok
+ANALYZE ex_s_u
+
+statement ok
+ANALYZE ex_s_e
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE b = (SELECT max(z) FROM ex_s_e)
+----
+Seq Scan on ex_s_t
+  Filter: (b = (InitPlan 1).col1)
+  InitPlan 1
+    ->  Aggregate
+          ->  Seq Scan on ex_s_e
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE b = (SELECT 1) + (SELECT 2)
+----
+Seq Scan on ex_s_t
+  Filter: (b = ((InitPlan 1).col1 + (InitPlan 2).col1))
+  InitPlan 1
+    ->  Result
+  InitPlan 2
+    ->  Result
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE b = (SELECT 1) ORDER BY a
+----
+Sort
+  Sort Key: ex_s_t.a
+  InitPlan 1
+    ->  Result
+  ->  Seq Scan on ex_s_t
+        Filter: (b = (InitPlan 1).col1)
+
+query T
+EXPLAIN (COSTS OFF) SELECT a, (SELECT count(*) FROM ex_s_u WHERE ex_s_u.a = ex_s_t.a) FROM ex_s_t
+----
+Seq Scan on ex_s_t
+  SubPlan 1
+    ->  Aggregate
+          ->  Seq Scan on ex_s_u
+                Filter: (a = ex_s_t.a)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a, (SELECT count(*) FROM ex_s_u WHERE ex_s_u.a = ex_s_t.a) FROM ex_s_t
+----
+Seq Scan on public.ex_s_t
+  Output: ex_s_t.a, (SubPlan 1)
+  SubPlan 1
+    ->  Aggregate
+          Output: count(*)
+          ->  Seq Scan on public.ex_s_u
+                Output: ex_s_u.a, ex_s_u.x
+                Filter: (ex_s_u.a = ex_s_t.a)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE b = (SELECT a FROM ex_s_u WHERE ex_s_u.x = ex_s_t.c LIMIT 1) OR a = 1
+----
+Seq Scan on ex_s_t
+  Filter: ((b = (SubPlan 1)) OR (a = 1))
+  SubPlan 1
+    ->  Limit
+          ->  Seq Scan on ex_s_u
+                Filter: (x = ex_s_t.c)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE a NOT IN (SELECT a FROM ex_s_u WHERE ex_s_u.x = ex_s_t.c)
+----
+Seq Scan on ex_s_t
+  Filter: (NOT (ANY (a = (SubPlan 1).col1)))
+  SubPlan 1
+    ->  Seq Scan on ex_s_u
+          Filter: (x = ex_s_t.c)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE a NOT IN (SELECT a FROM ex_s_u)
+----
+Seq Scan on ex_s_t
+  Filter: (NOT (ANY (a = (hashed SubPlan 1).col1)))
+  SubPlan 1
+    ->  Seq Scan on ex_s_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE (a, b) IN (SELECT a, a FROM ex_s_u) OR c = 'q'
+----
+Seq Scan on ex_s_t
+  Filter: ((ANY ((a = (hashed SubPlan 1).col1) AND (b = (hashed SubPlan 1).col2))) OR (c = 'q'::text))
+  SubPlan 1
+    ->  Seq Scan on ex_s_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE EXISTS (SELECT 1 FROM ex_s_u WHERE ex_s_u.a < ex_s_t.a) OR b = 1
+----
+Seq Scan on ex_s_t
+  Filter: (EXISTS(SubPlan 1) OR (b = 1))
+  SubPlan 1
+    ->  Seq Scan on ex_s_u
+          Filter: (a < ex_s_t.a)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE NOT EXISTS (SELECT 1 FROM ex_s_u WHERE ex_s_u.a < ex_s_t.a) OR b = 1
+----
+Seq Scan on ex_s_t
+  Filter: ((NOT EXISTS(SubPlan 1)) OR (b = 1))
+  SubPlan 1
+    ->  Seq Scan on ex_s_u
+          Filter: (a < ex_s_t.a)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE EXISTS (SELECT 1 FROM ex_s_u) OR b = 1
+----
+Seq Scan on ex_s_t
+  Filter: ((InitPlan 1).col1 OR (b = 1))
+  InitPlan 1
+    ->  Seq Scan on ex_s_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_s_t WHERE b > 1 OR a = ANY (SELECT a FROM ex_s_u WHERE ex_s_u.x = ex_s_t.c)
+----
+Seq Scan on ex_s_t
+  Filter: ((b > 1) OR (ANY (a = (SubPlan 1).col1)))
+  SubPlan 1
+    ->  Seq Scan on ex_s_u
+          Filter: (x = ex_s_t.c)
+
+statement ok
+DROP TABLE ex_s_t
+
+statement ok
+DROP TABLE ex_s_u
+
+statement ok
+DROP TABLE ex_s_e
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

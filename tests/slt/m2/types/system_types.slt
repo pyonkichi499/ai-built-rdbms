@@ -29,10 +29,10 @@ SELECT 16384::oid
 statement error (22003)
 SELECT '4294967296'::oid
 
-statement error db error: ERROR: OID out of range
+statement error OID out of range
 SELECT 4294967296::oid
 
-statement error db error: ERROR: OID out of range
+statement error OID out of range
 SELECT (-4294967296)::oid
 
 statement error (22P02)

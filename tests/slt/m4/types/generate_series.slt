@@ -1,0 +1,295 @@
+# generate_series(int4/int8): FROM 句での使用
+
+query I
+SELECT * FROM generate_series(1, 5) ORDER BY 1
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT * FROM generate_series(5, 1) ORDER BY 1
+----
+
+query I
+SELECT * FROM generate_series(5, 1, -2) ORDER BY 1
+----
+1
+3
+5
+
+query I
+SELECT * FROM generate_series(1, 10, 3) ORDER BY 1
+----
+1
+4
+7
+10
+
+query I
+SELECT * FROM generate_series(3, 3) ORDER BY 1
+----
+3
+
+query I
+SELECT * FROM generate_series(-2, 2) ORDER BY 1
+----
+-2
+-1
+0
+1
+2
+
+query I
+SELECT * FROM generate_series(1, 0) ORDER BY 1
+----
+
+query I
+SELECT * FROM generate_series(1, 5, -1) ORDER BY 1
+----
+
+query I
+SELECT * FROM generate_series(5, 1, 1) ORDER BY 1
+----
+
+# NULL の引数は 0 行
+query I
+SELECT * FROM generate_series(NULL, 5) ORDER BY 1
+----
+
+query I
+SELECT * FROM generate_series(1, NULL) ORDER BY 1
+----
+
+query I
+SELECT * FROM generate_series(1, 5, NULL) ORDER BY 1
+----
+
+statement error (22023)
+SELECT * FROM generate_series(1, 5, 0) ORDER BY 1
+
+statement error (22023)
+SELECT * FROM generate_series(1::int8, 5::int8, 0::int8) ORDER BY 1
+
+# int4 の端（桁あふれで止まる）
+query I
+SELECT * FROM generate_series(2147483646, 2147483647) ORDER BY 1
+----
+2147483646
+2147483647
+
+query I
+SELECT * FROM generate_series(-2147483647, -2147483648, -1) ORDER BY 1
+----
+-2147483648
+-2147483647
+
+query I
+SELECT * FROM generate_series(2147483645, 2147483647, 2) ORDER BY 1
+----
+2147483645
+2147483647
+
+# int8
+query I
+SELECT * FROM generate_series(9223372036854775806, 9223372036854775807) ORDER BY 1
+----
+9223372036854775806
+9223372036854775807
+
+query I
+SELECT * FROM generate_series(3000000000, 3000000002) ORDER BY 1
+----
+3000000000
+3000000001
+3000000002
+
+query T
+SELECT pg_typeof(g) FROM generate_series(1, 1) g
+----
+integer
+
+query T
+SELECT pg_typeof(g) FROM generate_series(3000000000, 3000000000) g
+----
+bigint
+
+query T
+SELECT pg_typeof(g) FROM generate_series(1::int8, 1::int8) g
+----
+bigint
+
+# 列名と別名
+query I
+SELECT generate_series FROM generate_series(1, 2) ORDER BY 1
+----
+1
+2
+
+query I
+SELECT g FROM generate_series(1, 2) AS g ORDER BY 1
+----
+1
+2
+
+# 別名を付けると、列名も別名になる
+statement error (42703)
+SELECT g.generate_series FROM generate_series(1, 2) g
+
+query I
+SELECT g.x FROM generate_series(1, 2) g(x) ORDER BY 1
+----
+1
+2
+
+query I
+SELECT x FROM generate_series(1, 2) AS g(x) ORDER BY x DESC
+----
+2
+1
+
+# 式での使用
+query II
+SELECT g, g * g FROM generate_series(1, 4) g ORDER BY g
+----
+1 1
+2 4
+3 9
+4 16
+
+query I
+SELECT g FROM generate_series(1, 10) g WHERE g % 3 = 0 ORDER BY g
+----
+3
+6
+9
+
+query I
+SELECT count(*) FROM generate_series(1, 1000)
+----
+1000
+
+query II
+SELECT sum(g), max(g) FROM generate_series(1, 100) g
+----
+5050 100
+
+query I
+SELECT g FROM generate_series(1, 10 - 7) g ORDER BY g
+----
+1
+2
+3
+
+query I
+SELECT g FROM generate_series(1 + 1, 2 * 3) g ORDER BY g
+----
+2
+3
+4
+5
+6
+
+# 結合
+query II
+SELECT a, b FROM generate_series(1, 3) a JOIN generate_series(2, 4) b ON a = b ORDER BY a
+----
+2 2
+3 3
+
+query II
+SELECT a, b FROM generate_series(1, 2) a, generate_series(1, 2) b ORDER BY a, b
+----
+1 1
+1 2
+2 1
+2 2
+
+query II
+SELECT a, b FROM generate_series(1, 3) a LEFT JOIN generate_series(2, 4) b ON a = b ORDER BY a
+----
+1 NULL
+2 2
+3 3
+
+# テーブルと結合
+statement ok
+CREATE TABLE ty_gs_t (id int, v text)
+
+statement ok
+INSERT INTO ty_gs_t VALUES (1, 'a'), (3, 'c'), (NULL, 'n')
+
+query IT
+SELECT g, t.v FROM generate_series(1, 4) g LEFT JOIN ty_gs_t t ON t.id = g ORDER BY g
+----
+1 a
+2 NULL
+3 c
+4 NULL
+
+query I
+SELECT count(*) FROM ty_gs_t t WHERE t.id IN (SELECT g FROM generate_series(1, 2) g)
+----
+1
+
+# INSERT ... SELECT（pgbench -i -I G の形）
+statement ok
+INSERT INTO ty_gs_t (id, v) SELECT g, '' FROM generate_series(10, 14) AS g
+
+query I
+SELECT count(*) FROM ty_gs_t
+----
+8
+
+statement ok
+INSERT INTO ty_gs_t (id, v) SELECT g, 'x' || g FROM generate_series(20, 22) g
+
+query IT
+SELECT id, v FROM ty_gs_t WHERE id >= 20 ORDER BY id
+----
+20 x20
+21 x21
+22 x22
+
+statement ok
+DROP TABLE ty_gs_t
+
+# 副問い合わせの中
+query I
+SELECT (SELECT max(g) FROM generate_series(1, 5) g)
+----
+5
+
+query I
+SELECT g FROM (SELECT g FROM generate_series(1, 5) g) s WHERE g > 3 ORDER BY g
+----
+4
+5
+
+# KNOWN-DIFF: KD-24 numeric 版は M5。yuzhu は 42883
+skipif yuzhu
+query I
+SELECT count(*) FROM generate_series(1, 10.5)
+----
+10
+
+# KNOWN-DIFF: KD-24 numeric 版は M5。yuzhu は 42883
+onlyif yuzhu
+statement error (42883)
+SELECT count(*) FROM generate_series(1, 10.5)
+
+# KNOWN-DIFF: KD-27 SELECT 句の集合返却関数は M4 では 0A000
+skipif yuzhu
+query I
+SELECT generate_series(1, 3) ORDER BY 1
+----
+1
+2
+3
+
+# KNOWN-DIFF: KD-27 SELECT 句の集合返却関数は M4 では 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT generate_series(1, 3)

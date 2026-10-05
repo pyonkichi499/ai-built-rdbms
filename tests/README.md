@@ -10,17 +10,23 @@
 ```
 tests/
 ├── run.sh            スイートの実行スクリプト（--restart で再起動テスト、--crash で kill -9 のクラッシュテスト）
+├── done-check.sh     M4 の完了判定（01 §3 の条件 1〜9）をローカルで一発実行し、合否を一覧で出す
 ├── pg.sh             検証用の PostgreSQL 17 コンテナを起動・停止・再起動（crash で kill -9）する
 ├── yuzhu.sh          yuzhu-server をテスト用に起動・停止・再起動（crash で kill -9）する
 ├── slt/
 │   ├── m1/<機能>/*.slt   M1 の範囲のテスト（ddl, insert, constraints, select, expressions, types, functions, txn, session, errors）
 │   ├── m2/<機能>/*.slt   M2 の範囲のテスト（dml, txn, ddl, catalog, types, psql）
-│   └── m3/<機能>/*.slt   M3 の範囲のテスト（txn, session, functions, checkpoint）
+│   ├── m3/<機能>/*.slt   M3 の範囲のテスト（txn, session, functions, checkpoint）
+│   ├── m4/<機能>/*.slt   M4 の範囲のテスト（K1〜K4。KNOWN-DIFFS.md、z_final/ を含む）
+│   └── _include/consistency.slt.part  カタログ整合の SQL の正本（slttools consistency がコピーする）
 ├── restart/
 │   ├── <シナリオ>/NN-*.slt      再起動をまたぐテスト（--restart。フェーズごとにサーバを再起動する）
-│   └── m3/<シナリオ>/NN-*.slt   クラッシュ（kill -9）をまたぐテスト（--crash。yuzhu.only / yuzhu.args / NN-*.after.sh を置ける）
+│   ├── m3/<シナリオ>/NN-*.slt   クラッシュ（kill -9）をまたぐテスト（--crash。yuzhu.only / yuzhu.args / NN-*.after.sh を置ける）
+│   └── m4/<シナリオ>/NN-*.slt   M4 の再起動・クラッシュ（mode ファイルで restart | crash | both | mixed）
 ├── isolation/{specs,expected}    isolationtester 形式の spec と期待値
-└── tools/isolation/              spec のランナー（yuzhu-isolation）
+└── tools/
+    ├── isolation/                spec のランナー（yuzhu-isolation）
+    └── slttools/                slt の lint と consistency の同期（依存なしの Rust）
 ```
 
 ## 準備
@@ -265,3 +271,66 @@ ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port
   古い `tests/tools/isolation/target/release/yuzhu-isolation` が残っていると `-- @cancel` 拡張が無く `cancel-wait` が 30 秒で失敗するので、必ずビルドし直します。
 - PG にテーブルが残っていると `m2/catalog/*` や `m2/ddl/drop_cleanup` が失敗します。slt の前に PG をクリーンにします（`sandbox/pg.sh stop && sandbox/pg.sh start`）。
 - 注意: `tests/pg.sh crash`（docker なし）は kill -9 を使うので、同じ PG を他のエージェントが使っている最中に流さないこと。
+
+## M4 の追加（K4）
+
+### 完了判定 `tests/done-check.sh`
+
+```sh
+tests/done-check.sh                  # 条件 1〜9 を順に実行し、最後に PASS / FAIL / MISSING の一覧を出す
+tests/done-check.sh --only 2,4       # 条件を選ぶ（完了判定にはならない）
+tests/done-check.sh --quick          # 差分テストの長時間実行を短くする（完了判定にはならない）
+tests/done-check.sh --pg-only --skip 1,7   # yuzhu の手順を飛ばし、PostgreSQL だけでテスト自体を検証する（完了判定にはならない）
+```
+
+- 専用の PostgreSQL（`127.0.0.1:55443`）と yuzhu（`127.0.0.1:5443`）を起動し、終わりに止める。他のエージェントが使う 55432 / 5432 には触らない
+  （環境変数 `DC_PG_PORT` `DC_YUZHU_PORT` `DC_PG_DATA` で変える。`--keep` で残す）。
+- 条件ごとのログは `/tmp/yuzhu-done-check/<日時>/`。1 つでも FAIL / MISSING があれば終了コード 1。
+- 条件 5（`tests/compat/run.sh`）と条件 8（`explain/format.slt`、`deparse_*.slt`、`plan_variants/`）は、ファイルがなければ MISSING。
+
+### slt の lint `tests/tools/slttools`
+
+```sh
+cargo build --release --manifest-path tests/tools/slttools/Cargo.toml   # $CARGO_TARGET_DIR/release/slttools
+slttools lint [--only L01,L02] [paths...]      # 既定は tests/slt と tests/restart。違反があれば終了コード 1（warning は 0）
+slttools consistency [--add] [--check] [paths...]
+```
+
+- 実装済みの規則は L01〜L10（`11-tests-plan.md` §3.2.5）。L11（plan_variants の生成物）は未実装。
+  L03 と L06 は m4（`tests/slt/m4`、`tests/restart/m4`）だけに適用する。
+  L01 は、作成の直前 3 行以内に `# LINT-ALLOW: L01 理由` があれば免除する（コミットされない作成など。例: `tests/restart/06-uncommitted-at-stop`）。
+  L02 は、エラーを期待する SET、`SET TRANSACTION` / `SET SESSION CHARACTERISTICS` / `SET CONSTRAINTS` を対象にしない。`RESET ALL` でも満たされる。
+- `consistency` は `tests/slt/_include/consistency.slt.part` を `z_final/consistency.slt` と、`tests/restart/m4` の各シナリオの最後のフェーズへコピーする。
+  最後のフェーズに入れるには、`slttools consistency --add tests/restart/m4/<シナリオ>`（`# >>> consistency` ... `# <<< consistency` のブロックが付く）。以後は引数なしで同期する。
+- `z_final/no_leftovers.slt` は、スイート全体を**新しいサーバ**で流したときだけ通る（ユーザーオブジェクトが 0 件）。他のテストが同じ PostgreSQL を使っている最中は通らない。
+
+### 再起動・クラッシュのシナリオの `mode`（`tests/restart/m4/`）
+
+- `mode`（1 行。なければ `both`）: `restart` は `--restart` のみ、`crash` は `--crash` のみ、`both` は両方、`mixed` は `--crash` の中で 1 回だけ。
+  フェーズごとの `NN-<名前>.mode`（`restart` | `crash`）が、そのフェーズの後の停止の方法を決める（`mixed` のシナリオ）。不正な値は終了コード 2。
+- 既定の探索先: `--restart` は `tests/restart` 直下と `tests/restart/m4`、`--crash` は `tests/restart/m3` と `tests/restart/m4`。明示のパスを渡すと `mode` を無視して全部流す。
+- B+Tree のシナリオ（K4）: `btree-grow`（both。昇順・降順・ばらばらの順の挿入で分割、キーを変える UPDATE、範囲 DELETE、ROLLBACK）、
+  `btree-uncommitted-crash`（crash。`--shared-buffers 1MB`。分割を伴う未コミットの変更を残して kill -9）、`btree-mixed`（mixed。正常停止のあと kill -9）。接頭辞は `m4r_bg_` `m4r_bu_` `m4r_bm_` `m4r_`。
+- 専用の PostgreSQL に対して流すには、`PG_DATA=... PG_PORT=N sandbox/pg.sh start` のあと `PG_DATA=... PG_PORT=N tests/run.sh --target pg --port N --crash`（再起動・kill -9 が同じインスタンスを指す）。
+
+### isolation の追加
+
+`index-reader-writer`（索引走査の読み手は書き手を待たず、ROLLBACK 後も値が戻る）、`seq-nonblocking`（`nextval` は待たず、ROLLBACK で戻らない）、
+`index-unique-wait`（同じキーの INSERT は待ち合い、COMMIT なら 23505、ROLLBACK なら成功）。期待値は PostgreSQL 17 で作成。
+yuzhu では `--variant yuzhu-m3` を付けて流す（Repeatable Read は M5）。
+
+### M4 の slt（`tests/slt/m4/`）の構成と運用
+
+- K1: `join` `agg` `subquery` `setop` `cte` `dml`（接頭辞 `jn_` `ag_` `sb_` `so_` `ct_` `dm_`）。
+  `dml/returning.slt.pending` は、yuzhu が `RETURNING_ENABLED` を true にしてから `returning.slt` に改名して有効化する（run.sh は `*.slt` だけを拾う）。
+  有効化すると `tests/slt/m2/dml/update_errors.slt` の `onlyif yuzhu` の `RETURNING` `0A000` が落ちるので、あわせて直す。
+- K2: `catalog` `constraint` `index` `ddl` `seq`（接頭辞 `cat_` `cst_` `idx_` `ddl_` `sq_` `sr_` `id_`）と `tests/restart/m4` の idx-* / seq-* など。
+  `seq/log_cnt.slt` は yuzhu 専用（`onlyif yuzhu`）なので PostgreSQL では検証していない。
+- K3: `types` `explain` `copy` `psql`（接頭辞 `ty_` `ex_` `cp_` `psql_t_`）。`explain/nodes.slt` の join・集合演算のプラン形は PostgreSQL の選択のまま。
+- K4: `z_final`、`KNOWN-DIFFS.md`（KD-30 は索引・制約の未対応オプション）、isolation、`tests/restart/m4/btree-*`。
+- 未作成: `tests/compat/`（条件 5）、`plan_variants/`、`mem/limit.slt`、`slttools` の `plan-variants` / `large-keys` / `pgregress` と L11。
+- 重複: カタログ整合の SQL は `_include/consistency.slt.part` が正本。both / crash のシナリオの最後のフェーズに入っている同じ内容のブロックは、`slttools consistency --check` で同期を確認する。
+- PostgreSQL に対する確認の手順（クリーンなインスタンスで）:
+  `PG_PORT=55460 PG_DATA=/tmp/x sandbox/pg.sh start` → `tests/run.sh --target pg --port 55460`（`z_final/no_leftovers.slt` まで通る）→
+  `PG_DATA=/tmp/x tests/run.sh --target pg --port 55460 --restart` と `--crash` → `yuzhu-isolation --port 55460 tests/isolation/specs`。
+  共有の 55432 は他のエージェントの表が残るので、`no_leftovers.slt` と `m2/catalog/pg_attribute.slt` などの `oid >= 16384` を数える系は通らないことがある。

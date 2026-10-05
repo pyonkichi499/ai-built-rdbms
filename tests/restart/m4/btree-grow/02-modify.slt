@@ -1,0 +1,111 @@
+# フェーズ 2（正常停止の再起動の後）: 前フェーズの索引が使える。キーを変える UPDATE、範囲の DELETE、同じキーの再 INSERT で
+# 死んだ項目と再利用されたキーを作り、さらに追加する。
+
+# --- 索引走査（enable_seqscan = off）と全走査の件数・合計が一致する
+statement ok
+SET enable_seqscan = off
+
+query III
+SELECT count(*), min(k), max(k) FROM m4r_bg_t
+----
+9000 1 9000
+
+query II
+SELECT count(*), sum(v) FROM m4r_bg_t WHERE k BETWEEN 100 AND 7000
+----
+6901 167050
+
+query II
+SELECT count(*), sum(k) FROM m4r_bg_t WHERE v = 7
+----
+180 811560
+
+query I
+SELECT count(*) FROM m4r_bg_t WHERE v IS NULL
+----
+300
+
+query II
+SELECT k, length(s) FROM m4r_bg_t WHERE s = lpad('4321', 300, '0')
+----
+4321 300
+
+query I
+SELECT k FROM m4r_bg_t ORDER BY k DESC LIMIT 3
+----
+9000
+8999
+8998
+
+query I
+SELECT k FROM m4r_bg_t WHERE k >= 2990 ORDER BY k LIMIT 4
+----
+2990
+2991
+2992
+2993
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+SET enable_indexscan = off
+
+statement ok
+SET enable_bitmapscan = off
+
+query III
+SELECT count(*), min(k), max(k) FROM m4r_bg_t
+----
+9000 1 9000
+
+query II
+SELECT count(*), sum(v) FROM m4r_bg_t WHERE k BETWEEN 100 AND 7000
+----
+6901 167050
+
+query II
+SELECT count(*), sum(k) FROM m4r_bg_t WHERE v = 7
+----
+180 811560
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+RESET enable_bitmapscan
+
+# --- 一意性（PRIMARY KEY と UNIQUE INDEX）
+statement error (23505)
+INSERT INTO m4r_bg_t VALUES (4321, 'dup-pk', 0)
+
+statement error (23505)
+INSERT INTO m4r_bg_t VALUES (-1, lpad('4321', 300, '0'), 0)
+
+# キーを変える UPDATE（索引の項目が移る）
+statement count 500
+UPDATE m4r_bg_t SET k = k + 100000, s = lpad((k + 100000)::text, 300, '0') WHERE k BETWEEN 1 AND 500
+
+# 範囲の DELETE の後、同じキーを入れ直す（コミット済みの削除なので 23505 にならない）
+statement count 1000
+DELETE FROM m4r_bg_t WHERE k BETWEEN 2000 AND 2999
+
+statement count 1000
+INSERT INTO m4r_bg_t SELECT g, lpad(g::text, 300, '0'), 7 FROM generate_series(2000, 2999) g
+
+# ROLLBACK した INSERT・UPDATE は残らない
+statement ok
+BEGIN
+
+statement count 1000
+INSERT INTO m4r_bg_t SELECT 20000 + g, lpad((20000 + g)::text, 300, '0'), 0 FROM generate_series(1, 1000) g
+
+statement count 200
+UPDATE m4r_bg_t SET k = k + 500000, s = lpad((k + 500000)::text, 300, '0') WHERE k BETWEEN 5000 AND 5199
+
+statement ok
+ROLLBACK
+
+# 先頭への追加（負のキー）
+statement count 300
+INSERT INTO m4r_bg_t SELECT -g, lpad((-g)::text, 300, '0'), g % 3 FROM generate_series(1, 300) g

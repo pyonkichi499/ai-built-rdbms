@@ -1,0 +1,47 @@
+# name 型の比較と演算子: <> 'pg_catalog'、= 'public'、ORDER BY、!~ '^pg_'
+
+query T
+SELECT nspname FROM pg_namespace WHERE nspname <> 'pg_catalog' AND nspname <> 'information_schema' AND nspname !~ '^pg_' ORDER BY 1
+----
+public
+
+query ?????
+SELECT 'a'::name = 'a', 'a'::name <> 'b', 'a'::name < 'b', 'b'::name > 'a', 'a'::name <= 'a'
+----
+t t t t t
+
+query ??
+SELECT 'a'::name = 'a'::text, 'a'::text = 'a'::name
+----
+t t
+
+query TT
+SELECT pg_typeof('a'::name), pg_typeof('a'::name = 'a')
+----
+name boolean
+
+query T
+SELECT n.nspname FROM pg_namespace n WHERE n.nspname IN ('public', 'pg_catalog') ORDER BY n.nspname
+----
+pg_catalog
+public
+
+query T
+SELECT n.nspname FROM pg_namespace n WHERE n.nspname = 'public'
+----
+public
+
+query T
+SELECT max(nspname::text) FROM pg_namespace WHERE nspname = 'public'
+----
+public
+
+query TT
+SELECT 'abc'::name || 'x', length('abc'::name)
+----
+abcx 3
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'pg_class'
+----
+pg_class

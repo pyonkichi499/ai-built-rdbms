@@ -1,0 +1,135 @@
+# 集合演算: 型の決定（左から 2 つずつ）、unknown の扱い、列名、ORDER BY / LIMIT、優先順位、エラー
+
+statement ok
+CREATE TABLE so_t (a int, b text)
+
+statement ok
+CREATE TABLE so_u (a bigint, e text)
+
+statement ok
+INSERT INTO so_t VALUES (1, 'x'), (2, 'y'), (2, 'y'), (NULL, 'n')
+
+statement ok
+INSERT INTO so_u VALUES (2, 'y'), (3, 'q'), (NULL, 'n')
+
+# UNION は重複を除く（NULL どうしは等しい）。UNION ALL は除かない
+query IT
+SELECT a, b FROM so_t UNION SELECT a, e FROM so_u ORDER BY a, b
+----
+1 x
+2 y
+3 q
+NULL n
+
+query I
+SELECT count(*) FROM (SELECT a FROM so_t UNION ALL SELECT a FROM so_u) s
+----
+7
+
+# 共通型: int と bigint は bigint、int と numeric は numeric
+query T
+SELECT pg_typeof(a) FROM (SELECT a FROM so_t UNION SELECT a FROM so_u) s LIMIT 1
+----
+bigint
+
+query T
+SELECT pg_typeof(x) FROM (SELECT 1 AS x UNION SELECT 2.5) s LIMIT 1
+----
+numeric
+
+# unknown 同士は text。unknown と int は int（リテラルの入力関数で評価）
+query T
+SELECT pg_typeof(x) FROM (SELECT 'a' AS x UNION SELECT 'b') s LIMIT 1
+----
+text
+
+query I
+SELECT x FROM (SELECT 1 AS x UNION SELECT '2') s ORDER BY x
+----
+1
+2
+
+statement error invalid input syntax for type integer: "a"
+SELECT 1 UNION SELECT 'a'
+
+# 左から 2 つずつ: (NULL UNION NULL) は text になるので、後の 1 とは合わない
+statement error UNION types text and integer cannot be matched
+SELECT NULL UNION SELECT NULL UNION SELECT 1
+
+# 列名は最も左の腕
+query I
+SELECT a AS first FROM so_t WHERE a = 1 UNION SELECT a FROM so_u WHERE a = 3 ORDER BY first
+----
+1
+3
+
+# 集合演算全体の ORDER BY は出力列の名前か位置だけ
+query I
+SELECT a FROM so_t UNION SELECT a FROM so_u ORDER BY 1 DESC NULLS LAST LIMIT 2
+----
+3
+2
+
+statement error missing FROM-clause entry for table "so_t"
+SELECT a FROM so_t UNION SELECT a FROM so_u ORDER BY so_t.a
+
+statement error invalid UNION/INTERSECT/EXCEPT ORDER BY clause
+SELECT a FROM so_t UNION SELECT a FROM so_u ORDER BY a + 1
+
+statement error ORDER BY position 2 is not in select list
+SELECT a FROM so_t UNION SELECT a FROM so_u ORDER BY 2
+
+# 優先順位: INTERSECT が UNION / EXCEPT より強い。同じ強さは左結合
+query I
+SELECT a FROM so_t WHERE a = 1 UNION SELECT a FROM so_u INTERSECT SELECT 2 ORDER BY a
+----
+1
+2
+
+query I
+SELECT a FROM so_t EXCEPT SELECT a FROM so_u EXCEPT SELECT 1 ORDER BY a
+----
+
+# 括弧つきの腕は ORDER BY / LIMIT を持てる
+query I
+(SELECT a FROM so_t WHERE a IS NOT NULL ORDER BY a LIMIT 1) UNION ALL (SELECT a FROM so_u WHERE a IS NOT NULL ORDER BY a DESC LIMIT 1) ORDER BY 1
+----
+1
+3
+
+# ALL: INTERSECT ALL は min(nl, nr)、EXCEPT ALL は max(nl - nr, 0)
+query I
+SELECT a FROM so_t INTERSECT ALL SELECT a FROM so_u ORDER BY a
+----
+2
+NULL
+
+query I
+SELECT a FROM so_t EXCEPT ALL SELECT a FROM so_u ORDER BY a
+----
+1
+2
+
+# VALUES の腕
+query IT
+VALUES (1, 'a') UNION SELECT a, b FROM so_t WHERE a = 1 ORDER BY 1, 2
+----
+1 a
+1 x
+
+# 列数が違う
+statement error each UNION query must have the same number of columns
+SELECT a, b FROM so_t UNION SELECT a FROM so_u
+
+statement error each INTERSECT query must have the same number of columns
+SELECT a FROM so_t INTERSECT SELECT a, e FROM so_u
+
+statement error UNION types integer and text cannot be matched
+SELECT a FROM so_t UNION SELECT e FROM so_u
+
+# 括弧なしの腕の ORDER BY は構文エラー
+statement error (42601)
+SELECT a FROM so_t ORDER BY a UNION SELECT a FROM so_u
+
+statement ok
+DROP TABLE so_t, so_u

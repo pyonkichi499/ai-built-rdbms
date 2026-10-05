@@ -1,0 +1,86 @@
+# opclass 関連のカタログ（pg_opfamily / pg_opclass / pg_amop / pg_amproc）。行数は比べない（yuzhu は PostgreSQL より少ない）
+
+# pg_opfamily: btree の演算子族
+query TI
+SELECT opfname, opfmethod::int FROM pg_opfamily WHERE opfname IN ('integer_ops', 'text_ops', 'bool_ops', 'oid_ops', 'float_ops', 'numeric_ops', 'datetime_ops', 'bpchar_ops') AND opfmethod = 403 ORDER BY opfname
+----
+bool_ops 403
+bpchar_ops 403
+datetime_ops 403
+float_ops 403
+integer_ops 403
+numeric_ops 403
+oid_ops 403
+text_ops 403
+
+# pg_opclass: 既定の opclass と入力型
+query TTT
+SELECT oc.opcname, t.typname, oc.opcdefault::text FROM pg_opclass oc JOIN pg_type t ON t.oid = oc.opcintype WHERE oc.opcmethod = 403 AND oc.opcname IN ('int2_ops', 'int4_ops', 'int8_ops', 'text_ops', 'varchar_ops', 'bpchar_ops', 'bool_ops', 'oid_ops', 'float4_ops', 'float8_ops', 'numeric_ops', 'date_ops', 'timestamp_ops') ORDER BY oc.opcname
+----
+bool_ops bool true
+bpchar_ops bpchar true
+date_ops date true
+float4_ops float4 true
+float8_ops float8 true
+int2_ops int2 true
+int4_ops int4 true
+int8_ops int8 true
+numeric_ops numeric true
+oid_ops oid true
+text_ops text true
+timestamp_ops timestamp true
+varchar_ops text false
+
+# opclass の所属する演算子族
+query TT
+SELECT oc.opcname, f.opfname FROM pg_opclass oc JOIN pg_opfamily f ON f.oid = oc.opcfamily WHERE oc.opcmethod = 403 AND oc.opcname IN ('int2_ops', 'int4_ops', 'int8_ops', 'text_ops', 'bool_ops', 'oid_ops', 'numeric_ops') ORDER BY oc.opcname
+----
+bool_ops bool_ops
+int2_ops integer_ops
+int4_ops integer_ops
+int8_ops integer_ops
+numeric_ops numeric_ops
+oid_ops oid_ops
+text_ops text_ops
+
+# pg_amop: integer_ops の int4 同士の 5 つの strategy
+query ITT
+SELECT a.amopstrategy::int, o.oprname, a.amoppurpose::text FROM pg_amop a JOIN pg_opfamily f ON f.oid = a.amopfamily JOIN pg_operator o ON o.oid = a.amopopr WHERE f.opfname = 'integer_ops' AND f.opfmethod = 403 AND a.amoplefttype = 'int4'::regtype AND a.amoprighttype = 'int4'::regtype ORDER BY a.amopstrategy
+----
+1 < s
+2 <= s
+3 = s
+4 >= s
+5 > s
+
+# pg_amproc: support 1 の関数名
+query TI
+SELECT p.proname, ap.amprocnum::int FROM pg_amproc ap JOIN pg_opfamily f ON f.oid = ap.amprocfamily JOIN pg_proc p ON p.oid = ap.amproc WHERE f.opfname = 'integer_ops' AND f.opfmethod = 403 AND ap.amproclefttype = 'int4'::regtype AND ap.amprocrighttype = 'int4'::regtype AND ap.amprocnum = 1
+----
+btint4cmp 1
+
+query T
+SELECT p.proname FROM pg_amproc ap JOIN pg_opfamily f ON f.oid = ap.amprocfamily JOIN pg_proc p ON p.oid = ap.amproc WHERE f.opfname = 'text_ops' AND f.opfmethod = 403 AND ap.amproclefttype = 'text'::regtype AND ap.amprocrighttype = 'text'::regtype AND ap.amprocnum = 1
+----
+bttextcmp
+
+query T
+SELECT p.proname FROM pg_amproc ap JOIN pg_opfamily f ON f.oid = ap.amprocfamily JOIN pg_proc p ON p.oid = ap.amproc WHERE f.opfname = 'integer_ops' AND f.opfmethod = 403 AND ap.amproclefttype = 'int8'::regtype AND ap.amprocrighttype = 'int8'::regtype AND ap.amprocnum = 1
+----
+btint8cmp
+
+# text_ops の strategy 1〜5 の演算子（text 同士）
+query IT
+SELECT a.amopstrategy::int, o.oprname FROM pg_amop a JOIN pg_opfamily f ON f.oid = a.amopfamily JOIN pg_operator o ON o.oid = a.amopopr WHERE f.opfname = 'text_ops' AND f.opfmethod = 403 AND a.amoplefttype = 'text'::regtype AND a.amoprighttype = 'text'::regtype ORDER BY a.amopstrategy
+----
+1 <
+2 <=
+3 =
+4 >=
+5 >
+
+# 既定の opclass は型ごとに 1 つ
+query I
+SELECT count(*) FROM (SELECT opcintype FROM pg_opclass WHERE opcmethod = 403 AND opcdefault AND opcintype IN ('int4'::regtype, 'int8'::regtype, 'text'::regtype, 'bool'::regtype, 'oid'::regtype) GROUP BY opcintype HAVING count(*) <> 1) s
+----
+0

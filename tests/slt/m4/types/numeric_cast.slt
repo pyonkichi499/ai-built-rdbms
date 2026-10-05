@@ -1,0 +1,201 @@
+# numeric のキャスト: float との往復、整数への丸めと範囲、文字列との相互変換、エラー
+
+# float8 / float4 → numeric（float8 は有効数字 15 桁に丸める）
+query TTTT
+SELECT 0.30000000000000004::float8::numeric::text, 1.5::float8::numeric::text, 1e15::float8::numeric::text, 0.1::float8::numeric::text
+----
+0.3 1.5 1000000000000000 0.1
+
+query TTT
+SELECT 'NaN'::float8::numeric::text, 'Infinity'::float8::numeric::text, '-Infinity'::float8::numeric::text
+----
+NaN Infinity -Infinity
+
+query TTT
+SELECT 1.5::float4::numeric::text, 0.1::float4::numeric::text, 16777216::float4::numeric::text
+----
+1.5 0.1 16777200
+
+query TT
+SELECT 123456789.123456789::float8::numeric::text, 1e-5::float8::numeric::text
+----
+123456789.123457 0.00001
+
+# numeric → float
+query R?T
+SELECT 1.5::numeric::float8, 0.1::numeric::float8 = 0.1::float8, 'NaN'::numeric::float8::text
+----
+1.5 t NaN
+
+query TT
+SELECT 1.5::numeric::float4::text, 'Infinity'::numeric::float8::text
+----
+1.5 Infinity
+
+# numeric → 整数（0 から遠い方へ丸める）
+query IIII
+SELECT 1.4::numeric::int, 1.5::numeric::int, 2.5::numeric::int, 0.5::numeric::int
+----
+1 2 3 1
+
+query IIII
+SELECT (-1.4)::numeric::int, (-1.5)::numeric::int, (-2.5)::numeric::int, (-0.5)::numeric::int
+----
+-1 -2 -3 -1
+
+query III
+SELECT 32767.4::numeric::int2, (-32768.4)::numeric::int2, 2147483647.4::numeric::int4
+----
+32767 -32768 2147483647
+
+query II
+SELECT 9223372036854775807::numeric::int8, 9223372036854775807.4::numeric::int8
+----
+9223372036854775807 9223372036854775807
+
+statement error (22003)
+SELECT 32768::numeric::int2
+
+statement error (22003)
+SELECT 2147483648::numeric::int4
+
+statement error (22003)
+SELECT 9223372036854775808::numeric::int8
+
+statement error (22003)
+SELECT 32767.5::numeric::int2
+
+statement error (0A000)
+SELECT 'NaN'::numeric::int
+
+statement error (0A000)
+SELECT 'Infinity'::numeric::int8
+
+statement error (0A000)
+SELECT 'NaN'::numeric::int2
+
+# 整数 → numeric は暗黙のキャスト
+query TTT
+SELECT 5::int2::numeric::text, 2147483647::int::numeric::text, (-9223372036854775807)::int8::numeric::text
+----
+5 2147483647 -9223372036854775807
+
+query TT
+SELECT pg_typeof(1::int2::numeric), pg_typeof(1::numeric + 1::int2)
+----
+numeric numeric
+
+# 文字列との相互変換
+query TTTT
+SELECT '12.50'::numeric::text, ' 12.5 '::numeric::text, '+7'::numeric::text, '-0.0'::numeric::text
+----
+12.50 12.5 7 0.0
+
+query TTTT
+SELECT '1e3'::numeric::text, '1.5E-3'::numeric::text, '.5'::numeric::text, '5.'::numeric::text
+----
+1000 0.0015 0.5 5
+
+query TTT
+SELECT '00012'::numeric::text, '1_000'::numeric::text, '0x10'::numeric::text
+----
+12 1000 16
+
+query TT
+SELECT 12.50::text, (12.5::numeric(6,3))::varchar
+----
+12.50 12.500
+
+query T
+SELECT CAST(1.5 AS text) || 'x'
+----
+1.5x
+
+statement error (22P02)
+SELECT 'x'::numeric
+
+statement error (22P02)
+SELECT ''::numeric
+
+statement error (22P02)
+SELECT '1.2.3'::numeric
+
+statement error (22P02)
+SELECT '1e'::numeric
+
+statement error (22P02)
+SELECT '--1'::numeric
+
+statement error (22P02)
+SELECT '1 2'::numeric
+
+# CAST 構文と関数形式
+query TT
+SELECT CAST('1.50' AS numeric)::text, numeric '2.50'::text
+----
+1.50 2.50
+
+query TT
+SELECT CAST(1.5 AS numeric(5,2))::text, CAST(2 AS decimal(4,1))::text
+----
+1.50 2.0
+
+query TT
+SELECT pg_typeof(1::decimal), pg_typeof(1::dec(5,2))
+----
+numeric numeric
+
+# 列を介したキャスト（NULL を混ぜる）
+statement ok
+CREATE TABLE ty_nc_t (id int, t text, n numeric, f float8)
+
+statement ok
+INSERT INTO ty_nc_t VALUES (1, '1.5', 2.25, 0.5), (2, '-3', NULL, 1e10::float8), (3, NULL, 7, NULL)
+
+query ITT
+SELECT id, t::numeric::text, (n * 2)::text FROM ty_nc_t ORDER BY id
+----
+1 1.5 4.50
+2 -3 NULL
+3 NULL 14
+
+query IT
+SELECT id, (n + f)::text FROM ty_nc_t ORDER BY id
+----
+1 2.75
+2 NULL
+3 NULL
+
+query IT
+SELECT id, (n::int)::text FROM ty_nc_t ORDER BY id
+----
+1 2
+2 NULL
+3 7
+
+query IT
+SELECT id, f::numeric::text FROM ty_nc_t ORDER BY id
+----
+1 0.5
+2 10000000000
+3 NULL
+
+statement ok
+INSERT INTO ty_nc_t (id, f) VALUES (4, 1.5)
+
+statement ok
+UPDATE ty_nc_t SET n = f WHERE id = 4
+
+query T
+SELECT n::text FROM ty_nc_t WHERE id = 4
+----
+1.5
+
+statement ok
+INSERT INTO ty_nc_t (id, t) VALUES (5, 'abc')
+
+statement error (22P02)
+SELECT t::numeric FROM ty_nc_t WHERE id = 5
+
+statement ok
+DROP TABLE ty_nc_t

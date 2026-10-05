@@ -1,0 +1,227 @@
+# ALTER SEQUENCE
+
+statement ok
+CREATE SEQUENCE sq_al_a
+
+query I
+SELECT nextval('sq_al_a') FROM generate_series(1, 3)
+----
+1
+2
+3
+
+# RESTART（START の値に戻る）
+statement ok
+ALTER SEQUENCE sq_al_a RESTART
+
+query I
+SELECT nextval('sq_al_a')
+----
+1
+
+statement ok
+ALTER SEQUENCE sq_al_a RESTART WITH 50
+
+query I
+SELECT nextval('sq_al_a')
+----
+50
+
+# INCREMENT
+statement ok
+ALTER SEQUENCE sq_al_a INCREMENT BY 10
+
+query I
+SELECT nextval('sq_al_a')
+----
+60
+
+# MAXVALUE / MINVALUE / NO MAXVALUE
+statement ok
+ALTER SEQUENCE sq_al_a MAXVALUE 75
+
+statement error (2200H)
+SELECT nextval('sq_al_a') + nextval('sq_al_a')
+
+statement ok
+ALTER SEQUENCE sq_al_a NO MAXVALUE
+
+query IIII
+SELECT seqmin, seqmax, seqincrement, seqstart FROM pg_sequence WHERE seqrelid = 'sq_al_a'::regclass
+----
+1 9223372036854775807 10 1
+
+statement ok
+ALTER SEQUENCE sq_al_a MINVALUE 0 START 5
+
+query II
+SELECT seqmin, seqstart FROM pg_sequence WHERE seqrelid = 'sq_al_a'::regclass
+----
+0 5
+
+# START は RESTART の既定値
+statement ok
+ALTER SEQUENCE sq_al_a RESTART
+
+query I
+SELECT nextval('sq_al_a')
+----
+5
+
+# CACHE と CYCLE
+statement ok
+ALTER SEQUENCE sq_al_a CACHE 4 CYCLE
+
+query IT
+SELECT seqcache, seqcycle::text FROM pg_sequence WHERE seqrelid = 'sq_al_a'::regclass
+----
+4 true
+
+statement ok
+ALTER SEQUENCE sq_al_a NO CYCLE CACHE 1
+
+# AS の型変更（min / max が調整される）
+statement ok
+CREATE SEQUENCE sq_al_b AS integer
+
+statement ok
+ALTER SEQUENCE sq_al_b AS smallint
+
+query TII
+SELECT seqtypid::regtype::text, seqmin, seqmax FROM pg_sequence WHERE seqrelid = 'sq_al_b'::regclass
+----
+smallint 1 32767
+
+statement ok
+ALTER SEQUENCE sq_al_b AS bigint
+
+query TII
+SELECT seqtypid::regtype::text, seqmin, seqmax FROM pg_sequence WHERE seqrelid = 'sq_al_b'::regclass
+----
+bigint 1 9223372036854775807
+
+# 現在の値を超える MAXVALUE
+statement ok
+CREATE SEQUENCE sq_al_c
+
+query I
+SELECT setval('sq_al_c', 50)
+----
+50
+
+statement error (?s)RESTART value \(50\) cannot be greater than MAXVALUE \(10\)
+ALTER SEQUENCE sq_al_c MAXVALUE 10
+
+statement error (22023)
+ALTER SEQUENCE sq_al_c MAXVALUE 10
+
+statement error (?s)RESTART value \(500\) cannot be greater than MAXVALUE \(100\)
+ALTER SEQUENCE sq_al_c RESTART WITH 500 MAXVALUE 100
+
+statement error (?s)INCREMENT must not be zero
+ALTER SEQUENCE sq_al_c INCREMENT 0
+
+statement error (?s)conflicting or redundant options
+ALTER SEQUENCE sq_al_c CACHE 2 CACHE 3
+
+statement error (?s)CACHE \(0\) must be greater than zero
+ALTER SEQUENCE sq_al_c CACHE 0
+
+# 存在しない・表
+statement error (?s)relation "sq_al_nope" does not exist
+ALTER SEQUENCE sq_al_nope RESTART
+
+statement error (42P01)
+ALTER SEQUENCE sq_al_nope RESTART
+
+statement ok
+ALTER SEQUENCE IF EXISTS sq_al_nope RESTART
+
+statement ok
+CREATE TABLE sq_al_t (a int)
+
+statement error (42809)
+ALTER SEQUENCE sq_al_t RESTART
+
+statement ok
+DROP TABLE sq_al_t
+
+# OWNED BY
+statement ok
+CREATE TABLE sq_al_o (a int, b int)
+
+statement ok
+ALTER SEQUENCE sq_al_c OWNED BY sq_al_o.b
+
+query TTI
+SELECT deptype::text, refobjid::regclass::text, refobjsubid FROM pg_depend WHERE objid = 'sq_al_c'::regclass AND classid = 'pg_class'::regclass AND refclassid = 'pg_class'::regclass
+----
+a sq_al_o 2
+
+statement ok
+ALTER SEQUENCE sq_al_c OWNED BY sq_al_o.a
+
+query I
+SELECT refobjsubid FROM pg_depend WHERE objid = 'sq_al_c'::regclass AND classid = 'pg_class'::regclass AND refclassid = 'pg_class'::regclass
+----
+1
+
+statement ok
+ALTER SEQUENCE sq_al_c OWNED BY NONE
+
+query I
+SELECT count(*) FROM pg_depend WHERE objid = 'sq_al_c'::regclass AND classid = 'pg_class'::regclass AND refclassid = 'pg_class'::regclass
+----
+0
+
+statement error (42703)
+ALTER SEQUENCE sq_al_c OWNED BY sq_al_o.zz
+
+statement error (42809)
+ALTER SEQUENCE sq_al_c OWNED BY sq_al_c.last_value
+
+# ALTER の後も nextval は続く
+query I
+SELECT nextval('sq_al_c')
+----
+51
+
+# ALTER SEQUENCE のロールバック（RESTART）は PostgreSQL では取り消される
+statement ok
+CREATE SEQUENCE sq_al_r
+
+query I
+SELECT nextval('sq_al_r') FROM generate_series(1, 3)
+----
+1
+2
+3
+
+statement ok
+BEGIN
+
+statement ok
+ALTER SEQUENCE sq_al_r RESTART WITH 100
+
+statement ok
+ROLLBACK
+
+# KNOWN-DIFF: KD-11 PostgreSQL は ALTER SEQUENCE の RESTART を ROLLBACK で取り消す
+skipif yuzhu
+query I
+SELECT nextval('sq_al_r')
+----
+4
+
+# KNOWN-DIFF: KD-11 yuzhu は ALTER SEQUENCE の状態をロールバックしない
+onlyif yuzhu
+query I
+SELECT nextval('sq_al_r')
+----
+100
+
+statement ok
+DROP TABLE sq_al_o
+
+statement ok
+DROP SEQUENCE sq_al_a, sq_al_b, sq_al_c, sq_al_r

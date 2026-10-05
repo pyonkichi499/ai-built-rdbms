@@ -1,0 +1,24 @@
+# pg_language の 3 行と、pg_proc.prolang の参照
+
+query ITTTT
+SELECT oid::int, lanname, lanispl::text, lanpltrusted::text, lanowner::int FROM pg_language WHERE oid IN (12, 13, 14) ORDER BY oid
+----
+12 internal false false 10
+13 c false false 10
+14 sql false true 10
+
+# pg_proc.prolang はすべて pg_language に存在する
+query I
+SELECT count(*) FROM pg_proc WHERE prolang NOT IN (SELECT oid FROM pg_language)
+----
+0
+
+query T
+SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE p.proname = 'int4pl'
+----
+internal
+
+query T
+SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE p.proname = 'nextval'
+----
+internal

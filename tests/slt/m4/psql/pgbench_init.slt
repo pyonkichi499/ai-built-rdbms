@@ -1,0 +1,208 @@
+# pgbench -i（手順 dtGvp）と組み込みスクリプト tpcb-like の SQL を、小さな規模（scale 相当 1/100）で流す。
+# テーブル名だけ psql_pb_ に変えてある。pgbench そのものの実行は tests/compat/pgbench
+
+# d
+statement ok
+DROP TABLE IF EXISTS psql_pb_accounts, psql_pb_branches, psql_pb_history, psql_pb_tellers
+
+# t
+statement ok
+CREATE TABLE psql_pb_history(tid int,bid int,aid    int,delta int,mtime timestamp,filler char(22))
+
+statement ok
+CREATE TABLE psql_pb_tellers(tid int not null,bid int,tbalance int,filler char(84)) WITH (fillfactor=100)
+
+statement ok
+CREATE TABLE psql_pb_accounts(aid    int not null,bid int,abalance int,filler char(84)) WITH (fillfactor=100)
+
+statement ok
+CREATE TABLE psql_pb_branches(bid int not null,bbalance int,filler char(88)) WITH (fillfactor=100)
+
+# G（サーバ側でデータを生成）
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE TABLE psql_pb_accounts, psql_pb_branches, psql_pb_history, psql_pb_tellers
+
+statement ok
+INSERT INTO psql_pb_branches(bid,bbalance) SELECT bid, 0 FROM generate_series(1, 1) AS bid
+
+statement ok
+INSERT INTO psql_pb_tellers(tid,bid,tbalance) SELECT tid, (tid - 1) / 10 + 1, 0 FROM generate_series(1, 10) AS tid
+
+statement ok
+INSERT INTO psql_pb_accounts(aid,bid,abalance,filler) SELECT aid, (aid - 1) / 100000 + 1, 0, '' FROM generate_series(1, 1000) AS aid
+
+statement ok
+COMMIT
+
+# v
+statement ok
+VACUUM ANALYZE psql_pb_branches
+
+statement ok
+VACUUM ANALYZE psql_pb_tellers
+
+statement ok
+VACUUM ANALYZE psql_pb_accounts
+
+statement ok
+VACUUM ANALYZE psql_pb_history
+
+# p
+statement ok
+ALTER TABLE psql_pb_branches ADD PRIMARY KEY (bid)
+
+statement ok
+ALTER TABLE psql_pb_tellers ADD PRIMARY KEY (tid)
+
+statement ok
+ALTER TABLE psql_pb_accounts ADD PRIMARY KEY (aid)
+
+# 7.3 の 1: 件数と主キー
+query IIII
+SELECT (SELECT count(*) FROM psql_pb_accounts), (SELECT count(*) FROM psql_pb_branches), (SELECT count(*) FROM psql_pb_tellers), (SELECT count(*) FROM psql_pb_history)
+----
+1000 1 10 0
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'psql_pb_accounts'::regclass
+----
+psql_pb_accounts_pkey
+
+query TT
+SELECT conname, contype FROM pg_constraint WHERE conrelid IN ('psql_pb_branches'::regclass, 'psql_pb_tellers'::regclass) ORDER BY conname
+----
+psql_pb_branches_pkey p
+psql_pb_tellers_pkey p
+
+# char(n) 列は空白で埋まる
+query II
+SELECT octet_length(filler), length(filler) FROM psql_pb_accounts WHERE aid = 1
+----
+84 0
+
+query II
+SELECT octet_length(filler), length(filler) FROM psql_pb_branches
+----
+NULL NULL
+
+# スケールの確認（pgbench が実行前に送る）
+query I
+SELECT count(*) FROM psql_pb_branches
+----
+1
+
+# tpcb-like（-M simple。\set は pgbench が値を計算してリテラルにする）
+statement ok
+BEGIN
+
+statement ok
+UPDATE psql_pb_accounts SET abalance = abalance + -400 WHERE aid = 441
+
+query I
+SELECT abalance FROM psql_pb_accounts WHERE aid = 441
+----
+-400
+
+statement ok
+UPDATE psql_pb_tellers SET tbalance = tbalance + -400 WHERE tid = 7
+
+statement ok
+UPDATE psql_pb_branches SET bbalance = bbalance + -400 WHERE bid = 1
+
+statement ok
+INSERT INTO psql_pb_history (tid, bid, aid, delta, mtime) VALUES (7, 1, 441, -400, CURRENT_TIMESTAMP)
+
+statement ok
+END
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE psql_pb_accounts SET abalance = abalance + 250 WHERE aid = 12
+
+statement ok
+UPDATE psql_pb_tellers SET tbalance = tbalance + 250 WHERE tid = 2
+
+statement ok
+UPDATE psql_pb_branches SET bbalance = bbalance + 250 WHERE bid = 1
+
+statement ok
+INSERT INTO psql_pb_history (tid, bid, aid, delta, mtime) VALUES (2, 1, 12, 250, CURRENT_TIMESTAMP)
+
+statement ok
+END
+
+# 7.3 の 4: 4 つの合計がすべて等しい
+query IIII
+SELECT (SELECT sum(abalance) FROM psql_pb_accounts), (SELECT sum(tbalance) FROM psql_pb_tellers), (SELECT sum(bbalance) FROM psql_pb_branches), (SELECT sum(delta) FROM psql_pb_history)
+----
+-150 -150 -150 -150
+
+query I
+SELECT count(*) FROM psql_pb_history
+----
+2
+
+query I
+SELECT count(*) FROM psql_pb_history WHERE mtime IS NOT NULL
+----
+2
+
+query TT
+SELECT pg_typeof(mtime), pg_typeof(filler) FROM psql_pb_history LIMIT 1
+----
+timestamp without time zone character
+
+# 主キー検索と更新の結果
+query II
+SELECT aid, abalance FROM psql_pb_accounts WHERE aid IN (441, 12) ORDER BY aid
+----
+12 250
+441 -400
+
+# 失敗したトランザクションは何も残さない
+statement ok
+BEGIN
+
+statement ok
+UPDATE psql_pb_accounts SET abalance = abalance + 1000 WHERE aid = 5
+
+statement ok
+ROLLBACK
+
+query I
+SELECT abalance FROM psql_pb_accounts WHERE aid = 5
+----
+0
+
+# 主キーの一意性
+statement error (23505)
+INSERT INTO psql_pb_accounts (aid, bid, abalance, filler) VALUES (1, 1, 0, '')
+
+statement error (23502)
+INSERT INTO psql_pb_accounts (aid, bid) VALUES (NULL, 1)
+
+# TRUNCATE（pgbench -i の g と、実行前の truncate pgbench_history）
+statement ok
+TRUNCATE psql_pb_history
+
+query I
+SELECT count(*) FROM psql_pb_history
+----
+0
+
+# \dt に 4 つ出る
+query TT
+SELECT c.relname, c.relkind FROM pg_class c WHERE c.relname LIKE 'psql\_pb\_%' AND c.relkind = 'r' ORDER BY 1
+----
+psql_pb_accounts r
+psql_pb_branches r
+psql_pb_history r
+psql_pb_tellers r
+
+statement ok
+DROP TABLE psql_pb_accounts, psql_pb_branches, psql_pb_history, psql_pb_tellers

@@ -1,0 +1,59 @@
+# 一意制約違反のメッセージと DETAIL
+
+statement ok
+CREATE TABLE idx_uv_t (a int, b text, d date, n numeric(6,2), t text, c1 int, c2 text, UNIQUE (a), UNIQUE (c1, c2), UNIQUE (d), UNIQUE (n), UNIQUE (t))
+
+statement count 1
+INSERT INTO idx_uv_t VALUES (1, 'x', '2024-02-29', 12.50, 'k1', 5, 'x')
+
+statement error (23505)
+INSERT INTO idx_uv_t (a) VALUES (1)
+
+statement error (?s)duplicate key value violates unique constraint "idx_uv_t_a_key".*Key \(a\)=\(1\) already exists\.
+INSERT INTO idx_uv_t (a) VALUES (1)
+
+statement error (?s)idx_uv_t_c1_c2_key.*Key \(c1, c2\)=\(5, x\) already exists\.
+INSERT INTO idx_uv_t (c1, c2) VALUES (5, 'x')
+
+statement error (?s)idx_uv_t_d_key.*Key \(d\)=\(2024-02-29\) already exists\.
+INSERT INTO idx_uv_t (d) VALUES ('2024-02-29')
+
+statement error (?s)idx_uv_t_n_key.*Key \(n\)=\(12\.50\) already exists\.
+INSERT INTO idx_uv_t (n) VALUES (12.5)
+
+statement error (?s)idx_uv_t_t_key.*Key \(t\)=\(k1\) already exists\.
+INSERT INTO idx_uv_t (t) VALUES ('k1')
+
+# 長い値は切り詰めない
+statement count 1
+INSERT INTO idx_uv_t (t) VALUES (repeat('abcdefghij', 20) || 'END')
+
+statement error (?s)Key \(t\)=\((abcdefghij){20}END\) already exists\.
+INSERT INTO idx_uv_t (t) VALUES (repeat('abcdefghij', 20) || 'END')
+
+# UPDATE での違反も同じ文言
+statement count 1
+INSERT INTO idx_uv_t (a) VALUES (2)
+
+statement error (?s)idx_uv_t_a_key.*Key \(a\)=\(1\) already exists\.
+UPDATE idx_uv_t SET a = 1 WHERE a = 2
+
+# CREATE UNIQUE INDEX の重複
+statement count 2
+INSERT INTO idx_uv_t (b, a) VALUES ('dup', 10), ('dup', 11)
+
+statement error (23505)
+CREATE UNIQUE INDEX idx_uv_b ON idx_uv_t (b)
+
+statement error (?s)could not create unique index "idx_uv_b".*Key \(b\)=\(dup\) is duplicated\.
+CREATE UNIQUE INDEX idx_uv_b ON idx_uv_t (b)
+
+# NULL の重複は可
+statement ok
+CREATE UNIQUE INDEX idx_uv_n2 ON idx_uv_t (d, n)
+
+statement count 2
+INSERT INTO idx_uv_t (a) VALUES (20), (21)
+
+statement ok
+DROP TABLE idx_uv_t

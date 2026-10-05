@@ -1,0 +1,95 @@
+# pg_class: relkind（r / i / S）、relam、relhasindex、relnatts、relchecks、relreplident、relowner、relnamespace
+
+statement ok
+CREATE TABLE cat_pk_t (id int PRIMARY KEY, a int, b text, CHECK (a > 0), CHECK (a < 100))
+
+statement ok
+CREATE TABLE cat_pk_n (x int)
+
+statement ok
+CREATE SEQUENCE cat_pk_s
+
+statement ok
+CREATE INDEX cat_pk_i ON cat_pk_t (a)
+
+query TTTTT
+SELECT relname, relkind::text, relam::int, relnatts, relchecks FROM pg_class WHERE relname IN ('cat_pk_t', 'cat_pk_n', 'cat_pk_s', 'cat_pk_i', 'cat_pk_t_pkey') ORDER BY relname
+----
+cat_pk_i i 403 1 0
+cat_pk_n r 2 1 0
+cat_pk_s S 0 3 0
+cat_pk_t r 2 3 2
+cat_pk_t_pkey i 403 1 0
+
+# relam は btree = 403、表 = 2（heap）、シーケンス = 0
+query TI
+SELECT c.relname, am.oid::int FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname IN ('cat_pk_t', 'cat_pk_i', 'cat_pk_t_pkey') ORDER BY c.relname
+----
+cat_pk_i 403
+cat_pk_t 2
+cat_pk_t_pkey 403
+
+query TTT
+SELECT relname, relreplident::text, relhasindex::text FROM pg_class WHERE relname IN ('cat_pk_t', 'cat_pk_n', 'cat_pk_s', 'cat_pk_i') ORDER BY relname
+----
+cat_pk_i n false
+cat_pk_n d false
+cat_pk_s n false
+cat_pk_t d true
+
+# relhasindex は DROP INDEX の後も t のまま（PRIMARY KEY があるため）。索引のない表の relhasindex は f
+statement ok
+DROP INDEX cat_pk_i
+
+query TT
+SELECT relname, relhasindex::text FROM pg_class WHERE relname IN ('cat_pk_t', 'cat_pk_n') ORDER BY relname
+----
+cat_pk_n false
+cat_pk_t true
+
+# 索引を作ると relhasindex が t になり、DROP INDEX の後も t のまま
+statement ok
+CREATE INDEX cat_pk_ni ON cat_pk_n (x)
+
+query T
+SELECT relhasindex::text FROM pg_class WHERE relname = 'cat_pk_n'
+----
+true
+
+statement ok
+DROP INDEX cat_pk_ni
+
+query T
+SELECT relhasindex::text FROM pg_class WHERE relname = 'cat_pk_n'
+----
+true
+
+# 所有者と名前空間
+query TTT
+SELECT c.relname, pg_get_userbyid(c.relowner), n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname IN ('cat_pk_t', 'cat_pk_s', 'cat_pk_t_pkey') ORDER BY c.relname
+----
+cat_pk_s postgres public
+cat_pk_t postgres public
+cat_pk_t_pkey postgres public
+
+query T
+SELECT relpersistence::text FROM pg_class WHERE relname IN ('cat_pk_t', 'cat_pk_s', 'cat_pk_t_pkey') ORDER BY relname
+----
+p
+p
+p
+
+# relfilenode は 0 でない（索引・シーケンスも自分のファイル）
+query I
+SELECT count(*) FROM pg_class WHERE relname IN ('cat_pk_t', 'cat_pk_n', 'cat_pk_s', 'cat_pk_t_pkey') AND relfilenode = 0
+----
+0
+
+statement ok
+DROP TABLE cat_pk_t
+
+statement ok
+DROP TABLE cat_pk_n
+
+statement ok
+DROP SEQUENCE cat_pk_s

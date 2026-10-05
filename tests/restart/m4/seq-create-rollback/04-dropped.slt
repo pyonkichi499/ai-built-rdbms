@@ -1,0 +1,8 @@
+# フェーズ 4: DROP SEQUENCE のコミットが残る。
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'm4r\_sr\_%'
+----
+
+statement error (42P01)
+SELECT nextval('m4r_sr_s')

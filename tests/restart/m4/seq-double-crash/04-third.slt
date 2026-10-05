@@ -1,0 +1,14 @@
+# フェーズ 4: 3 回目のクラッシュの後。
+
+query I
+SELECT nextval('m4r_sd_a')
+----
+100
+
+statement ok
+DROP SEQUENCE m4r_sd_a
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'm4r\_sd\_%'
+----
+0

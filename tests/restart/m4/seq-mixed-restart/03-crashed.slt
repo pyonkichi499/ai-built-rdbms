@@ -1,0 +1,30 @@
+# フェーズ 3: クラッシュの後は 33 ずつ先（r1 = 37、r2 = 43、rt の id = 36）。
+
+query I
+SELECT nextval('m4r_sm_r1')
+----
+37
+
+query I
+SELECT nextval('m4r_sm_r2')
+----
+43
+
+statement count 1
+INSERT INTO m4r_sm_rt (v) VALUES (4)
+
+query I
+SELECT id FROM m4r_sm_rt WHERE v = 4
+----
+36
+
+statement ok
+DROP TABLE m4r_sm_rt
+
+statement ok
+DROP SEQUENCE m4r_sm_r1, m4r_sm_r2
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'm4r\_sm\_%'
+----
+0

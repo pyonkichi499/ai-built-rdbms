@@ -1,0 +1,279 @@
+# タイムゾーンと DateStyle: SET TIME ZONE ごとの出力・変換・DST の境界
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+# 固定のオフセットと名前
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+query ??
+SELECT '2024-03-15 12:00:00+00'::timestamptz, '2024-03-15 12:00:00'::timestamptz
+----
+2024-03-15 21:00:00+09 2024-03-15 12:00:00+09
+
+query ???
+SELECT '2024-03-15 12:00:00+00'::timestamptz::timestamp, '2024-03-15 12:00:00+00'::timestamptz::date, '2024-03-15 20:00:00+00'::timestamptz::date
+----
+2024-03-15 21:00:00 2024-03-15 2024-03-16
+
+query ??
+SELECT '2024-03-15 12:00:00'::timestamp::timestamptz, '2024-03-15'::date::timestamptz
+----
+2024-03-15 12:00:00+09 2024-03-15 00:00:00+09
+
+# 日本標準時には夏時間がない
+query ??
+SELECT '2024-07-01 00:00:00'::timestamptz, '2024-01-01 00:00:00'::timestamptz
+----
+2024-07-01 00:00:00+09 2024-01-01 00:00:00+09
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SHOW TimeZone
+----
+America/New_York
+
+query ??
+SELECT '2024-01-15 12:00:00+00'::timestamptz, '2024-07-15 12:00:00+00'::timestamptz
+----
+2024-01-15 07:00:00-05 2024-07-15 08:00:00-04
+
+# DST の境界（春: 2024-03-10 02:00 → 03:00。秋: 2024-11-03 02:00 → 01:00）
+query ???
+SELECT '2024-03-10 01:59:59'::timestamptz, '2024-03-10 02:30:00'::timestamptz, '2024-03-10 03:00:00'::timestamptz
+----
+2024-03-10 01:59:59-05 2024-03-10 03:30:00-04 2024-03-10 03:00:00-04
+
+query ??
+SELECT '2024-03-10 06:59:59+00'::timestamptz, '2024-03-10 07:00:00+00'::timestamptz
+----
+2024-03-10 01:59:59-05 2024-03-10 03:00:00-04
+
+query ???
+SELECT '2024-11-03 00:59:59'::timestamptz, '2024-11-03 01:30:00'::timestamptz, '2024-11-03 02:00:00'::timestamptz
+----
+2024-11-03 00:59:59-04 2024-11-03 01:30:00-05 2024-11-03 02:00:00-05
+
+query ??
+SELECT '2024-11-03 05:30:00+00'::timestamptz, '2024-11-03 06:30:00+00'::timestamptz
+----
+2024-11-03 01:30:00-04 2024-11-03 01:30:00-05
+
+# 秋の曖昧な壁時計 01:30 は、PostgreSQL では 2 回目（標準時 EST, UTC-5）に解決される
+query ?
+SELECT '2024-11-03 01:30:00'::timestamptz = '2024-11-03 06:30:00+00'::timestamptz
+----
+t
+
+# timestamptz → timestamp は現在のゾーンの壁時計
+query ??
+SELECT '2024-03-10 06:59:59+00'::timestamptz::timestamp, '2024-03-10 07:00:00+00'::timestamptz::timestamp
+----
+2024-03-10 01:59:59 2024-03-10 03:00:00
+
+# 同じ時刻が別のゾーンでは別の日付になる
+query ?
+SELECT '2024-03-15 02:00:00+00'::timestamptz::date
+----
+2024-03-14
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query ?
+SELECT '2024-03-15 02:00:00+00'::timestamptz::date
+----
+2024-03-15
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query ?
+SELECT '2024-03-15 02:00:00+00'::timestamptz::date
+----
+2024-03-15
+
+# 比較と ORDER BY はゾーンに依らず絶対時刻
+statement ok
+CREATE TABLE ty_tz_t (id int, tz timestamptz, ts timestamp)
+
+statement ok
+INSERT INTO ty_tz_t VALUES (1, '2024-03-15 12:00:00+09', '2024-03-15 12:00:00'), (2, '2024-03-15 12:00:00+00', '2024-03-15 12:00:00'), (3, '2024-03-15 12:00:00-05', '2024-03-15 12:00:00')
+
+query I?
+SELECT id, tz FROM ty_tz_t ORDER BY tz
+----
+1 2024-03-15 03:00:00+00
+2 2024-03-15 12:00:00+00
+3 2024-03-15 17:00:00+00
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query I?
+SELECT id, tz FROM ty_tz_t ORDER BY tz
+----
+1 2024-03-15 12:00:00+09
+2 2024-03-15 21:00:00+09
+3 2024-03-16 02:00:00+09
+
+query I
+SELECT id FROM ty_tz_t WHERE tz = '2024-03-15 12:00:00' ORDER BY id
+----
+1
+
+query I
+SELECT id FROM ty_tz_t WHERE tz < '2024-03-15 12:00:00' ORDER BY id
+----
+
+# timestamp 列を timestamptz と比べると、現在のゾーンで解釈される
+query I
+SELECT id FROM ty_tz_t WHERE ts = tz ORDER BY id
+----
+1
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query I
+SELECT id FROM ty_tz_t WHERE ts = tz ORDER BY id
+----
+2
+
+# timestamp 列へ timestamptz を代入すると現在のゾーンの壁時計になる
+statement ok
+INSERT INTO ty_tz_t (id, ts) VALUES (4, '2024-03-15 12:00:00+09'::timestamptz)
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+statement ok
+INSERT INTO ty_tz_t (id, ts) VALUES (5, '2024-03-15 12:00:00+09'::timestamptz)
+
+query I?
+SELECT id, ts FROM ty_tz_t WHERE id >= 4 ORDER BY id
+----
+4 2024-03-15 03:00:00
+5 2024-03-14 23:00:00
+
+statement ok
+DROP TABLE ty_tz_t
+
+statement ok
+SET TIME ZONE 'Europe/London'
+
+query ??
+SELECT '2024-03-31 00:59:59+00'::timestamptz, '2024-03-31 01:00:00+00'::timestamptz
+----
+2024-03-31 00:59:59+00 2024-03-31 02:00:00+01
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# SET TIME ZONE LOCAL / DEFAULT / TO
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+statement ok
+SET TimeZone = 'UTC'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+statement ok
+SET timezone TO 'America/New_York'
+
+query T
+SHOW TimeZone
+----
+America/New_York
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# 存在しないゾーン
+statement error (22023)
+SET TIME ZONE 'Foo/Bar'
+
+statement error (22023)
+SET TimeZone = 'Mars/Olympus'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+# DateStyle と日付の入力
+statement ok
+SET DateStyle = 'ISO, DMY'
+
+query ???
+SELECT '05/06/2024'::date, '5.6.2024'::date, '2024-06-05'::date
+----
+2024-06-05 2024-06-05 2024-06-05
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+query ??
+SELECT '05/06/2024'::date, '2024-06-05'::date
+----
+2024-05-06 2024-06-05
+
+statement ok
+SET DateStyle = 'ISO, YMD'
+
+query ?
+SELECT '24/06/05'::date
+----
+2024-06-05
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+statement error (22023)
+SET DateStyle = 'Nonsense'
+
+# 'now' 'today' などの特別な入力（値は比べず型だけ）
+query TTT
+SELECT pg_typeof('now'::timestamptz), pg_typeof('today'::date), pg_typeof('tomorrow'::timestamp)
+----
+timestamp with time zone date timestamp without time zone
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET timezone

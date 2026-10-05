@@ -1,0 +1,22 @@
+# フェーズ 1: 他の表の既定値が使うシーケンスを持つ表を DROP TABLE ... CASCADE する。
+
+statement ok
+CREATE TABLE m4r_dc_a (id serial PRIMARY KEY, v int UNIQUE)
+
+statement ok
+CREATE TABLE m4r_dc_b (id int DEFAULT nextval('m4r_dc_a_id_seq'::regclass), x text)
+
+statement ok
+CREATE TABLE m4r_dc_keep (id serial PRIMARY KEY, y text)
+
+statement count 2
+INSERT INTO m4r_dc_a (v) VALUES (1), (2)
+
+statement count 1
+INSERT INTO m4r_dc_b (x) VALUES ('before')
+
+statement error (2BP01)
+DROP TABLE m4r_dc_a
+
+statement ok
+DROP TABLE m4r_dc_a CASCADE

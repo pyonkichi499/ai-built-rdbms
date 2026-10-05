@@ -1,0 +1,192 @@
+# 行値の IN / NOT IN / = ANY / <> ALL（副問い合わせの左辺だけ。NULL を含む）
+
+statement ok
+CREATE TABLE sb_l (id int, a int, b int)
+
+statement ok
+CREATE TABLE sb_r (a int, b int)
+
+statement ok
+INSERT INTO sb_l VALUES (1, 1, 1), (2, 1, 2), (3, 2, NULL), (4, NULL, 5), (5, NULL, NULL), (6, 9, 9)
+
+statement ok
+INSERT INTO sb_r VALUES (1, 1), (2, 2), (2, NULL), (NULL, 5)
+
+# IN: 全成分が一致して true。比較が false になる成分があれば false
+query I
+SELECT id FROM sb_l WHERE (a, b) IN (SELECT a, b FROM sb_r) ORDER BY id
+----
+1
+
+# 結果の三値（true / false / NULL）
+query IT
+SELECT id, ((a, b) IN (SELECT a, b FROM sb_r))::text FROM sb_l ORDER BY id
+----
+1 true
+2 false
+3 NULL
+4 NULL
+5 NULL
+6 false
+
+# NOT IN
+query I
+SELECT id FROM sb_l WHERE (a, b) NOT IN (SELECT a, b FROM sb_r) ORDER BY id
+----
+2
+6
+
+# = ANY は IN と同じ
+query I
+SELECT id FROM sb_l WHERE (a, b) = ANY (SELECT a, b FROM sb_r) ORDER BY id
+----
+1
+
+query IT
+SELECT id, ((a, b) = ANY (SELECT a, b FROM sb_r))::text FROM sb_l ORDER BY id
+----
+1 true
+2 false
+3 NULL
+4 NULL
+5 NULL
+6 false
+
+# <> ALL は NOT IN と同じ
+query I
+SELECT id FROM sb_l WHERE (a, b) <> ALL (SELECT a, b FROM sb_r) ORDER BY id
+----
+2
+6
+
+query IT
+SELECT id, ((a, b) <> ALL (SELECT a, b FROM sb_r))::text FROM sb_l ORDER BY id
+----
+1 false
+2 true
+3 NULL
+4 NULL
+5 NULL
+6 true
+
+# 空の副問い合わせ: IN は false、NOT IN は true（左辺が NULL でも）
+query IT
+SELECT id, ((a, b) IN (SELECT a, b FROM sb_r WHERE false))::text FROM sb_l WHERE id IN (1, 5) ORDER BY id
+----
+1 false
+5 false
+
+query IT
+SELECT id, ((a, b) NOT IN (SELECT a, b FROM sb_r WHERE false))::text FROM sb_l WHERE id IN (1, 5) ORDER BY id
+----
+1 true
+5 true
+
+# 3 列
+statement ok
+CREATE TABLE sb_l3 (a int, b int, c text)
+
+statement ok
+INSERT INTO sb_l3 VALUES (1, 1, 'x'), (1, 1, 'y'), (2, NULL, 'x')
+
+query IIT
+SELECT a, b, c FROM sb_l3 WHERE (a, b, c) IN (SELECT 1, 1, 'y') ORDER BY 1
+----
+1 1 y
+
+query IIT
+SELECT a, b, c FROM sb_l3 WHERE (a, b, c) NOT IN (SELECT 1, 1, 'y') ORDER BY 1, 3
+----
+1 1 x
+2 NULL x
+
+# 型の昇格（int と bigint / numeric）
+query I
+SELECT id FROM sb_l WHERE (a, b) IN (SELECT a::bigint, b::numeric FROM sb_r) ORDER BY id
+----
+1
+
+# 相関
+query I
+SELECT id FROM sb_l WHERE (a, b) IN (SELECT r.a, r.b FROM sb_r r WHERE r.a = sb_l.a) ORDER BY id
+----
+1
+
+# ORDER BY の中・SELECT 句の中でも使える
+query IT
+SELECT id, CASE WHEN (a, b) IN (SELECT a, b FROM sb_r) THEN 'in' ELSE 'out' END FROM sb_l ORDER BY id
+----
+1 in
+2 out
+3 out
+4 out
+5 out
+6 out
+
+# 列数の不一致
+statement error (42601)
+SELECT id FROM sb_l WHERE (a, b) IN (SELECT a FROM sb_r)
+
+statement error (42601)
+SELECT id FROM sb_l WHERE (a, b) IN (SELECT a, b, a FROM sb_r)
+
+statement error (42601)
+SELECT id FROM sb_l WHERE (a, b) NOT IN (SELECT 1)
+
+# 型の不一致
+statement error (42883)
+SELECT id FROM sb_l WHERE (a, b) IN (SELECT 'x'::text, b FROM sb_r)
+
+# 行値のその他の使い方: PostgreSQL は通す。yuzhu は 0A000（行値は IN / ANY / ALL の副問い合わせの左辺だけ）
+# KNOWN-DIFF: KD-9 行値のその他の使い方は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query I
+SELECT id FROM sb_l WHERE (a, b) = (1, 2) ORDER BY id
+----
+2
+
+# KNOWN-DIFF: KD-9 行値のその他の使い方は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT id FROM sb_l WHERE (a, b) = (1, 2) ORDER BY id
+
+# KNOWN-DIFF: KD-9 行値の IN のリストは yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query I
+SELECT id FROM sb_l WHERE (a, b) IN ((1, 1), (9, 9)) ORDER BY id
+----
+1
+6
+
+# KNOWN-DIFF: KD-9 行値の IN のリストは yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT id FROM sb_l WHERE (a, b) IN ((1, 1), (9, 9)) ORDER BY id
+
+# KNOWN-DIFF: KD-9 行値のその他の演算子（< ANY）は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query I
+SELECT id FROM sb_l WHERE (a, b) < ANY (SELECT a, b FROM sb_r) ORDER BY id
+----
+1
+2
+
+# KNOWN-DIFF: KD-9 行値のその他の演算子（< ANY）は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT id FROM sb_l WHERE (a, b) < ANY (SELECT a, b FROM sb_r) ORDER BY id
+
+# KNOWN-DIFF: KD-9 ROW(...) の単独の使用は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query T
+SELECT ROW(1, 2) = ROW(1, 2)
+----
+t
+
+# KNOWN-DIFF: KD-9 ROW(...) の単独の使用は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT ROW(1, 2) = ROW(1, 2)
+
+statement ok
+DROP TABLE sb_l, sb_r, sb_l3

@@ -1,0 +1,138 @@
+# 一意性とトランザクション: DELETE → INSERT、ROLLBACK、UPDATE でのキー変更
+
+statement ok
+CREATE TABLE idx_ut_t (id int PRIMARY KEY, v text)
+
+statement count 3
+INSERT INTO idx_ut_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+# 同じトランザクションでの DELETE → 同じキーの INSERT
+statement ok
+BEGIN
+
+statement count 1
+DELETE FROM idx_ut_t WHERE id = 1
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (1, 'a2')
+
+statement ok
+COMMIT
+
+query IT
+SELECT id, v FROM idx_ut_t ORDER BY id
+----
+1 a2
+2 b
+3 c
+
+# ROLLBACK した DELETE の後は、元の行がキーを持ち続ける
+statement ok
+BEGIN
+
+statement count 1
+DELETE FROM idx_ut_t WHERE id = 2
+
+statement ok
+ROLLBACK
+
+statement error (23505)
+INSERT INTO idx_ut_t VALUES (2, 'dup')
+
+# ROLLBACK した INSERT のキーは再利用できる
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (10, 'x')
+
+statement ok
+ROLLBACK
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (10, 'y')
+
+# UPDATE でキーを変える → 元のキーを別の行が使える
+statement count 1
+UPDATE idx_ut_t SET id = 20 WHERE id = 10
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (10, 'z')
+
+statement error (23505)
+UPDATE idx_ut_t SET id = 20 WHERE id = 10
+
+# 同じトランザクションで 2 回 UPDATE
+statement ok
+BEGIN
+
+statement count 1
+UPDATE idx_ut_t SET id = 30 WHERE id = 20
+
+statement count 1
+UPDATE idx_ut_t SET id = 31 WHERE id = 30
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (20, 'reuse')
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (30, 'reuse2')
+
+statement error (23505)
+INSERT INTO idx_ut_t VALUES (31, 'dup')
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM idx_ut_t ORDER BY id
+----
+1 a2
+2 b
+3 c
+10 z
+20 y
+
+# UPDATE の ROLLBACK 後、新旧どちらのキーも元の状態
+statement ok
+BEGIN
+
+statement count 1
+UPDATE idx_ut_t SET id = 100 WHERE id = 3
+
+statement ok
+ROLLBACK
+
+statement error (23505)
+INSERT INTO idx_ut_t VALUES (3, 'dup')
+
+statement count 1
+INSERT INTO idx_ut_t VALUES (100, 'free')
+
+# 2 接続: コミット済みの行と衝突する（未コミットの衝突は待つので M3 の isolation で扱う）
+connection a
+statement ok
+BEGIN
+
+connection a
+statement count 1
+INSERT INTO idx_ut_t VALUES (200, 'a')
+
+connection a
+statement ok
+COMMIT
+
+connection b
+statement error (23505)
+INSERT INTO idx_ut_t VALUES (200, 'b')
+
+connection b
+statement count 1
+DELETE FROM idx_ut_t WHERE id = 200
+
+connection a
+statement count 1
+INSERT INTO idx_ut_t VALUES (200, 'a again')
+
+statement ok
+DROP TABLE idx_ut_t

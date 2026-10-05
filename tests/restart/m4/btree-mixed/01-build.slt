@@ -1,0 +1,21 @@
+# フェーズ 1（この後は正常停止 = 01-build.mode）: 索引つきの表を作ってコミットする。
+
+statement ok
+CREATE TABLE m4r_bm_t (k int PRIMARY KEY, s text NOT NULL, v int)
+
+statement ok
+CREATE UNIQUE INDEX m4r_bm_t_s ON m4r_bm_t (s)
+
+statement count 2000
+INSERT INTO m4r_bm_t SELECT g, lpad(g::text, 300, '0'), g % 10 FROM generate_series(1, 2000) g
+
+statement ok
+SET enable_seqscan = off
+
+query IIII
+SELECT count(*), min(k), max(k), sum(v) FROM m4r_bm_t
+----
+2000 1 2000 9000
+
+statement ok
+RESET enable_seqscan

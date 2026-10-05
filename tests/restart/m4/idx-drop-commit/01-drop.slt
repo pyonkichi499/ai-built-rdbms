@@ -1,0 +1,16 @@
+# フェーズ 1: DROP INDEX をコミットする。
+
+statement ok
+CREATE TABLE m4r_id_t (id int PRIMARY KEY, a int, b int)
+
+statement ok
+CREATE INDEX m4r_id_a ON m4r_id_t (a)
+
+statement ok
+CREATE INDEX m4r_id_b ON m4r_id_t (b)
+
+statement count 4
+INSERT INTO m4r_id_t VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30), (4, 3, 40)
+
+statement ok
+DROP INDEX m4r_id_a

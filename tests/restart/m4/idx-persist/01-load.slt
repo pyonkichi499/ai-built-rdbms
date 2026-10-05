@@ -1,0 +1,10 @@
+# フェーズ 1: 索引つきの表に 3000 行を入れる。
+
+statement ok
+CREATE TABLE m4r_ip_t (id int PRIMARY KEY, k int, s text UNIQUE)
+
+statement ok
+CREATE INDEX m4r_ip_k ON m4r_ip_t (k)
+
+statement count 3000
+INSERT INTO m4r_ip_t SELECT g, g % 100, 'key' || lpad(g::text, 5, '0') FROM generate_series(1, 3000) g

@@ -1,0 +1,53 @@
+# フェーズ 1: 分割を伴うコミット済みの変更のあと、別の接続に分割を伴う未コミットの変更を残して kill -9 される。
+# （yuzhu の書き込みは 1 本ずつなので、本体の接続のコミットを先に済ませてから other が書き始める）
+# yuzhu.args の --shared-buffers 1MB で、索引のページが途中でディスクへ書き出される（steal）。
+
+statement ok
+CREATE TABLE m4r_bu_t (k int PRIMARY KEY, s text NOT NULL, v int)
+
+statement ok
+CREATE UNIQUE INDEX m4r_bu_t_s ON m4r_bu_t (s)
+
+statement ok
+CREATE INDEX m4r_bu_t_v ON m4r_bu_t (v)
+
+statement count 4000
+INSERT INTO m4r_bu_t SELECT g, lpad(g::text, 300, '0'), g % 20 FROM generate_series(1, 4000) g
+
+statement ok
+CHECKPOINT
+
+statement count 2000
+INSERT INTO m4r_bu_t SELECT g, lpad(g::text, 300, '0'), g % 20 FROM generate_series(4001, 6000) g
+
+statement count 100
+UPDATE m4r_bu_t SET v = v + 100 WHERE k BETWEEN 1 AND 100
+
+connection other
+statement ok
+BEGIN
+
+# 未コミット: キーが既存の範囲に挟まる INSERT（分割する）、キーを変える UPDATE、DELETE
+connection other
+statement count 3000
+INSERT INTO m4r_bu_t SELECT 100000 + g, lpad((100000 + g)::text, 300, '0'), 0 FROM generate_series(1, 3000) g
+
+connection other
+statement count 500
+UPDATE m4r_bu_t SET k = k + 500000, s = lpad((k + 500000)::text, 300, '0') WHERE k BETWEEN 1001 AND 1500
+
+connection other
+statement count 500
+DELETE FROM m4r_bu_t WHERE k BETWEEN 2001 AND 2500
+
+connection other
+query I
+SELECT count(*) FROM m4r_bu_t
+----
+8500
+
+# 本体の接続はコミット済みの版だけを見る
+query I
+SELECT count(*) FROM m4r_bu_t
+----
+6000

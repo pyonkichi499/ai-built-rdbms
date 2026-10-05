@@ -1,0 +1,263 @@
+# CREATE INDEX のエラー: 42P01 42703 42809 42501 42P07 54011 42704 42804 0A000 22023 25001
+
+statement ok
+CREATE TABLE idx_ce_t (a int, b text, c xid)
+
+statement ok
+CREATE SEQUENCE idx_ce_s
+
+statement ok
+ALTER TABLE idx_ce_t ADD PRIMARY KEY (a)
+
+# 対象がない
+statement error (42P01)
+CREATE INDEX ON idx_ce_nosuch (a)
+
+statement error (?s)relation "idx_ce_nosuch" does not exist
+CREATE INDEX ON idx_ce_nosuch (a)
+
+statement error (42703)
+CREATE INDEX ON idx_ce_t (zz)
+
+statement error (?s)column "zz" does not exist
+CREATE INDEX ON idx_ce_t (zz)
+
+statement error (42703)
+CREATE INDEX ON idx_ce_t (a, zz)
+
+statement error (?s)column "zz" does not exist
+CREATE INDEX ON idx_ce_t (a, zz)
+
+# 対象がシーケンス・索引
+statement error (42809)
+CREATE INDEX ON idx_ce_s (last_value)
+
+statement error (?s)cannot create index on relation "idx_ce_s".*This operation is not supported for sequences\.
+CREATE INDEX ON idx_ce_s (last_value)
+
+statement error (42809)
+CREATE INDEX ON idx_ce_t_pkey (a)
+
+statement error (?s)cannot open relation "idx_ce_t_pkey".*This operation is not supported for indexes\.
+CREATE INDEX ON idx_ce_t_pkey (a)
+
+# システムカタログ
+statement error (42501)
+CREATE INDEX idx_ce_sys ON pg_class (relname)
+
+statement error (?s)permission denied: "pg_class" is a system catalog
+CREATE INDEX idx_ce_sys ON pg_class (relname)
+
+# 同名のリレーション
+statement ok
+CREATE INDEX idx_ce_a ON idx_ce_t (a)
+
+statement error (42P07)
+CREATE INDEX idx_ce_a ON idx_ce_t (b)
+
+statement error (?s)relation "idx_ce_a" already exists
+CREATE INDEX idx_ce_a ON idx_ce_t (b)
+
+statement error (42P07)
+CREATE INDEX idx_ce_t ON idx_ce_t (b)
+
+statement error (?s)relation "idx_ce_t" already exists
+CREATE INDEX idx_ce_t ON idx_ce_t (b)
+
+statement error (42P07)
+CREATE INDEX idx_ce_s ON idx_ce_t (b)
+
+statement ok
+CREATE INDEX IF NOT EXISTS idx_ce_a ON idx_ce_t (b)
+
+# IF NOT EXISTS には名前が要る
+statement error (42601)
+CREATE INDEX IF NOT EXISTS ON idx_ce_t (a)
+
+# 列数の上限は 32
+statement error (54011)
+CREATE INDEX ON idx_ce_t (a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a)
+
+statement error (?s)cannot use more than 32 columns in an index
+CREATE INDEX ON idx_ce_t (a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a)
+
+statement ok
+CREATE INDEX idx_ce_32 ON idx_ce_t (a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a)
+
+query I
+SELECT count(*) FROM pg_attribute WHERE attrelid = 'idx_ce_32'::regclass
+----
+32
+
+query T
+SELECT attname FROM pg_attribute WHERE attrelid = 'idx_ce_32'::regclass AND attnum IN (1, 2, 3, 32) ORDER BY attnum
+----
+a
+a1
+a2
+a31
+
+# opclass とアクセスメソッド
+statement error (42704)
+CREATE INDEX ON idx_ce_t (a idx_ce_nosuch_ops)
+
+statement error (?s)operator class "idx_ce_nosuch_ops" does not exist for access method "btree"
+CREATE INDEX ON idx_ce_t (a idx_ce_nosuch_ops)
+
+statement error (42804)
+CREATE INDEX ON idx_ce_t (a text_ops)
+
+statement error (?s)operator class "text_ops" does not accept data type integer
+CREATE INDEX ON idx_ce_t (a text_ops)
+
+statement error (42704)
+CREATE INDEX ON idx_ce_t (c)
+
+statement error (?s)data type xid has no default operator class for access method "btree".*HINT: You must specify an operator class for the index or define a default operator class for the data type\.
+CREATE INDEX ON idx_ce_t (c)
+
+statement error (42704)
+CREATE INDEX ON idx_ce_t USING idx_ce_nosuch (a)
+
+statement error (?s)access method "idx_ce_nosuch" does not exist
+CREATE INDEX ON idx_ce_t USING idx_ce_nosuch (a)
+
+# WITH
+statement error (22023)
+CREATE INDEX ON idx_ce_t (a) WITH (fillfactor = 5)
+
+statement error (?s)value 5 out of bounds for option "fillfactor".*Valid values are between "10" and "100"\.
+CREATE INDEX ON idx_ce_t (a) WITH (fillfactor = 5)
+
+statement error (22023)
+CREATE INDEX ON idx_ce_t (a) WITH (foo = 1)
+
+statement error (?s)unrecognized parameter "foo"
+CREATE INDEX ON idx_ce_t (a) WITH (foo = 1)
+
+# CONCURRENTLY はトランザクションブロックの中で使えない
+statement ok
+BEGIN
+
+statement error (25001)
+CREATE INDEX CONCURRENTLY idx_ce_c1 ON idx_ce_t (a)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (?s)CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+CREATE INDEX CONCURRENTLY idx_ce_c1 ON idx_ce_t (a)
+
+statement ok
+ROLLBACK
+
+# 未対応の機能。PostgreSQL は成功し、yuzhu は 0A000
+# KNOWN-DIFF: KD-30 hash などの btree 以外のアクセスメソッドは yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE INDEX idx_ce_h ON idx_ce_t USING hash (a)
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_h
+
+# KNOWN-DIFF: KD-30 hash などの btree 以外のアクセスメソッドは yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE INDEX idx_ce_h ON idx_ce_t USING hash (a)
+
+# KNOWN-DIFF: KD-30 式索引は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE INDEX idx_ce_x ON idx_ce_t ((a + 1))
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_x
+
+# KNOWN-DIFF: KD-30 式索引は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE INDEX idx_ce_x ON idx_ce_t ((a + 1))
+
+# KNOWN-DIFF: KD-30 部分索引は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE INDEX idx_ce_p ON idx_ce_t (a) WHERE a > 0
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_p
+
+# KNOWN-DIFF: KD-30 部分索引は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE INDEX idx_ce_p ON idx_ce_t (a) WHERE a > 0
+
+# KNOWN-DIFF: KD-30 INCLUDE 列は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE INDEX idx_ce_i ON idx_ce_t (a) INCLUDE (b)
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_i
+
+# KNOWN-DIFF: KD-30 INCLUDE 列は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE INDEX idx_ce_i ON idx_ce_t (a) INCLUDE (b)
+
+# KNOWN-DIFF: KD-30 NULLS NOT DISTINCT は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE UNIQUE INDEX idx_ce_nn ON idx_ce_t (a) NULLS NOT DISTINCT
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_nn
+
+# KNOWN-DIFF: KD-30 NULLS NOT DISTINCT は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE UNIQUE INDEX idx_ce_nn ON idx_ce_t (a) NULLS NOT DISTINCT
+
+# KNOWN-DIFF: KD-30 COLLATE は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE INDEX idx_ce_co ON idx_ce_t (b COLLATE "C")
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_co
+
+# KNOWN-DIFF: KD-30 COLLATE は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE INDEX idx_ce_co ON idx_ce_t (b COLLATE "C")
+
+# KNOWN-DIFF: KD-30 TABLESPACE は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE INDEX idx_ce_ts ON idx_ce_t (a) TABLESPACE pg_default
+
+statement ok
+DROP INDEX IF EXISTS idx_ce_ts
+
+# KNOWN-DIFF: KD-30 TABLESPACE は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE INDEX idx_ce_ts ON idx_ce_t (a) TABLESPACE pg_default
+
+# 失敗した文は何も作らない
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_ce\_%' ORDER BY relname
+----
+idx_ce_32
+idx_ce_a
+idx_ce_s
+idx_ce_t
+idx_ce_t_pkey
+
+statement ok
+DROP SEQUENCE idx_ce_s
+
+statement ok
+DROP TABLE idx_ce_t

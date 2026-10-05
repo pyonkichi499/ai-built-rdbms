@@ -1,0 +1,165 @@
+# 外部結合（ON と WHERE の違い、FULL の非等値の条件、入れ子）、名前空間のエラー
+
+statement ok
+CREATE TABLE jn_t (a int, b int, c text)
+
+statement ok
+CREATE TABLE jn_u (a int, e int, c text)
+
+statement ok
+CREATE TABLE jn_p (id int, v int)
+
+statement ok
+INSERT INTO jn_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, NULL, 'z')
+
+statement ok
+INSERT INTO jn_u VALUES (1, 100, 'x'), (3, 300, 'q'), (4, 400, 'w')
+
+statement ok
+INSERT INTO jn_p VALUES (1, 1), (2, 2)
+
+# ON の条件は結合の一致の判定、WHERE は結合の後の絞り込み
+query IIT
+SELECT jn_t.a, jn_u.e, jn_t.c FROM jn_t LEFT JOIN jn_u ON jn_t.a = jn_u.a AND jn_u.e > 150 ORDER BY 1
+----
+1 NULL x
+2 NULL y
+3 300 z
+
+query IIT
+SELECT jn_t.a, jn_u.e, jn_t.c FROM jn_t LEFT JOIN jn_u ON jn_t.a = jn_u.a WHERE jn_u.e > 150 ORDER BY 1
+----
+3 300 z
+
+# 右辺だけの条件を ON に書いた外部結合: 右の行を絞るだけで左の行は残る
+query II
+SELECT jn_t.a, jn_u.a FROM jn_t LEFT JOIN jn_u ON jn_u.a = 3 ORDER BY 1, 2
+----
+1 3
+2 3
+3 3
+
+# 非等値の LEFT JOIN
+query II
+SELECT jn_t.a, jn_u.a FROM jn_t LEFT JOIN jn_u ON jn_t.a < jn_u.a ORDER BY 1, 2
+----
+1 3
+1 4
+2 3
+2 4
+3 4
+
+# RIGHT は左右を入れ替えた LEFT と同じ集合
+query II rowsort
+SELECT jn_t.a, jn_u.a FROM jn_t RIGHT JOIN jn_u ON jn_t.a = jn_u.a
+----
+1 1
+3 3
+NULL 4
+
+# FULL: 等値 + 残りの条件
+query IIII
+SELECT jn_t.a, jn_t.b, jn_u.a, jn_u.e FROM jn_t FULL JOIN jn_u ON jn_t.a = jn_u.a AND jn_t.b < jn_u.e ORDER BY 1, 3
+----
+1 10 1 100
+2 20 NULL NULL
+3 NULL NULL NULL
+NULL NULL 3 300
+NULL NULL 4 400
+
+# 等値のキーが NULL の行は一致しない
+statement ok
+INSERT INTO jn_t VALUES (NULL, 0, 'n')
+
+statement ok
+INSERT INTO jn_u VALUES (NULL, 0, 'n')
+
+query II rowsort
+SELECT jn_t.a, jn_u.a FROM jn_t FULL JOIN jn_u ON jn_t.a = jn_u.a
+----
+1 1
+2 NULL
+3 3
+NULL 4
+NULL NULL
+NULL NULL
+
+# 3 つの結合と、ON は直前の結合の列と自分の右辺が見える
+query III
+SELECT jn_t.a, jn_u.e, jn_p.v FROM jn_t JOIN jn_u ON jn_t.a = jn_u.a JOIN jn_p ON jn_p.id = jn_u.a ORDER BY 1
+----
+1 100 1
+
+query III
+SELECT jn_t.a, jn_u.e, jn_p.v FROM jn_t LEFT JOIN jn_u ON jn_t.a = jn_u.a LEFT JOIN jn_p ON jn_p.id = jn_t.a ORDER BY 1 NULLS LAST
+----
+1 100 1
+2 NULL 2
+3 300 NULL
+NULL NULL NULL
+
+# カンマと JOIN の混在: JOIN の ON から見えるのはその JOIN の左右だけ
+query I
+SELECT count(*) FROM jn_t, jn_u JOIN jn_p ON jn_p.id = jn_u.a
+----
+4
+
+statement error invalid reference to FROM-clause entry for table "jn_t"
+SELECT * FROM jn_t, jn_u JOIN jn_p ON jn_p.id = jn_t.a
+
+# 参照できない位置の表（派生表から左の項目: LATERAL がないとエラー）
+statement error invalid reference to FROM-clause entry for table "jn_t"
+SELECT * FROM jn_t, (SELECT jn_t.a) s
+
+statement error column "a" does not exist
+SELECT * FROM jn_t, (SELECT a) s
+
+# 別名で隠された名前
+statement error invalid reference to FROM-clause entry for table "jn_t"
+SELECT jn_t.a FROM jn_t AS x
+
+statement error table name "jn_t" specified more than once
+SELECT * FROM jn_t, jn_t
+
+statement error table name "x" specified more than once
+SELECT * FROM jn_t x, jn_u x
+
+statement error missing FROM-clause entry for table "zz"
+SELECT zz.a FROM jn_t
+
+statement error column "zz" does not exist
+SELECT zz FROM jn_t
+
+statement error column jn_t.zz does not exist
+SELECT jn_t.zz FROM jn_t
+
+statement error column reference "a" is ambiguous
+SELECT a FROM jn_t, jn_u
+
+statement error argument of JOIN/ON must be type boolean, not type integer
+SELECT * FROM jn_t JOIN jn_u ON jn_t.a
+
+statement error aggregate functions are not allowed in JOIN conditions
+SELECT * FROM jn_t JOIN jn_u ON count(*) > 1
+
+statement error table "x" has 3 columns available but 4 columns specified
+SELECT * FROM jn_t AS x(p, q, r, s)
+
+# FULL JOIN の 0A000（結合キーがない）。ON が定数だけの FULL は PG だけが通す（yuzhu の 04 は結合キーがなければ 0A000）
+statement error FULL JOIN is only supported with merge-joinable or hash-joinable join conditions
+SELECT * FROM jn_t FULL JOIN jn_u ON jn_t.a < jn_u.a
+
+# KNOWN-DIFF: KD-2 ハッシュ可能な等値のない FULL JOIN は yuzhu で 0A000（PostgreSQL は通す）
+skipif yuzhu
+query I
+SELECT count(*) FROM jn_t FULL JOIN jn_u ON true
+----
+16
+
+# KNOWN-DIFF: KD-2 ハッシュ可能な等値のない FULL JOIN は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT count(*) FROM jn_t FULL JOIN jn_u ON true
+
+statement ok
+DROP TABLE jn_t, jn_u, jn_p

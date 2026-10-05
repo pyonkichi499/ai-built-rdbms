@@ -1,0 +1,97 @@
+# format_type(oid, typmod)
+
+query TTTTT
+SELECT format_type(16, NULL), format_type(18, NULL), format_type(19, NULL), format_type(20, NULL), format_type(21, NULL)
+----
+boolean "char" name bigint smallint
+
+query TTTTT
+SELECT format_type(23, NULL), format_type(25, NULL), format_type(26, NULL), format_type(700, NULL), format_type(701, NULL)
+----
+integer text oid real double precision
+
+query TTTT
+SELECT format_type(1042, NULL), format_type(1043, NULL), format_type(1082, NULL), format_type(1114, NULL)
+----
+character character varying date timestamp without time zone
+
+query TTTT
+SELECT format_type(1184, NULL), format_type(1700, NULL), format_type(2205, NULL), format_type(2206, NULL)
+----
+timestamp with time zone numeric regclass regtype
+
+# typmod が -1（「指定なし」として渡された）
+query TTTT
+SELECT format_type(1042, -1), format_type(1043, -1), format_type(1700, -1), format_type(1114, -1)
+----
+bpchar character varying numeric timestamp without time zone
+
+# typmod あり
+query TTT
+SELECT format_type(1042, 5), format_type(1042, 9), format_type(1042, 4)
+----
+character(1) character(5) character
+
+query TTT
+SELECT format_type(1043, 12), format_type(1043, 5), format_type(1043, 4)
+----
+character varying(8) character varying(1) character varying
+
+query TTT
+SELECT format_type(1700, 655366), format_type(1700, 327686), format_type(1700, 262148)
+----
+numeric(10,2) numeric(5,2) numeric(4,0)
+
+query TTTT
+SELECT format_type(1114, 3), format_type(1114, 0), format_type(1184, 6), format_type(1184, 0)
+----
+timestamp(3) without time zone timestamp(0) without time zone timestamp(6) with time zone timestamp(0) with time zone
+
+# 負の scale
+query T
+SELECT format_type(1700, 329731)
+----
+numeric(5,-1)
+
+# 0 と存在しない OID
+query TT
+SELECT format_type(0, NULL), format_type(99999999, NULL)
+----
+- ???
+
+# 列の型と typmod から
+statement ok
+CREATE TABLE ex_ft_t (a numeric(10,2), b char(3), c varchar(8), d timestamp(3), e timestamptz, f int, g text, h date)
+
+query TT
+SELECT a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a WHERE a.attrelid = 'ex_ft_t'::regclass AND a.attnum > 0 ORDER BY a.attnum
+----
+a numeric(10,2)
+b character(3)
+c character varying(8)
+d timestamp(3) without time zone
+e timestamp with time zone
+f integer
+g text
+h date
+
+query TT
+SELECT a.attname, format_type(a.atttypid, NULL) FROM pg_attribute a WHERE a.attrelid = 'ex_ft_t'::regclass AND a.attnum > 0 ORDER BY a.attnum
+----
+a numeric
+b character
+c character varying
+d timestamp without time zone
+e timestamp with time zone
+f integer
+g text
+h date
+
+# regtype の出力は typmod なし
+query TT
+SELECT 'bpchar'::regtype::text, 'timestamptz'::regtype::text
+----
+character timestamp with time zone
+
+statement ok
+DROP TABLE ex_ft_t

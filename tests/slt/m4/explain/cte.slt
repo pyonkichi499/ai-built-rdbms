@@ -1,0 +1,111 @@
+# CTE のプランの形: CTE Scan、CTE ラベルつきの子、参照 2 回、NOT MATERIALIZED のインライン化
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_c_t (a int, b int, c text)
+
+statement ok
+INSERT INTO ex_c_t SELECT g, g % 5, 'c' || g FROM generate_series(1, 100) g
+
+statement ok
+CREATE TABLE ex_c_u (a int, x text)
+
+statement ok
+INSERT INTO ex_c_u SELECT g, 'x' || g FROM generate_series(1, 30) g
+
+statement ok
+CREATE TABLE ex_c_e (z int)
+
+statement ok
+ANALYZE ex_c_t
+
+statement ok
+ANALYZE ex_c_u
+
+statement ok
+ANALYZE ex_c_e
+
+query T
+EXPLAIN (COSTS OFF) WITH c AS MATERIALIZED (SELECT a, b FROM ex_c_t WHERE b > 3) SELECT * FROM c WHERE a < 10
+----
+CTE Scan on c
+  Filter: (a < 10)
+  CTE c
+    ->  Seq Scan on ex_c_t
+          Filter: (b > 3)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) WITH c AS MATERIALIZED (SELECT a, b FROM ex_c_t WHERE b > 3) SELECT * FROM c WHERE a < 10
+----
+CTE Scan on c
+  Output: c.a, c.b
+  Filter: (c.a < 10)
+  CTE c
+    ->  Seq Scan on public.ex_c_t
+          Output: ex_c_t.a, ex_c_t.b
+          Filter: (ex_c_t.b > 3)
+
+query T
+EXPLAIN (COSTS OFF) WITH c AS MATERIALIZED (SELECT a FROM ex_c_t) SELECT * FROM c c1, c c2 WHERE c1.a = c2.a
+----
+Hash Join
+  Hash Cond: (c1.a = c2.a)
+  CTE c
+    ->  Seq Scan on ex_c_t
+  ->  CTE Scan on c c1
+  ->  Hash
+        ->  CTE Scan on c c2
+
+query T
+EXPLAIN (COSTS OFF) WITH c AS NOT MATERIALIZED (SELECT a FROM ex_c_t) SELECT * FROM c c1, c c2 WHERE c1.a = c2.a
+----
+Hash Join
+  Hash Cond: (ex_c_t.a = ex_c_t_1.a)
+  ->  Seq Scan on ex_c_t
+  ->  Hash
+        ->  Seq Scan on ex_c_t ex_c_t_1
+
+query T
+EXPLAIN (COSTS OFF) WITH c AS (SELECT a, b FROM ex_c_t WHERE b = 1) SELECT * FROM c WHERE a > 50
+----
+Seq Scan on ex_c_t
+  Filter: ((a > 50) AND (b = 1))
+
+query T
+EXPLAIN (COSTS OFF) WITH c AS MATERIALIZED (SELECT a FROM ex_c_t WHERE b = 1) SELECT a FROM c UNION ALL SELECT a FROM c
+----
+Append
+  CTE c
+    ->  Seq Scan on ex_c_t
+          Filter: (b = 1)
+  ->  CTE Scan on c
+  ->  CTE Scan on c c_1
+
+query T
+EXPLAIN (COSTS OFF) WITH c AS MATERIALIZED (SELECT a, b FROM ex_c_t) SELECT * FROM ex_c_u WHERE a IN (SELECT a FROM c WHERE b = 1) OR x = 'x1'
+----
+Seq Scan on ex_c_u
+  Filter: ((ANY (a = (hashed SubPlan 2).col1)) OR (x = 'x1'::text))
+  CTE c
+    ->  Seq Scan on ex_c_t
+  SubPlan 2
+    ->  CTE Scan on c
+          Filter: (b = 1)
+
+statement ok
+DROP TABLE ex_c_t
+
+statement ok
+DROP TABLE ex_c_u
+
+statement ok
+DROP TABLE ex_c_e
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

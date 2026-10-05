@@ -1,0 +1,113 @@
+# pg_class の relkind・relowner・relam・relpersistence・relnamespace に実データがある（psql の \dt \di \ds の前提）
+
+statement ok
+CREATE TABLE psql_t_k1 (id int PRIMARY KEY, v text UNIQUE)
+
+statement ok
+CREATE INDEX psql_t_k1_idx ON psql_t_k1 (id, v)
+
+statement ok
+CREATE SEQUENCE psql_t_k1_seq
+
+statement ok
+CREATE TABLE psql_t_k2 (id serial)
+
+query TTT
+SELECT c.relname, c.relkind, c.relpersistence FROM pg_class c WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1 r p
+psql_t_k1_idx i p
+psql_t_k1_pkey i p
+psql_t_k1_seq S p
+psql_t_k1_v_key i p
+psql_t_k2 r p
+psql_t_k2_id_seq S p
+
+query TT
+SELECT c.relname, n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1 public
+psql_t_k1_idx public
+psql_t_k1_pkey public
+psql_t_k1_seq public
+psql_t_k1_v_key public
+psql_t_k2 public
+psql_t_k2_id_seq public
+
+query TT
+SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) FROM pg_class c WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1 postgres
+psql_t_k1_idx postgres
+psql_t_k1_pkey postgres
+psql_t_k1_seq postgres
+psql_t_k1_v_key postgres
+psql_t_k2 postgres
+psql_t_k2_id_seq postgres
+
+# relam: 表は heap（2）、インデックスは btree（403）、シーケンスは 0
+query TT
+SELECT c.relname, am.amname FROM pg_class c LEFT JOIN pg_am am ON am.oid = c.relam WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1 heap
+psql_t_k1_idx btree
+psql_t_k1_pkey btree
+psql_t_k1_seq NULL
+psql_t_k1_v_key btree
+psql_t_k2 heap
+psql_t_k2_id_seq NULL
+
+query TI
+SELECT c.relname, c.relam FROM pg_class c WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1 2
+psql_t_k1_idx 403
+psql_t_k1_pkey 403
+psql_t_k1_seq 0
+psql_t_k1_v_key 403
+psql_t_k2 2
+psql_t_k2_id_seq 0
+
+# relkind ごとの件数
+query TI
+SELECT c.relkind, count(*) FROM pg_class c WHERE c.relname LIKE 'psql\_t\_k%' GROUP BY c.relkind ORDER BY c.relkind
+----
+S 2
+i 3
+r 2
+
+# relhasindex
+query T?
+SELECT c.relname, c.relhasindex FROM pg_class c WHERE c.relname LIKE 'psql\_t\_k%' AND c.relkind = 'r' ORDER BY c.relname
+----
+psql_t_k1 t
+psql_t_k2 f
+
+# relnatts と reltype
+query TI
+SELECT c.relname, c.relnatts FROM pg_class c WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1 2
+psql_t_k1_idx 2
+psql_t_k1_pkey 1
+psql_t_k1_seq 3
+psql_t_k1_v_key 1
+psql_t_k2 1
+psql_t_k2_id_seq 3
+
+# pg_index との結合（\di が使う）
+query TT
+SELECT c.relname, c2.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid JOIN pg_class c2 ON c2.oid = i.indrelid WHERE c.relname LIKE 'psql\_t\_k%' ORDER BY c.relname
+----
+psql_t_k1_idx psql_t_k1
+psql_t_k1_pkey psql_t_k1
+psql_t_k1_v_key psql_t_k1
+
+statement ok
+DROP TABLE psql_t_k1
+
+statement ok
+DROP SEQUENCE psql_t_k1_seq
+
+statement ok
+DROP TABLE psql_t_k2

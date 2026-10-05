@@ -1,0 +1,134 @@
+# 相関副問い合わせ: 2 段以上の入れ子、派生表を通り抜ける参照、HAVING / ORDER BY / LIMIT / SET の中、禁止される位置
+
+statement ok
+CREATE TABLE sb_t (a int, b int)
+
+statement ok
+CREATE TABLE sb_u (a int, e int)
+
+statement ok
+CREATE TABLE sb_p (id int PRIMARY KEY, v int)
+
+statement ok
+INSERT INTO sb_t VALUES (1, 10), (2, 20), (3, NULL)
+
+statement ok
+INSERT INTO sb_u VALUES (1, 100), (1, 101), (3, 300)
+
+statement ok
+INSERT INTO sb_p VALUES (1, 1), (3, 3)
+
+# 外側の列を 2 段内側から参照する
+query II
+SELECT a, (SELECT (SELECT sb_t.a + sb_u.e) FROM sb_u WHERE sb_u.a = sb_t.a ORDER BY e LIMIT 1) FROM sb_t ORDER BY a
+----
+1 101
+2 NULL
+3 303
+
+# 副問い合わせ式の中の派生表が、さらに外側の列を参照する（FROM の兄弟は参照できない）
+query II
+SELECT a, (SELECT x FROM (SELECT sb_t.a AS x) q) FROM sb_t ORDER BY a
+----
+1 1
+2 2
+3 3
+
+statement error invalid reference to FROM-clause entry for table "sb_t"
+SELECT * FROM sb_t, (SELECT sb_t.a AS x) q
+
+# 相関 EXISTS / IN の入れ子
+query I
+SELECT a FROM sb_t WHERE a IN (SELECT a FROM sb_u WHERE a IN (SELECT id FROM sb_p WHERE sb_p.id = sb_t.a AND sb_p.v = sb_u.a)) ORDER BY a
+----
+1
+3
+
+# SELECT 句・ORDER BY・HAVING の中の相関
+query II
+SELECT a, (SELECT count(*) FROM sb_u WHERE sb_u.a = sb_t.a) FROM sb_t ORDER BY 2 DESC, 1
+----
+1 2
+3 1
+2 0
+
+query I
+SELECT a FROM sb_t ORDER BY (SELECT max(e) FROM sb_u WHERE sb_u.a = sb_t.a) DESC NULLS LAST, a
+----
+3
+1
+2
+
+query I
+SELECT a FROM sb_t GROUP BY a HAVING EXISTS (SELECT 1 FROM sb_u WHERE sb_u.a = sb_t.a) ORDER BY a
+----
+1
+3
+
+# GROUP BY した列は副問い合わせの中で使える。しない列は 42803
+query II
+SELECT a, (SELECT max(e) FROM sb_u WHERE sb_u.a = sb_t.a) FROM sb_t GROUP BY a ORDER BY a
+----
+1 101
+2 NULL
+3 300
+
+statement error subquery uses ungrouped column "sb_t.b" from outer query
+SELECT (SELECT max(e) FROM sb_u WHERE sb_u.e > sb_t.b) FROM sb_t GROUP BY a
+
+# UPDATE の SET の右辺と DELETE の WHERE
+statement count 3
+UPDATE sb_t SET b = (SELECT coalesce(sum(e), 0) FROM sb_u WHERE sb_u.a = sb_t.a)
+
+query II
+SELECT a, b FROM sb_t ORDER BY a
+----
+1 201
+2 0
+3 300
+
+statement count 1
+DELETE FROM sb_t WHERE NOT EXISTS (SELECT 1 FROM sb_u WHERE sb_u.a = sb_t.a) AND b = 0
+
+# LIMIT / OFFSET: 外側の列は書ける、現スコープの列は書けない
+query I
+SELECT a FROM sb_t WHERE a IN (SELECT a FROM sb_u ORDER BY e LIMIT sb_t.a) ORDER BY a
+----
+1
+3
+
+statement error argument of LIMIT must not contain variables
+SELECT a FROM sb_t LIMIT a
+
+statement error argument of LIMIT must not contain variables
+SELECT a FROM sb_t LIMIT (SELECT sb_u.a FROM sb_u WHERE sb_u.a = sb_t.a)
+
+query I
+SELECT a FROM sb_t ORDER BY a LIMIT (SELECT 1)
+----
+1
+
+# CHECK / DEFAULT に副問い合わせは書けない
+statement error cannot use subquery in check constraint
+CREATE TABLE sb_bad1 (a int CHECK (a IN (SELECT 1)))
+
+statement error cannot use subquery in DEFAULT expression
+CREATE TABLE sb_bad2 (a int DEFAULT (SELECT 1))
+
+statement error aggregate functions are not allowed in check constraints
+CREATE TABLE sb_bad3 (a int CHECK (count(*) > 1))
+
+# KNOWN-DIFF: KD-8 外側の問い合わせに属する集約は yuzhu で 0A000（PostgreSQL は外側の集約として評価する）
+skipif yuzhu
+query I
+SELECT (SELECT max(sb_t.a)) FROM sb_t
+----
+3
+
+# KNOWN-DIFF: KD-8 外側の問い合わせに属する集約は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+SELECT (SELECT max(sb_t.a)) FROM sb_t
+
+statement ok
+DROP TABLE sb_t, sb_u, sb_p

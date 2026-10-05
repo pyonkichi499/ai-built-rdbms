@@ -1,0 +1,94 @@
+# pg_constraint（PRIMARY KEY / UNIQUE）と索引: contype、conindid、conkey、同名、CHECK との共存
+
+statement ok
+CREATE TABLE cat_pc_t (a int, b int, c text, CONSTRAINT cat_pc_pk PRIMARY KEY (a, b), CONSTRAINT cat_pc_u UNIQUE (c), CONSTRAINT cat_pc_chk CHECK (a > 0))
+
+statement ok
+CREATE TABLE cat_pc_s (id int PRIMARY KEY, v int UNIQUE, w int)
+
+# 制約の主な列
+query TTTTTTTT
+SELECT conname, contype::text, CASE WHEN contype = 'c' THEN '-' ELSE conkey::text END, conislocal::text, connoinherit::text, convalidated::text, condeferrable::text, condeferred::text FROM pg_constraint WHERE conrelid = 'cat_pc_t'::regclass ORDER BY conname
+----
+cat_pc_chk c - true false true false false
+cat_pc_pk p {1,2} true true true false false
+cat_pc_u u {3} true true true false false
+
+# conindid は索引（CHECK は 0）。索引の名前は制約の名前
+query TTT
+SELECT c.conname, c.contype::text, CASE WHEN c.conindid = 0 THEN '-' ELSE ic.relname END FROM pg_constraint c LEFT JOIN pg_class ic ON ic.oid = c.conindid WHERE c.conrelid = 'cat_pc_t'::regclass ORDER BY c.conname
+----
+cat_pc_chk c -
+cat_pc_pk p cat_pc_pk
+cat_pc_u u cat_pc_u
+
+# conindid と pg_index.indexrelid、indrelid と conrelid が一致する
+query I
+SELECT count(*) FROM pg_constraint c JOIN pg_index i ON i.indexrelid = c.conindid WHERE c.conrelid = 'cat_pc_t'::regclass AND i.indrelid = c.conrelid
+----
+2
+
+query TT
+SELECT c.conname, i.indisprimary::text FROM pg_constraint c JOIN pg_index i ON i.indexrelid = c.conindid WHERE c.conrelid = 'cat_pc_t'::regclass ORDER BY c.conname
+----
+cat_pc_pk true
+cat_pc_u false
+
+# 自動名の制約
+query TTT
+SELECT conname, contype::text, conkey::text FROM pg_constraint WHERE conrelid = 'cat_pc_s'::regclass ORDER BY conname
+----
+cat_pc_s_pkey p {1}
+cat_pc_s_v_key u {2}
+
+# 索引と制約が同名（PRIMARY KEY / UNIQUE）
+query I
+SELECT count(*) FROM pg_constraint c JOIN pg_class ic ON ic.oid = c.conindid WHERE c.conrelid IN ('cat_pc_t'::regclass, 'cat_pc_s'::regclass) AND c.conname <> ic.relname
+----
+0
+
+# 参照する側の列
+query TTT
+SELECT conname, conrelid::regclass::text, connamespace::regnamespace::text FROM pg_constraint WHERE conrelid = 'cat_pc_s'::regclass ORDER BY conname
+----
+cat_pc_s_pkey cat_pc_s public
+cat_pc_s_v_key cat_pc_s public
+
+# NOT NULL 制約は PRIMARY KEY の列に付く
+query TT
+SELECT attname, attnotnull::text FROM pg_attribute WHERE attrelid = 'cat_pc_t'::regclass AND attnum > 0 ORDER BY attnum
+----
+a true
+b true
+c false
+
+# ALTER TABLE ADD 後も同じ形
+statement ok
+CREATE TABLE cat_pc_a (x int, y int)
+
+statement ok
+ALTER TABLE cat_pc_a ADD CONSTRAINT cat_pc_a_pk PRIMARY KEY (y)
+
+statement ok
+ALTER TABLE cat_pc_a ADD UNIQUE (x, y)
+
+query TTTT
+SELECT c.conname, c.contype::text, c.conkey::text, ic.relname FROM pg_constraint c JOIN pg_class ic ON ic.oid = c.conindid WHERE c.conrelid = 'cat_pc_a'::regclass ORDER BY c.conname
+----
+cat_pc_a_pk p {2} cat_pc_a_pk
+cat_pc_a_x_y_key u {1,2} cat_pc_a_x_y_key
+
+# DROP TABLE で制約の行も消える
+statement ok
+DROP TABLE cat_pc_t
+
+statement ok
+DROP TABLE cat_pc_s
+
+statement ok
+DROP TABLE cat_pc_a
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conname LIKE 'cat\_pc\_%'
+----
+0

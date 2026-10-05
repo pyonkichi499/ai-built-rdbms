@@ -1,0 +1,35 @@
+# フェーズ 2: クラッシュの後は、先に記録した分（32）だけ飛ぶ。setval は欠番を作らない。
+
+query I
+SELECT nextval('m4r_sk_a')
+----
+34
+
+query I
+SELECT nextval('m4r_sk_b')
+----
+38
+
+statement count 1
+INSERT INTO m4r_sk_t (v) VALUES (4)
+
+query I
+SELECT id FROM m4r_sk_t WHERE v = 4
+----
+34
+
+query I
+SELECT nextval('m4r_sk_c')
+----
+101
+
+statement ok
+DROP TABLE m4r_sk_t
+
+statement ok
+DROP SEQUENCE m4r_sk_a, m4r_sk_b, m4r_sk_c
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'm4r\_sk\_%'
+----
+0

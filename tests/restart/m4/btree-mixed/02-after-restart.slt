@@ -1,0 +1,27 @@
+# フェーズ 2（正常停止の後。この後は kill -9 = 02-after-restart.mode）: 追加と削除をコミットする。
+
+statement ok
+SET enable_seqscan = off
+
+query IIII
+SELECT count(*), min(k), max(k), sum(v) FROM m4r_bm_t
+----
+2000 1 2000 9000
+
+statement ok
+RESET enable_seqscan
+
+statement count 1000
+INSERT INTO m4r_bm_t SELECT g, lpad(g::text, 300, '0'), g % 10 FROM generate_series(2001, 3000) g
+
+statement count 750
+DELETE FROM m4r_bm_t WHERE k % 4 = 0
+
+# コミットしない変更を別の接続に残す（クラッシュで消える）
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 500
+INSERT INTO m4r_bm_t SELECT 10000 + g, lpad((10000 + g)::text, 300, '0'), 0 FROM generate_series(1, 500) g

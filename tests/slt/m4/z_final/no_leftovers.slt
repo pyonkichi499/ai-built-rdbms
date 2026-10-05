@@ -1,0 +1,32 @@
+# 全スイートの最後に流す。すべてのテストが後始末をしていれば、ユーザーオブジェクト（oid >= 16384）のカタログの行は 0 件。
+# 残っていたら、直前までのどこかのファイルの DROP 漏れ（slttools lint の L01 で検出できる）。
+
+query I
+SELECT count(*) FROM pg_class WHERE oid >= 16384
+----
+0
+
+query I
+SELECT count(*) FROM pg_attrdef WHERE oid >= 16384
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint WHERE oid >= 16384
+----
+0
+
+query I
+SELECT count(*) FROM pg_index WHERE indexrelid >= 16384
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend WHERE objid >= 16384 OR refobjid >= 16384
+----
+0
+
+query I
+SELECT count(*) FROM pg_sequence WHERE seqrelid >= 16384
+----
+0

@@ -1,0 +1,90 @@
+# psql の \dt パターンの述語: name 型に対する !~ と ~、OPERATOR(pg_catalog.~) と COLLATE pg_catalog.default
+
+statement ok
+CREATE TABLE psql_t_rn_foo (id int)
+
+statement ok
+CREATE TABLE psql_t_rn_foobar (id int)
+
+statement ok
+CREATE TABLE "psql_t_rn_Foo.Bar" (id int)
+
+statement ok
+CREATE TABLE psql_t_rn_tbl_42 (id int)
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_rn%' AND c.relname OPERATOR(pg_catalog.~) '^(psql_t_rn_foo.*)$' COLLATE pg_catalog.default ORDER BY 1
+----
+psql_t_rn_foo
+psql_t_rn_foobar
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname OPERATOR(pg_catalog.~) '^(psql_t_rn_foo.)$' COLLATE pg_catalog.default ORDER BY 1
+----
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname OPERATOR(pg_catalog.~) E'^(psql_t_rn_Foo\\.Bar)$' COLLATE pg_catalog.default ORDER BY 1
+----
+psql_t_rn_Foo.Bar
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname OPERATOR(pg_catalog.~) '^(psql_t_rn_tbl_[0-9]+)$' COLLATE pg_catalog.default ORDER BY 1
+----
+psql_t_rn_tbl_42
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname OPERATOR(pg_catalog.~) '^(psql_t_rn_(foo|tbl_42))$' COLLATE pg_catalog.default ORDER BY 1
+----
+psql_t_rn_foo
+psql_t_rn_tbl_42
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname OPERATOR(pg_catalog.~) '^(psql_t_rn_[a-f].*)$' COLLATE pg_catalog.default ORDER BY 1
+----
+psql_t_rn_foo
+psql_t_rn_foobar
+
+query T
+SELECT n.nspname FROM pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.~) '^(public)$' COLLATE pg_catalog.default
+----
+public
+
+query T
+SELECT n.nspname FROM pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.~) '^(pub.*)$' COLLATE pg_catalog.default
+----
+public
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_rn%' AND c.relname OPERATOR(pg_catalog.~) '^(psql_t_rn_foo)$' ORDER BY 1
+----
+psql_t_rn_foo
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_rn%' AND c.relname !~ '^pg_' ORDER BY 1
+----
+psql_t_rn_Foo.Bar
+psql_t_rn_foo
+psql_t_rn_foobar
+psql_t_rn_tbl_42
+
+query T
+SELECT n.nspname FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' ORDER BY 1
+----
+public
+
+query T
+SELECT 'x' COLLATE pg_catalog.default
+----
+x
+
+statement ok
+DROP TABLE psql_t_rn_foo
+
+statement ok
+DROP TABLE psql_t_rn_foobar
+
+statement ok
+DROP TABLE "psql_t_rn_Foo.Bar"
+
+statement ok
+DROP TABLE psql_t_rn_tbl_42

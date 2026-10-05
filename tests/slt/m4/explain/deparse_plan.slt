@@ -1,0 +1,213 @@
+# WHERE 式の逆変換: EXPLAIN (COSTS OFF) の Filter 行（定数畳み込み後の形）
+# 畳み込みの結果が PostgreSQL と違う行があれば onlyif yuzhu で別の期待値を足す（10 §4.9）
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_dp_t (i int, bi bigint, t text, v varchar(5), b bool, n numeric(10,2), f float8, d date, tz timestamptz)
+
+statement ok
+ANALYZE ex_dp_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i + 1 * 2 > 3
+----
+Seq Scan on ex_dp_t
+  Filter: ((i + 2) > 3)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i - (1 - 2) > 0
+----
+Seq Scan on ex_dp_t
+  Filter: ((i - '-1'::integer) > 0)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE t = 'abc'
+----
+Seq Scan on ex_dp_t
+  Filter: (t = 'abc'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE v = 'x'
+----
+Seq Scan on ex_dp_t
+  Filter: ((v)::text = 'x'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE t LIKE 'a!%' ESCAPE '!'
+----
+Seq Scan on ex_dp_t
+  Filter: (t ~~ 'a\%'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i IN (1,2,3)
+----
+Seq Scan on ex_dp_t
+  Filter: (i = ANY ('{1,2,3}'::integer[]))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE t IN ('a','b')
+----
+Seq Scan on ex_dp_t
+  Filter: (t = ANY ('{a,b}'::text[]))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i IN (1, NULL)
+----
+Seq Scan on ex_dp_t
+  Filter: (i = ANY ('{1,NULL}'::integer[]))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i IN (1, bi)
+----
+Seq Scan on ex_dp_t
+  Filter: ((i = 1) OR (i = bi))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE n > 1
+----
+Seq Scan on ex_dp_t
+  Filter: (n > '1'::numeric)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE n > 1.5
+----
+Seq Scan on ex_dp_t
+  Filter: (n > 1.5)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE f > 1.5
+----
+Seq Scan on ex_dp_t
+  Filter: (f > '1.5'::double precision)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE f > 1e10
+----
+Seq Scan on ex_dp_t
+  Filter: (f > '10000000000'::double precision)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE f > 1e100
+----
+Seq Scan on ex_dp_t
+  Filter: (f > '1e+100'::double precision)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE bi > 5
+----
+Seq Scan on ex_dp_t
+  Filter: (bi > 5)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE bi > 2147483648
+----
+Seq Scan on ex_dp_t
+  Filter: (bi > '2147483648'::bigint)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i > 2147483648
+----
+Seq Scan on ex_dp_t
+  Filter: (i > '2147483648'::bigint)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i > -1
+----
+Seq Scan on ex_dp_t
+  Filter: (i > '-1'::integer)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i > 1::bigint
+----
+Seq Scan on ex_dp_t
+  Filter: (i > '1'::bigint)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE d > '2020-01-01'
+----
+Seq Scan on ex_dp_t
+  Filter: (d > '2020-01-01'::date)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE case when i > 1 then 'a' else 'b' end = t
+----
+Seq Scan on ex_dp_t
+  Filter: (CASE WHEN (i > 1) THEN 'a'::text ELSE 'b'::text END = t)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE coalesce(t, v, 'z') = 'q'
+----
+Seq Scan on ex_dp_t
+  Filter: (COALESCE(t, (v)::text, 'z'::text) = 'q'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i::bigint > 1
+----
+Seq Scan on ex_dp_t
+  Filter: ((i)::bigint > 1)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE (i + 1)::text = t
+----
+Seq Scan on ex_dp_t
+  Filter: (((i + 1))::text = t)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE b IS UNKNOWN
+----
+Seq Scan on ex_dp_t
+  Filter: (b IS UNKNOWN)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE tz > current_timestamp
+----
+Seq Scan on ex_dp_t
+  Filter: (tz > CURRENT_TIMESTAMP)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i > 0 AND t IS NOT NULL
+----
+Seq Scan on ex_dp_t
+  Filter: ((t IS NOT NULL) AND (i > 0))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i > 0 OR t LIKE 'x%'
+----
+Seq Scan on ex_dp_t
+  Filter: ((i > 0) OR (t ~~ 'x%'::text))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE NOT (i > 0)
+----
+Seq Scan on ex_dp_t
+  Filter: (i <= 0)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE t || 'x' = 'yx'
+----
+Seq Scan on ex_dp_t
+  Filter: ((t || 'x'::text) = 'yx'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE lower(t) = 'abc'
+----
+Seq Scan on ex_dp_t
+  Filter: (lower(t) = 'abc'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_dp_t WHERE i BETWEEN 1 AND 5
+----
+Seq Scan on ex_dp_t
+  Filter: ((i >= 1) AND (i <= 5))
+
+statement ok
+DROP TABLE ex_dp_t
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

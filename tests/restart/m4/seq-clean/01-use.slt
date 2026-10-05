@@ -1,0 +1,47 @@
+# フェーズ 1: 正常停止の前にシーケンスを使う。
+
+statement ok
+CREATE SEQUENCE m4r_sc_a
+
+query I
+SELECT nextval('m4r_sc_a') FROM generate_series(1, 3)
+----
+1
+2
+3
+
+statement ok
+CREATE SEQUENCE m4r_sc_b CACHE 5
+
+query I
+SELECT nextval('m4r_sc_b') FROM generate_series(1, 2)
+----
+1
+2
+
+statement ok
+CREATE TABLE m4r_sc_t (id serial, v int)
+
+statement count 2
+INSERT INTO m4r_sc_t (v) VALUES (1), (2)
+
+statement ok
+CREATE SEQUENCE m4r_sc_c
+
+query I
+SELECT setval('m4r_sc_c', 100)
+----
+100
+
+statement ok
+CREATE SEQUENCE m4r_sc_d
+
+query I
+SELECT nextval('m4r_sc_d') FROM generate_series(1, 3)
+----
+1
+2
+3
+
+statement ok
+ALTER SEQUENCE m4r_sc_d RESTART WITH 7

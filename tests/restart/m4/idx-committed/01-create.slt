@@ -1,0 +1,16 @@
+# フェーズ 1: 表・PRIMARY KEY・UNIQUE・CREATE INDEX をコミットする。
+
+statement ok
+CREATE TABLE m4r_ic_t (id int PRIMARY KEY, k int UNIQUE, v text, w int)
+
+statement ok
+CREATE INDEX m4r_ic_w ON m4r_ic_t (w DESC)
+
+statement ok
+CREATE INDEX m4r_ic_vw ON m4r_ic_t (v, w)
+
+statement count 6
+INSERT INTO m4r_ic_t VALUES (1, 10, 'a', 100), (2, 20, 'b', 200), (3, 30, 'c', 300), (4, 40, 'd', NULL), (5, NULL, 'e', 500), (6, NULL, NULL, 600)
+
+statement error (23505)
+INSERT INTO m4r_ic_t VALUES (1, 11, 'dup', 1)

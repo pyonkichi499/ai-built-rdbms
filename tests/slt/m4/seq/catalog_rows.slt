@@ -1,0 +1,94 @@
+# シーケンスのカタログの行（pg_class / pg_attribute / pg_type / pg_sequence）
+
+statement ok
+CREATE SEQUENCE sq_cr_s
+
+query TIITIITT
+SELECT relkind::text, relam::int, relpages, relreplident::text, relfrozenxid::text::int, reltype::int, relnatts::int, relhasindex::text FROM pg_class WHERE oid = 'sq_cr_s'::regclass
+----
+S 0 1 n 0 0 3 false
+
+query TTTT
+SELECT relpersistence::text, relhasrules::text, relhastriggers::text, relowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) FROM pg_class WHERE oid = 'sq_cr_s'::regclass
+----
+p false false t
+
+query TTT
+SELECT attnum::text, attname, format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'sq_cr_s'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 last_value bigint
+2 log_cnt bigint
+3 is_called boolean
+
+query T
+SELECT attnotnull::text FROM pg_attribute WHERE attrelid = 'sq_cr_s'::regclass AND attnum > 0 ORDER BY attnum
+----
+true
+true
+true
+
+# システム列
+query T
+SELECT attname FROM pg_attribute WHERE attrelid = 'sq_cr_s'::regclass AND attnum < 0 ORDER BY attnum
+----
+tableoid
+cmax
+xmax
+cmin
+xmin
+ctid
+
+# 行型の pg_type の行はない
+query I
+SELECT count(*) FROM pg_type WHERE typrelid = 'sq_cr_s'::regclass
+----
+0
+
+# pg_sequence
+query TIIIIIT
+SELECT seqtypid::regtype::text, seqstart, seqincrement, seqmax, seqmin, seqcache, seqcycle::text FROM pg_sequence WHERE seqrelid = 'sq_cr_s'::regclass
+----
+bigint 1 1 9223372036854775807 1 1 false
+
+# 名前空間
+query T
+SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'sq_cr_s'
+----
+public
+
+# relkind = 'S' の行は必ず pg_sequence に行がある（逆も）
+query I
+SELECT count(*) FROM pg_class c WHERE c.relkind = 'S' AND c.relname LIKE 'sq\_cr\_%' AND NOT EXISTS (SELECT 1 FROM pg_sequence s WHERE s.seqrelid = c.oid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_sequence s WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = s.seqrelid)
+----
+0
+
+# 型付きのシーケンスと所有する SERIAL
+statement ok
+CREATE TABLE sr_cr_t (id serial)
+
+query TT
+SELECT relname, relkind::text FROM pg_class WHERE relname LIKE 'sr\_cr\_t%' ORDER BY relname
+----
+sr_cr_t r
+sr_cr_t_id_seq S
+
+query T
+SELECT pg_table_is_visible('sq_cr_s'::regclass)::text
+----
+true
+
+statement ok
+DROP TABLE sr_cr_t
+
+statement ok
+DROP SEQUENCE sq_cr_s
+
+query I
+SELECT count(*) FROM pg_sequence WHERE seqrelid NOT IN (SELECT oid FROM pg_class)
+----
+0

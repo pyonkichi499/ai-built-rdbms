@@ -1,0 +1,121 @@
+# setval / currval / lastval
+
+statement ok
+CREATE SEQUENCE sq_sv_s
+
+statement ok
+CREATE SEQUENCE sq_sv_t
+
+# currval は nextval の前は 55000
+statement error (55000)
+SELECT currval('sq_sv_s')
+
+statement error (?s)currval of sequence "sq_sv_s" is not yet defined in this session
+SELECT currval('sq_sv_s')
+
+statement error (55000)
+SELECT lastval()
+
+statement error (?s)lastval is not yet defined in this session
+SELECT lastval()
+
+# setval(.., false): 次の nextval がその値
+query I
+SELECT setval('sq_sv_s', 5, false)
+----
+5
+
+statement error (55000)
+SELECT currval('sq_sv_s')
+
+query I
+SELECT nextval('sq_sv_s')
+----
+5
+
+# setval(.., true): 次の nextval はその次
+query I
+SELECT setval('sq_sv_s', 7, true)
+----
+7
+
+query I
+SELECT currval('sq_sv_s')
+----
+7
+
+query I
+SELECT nextval('sq_sv_s')
+----
+8
+
+query I
+SELECT currval('sq_sv_s')
+----
+8
+
+# setval は lastval を変えない
+query I
+SELECT nextval('sq_sv_t')
+----
+1
+
+query I
+SELECT setval('sq_sv_s', 100)
+----
+100
+
+query I
+SELECT lastval()
+----
+1
+
+query II
+SELECT last_value, is_called::int FROM sq_sv_s
+----
+100 1
+
+# 新しい接続では currval / lastval が未定義
+connection other
+statement error (55000)
+SELECT currval('sq_sv_s')
+
+connection other
+statement error (55000)
+SELECT lastval()
+
+connection other
+query I
+SELECT nextval('sq_sv_s')
+----
+101
+
+connection other
+query I
+SELECT currval('sq_sv_s')
+----
+101
+
+# 元の接続の currval は自分の setval の値のまま
+query I
+SELECT currval('sq_sv_s')
+----
+100
+
+# DROP の後の lastval は 55000 のまま（lastval の対象が消えた）
+statement ok
+DROP SEQUENCE sq_sv_t
+
+statement error (42P01)
+SELECT currval('sq_sv_t')
+
+query I
+SELECT nextval('sq_sv_s')
+----
+102
+
+statement ok
+DROP SEQUENCE sq_sv_s
+
+statement error (55000)
+SELECT lastval()

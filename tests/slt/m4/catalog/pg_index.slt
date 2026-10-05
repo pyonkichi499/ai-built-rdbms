@@ -1,0 +1,117 @@
+# pg_index: PRIMARY KEY / UNIQUE / 通常 / DESC・NULLS / 複数列 / 型ごとの opclass と照合順序
+
+statement ok
+CREATE TABLE cat_pi_t (id int PRIMARY KEY, u int UNIQUE, a int, b text, v varchar(5), r regclass, c char(3), n numeric(5,2), d date, ts timestamp(3))
+
+statement ok
+CREATE INDEX cat_pi_a ON cat_pi_t (a)
+
+statement ok
+CREATE INDEX cat_pi_desc ON cat_pi_t (a DESC, b NULLS FIRST)
+
+statement ok
+CREATE INDEX cat_pi_multi ON cat_pi_t (b, a, id)
+
+statement ok
+CREATE INDEX cat_pi_v ON cat_pi_t (v)
+
+statement ok
+CREATE INDEX cat_pi_r ON cat_pi_t (r)
+
+statement ok
+CREATE INDEX cat_pi_c ON cat_pi_t (c)
+
+statement ok
+CREATE INDEX cat_pi_n ON cat_pi_t (n)
+
+statement ok
+CREATE INDEX cat_pi_d ON cat_pi_t (d)
+
+statement ok
+CREATE INDEX cat_pi_ts ON cat_pi_t (ts)
+
+statement ok
+CREATE UNIQUE INDEX cat_pi_uab ON cat_pi_t (a, b)
+
+# 基本の列
+query TIITTTTTTTT
+SELECT c.relname, i.indnatts, i.indnkeyatts, i.indisunique::text, i.indisprimary::text, i.indimmediate::text, i.indisvalid::text, i.indisready::text, i.indislive::text, i.indisclustered::text, i.indisreplident::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'cat_pi_t'::regclass ORDER BY c.relname
+----
+cat_pi_a 1 1 false false true true true true false false
+cat_pi_c 1 1 false false true true true true false false
+cat_pi_d 1 1 false false true true true true false false
+cat_pi_desc 2 2 false false true true true true false false
+cat_pi_multi 3 3 false false true true true true false false
+cat_pi_n 1 1 false false true true true true false false
+cat_pi_r 1 1 false false true true true true false false
+cat_pi_t_pkey 1 1 true true true true true true false false
+cat_pi_t_u_key 1 1 true false true true true true false false
+cat_pi_ts 1 1 false false true true true true false false
+cat_pi_uab 2 2 true false true true true true false false
+cat_pi_v 1 1 false false true true true true false false
+
+# キー・向き・照合順序
+query TTTT
+SELECT c.relname, i.indkey::text, i.indoption::text, i.indcollation::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'cat_pi_t'::regclass ORDER BY c.relname
+----
+cat_pi_a 3 0 0
+cat_pi_c 7 0 100
+cat_pi_d 9 0 0
+cat_pi_desc 3 4 3 2 0 100
+cat_pi_multi 4 3 1 0 0 0 100 0 0
+cat_pi_n 8 0 0
+cat_pi_r 6 0 0
+cat_pi_t_pkey 1 0 0
+cat_pi_t_u_key 2 0 0
+cat_pi_ts 10 0 0
+cat_pi_uab 3 4 0 0 0 100
+cat_pi_v 5 0 100
+
+# 式・述語は NULL
+query I
+SELECT count(*) FROM pg_index WHERE indrelid = 'cat_pi_t'::regclass AND (indexprs IS NOT NULL OR indpred IS NOT NULL)
+----
+0
+
+query I
+SELECT count(*) FROM pg_index WHERE indrelid = 'cat_pi_t'::regclass AND (indcheckxmin OR indisexclusion OR indnullsnotdistinct)
+----
+0
+
+# indclass: opclass の名前（索引ごとに列順）
+query TT
+SELECT c.relname, (SELECT string_agg(oc.opcname, ',' ORDER BY strpos(' ' || i.indclass::text || ' ', ' ' || oc.oid::text || ' ')) FROM pg_opclass oc WHERE strpos(' ' || i.indclass::text || ' ', ' ' || oc.oid::text || ' ') > 0) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'cat_pi_t'::regclass ORDER BY c.relname
+----
+cat_pi_a int4_ops
+cat_pi_c bpchar_ops
+cat_pi_d date_ops
+cat_pi_desc int4_ops,text_ops
+cat_pi_multi text_ops,int4_ops
+cat_pi_n numeric_ops
+cat_pi_r oid_ops
+cat_pi_t_pkey int4_ops
+cat_pi_t_u_key int4_ops
+cat_pi_ts timestamp_ops
+cat_pi_uab int4_ops,text_ops
+cat_pi_v text_ops
+
+# 索引の表への関連
+query TT
+SELECT c.relname, t.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid WHERE t.relname = 'cat_pi_t' AND c.relname IN ('cat_pi_t_pkey', 'cat_pi_t_u_key') ORDER BY c.relname
+----
+cat_pi_t_pkey cat_pi_t
+cat_pi_t_u_key cat_pi_t
+
+# 表を DROP すると行も消える
+statement ok
+DROP TABLE cat_pi_t
+
+query I
+SELECT count(*) FROM pg_index WHERE indexrelid IN (SELECT oid FROM pg_class WHERE relname LIKE 'cat\_pi\_%')
+----
+0
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'cat\_pi\_%'
+----
+0

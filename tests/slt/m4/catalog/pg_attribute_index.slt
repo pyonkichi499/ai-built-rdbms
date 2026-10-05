@@ -1,0 +1,63 @@
+# 索引の pg_attribute の行: attname、型・typmod、attnotnull、システム列がない、照合順序
+
+statement ok
+CREATE TABLE cat_pa_t (a int, b varchar(5), n numeric(5,2), c char(3), ts timestamp(3), t text)
+
+statement ok
+CREATE INDEX cat_pa_i ON cat_pa_t (a, b, n, c, ts, t)
+
+statement ok
+CREATE INDEX cat_pa_d ON cat_pa_t (a, a, a)
+
+query ITTTII
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, atttypmod, attcollation FROM pg_attribute WHERE attrelid = 'cat_pa_i'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 a integer false -1 0
+2 b character varying(5) false 9 100
+3 n numeric(5,2) false 327686 0
+4 c character(3) false 7 100
+5 ts timestamp(3) without time zone false 3 0
+6 t text false -1 100
+
+# 重複した列の名前は a, a1, a2
+query IT
+SELECT attnum, attname FROM pg_attribute WHERE attrelid = 'cat_pa_d'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 a
+2 a1
+3 a2
+
+# 索引にシステム列はない
+query I
+SELECT count(*) FROM pg_attribute WHERE attrelid IN ('cat_pa_i'::regclass, 'cat_pa_d'::regclass) AND attnum < 0
+----
+0
+
+# 索引の relnatts は列数
+query TI
+SELECT relname, relnatts FROM pg_class WHERE relname IN ('cat_pa_i', 'cat_pa_d') ORDER BY relname
+----
+cat_pa_d 3
+cat_pa_i 6
+
+# PRIMARY KEY の索引の列
+statement ok
+CREATE TABLE cat_pa_p (x int, y text, PRIMARY KEY (y, x))
+
+query ITT
+SELECT attnum, attname, format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'cat_pa_p_pkey'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 y text
+2 x integer
+
+# 表の DROP で索引の列も消える
+statement ok
+DROP TABLE cat_pa_t
+
+statement ok
+DROP TABLE cat_pa_p
+
+query I
+SELECT count(*) FROM pg_attribute WHERE attrelid NOT IN (SELECT oid FROM pg_class)
+----
+0

@@ -1,0 +1,13 @@
+# フェーズ 1: ALTER TABLE ADD PRIMARY KEY / UNIQUE をコミットした直後に終わる。
+
+statement ok
+CREATE TABLE m4r_ac_t (id int, u int, v text)
+
+statement count 5000
+INSERT INTO m4r_ac_t SELECT g, g * 2, 'v' || g FROM generate_series(1, 5000) g
+
+statement ok
+ALTER TABLE m4r_ac_t ADD PRIMARY KEY (id)
+
+statement ok
+ALTER TABLE m4r_ac_t ADD CONSTRAINT m4r_ac_u UNIQUE (u)

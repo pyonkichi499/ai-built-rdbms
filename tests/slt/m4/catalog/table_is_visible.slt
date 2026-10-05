@@ -1,0 +1,39 @@
+# pg_table_is_visible: 表・索引・シーケンスで t、存在しない OID は NULL
+
+statement ok
+CREATE TABLE cat_tv_t (id int PRIMARY KEY)
+
+statement ok
+CREATE SEQUENCE cat_tv_s
+
+query TTT
+SELECT pg_table_is_visible('cat_tv_t'::regclass)::text, pg_table_is_visible('cat_tv_t_pkey'::regclass)::text, pg_table_is_visible('cat_tv_s'::regclass)::text
+----
+true true true
+
+query T
+SELECT pg_table_is_visible(0::oid) IS NULL
+----
+t
+
+query T
+SELECT pg_table_is_visible(1::oid) IS NULL
+----
+t
+
+# pg_class の relname から引いた OID で全リレーションが t
+query I
+SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname LIKE 'cat\_tv\_%' AND pg_table_is_visible(c.oid)
+----
+3
+
+query I
+SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname LIKE 'cat\_tv\_%' AND NOT pg_table_is_visible(c.oid)
+----
+0
+
+statement ok
+DROP TABLE cat_tv_t
+
+statement ok
+DROP SEQUENCE cat_tv_s

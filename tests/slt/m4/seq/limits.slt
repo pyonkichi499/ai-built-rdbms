@@ -1,0 +1,119 @@
+# シーケンスの上限・下限・CYCLE
+
+statement ok
+CREATE SEQUENCE sq_l_a MAXVALUE 3
+
+query I
+SELECT nextval('sq_l_a')
+----
+1
+
+query I
+SELECT nextval('sq_l_a')
+----
+2
+
+query I
+SELECT nextval('sq_l_a')
+----
+3
+
+statement error (2200H)
+SELECT nextval('sq_l_a')
+
+statement error (?s)nextval: reached maximum value of sequence "sq_l_a" \(3\)
+SELECT nextval('sq_l_a')
+
+query IT
+SELECT last_value, is_called::text FROM sq_l_a
+----
+3 true
+
+query I
+SELECT currval('sq_l_a')
+----
+3
+
+# CYCLE
+statement ok
+CREATE SEQUENCE sq_l_b MAXVALUE 3 CYCLE
+
+query I
+SELECT nextval('sq_l_b') FROM generate_series(1, 7)
+----
+1
+2
+3
+1
+2
+3
+1
+
+# 降順
+statement ok
+CREATE SEQUENCE sq_l_c INCREMENT -1 MINVALUE -2 MAXVALUE 0 START 0
+
+query I
+SELECT nextval('sq_l_c') FROM generate_series(1, 3)
+----
+0
+-1
+-2
+
+statement error (2200H)
+SELECT nextval('sq_l_c')
+
+statement error (?s)nextval: reached minimum value of sequence "sq_l_c" \(-2\)
+SELECT nextval('sq_l_c')
+
+# smallint
+statement ok
+CREATE SEQUENCE sq_l_d AS smallint
+
+query I
+SELECT setval('sq_l_d', 32767)
+----
+32767
+
+statement error (2200H)
+SELECT nextval('sq_l_d')
+
+statement error (?s)nextval: reached maximum value of sequence "sq_l_d" \(32767\)
+SELECT nextval('sq_l_d')
+
+statement error (22003)
+SELECT setval('sq_l_d', 32768)
+
+statement error (?s)setval: value 32768 is out of bounds for sequence "sq_l_d" \(1\.\.32767\)
+SELECT setval('sq_l_d', 32768)
+
+statement error (22003)
+SELECT setval('sq_l_d', 0)
+
+# 増分が大きい CYCLE（オーバーフローを避ける）
+statement ok
+CREATE SEQUENCE sq_l_e INCREMENT 4611686018427387904 MAXVALUE 9223372036854775807 CYCLE
+
+query I
+SELECT nextval('sq_l_e') FROM generate_series(1, 4)
+----
+1
+4611686018427387905
+1
+4611686018427387905
+
+# bigint の最大値
+statement ok
+CREATE SEQUENCE sq_l_f START 9223372036854775806
+
+query I
+SELECT nextval('sq_l_f') FROM generate_series(1, 2)
+----
+9223372036854775806
+9223372036854775807
+
+statement error (2200H)
+SELECT nextval('sq_l_f')
+
+statement ok
+DROP SEQUENCE sq_l_a, sq_l_b, sq_l_c, sq_l_d, sq_l_e, sq_l_f

@@ -1,0 +1,325 @@
+# CHECK 式の逆変換: pg_get_constraintdef(oid, false / true)（保存式の deparse）と pg_get_expr（DEFAULT）
+# 期待値は PostgreSQL 17 の出力。各行は「制約名 ## 非 pretty ## pretty」
+
+statement ok
+CREATE TABLE ex_ds_t (i int, bi bigint, t text, v varchar(5), c char(3), b bool, n numeric(10,2), f float8, d date, ts timestamp, tz timestamptz)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c01 CHECK (i > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c02 CHECK (i + 1 + 2 > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c03 CHECK (i + 1 * 2 > 3)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c04 CHECK ((i + 1) * 2 > 3)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c05 CHECK (i - (1 - 2) > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c06 CHECK (i - 1 - 2 > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c07 CHECK (-i < 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c08 CHECK (i / (2 * 3) > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c09 CHECK (i % 2 * 3 > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c10 CHECK (i = bi + 1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c11 CHECK (t = 'abc')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c12 CHECK (v = 'x')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c13 CHECK (c = 'ab')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c14 CHECK (t || 'x' = 'yx')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c15 CHECK (lower(t) = 'abc')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c16 CHECK (lower(t || 'a') = 'x')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c17 CHECK (t LIKE 'a%')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c18 CHECK (t NOT ILIKE 'a%')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c19 CHECK (t ~ '^a')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c20 CHECK (i IN (1,2,3))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c21 CHECK (i NOT IN (1,2,3))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c22 CHECK (i IN (1))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c23 CHECK (i IN (1, bi))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c24 CHECK (i IN (1, NULL))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c25 CHECK (i BETWEEN 1 AND 5)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c26 CHECK (i NOT BETWEEN 1 AND 5)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c27 CHECK (t IS NULL)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c28 CHECK (t IS NOT NULL)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c29 CHECK (b IS NOT TRUE)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c30 CHECK (b)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c31 CHECK (NOT b)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c32 CHECK (b AND i > 1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c33 CHECK ((b AND i > 1) OR i < 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c34 CHECK (b AND (i > 1 OR i < 0))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c35 CHECK (NOT (b AND i > 1))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c36 CHECK (NOT (i > 1))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c37 CHECK (NOT b AND b)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c38 CHECK (NOT (NOT b))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c39 CHECK (b AND (b AND b))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c40 CHECK ((b OR b) AND (b OR b))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c41 CHECK ((i > 0) = (bi > 0))
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c42 CHECK ((i + 1) IS NULL)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c43 CHECK ((i + 1)::text IS NULL)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c44 CHECK (COALESCE(b AND b, true) = b)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c45 CHECK (COALESCE(t, v, 'z') = 'q')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c46 CHECK (NULLIF(i, 0) = 1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c47 CHECK (i::bigint > 1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c48 CHECK ((i + 1)::bigint > 0)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c49 CHECK (i::bigint::text = t)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c50 CHECK (i::numeric > 1.5)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c51 CHECK (n > 1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c52 CHECK (n = 1.50)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c53 CHECK (f > 1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c54 CHECK (f > 'Infinity')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c55 CHECK (i > -1)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c56 CHECK (i > 2147483648)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c57 CHECK (i > 1::bigint)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c58 CHECK (d > '2020-01-01')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c59 CHECK (ts > '2020-01-01 10:00')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c60 CHECK (tz > '2020-01-01 10:00+00')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c61 CHECK (ts > now())
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c62 CHECK (tz > current_timestamp)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c63 CHECK (d > current_date)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c64 CHECK (ts::date = d)
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c65 CHECK (t = '')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c66 CHECK (t = 'it''s')
+
+statement ok
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c67 CHECK (t = 'a\b')
+
+query T
+SELECT conname || ' ## ' || pg_get_constraintdef(oid, false) || ' ## ' || pg_get_constraintdef(oid, true) FROM pg_constraint WHERE conrelid = 'ex_ds_t'::regclass ORDER BY conname
+----
+ex_ds_c01 ## CHECK ((i > 0)) ## CHECK (i > 0)
+ex_ds_c02 ## CHECK ((((i + 1) + 2) > 0)) ## CHECK ((i + 1 + 2) > 0)
+ex_ds_c03 ## CHECK (((i + (1 * 2)) > 3)) ## CHECK ((i + 1 * 2) > 3)
+ex_ds_c04 ## CHECK ((((i + 1) * 2) > 3)) ## CHECK (((i + 1) * 2) > 3)
+ex_ds_c05 ## CHECK (((i - (1 - 2)) > 0)) ## CHECK ((i - (1 - 2)) > 0)
+ex_ds_c06 ## CHECK ((((i - 1) - 2) > 0)) ## CHECK ((i - 1 - 2) > 0)
+ex_ds_c07 ## CHECK (((- i) < 0)) ## CHECK ((- i) < 0)
+ex_ds_c08 ## CHECK (((i / (2 * 3)) > 0)) ## CHECK ((i / (2 * 3)) > 0)
+ex_ds_c09 ## CHECK ((((i % 2) * 3) > 0)) ## CHECK ((i % 2 * 3) > 0)
+ex_ds_c10 ## CHECK ((i = (bi + 1))) ## CHECK (i = (bi + 1))
+ex_ds_c11 ## CHECK ((t = 'abc'::text)) ## CHECK (t = 'abc'::text)
+ex_ds_c12 ## CHECK (((v)::text = 'x'::text)) ## CHECK (v::text = 'x'::text)
+ex_ds_c13 ## CHECK ((c = 'ab'::bpchar)) ## CHECK (c = 'ab'::bpchar)
+ex_ds_c14 ## CHECK (((t || 'x'::text) = 'yx'::text)) ## CHECK ((t || 'x'::text) = 'yx'::text)
+ex_ds_c15 ## CHECK ((lower(t) = 'abc'::text)) ## CHECK (lower(t) = 'abc'::text)
+ex_ds_c16 ## CHECK ((lower((t || 'a'::text)) = 'x'::text)) ## CHECK (lower(t || 'a'::text) = 'x'::text)
+ex_ds_c17 ## CHECK ((t ~~ 'a%'::text)) ## CHECK (t ~~ 'a%'::text)
+ex_ds_c18 ## CHECK ((t !~~* 'a%'::text)) ## CHECK (t !~~* 'a%'::text)
+ex_ds_c19 ## CHECK ((t ~ '^a'::text)) ## CHECK (t ~ '^a'::text)
+ex_ds_c20 ## CHECK ((i = ANY (ARRAY[1, 2, 3]))) ## CHECK (i = ANY (ARRAY[1, 2, 3]))
+ex_ds_c21 ## CHECK ((i <> ALL (ARRAY[1, 2, 3]))) ## CHECK (i <> ALL (ARRAY[1, 2, 3]))
+ex_ds_c22 ## CHECK ((i = 1)) ## CHECK (i = 1)
+ex_ds_c23 ## CHECK (((i = 1) OR (i = bi))) ## CHECK (i = 1 OR i = bi)
+ex_ds_c24 ## CHECK ((i = ANY (ARRAY[1, NULL::integer]))) ## CHECK (i = ANY (ARRAY[1, NULL::integer]))
+ex_ds_c25 ## CHECK (((i >= 1) AND (i <= 5))) ## CHECK (i >= 1 AND i <= 5)
+ex_ds_c26 ## CHECK (((i < 1) OR (i > 5))) ## CHECK (i < 1 OR i > 5)
+ex_ds_c27 ## CHECK ((t IS NULL)) ## CHECK (t IS NULL)
+ex_ds_c28 ## CHECK ((t IS NOT NULL)) ## CHECK (t IS NOT NULL)
+ex_ds_c29 ## CHECK ((b IS NOT TRUE)) ## CHECK (b IS NOT TRUE)
+ex_ds_c30 ## CHECK (b) ## CHECK (b)
+ex_ds_c31 ## CHECK ((NOT b)) ## CHECK (NOT b)
+ex_ds_c32 ## CHECK ((b AND (i > 1))) ## CHECK (b AND i > 1)
+ex_ds_c33 ## CHECK (((b AND (i > 1)) OR (i < 0))) ## CHECK (b AND i > 1 OR i < 0)
+ex_ds_c34 ## CHECK ((b AND ((i > 1) OR (i < 0)))) ## CHECK (b AND (i > 1 OR i < 0))
+ex_ds_c35 ## CHECK ((NOT (b AND (i > 1)))) ## CHECK (NOT (b AND i > 1))
+ex_ds_c36 ## CHECK ((NOT (i > 1))) ## CHECK (NOT i > 1)
+ex_ds_c37 ## CHECK (((NOT b) AND b)) ## CHECK (NOT b AND b)
+ex_ds_c38 ## CHECK ((NOT (NOT b))) ## CHECK (NOT (NOT b))
+ex_ds_c39 ## CHECK ((b AND (b AND b))) ## CHECK (b AND b AND b)
+ex_ds_c40 ## CHECK (((b OR b) AND (b OR b))) ## CHECK ((b OR b) AND (b OR b))
+ex_ds_c41 ## CHECK (((i > 0) = (bi > 0))) ## CHECK ((i > 0) = (bi > 0))
+ex_ds_c42 ## CHECK (((i + 1) IS NULL)) ## CHECK ((i + 1) IS NULL)
+ex_ds_c43 ## CHECK ((((i + 1))::text IS NULL)) ## CHECK (((i + 1)::text) IS NULL)
+ex_ds_c44 ## CHECK ((COALESCE((b AND b), true) = b)) ## CHECK (COALESCE(b AND b, true) = b)
+ex_ds_c45 ## CHECK ((COALESCE(t, (v)::text, 'z'::text) = 'q'::text)) ## CHECK (COALESCE(t, v::text, 'z'::text) = 'q'::text)
+ex_ds_c46 ## CHECK ((NULLIF(i, 0) = 1)) ## CHECK (NULLIF(i, 0) = 1)
+ex_ds_c47 ## CHECK (((i)::bigint > 1)) ## CHECK (i::bigint > 1)
+ex_ds_c48 ## CHECK ((((i + 1))::bigint > 0)) ## CHECK ((i + 1)::bigint > 0)
+ex_ds_c49 ## CHECK ((((i)::bigint)::text = t)) ## CHECK (i::bigint::text = t)
+ex_ds_c50 ## CHECK (((i)::numeric > 1.5)) ## CHECK (i::numeric > 1.5)
+ex_ds_c51 ## CHECK ((n > (1)::numeric)) ## CHECK (n > 1::numeric)
+ex_ds_c52 ## CHECK ((n = 1.50)) ## CHECK (n = 1.50)
+ex_ds_c53 ## CHECK ((f > (1)::double precision)) ## CHECK (f > 1::double precision)
+ex_ds_c54 ## CHECK ((f > 'Infinity'::double precision)) ## CHECK (f > 'Infinity'::double precision)
+ex_ds_c55 ## CHECK ((i > '-1'::integer)) ## CHECK (i > '-1'::integer)
+ex_ds_c56 ## CHECK ((i > '2147483648'::bigint)) ## CHECK (i > '2147483648'::bigint)
+ex_ds_c57 ## CHECK ((i > (1)::bigint)) ## CHECK (i > 1::bigint)
+ex_ds_c58 ## CHECK ((d > '2020-01-01'::date)) ## CHECK (d > '2020-01-01'::date)
+ex_ds_c59 ## CHECK ((ts > '2020-01-01 10:00:00'::timestamp without time zone)) ## CHECK (ts > '2020-01-01 10:00:00'::timestamp without time zone)
+ex_ds_c60 ## CHECK ((tz > '2020-01-01 10:00:00+00'::timestamp with time zone)) ## CHECK (tz > '2020-01-01 10:00:00+00'::timestamp with time zone)
+ex_ds_c61 ## CHECK ((ts > now())) ## CHECK (ts > now())
+ex_ds_c62 ## CHECK ((tz > CURRENT_TIMESTAMP)) ## CHECK (tz > CURRENT_TIMESTAMP)
+ex_ds_c63 ## CHECK ((d > CURRENT_DATE)) ## CHECK (d > CURRENT_DATE)
+ex_ds_c64 ## CHECK (((ts)::date = d)) ## CHECK (ts::date = d)
+ex_ds_c65 ## CHECK ((t = ''::text)) ## CHECK (t = ''::text)
+ex_ds_c66 ## CHECK ((t = 'it''s'::text)) ## CHECK (t = 'it''s'::text)
+ex_ds_c67 ## CHECK ((t = 'a\b'::text)) ## CHECK (t = 'a\b'::text)
+
+# 引数 1 つの形は非 pretty と同じ
+query ?
+SELECT pg_get_constraintdef(oid) = pg_get_constraintdef(oid, false) FROM pg_constraint WHERE conrelid = 'ex_ds_t'::regclass AND conname = 'ex_ds_c01'
+----
+t
+
+statement ok
+DROP TABLE ex_ds_t
+
+# DEFAULT 式（pg_get_expr）
+statement ok
+CREATE SEQUENCE ex_ds_s
+
+statement ok
+CREATE TABLE ex_ds_d (
+  x bigint DEFAULT 1,
+  w varchar(5) DEFAULT 'ab',
+  z text DEFAULT 'a',
+  h int DEFAULT -1,
+  i int DEFAULT 1+2,
+  n text DEFAULT 'a'||'b',
+  p bigint DEFAULT (1)::bigint,
+  q int DEFAULT nextval('ex_ds_s'),
+  t timestamp DEFAULT now(),
+  t2 timestamp DEFAULT current_timestamp,
+  e int
+)
+
+query T
+SELECT a.attname || ' ## ' || pg_get_expr(d.adbin, d.adrelid) || ' ## ' || pg_get_expr(d.adbin, d.adrelid, true) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'ex_ds_d'::regclass ORDER BY a.attnum
+----
+x ## 1 ## 1
+w ## 'ab'::character varying ## 'ab'::character varying
+z ## 'a'::text ## 'a'::text
+h ## '-1'::integer ## '-1'::integer
+i ## (1 + 2) ## 1 + 2
+n ## ('a'::text || 'b'::text) ## 'a'::text || 'b'::text
+p ## (1)::bigint ## 1::bigint
+q ## nextval('ex_ds_s'::regclass) ## nextval('ex_ds_s'::regclass)
+t ## now() ## now()
+t2 ## CURRENT_TIMESTAMP ## CURRENT_TIMESTAMP
+
+statement ok
+DROP TABLE ex_ds_d
+
+statement ok
+DROP SEQUENCE ex_ds_s

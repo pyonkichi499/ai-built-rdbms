@@ -1,0 +1,20 @@
+[package]
+name = "slttools"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "yuzhu 共有 slt スイートの補助ツール（lint、consistency の同期）"
+
+# impl/rust のワークスペースには入れない独立プロジェクト（tests/tools/isolation と同じ形）。依存なし。
+[workspace]
+
+[[bin]]
+name = "slttools"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

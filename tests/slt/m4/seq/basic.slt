@@ -1,0 +1,110 @@
+# シーケンスの基本: nextval / currval / lastval / 型
+
+statement ok
+CREATE SEQUENCE sq_b_s
+
+query IIT
+SELECT last_value, log_cnt, is_called FROM sq_b_s
+----
+1 0 f
+
+query I
+SELECT nextval('sq_b_s')
+----
+1
+
+query I
+SELECT nextval('sq_b_s')
+----
+2
+
+query II
+SELECT currval('sq_b_s'), lastval()
+----
+2 2
+
+query I
+SELECT nextval('sq_b_s') FROM generate_series(1, 3)
+----
+3
+4
+5
+
+# 左から評価される
+query II
+SELECT nextval('sq_b_s'), nextval('sq_b_s')
+----
+6 7
+
+query T
+SELECT pg_typeof(nextval('sq_b_s'))
+----
+bigint
+
+query T
+SELECT pg_typeof(currval('sq_b_s'))
+----
+bigint
+
+# NULL
+query I
+SELECT nextval(NULL)
+----
+NULL
+
+query I
+SELECT setval('sq_b_s', NULL)
+----
+NULL
+
+query I
+SELECT currval('sq_b_s')
+----
+8
+
+# text と oid での指定
+query I
+SELECT nextval('sq_b_s'::text)
+----
+9
+
+query I
+SELECT nextval('sq_b_s'::regclass)
+----
+10
+
+query I
+SELECT nextval(('sq_b_s'::regclass)::oid)
+----
+11
+
+# スキーマ修飾・引用符
+query I
+SELECT nextval('public.sq_b_s')
+----
+12
+
+query I
+SELECT nextval('"sq_b_s"')
+----
+13
+
+# 存在しない
+statement error (42P01)
+SELECT nextval('sq_b_nosuch')
+
+# シーケンスでない
+statement ok
+CREATE TABLE sq_b_t (a int)
+
+statement error (42809)
+SELECT nextval('sq_b_t')
+
+statement error (?s)cannot open relation "sq_b_t".*This operation is not supported for tables\.
+SELECT nextval('sq_b_t')
+
+statement ok
+DROP TABLE sq_b_t
+
+statement ok
+DROP SEQUENCE sq_b_s

@@ -1,0 +1,216 @@
+# numeric(p,s): 列への代入の丸めとオーバーフロー、明示キャスト、typmod のエラー、format_type、atttypmod
+
+statement ok
+CREATE TABLE ty_nt_t (id int, a numeric(5,2), b numeric(3,5), c numeric(5,-1), d numeric(4), e numeric)
+
+statement ok
+INSERT INTO ty_nt_t (id, a) VALUES (1, 1.234), (2, 123.456), (3, 0.005), (4, -0.004), (5, 999.99), (6, NULL), (7, 'NaN')
+
+query IT
+SELECT id, a::text FROM ty_nt_t ORDER BY id
+----
+1 1.23
+2 123.46
+3 0.01
+4 0.00
+5 999.99
+6 NULL
+7 NaN
+
+# 丸めの結果、整数部が 3 桁を超えるとき
+statement error (22003)
+INSERT INTO ty_nt_t (id, a) VALUES (9, 'Infinity')
+
+statement error (22003)
+INSERT INTO ty_nt_t (id, a) VALUES (10, 1000)
+
+statement error (22003)
+INSERT INTO ty_nt_t (id, a) VALUES (10, 999.995)
+
+statement error (22003)
+INSERT INTO ty_nt_t (id, a) VALUES (10, -1000.00)
+
+# numeric(3,5): 小数点以下 5 桁、絶対値 0.01 未満だけ入る
+statement ok
+INSERT INTO ty_nt_t (id, b) VALUES (11, 0.00012345), (12, 0.000999), (13, -0.0005), (14, 0)
+
+statement error (22003)
+INSERT INTO ty_nt_t (id, b) VALUES (15, 0.01)
+
+query IT
+SELECT id, b::text FROM ty_nt_t WHERE id >= 11 ORDER BY id
+----
+11 0.00012
+12 0.00100
+13 -0.00050
+14 0.00000
+
+# numeric(5,-1): 10 の位に丸める（PG15 以降）
+statement ok
+INSERT INTO ty_nt_t (id, c) VALUES (21, 12345), (22, 55), (23, 54), (24, -55), (25, 99994)
+
+statement error (22003)
+INSERT INTO ty_nt_t (id, c) VALUES (26, 999995)
+
+query IT
+SELECT id, c::text FROM ty_nt_t WHERE id >= 21 ORDER BY id
+----
+21 12350
+22 60
+23 50
+24 -60
+25 99990
+
+# numeric(4) = numeric(4,0)
+statement ok
+INSERT INTO ty_nt_t (id, d) VALUES (31, 9999.4), (32, 0.5), (33, -0.5)
+
+statement error (22003)
+INSERT INTO ty_nt_t (id, d) VALUES (34, 9999.5)
+
+query IT
+SELECT id, d::text FROM ty_nt_t WHERE id >= 31 ORDER BY id
+----
+31 9999
+32 1
+33 -1
+
+# typmod なしは値をそのまま持つ
+statement ok
+INSERT INTO ty_nt_t (id, e) VALUES (41, 1.2300), (42, 123456789012345678901234567890.123456789), (43, 0.0000000001)
+
+query IT
+SELECT id, e::text FROM ty_nt_t WHERE id >= 41 ORDER BY id
+----
+41 1.2300
+42 123456789012345678901234567890.123456789
+43 0.0000000001
+
+# DETAIL つきのエラー
+statement error precision 5, scale 2 must round to an absolute value less than 10\^3
+INSERT INTO ty_nt_t (id, a) VALUES (50, 1000)
+
+# UPDATE でも同じ検査
+statement ok
+UPDATE ty_nt_t SET a = a + 0.001 WHERE id = 1
+
+statement error (22003)
+UPDATE ty_nt_t SET a = a * 100000 WHERE id = 1
+
+query T
+SELECT a::text FROM ty_nt_t WHERE id = 1
+----
+1.23
+
+# 明示キャスト
+query TTTT
+SELECT (1.235)::numeric(7,2)::text, (1.5)::numeric(7,0)::text, (-1.5)::numeric(7,0)::text, 123.456::numeric(7,1)::text
+----
+1.24 2 -2 123.5
+
+query TT
+SELECT 'NaN'::numeric(5,2)::text, 12::numeric(5,2)::text
+----
+NaN 12.00
+
+statement error (22003)
+SELECT 1000::numeric(5,2)
+
+statement error (22003)
+SELECT 'Infinity'::numeric(5,2)::int
+
+# typmod_in のエラー
+statement error (22023)
+SELECT 1::numeric(0)
+
+statement error (22023)
+SELECT 1::numeric(1001)
+
+statement error (22023)
+SELECT 1::numeric(5,1001)
+
+# scale が precision より大きくてもよい（PG15 以降）。値が入らなければ 22003
+statement error (22003)
+SELECT 1::numeric(5,6)
+
+query T
+SELECT 0.05::numeric(5,6)::text
+----
+0.050000
+
+statement error (22023)
+SELECT 1::numeric(5,2,1)
+
+statement error (42601)
+SELECT 1::numeric(5,)
+
+# 最大: numeric(1000,0)、numeric(1000,1000)
+query T?
+SELECT 1::numeric(1000,0)::text, 0.5::numeric(1000,1000) = 0.5
+----
+1 t
+
+# format_type と atttypmod
+query ITIT
+SELECT a.attnum, a.attname, a.atttypmod, format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a WHERE a.attrelid = 'ty_nt_t'::regclass AND a.attnum > 0 ORDER BY a.attnum
+----
+1 id -1 integer
+2 a 327686 numeric(5,2)
+3 b 196617 numeric(3,5)
+4 c 329731 numeric(5,-1)
+5 d 262148 numeric(4,0)
+6 e -1 numeric
+
+query TTT
+SELECT format_type(1700, NULL), format_type(1700, 655366), format_type(1700, -1)
+----
+numeric numeric(10,2) numeric
+
+query TTT
+SELECT pg_typeof(a), pg_typeof(c), pg_typeof(e) FROM ty_nt_t WHERE id = 1
+----
+numeric numeric numeric
+
+# 列の型のまま演算すると typmod は消える（結果は numeric）
+query TT
+SELECT (a * 1000)::text, pg_typeof(a * 1000) FROM ty_nt_t WHERE id = 5
+----
+999990.00 numeric
+
+# CHECK と組み合わせ
+statement ok
+CREATE TABLE ty_nt_c (p numeric(6,3) CHECK (p > 0))
+
+statement ok
+INSERT INTO ty_nt_c VALUES (0.0006), (1.5)
+
+statement error (23514)
+INSERT INTO ty_nt_c VALUES ( 0.0006), (0.0001)
+
+query T
+SELECT p::text FROM ty_nt_c ORDER BY p
+----
+0.001
+1.500
+
+# DEFAULT にも typmod が効く
+statement ok
+CREATE TABLE ty_nt_d (id int, p numeric(5,2) DEFAULT 1.005)
+
+statement ok
+INSERT INTO ty_nt_d (id) VALUES (1)
+
+query T
+SELECT p::text FROM ty_nt_d
+----
+1.01
+
+statement ok
+DROP TABLE ty_nt_t
+
+statement ok
+DROP TABLE ty_nt_c
+
+statement ok
+DROP TABLE ty_nt_d

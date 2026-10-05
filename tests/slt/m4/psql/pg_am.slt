@@ -1,0 +1,30 @@
+# pg_am: heap（2, 't'）と btree（403, 'i'）。\dt が LEFT JOIN で使う
+
+query ITT
+SELECT oid::int, amname, amtype FROM pg_am WHERE oid IN (2, 403) ORDER BY oid
+----
+2 heap t
+403 btree i
+
+query TT
+SELECT amname, amtype FROM pg_am WHERE amname IN ('heap', 'btree') ORDER BY amname
+----
+btree i
+heap t
+
+query I
+SELECT count(*) FROM pg_am WHERE amname = 'btree' AND amtype = 'i'
+----
+1
+
+statement ok
+CREATE TABLE psql_t_am (id int PRIMARY KEY)
+
+query TT
+SELECT c.relname, am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname LIKE 'psql\_t\_am%' ORDER BY c.relname
+----
+psql_t_am heap
+psql_t_am_pkey btree
+
+statement ok
+DROP TABLE psql_t_am

@@ -1,0 +1,17 @@
+# フェーズ 1: プールより大きい表（PRIMARY KEY・UNIQUE・副索引つき）を作り、CHECKPOINT の後に全行を UPDATE する。
+
+statement ok
+CREATE TABLE m4r_is_t (id int PRIMARY KEY, u int UNIQUE, k int, pad text)
+
+statement ok
+CREATE INDEX m4r_is_k ON m4r_is_t (k)
+
+statement count 40000
+INSERT INTO m4r_is_t SELECT g, g, g % 50, repeat('x', 100) FROM generate_series(1, 40000) g
+
+statement ok
+CHECKPOINT
+
+# キーを変える UPDATE を含む（u と k を変える）
+statement count 40000
+UPDATE m4r_is_t SET u = u + 100000, k = (k + 1) % 50, pad = repeat('y', 100)

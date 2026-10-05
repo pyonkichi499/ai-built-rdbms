@@ -1,0 +1,110 @@
+# 演算子クラス: 既定、明示、型に合わない指定、既定がない型
+
+statement ok
+CREATE TABLE idx_oc_t (i int, s text, v varchar(5), c char(3), n numeric(5,2), d date, ts timestamp, r regclass, b bigint, si smallint, f float8, bl bool)
+
+# 既定の opclass
+statement ok
+CREATE INDEX idx_oc_def ON idx_oc_t (i, s, v, c, n, d, ts, r, b, si, f, bl)
+
+query T
+SELECT oc.opcname FROM pg_index i JOIN pg_opclass oc ON strpos(' ' || i.indclass::text || ' ', ' ' || oc.oid::text || ' ') > 0 WHERE i.indexrelid = 'idx_oc_def'::regclass ORDER BY strpos(' ' || i.indclass::text || ' ', ' ' || oc.oid::text || ' ')
+----
+int4_ops
+text_ops
+bpchar_ops
+numeric_ops
+date_ops
+timestamp_ops
+oid_ops
+int8_ops
+int2_ops
+float8_ops
+bool_ops
+
+# 明示の opclass
+statement ok
+CREATE INDEX idx_oc_exp ON idx_oc_t (i int4_ops, s text_ops, v varchar_ops, v text_ops)
+
+query T
+SELECT oc.opcname FROM pg_index i JOIN pg_opclass oc ON strpos(' ' || i.indclass::text || ' ', ' ' || oc.oid::text || ' ') > 0 WHERE i.indexrelid = 'idx_oc_exp'::regclass ORDER BY strpos(' ' || i.indclass::text || ' ', ' ' || oc.oid::text || ' ')
+----
+int4_ops
+text_ops
+varchar_ops
+
+# 型に合わない・存在しない opclass
+statement error (42804)
+CREATE INDEX ON idx_oc_t (i text_ops)
+
+statement error (?s)operator class "text_ops" does not accept data type integer
+CREATE INDEX ON idx_oc_t (i text_ops)
+
+statement error (42704)
+CREATE INDEX ON idx_oc_t (i idx_oc_nosuch_ops)
+
+statement error (?s)operator class "idx_oc_nosuch_ops" does not exist for access method "btree"
+CREATE INDEX ON idx_oc_t (i idx_oc_nosuch_ops)
+
+statement error (42804)
+CREATE INDEX ON idx_oc_t (s int4_ops)
+
+# 既定の opclass がない型
+statement ok
+CREATE TABLE idx_oc_x (x xid, y int)
+
+statement error (42704)
+CREATE INDEX ON idx_oc_x (x)
+
+statement error (?s)data type xid has no default operator class for access method "btree"
+CREATE INDEX ON idx_oc_x (x)
+
+statement error (42704)
+CREATE INDEX ON idx_oc_x (y, x)
+
+# regclass の索引（oid_ops）
+statement count 3
+INSERT INTO idx_oc_t (r) VALUES ('pg_class'), ('pg_attribute'), (NULL)
+
+statement ok
+SET enable_seqscan = off
+
+query T
+SELECT r::text FROM idx_oc_t WHERE r = 'pg_class'::regclass
+----
+pg_class
+
+query I
+SELECT count(*) FROM idx_oc_t WHERE r IS NULL
+----
+1
+
+statement ok
+RESET enable_seqscan
+
+# varchar に varchar_ops と text_ops の両方があっても同じ検索結果
+statement count 3
+INSERT INTO idx_oc_t (v, s) VALUES ('abc', 'abc'), ('abd', 'abd'), ('b', 'b')
+
+statement ok
+SET enable_seqscan = off
+
+query T
+SELECT v FROM idx_oc_t WHERE v >= 'abd' AND v IS NOT NULL ORDER BY v
+----
+abd
+b
+
+query T
+SELECT s FROM idx_oc_t WHERE s = 'abc'
+----
+abc
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+DROP TABLE idx_oc_t
+
+statement ok
+DROP TABLE idx_oc_x

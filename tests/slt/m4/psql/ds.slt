@@ -1,0 +1,67 @@
+# psql 17 の \ds が送る SQL（自分のシーケンスだけに絞る）。SERIAL / IDENTITY の暗黙のシーケンスも並ぶ
+
+statement ok
+CREATE SEQUENCE psql_t_seq1
+
+statement ok
+CREATE SEQUENCE psql_t_seq2 START 10 INCREMENT 5
+
+statement ok
+CREATE TABLE psql_t_s1 (id serial, v int)
+
+statement ok
+CREATE TABLE psql_t_s2 (id int GENERATED ALWAYS AS IDENTITY, v int)
+
+query TTTT
+SELECT n.nspname as "Schema",
+  c.relname as "Name",
+  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as "Type",
+  pg_catalog.pg_get_userbyid(c.relowner) as "Owner"
+FROM pg_catalog.pg_class c
+     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('S','')
+      AND n.nspname <> 'pg_catalog'
+      AND n.nspname !~ '^pg_toast'
+      AND n.nspname <> 'information_schema'
+  AND pg_catalog.pg_table_is_visible(c.oid)
+  AND c.relname LIKE 'psql\_t\_%'
+ORDER BY 1,2
+----
+public psql_t_s1_id_seq sequence postgres
+public psql_t_s2_id_seq sequence postgres
+public psql_t_seq1 sequence postgres
+public psql_t_seq2 sequence postgres
+
+# \dt には出ない
+query T
+SELECT c.relname
+FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','') AND n.nspname <> 'pg_catalog' AND n.nspname !~ '^pg_toast' AND n.nspname <> 'information_schema'
+  AND pg_catalog.pg_table_is_visible(c.oid) AND c.relname LIKE 'psql\_t\_%'
+ORDER BY 1
+----
+psql_t_s1
+psql_t_s2
+
+# DROP すると一覧から消える（所有されるシーケンスは表と一緒に）
+statement ok
+DROP SEQUENCE psql_t_seq1
+
+statement ok
+DROP TABLE psql_t_s1
+
+query T
+SELECT c.relname
+FROM pg_catalog.pg_class c LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('S','') AND n.nspname <> 'pg_catalog' AND n.nspname !~ '^pg_toast' AND n.nspname <> 'information_schema'
+  AND pg_catalog.pg_table_is_visible(c.oid) AND c.relname LIKE 'psql\_t\_%'
+ORDER BY 1
+----
+psql_t_s2_id_seq
+psql_t_seq2
+
+statement ok
+DROP SEQUENCE psql_t_seq2
+
+statement ok
+DROP TABLE psql_t_s2

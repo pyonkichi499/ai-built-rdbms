@@ -1,0 +1,227 @@
+# CREATE TABLE（PRIMARY KEY / UNIQUE）のエラー: 42P16 42701 42703 42P07 42710 42704 22023 0A000
+
+statement ok
+CREATE TABLE cst_ce_exist (a int)
+
+# 同名のリレーション
+statement error (42P07)
+CREATE TABLE cst_ce_exist (a int PRIMARY KEY)
+
+statement error (?s)relation "cst_ce_exist" already exists
+CREATE TABLE cst_ce_exist (a int PRIMARY KEY)
+
+# IF NOT EXISTS は何もしない（NOTICE）。PRIMARY KEY の索引も作らない
+statement ok
+CREATE TABLE IF NOT EXISTS cst_ce_exist (a int PRIMARY KEY)
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cst\_ce\_exist%' ORDER BY relname
+----
+cst_ce_exist
+
+# 失敗した CREATE TABLE は何も残さない
+statement error (42P16)
+CREATE TABLE cst_ce_p1 (a int PRIMARY KEY, b int, PRIMARY KEY (b))
+
+statement error (?s)multiple primary keys for table "cst_ce_p1" are not allowed
+CREATE TABLE cst_ce_p1 (a int PRIMARY KEY, b int, PRIMARY KEY (b))
+
+statement error (42P16)
+CREATE TABLE cst_ce_p1 (a int PRIMARY KEY, b int PRIMARY KEY)
+
+statement error (42P16)
+CREATE TABLE cst_ce_p1 (a int, b int, PRIMARY KEY (a), PRIMARY KEY (b))
+
+statement error (42701)
+CREATE TABLE cst_ce_p1 (a int, PRIMARY KEY (a, a))
+
+statement error (?s)column "a" appears twice in primary key constraint
+CREATE TABLE cst_ce_p1 (a int, PRIMARY KEY (a, a))
+
+statement error (42701)
+CREATE TABLE cst_ce_p1 (a int, UNIQUE (a, a))
+
+statement error (?s)column "a" appears twice in unique constraint
+CREATE TABLE cst_ce_p1 (a int, UNIQUE (a, a))
+
+statement error (42703)
+CREATE TABLE cst_ce_p1 (a int, PRIMARY KEY (zz))
+
+statement error (?s)column "zz" named in key does not exist
+CREATE TABLE cst_ce_p1 (a int, PRIMARY KEY (zz))
+
+statement error (42703)
+CREATE TABLE cst_ce_p1 (a int, UNIQUE (a, zz))
+
+statement error (?s)column "zz" named in key does not exist
+CREATE TABLE cst_ce_p1 (a int, UNIQUE (a, zz))
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cst\_ce\_p1%'
+----
+
+# 明示した制約名が、すでにあるリレーション（表・索引）と同じ
+statement error (42P07)
+CREATE TABLE cst_ce_n1 (a int, CONSTRAINT cst_ce_exist UNIQUE (a))
+
+statement error (?s)relation "cst_ce_exist" already exists
+CREATE TABLE cst_ce_n1 (a int, CONSTRAINT cst_ce_exist UNIQUE (a))
+
+statement error (42P07)
+CREATE TABLE cst_ce_n1 (a int, CONSTRAINT cst_ce_exist PRIMARY KEY (a))
+
+statement error (?s)relation "cst_ce_exist" already exists
+CREATE TABLE cst_ce_n1 (a int, CONSTRAINT cst_ce_exist PRIMARY KEY (a))
+
+# CHECK どうしの重複
+statement error (42710)
+CREATE TABLE cst_ce_n2 (a int, CONSTRAINT cst_ce_c CHECK (a > 0), CONSTRAINT cst_ce_c CHECK (a < 10))
+
+statement error (?s)check constraint "cst_ce_c" already exists
+CREATE TABLE cst_ce_n2 (a int, CONSTRAINT cst_ce_c CHECK (a > 0), CONSTRAINT cst_ce_c CHECK (a < 10))
+
+# PRIMARY KEY / UNIQUE と CHECK の重複（どちらが先でも）
+statement error (42710)
+CREATE TABLE cst_ce_n3 (a int, CONSTRAINT cst_ce_c1 UNIQUE (a), CONSTRAINT cst_ce_c1 CHECK (a > 0))
+
+statement error (?s)constraint "cst_ce_c1" for relation "cst_ce_n3" already exists
+CREATE TABLE cst_ce_n3 (a int, CONSTRAINT cst_ce_c1 UNIQUE (a), CONSTRAINT cst_ce_c1 CHECK (a > 0))
+
+statement error (42710)
+CREATE TABLE cst_ce_n3 (a int, CONSTRAINT cst_ce_c1 CHECK (a > 0), CONSTRAINT cst_ce_c1 PRIMARY KEY (a))
+
+statement error (?s)constraint "cst_ce_c1" for relation "cst_ce_n3" already exists
+CREATE TABLE cst_ce_n3 (a int, CONSTRAINT cst_ce_c1 CHECK (a > 0), CONSTRAINT cst_ce_c1 PRIMARY KEY (a))
+
+# PRIMARY KEY / UNIQUE どうし（列が違う）は索引の名前の衝突
+statement error (42P07)
+CREATE TABLE cst_ce_n4 (a int, b int, CONSTRAINT cst_ce_c1 UNIQUE (a), CONSTRAINT cst_ce_c1 UNIQUE (b))
+
+statement error (?s)relation "cst_ce_c1" already exists
+CREATE TABLE cst_ce_n4 (a int, b int, CONSTRAINT cst_ce_c1 UNIQUE (a), CONSTRAINT cst_ce_c1 UNIQUE (b))
+
+# 他の表の制約と同じ名前
+statement ok
+CREATE TABLE cst_ce_n5 (a int, CONSTRAINT cst_ce_dupname UNIQUE (a))
+
+statement error (42P07)
+CREATE TABLE cst_ce_n6 (a int, CONSTRAINT cst_ce_dupname PRIMARY KEY (a))
+
+# CHECK 制約の名前は他の表の索引の名前と衝突しない
+statement ok
+CREATE TABLE cst_ce_n6 (a int, CONSTRAINT cst_ce_dupname CHECK (a > 0))
+
+statement ok
+DROP TABLE cst_ce_n6
+
+# 索引を持てない型（既定の opclass がない）
+statement error (42704)
+CREATE TABLE cst_ce_x (a xid PRIMARY KEY)
+
+statement error (?s)data type xid has no default operator class for access method "btree".*HINT: You must specify an operator class for the index or define a default operator class for the data type\.
+CREATE TABLE cst_ce_x (a xid PRIMARY KEY)
+
+statement error (42704)
+CREATE TABLE cst_ce_x (a xid UNIQUE)
+
+# WITH (fillfactor) の検証
+statement error (22023)
+CREATE TABLE cst_ce_w (a int, PRIMARY KEY (a) WITH (fillfactor = 5))
+
+statement error (?s)value 5 out of bounds for option "fillfactor".*Valid values are between "10" and "100"\.
+CREATE TABLE cst_ce_w (a int, PRIMARY KEY (a) WITH (fillfactor = 5))
+
+statement error (22023)
+CREATE TABLE cst_ce_w (a int UNIQUE WITH (fillfactor = 101))
+
+statement error (?s)value 101 out of bounds for option "fillfactor"
+CREATE TABLE cst_ce_w (a int UNIQUE WITH (fillfactor = 101))
+
+statement error (22023)
+CREATE TABLE cst_ce_w (a int, UNIQUE (a) WITH (foo = 1))
+
+statement error (?s)unrecognized parameter "foo"
+CREATE TABLE cst_ce_w (a int, UNIQUE (a) WITH (foo = 1))
+
+statement ok
+CREATE TABLE cst_ce_w (a int, UNIQUE (a) WITH (fillfactor = 70))
+
+statement ok
+DROP TABLE cst_ce_w
+
+# 未対応のオプション。PostgreSQL は成功し、yuzhu は 0A000
+# KNOWN-DIFF: KD-30 DEFERRABLE な制約は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE TABLE cst_ce_u1 (a int UNIQUE DEFERRABLE)
+
+statement ok
+DROP TABLE IF EXISTS cst_ce_u1
+
+# KNOWN-DIFF: KD-30 DEFERRABLE な制約は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE TABLE cst_ce_u1 (a int UNIQUE DEFERRABLE)
+
+# KNOWN-DIFF: KD-30 INITIALLY DEFERRED は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE TABLE cst_ce_u2 (a int, PRIMARY KEY (a) DEFERRABLE INITIALLY DEFERRED)
+
+statement ok
+DROP TABLE IF EXISTS cst_ce_u2
+
+# KNOWN-DIFF: KD-30 INITIALLY DEFERRED は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE TABLE cst_ce_u2 (a int, PRIMARY KEY (a) DEFERRABLE INITIALLY DEFERRED)
+
+# KNOWN-DIFF: KD-30 NULLS NOT DISTINCT は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE TABLE cst_ce_u3 (a int, UNIQUE NULLS NOT DISTINCT (a))
+
+statement ok
+DROP TABLE IF EXISTS cst_ce_u3
+
+# KNOWN-DIFF: KD-30 NULLS NOT DISTINCT は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE TABLE cst_ce_u3 (a int, UNIQUE NULLS NOT DISTINCT (a))
+
+# KNOWN-DIFF: KD-30 INCLUDE 列は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE TABLE cst_ce_u4 (a int, b int, UNIQUE (a) INCLUDE (b))
+
+statement ok
+DROP TABLE IF EXISTS cst_ce_u4
+
+# KNOWN-DIFF: KD-30 INCLUDE 列は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE TABLE cst_ce_u4 (a int, b int, UNIQUE (a) INCLUDE (b))
+
+# KNOWN-DIFF: KD-30 EXCLUDE 制約は yuzhu では未対応
+skipif yuzhu
+statement ok
+CREATE TABLE cst_ce_u5 (a int, EXCLUDE USING btree (a WITH =))
+
+statement ok
+DROP TABLE IF EXISTS cst_ce_u5
+
+# KNOWN-DIFF: KD-30 EXCLUDE 制約は yuzhu では未対応
+onlyif yuzhu
+statement error (0A000)
+CREATE TABLE cst_ce_u5 (a int, EXCLUDE USING btree (a WITH =))
+
+# どのエラーでも表は残らない
+query T
+SELECT relname FROM pg_class WHERE relname ~ '^cst_ce_(p1|n[1-4]|x|w|u[1-5])' ORDER BY relname
+----
+
+statement ok
+DROP TABLE cst_ce_exist
+
+statement ok
+DROP TABLE cst_ce_n5

@@ -1,0 +1,384 @@
+# 索引つきの表への INSERT / UPDATE / DELETE の後、enable_seqscan の on / off で同じ結果になる
+
+statement ok
+CREATE TABLE idx_dm_t (id int PRIMARY KEY, k int, s text, d date)
+
+statement ok
+CREATE INDEX idx_dm_k ON idx_dm_t (k)
+
+statement ok
+CREATE INDEX idx_dm_s ON idx_dm_t (s DESC NULLS LAST)
+
+statement ok
+CREATE UNIQUE INDEX idx_dm_ks ON idx_dm_t (k, s)
+
+statement count 20
+INSERT INTO idx_dm_t SELECT g, g % 5, 'row' || g, DATE '2024-01-01' + g FROM generate_series(1, 20) g
+
+statement count 3
+INSERT INTO idx_dm_t VALUES (21, NULL, NULL, NULL), (22, NULL, 'n', NULL), (23, 2, NULL, '2024-03-01')
+
+# 既定（索引走査と全走査のどちらでもよい）
+query IIT
+SELECT id, k, s FROM idx_dm_t WHERE k = 3 ORDER BY id
+----
+3 3 row3
+8 3 row8
+13 3 row13
+18 3 row18
+
+query I
+SELECT id FROM idx_dm_t WHERE id BETWEEN 5 AND 9 ORDER BY id
+----
+5
+6
+7
+8
+9
+
+query I
+SELECT id FROM idx_dm_t WHERE k IS NULL ORDER BY id
+----
+21
+22
+
+query I
+SELECT id FROM idx_dm_t WHERE s IS NULL ORDER BY id
+----
+21
+23
+
+query I
+SELECT id FROM idx_dm_t WHERE s > 'row5' ORDER BY s, id
+----
+6
+7
+8
+9
+
+query I
+SELECT id FROM idx_dm_t WHERE k = 2 AND s = 'row12'
+----
+12
+
+# 索引走査を強制しても同じ結果
+statement ok
+SET enable_seqscan = off
+
+query IIT
+SELECT id, k, s FROM idx_dm_t WHERE k = 3 ORDER BY id
+----
+3 3 row3
+8 3 row8
+13 3 row13
+18 3 row18
+
+query I
+SELECT id FROM idx_dm_t WHERE id BETWEEN 5 AND 9 ORDER BY id
+----
+5
+6
+7
+8
+9
+
+query I
+SELECT id FROM idx_dm_t WHERE k IS NULL ORDER BY id
+----
+21
+22
+
+query I
+SELECT id FROM idx_dm_t WHERE s IS NULL ORDER BY id
+----
+21
+23
+
+query I
+SELECT id FROM idx_dm_t WHERE s > 'row5' ORDER BY s, id
+----
+6
+7
+8
+9
+
+query I
+SELECT id FROM idx_dm_t WHERE k = 2 AND s = 'row12'
+----
+12
+
+statement ok
+RESET enable_seqscan
+
+# UPDATE: 索引のキーが変わる行・変わらない行
+statement count 4
+UPDATE idx_dm_t SET k = 9 WHERE k = 3
+
+statement count 5
+UPDATE idx_dm_t SET d = d + 1 WHERE k = 1 OR id = 23
+
+statement count 1
+UPDATE idx_dm_t SET s = 'zzz' WHERE id = 1
+
+statement count 1
+UPDATE idx_dm_t SET s = NULL WHERE id = 2
+
+# DELETE
+statement count 3
+DELETE FROM idx_dm_t WHERE id IN (4, 14, 21)
+
+statement count 2
+DELETE FROM idx_dm_t WHERE k = 4
+
+# 同じキーの再 INSERT
+statement count 1
+INSERT INTO idx_dm_t VALUES (4, 4, 'row4', NULL)
+
+statement error (23505)
+INSERT INTO idx_dm_t VALUES (100, 4, 'row4', NULL)
+
+statement error (?s)duplicate key value violates unique constraint "idx_dm_ks".*Key \(k, s\)=\(4, row4\) already exists\.
+INSERT INTO idx_dm_t VALUES (100, 4, 'row4', NULL)
+
+statement count 1
+INSERT INTO idx_dm_t VALUES (100, 4, 'row4b', NULL)
+
+statement ok
+SET enable_seqscan = off
+
+query IIT
+SELECT id, k, s FROM idx_dm_t WHERE k = 9 ORDER BY id
+----
+3 9 row3
+8 9 row8
+13 9 row13
+18 9 row18
+
+query IIT
+SELECT id, k, s FROM idx_dm_t WHERE k = 1 ORDER BY id
+----
+1 1 zzz
+6 1 row6
+11 1 row11
+16 1 row16
+
+query I
+SELECT id FROM idx_dm_t WHERE k = 4 ORDER BY id
+----
+4
+100
+
+query I
+SELECT id FROM idx_dm_t WHERE s = 'zzz'
+----
+1
+
+query I
+SELECT id FROM idx_dm_t WHERE s IS NULL ORDER BY id
+----
+2
+23
+
+query I
+SELECT id FROM idx_dm_t WHERE id <= 6 ORDER BY id
+----
+1
+2
+3
+4
+5
+6
+
+query I
+SELECT id FROM idx_dm_t ORDER BY id
+----
+1
+2
+3
+4
+5
+6
+7
+8
+10
+11
+12
+13
+15
+16
+17
+18
+20
+22
+23
+100
+
+query T
+SELECT s FROM idx_dm_t WHERE s IS NOT NULL ORDER BY s DESC LIMIT 5
+----
+zzz
+row8
+row7
+row6
+row5
+
+statement ok
+RESET enable_seqscan
+
+query IIT
+SELECT id, k, s FROM idx_dm_t WHERE k = 9 ORDER BY id
+----
+3 9 row3
+8 9 row8
+13 9 row13
+18 9 row18
+
+query IIT
+SELECT id, k, s FROM idx_dm_t WHERE k = 1 ORDER BY id
+----
+1 1 zzz
+6 1 row6
+11 1 row11
+16 1 row16
+
+query I
+SELECT id FROM idx_dm_t WHERE k = 4 ORDER BY id
+----
+4
+100
+
+query I
+SELECT id FROM idx_dm_t WHERE s = 'zzz'
+----
+1
+
+query I
+SELECT id FROM idx_dm_t WHERE s IS NULL ORDER BY id
+----
+2
+23
+
+query I
+SELECT id FROM idx_dm_t WHERE id <= 6 ORDER BY id
+----
+1
+2
+3
+4
+5
+6
+
+query I
+SELECT id FROM idx_dm_t ORDER BY id
+----
+1
+2
+3
+4
+5
+6
+7
+8
+10
+11
+12
+13
+15
+16
+17
+18
+20
+22
+23
+100
+
+query T
+SELECT s FROM idx_dm_t WHERE s IS NOT NULL ORDER BY s DESC LIMIT 5
+----
+zzz
+row8
+row7
+row6
+row5
+
+# 既存の行がある表への CREATE INDEX の後
+statement ok
+CREATE INDEX idx_dm_d ON idx_dm_t (d)
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT id FROM idx_dm_t WHERE d = DATE '2024-01-06' ORDER BY id
+----
+5
+
+query I
+SELECT id FROM idx_dm_t WHERE d >= DATE '2024-01-15' ORDER BY d, id
+----
+15
+16
+17
+18
+20
+23
+
+query I
+SELECT id FROM idx_dm_t WHERE d IS NULL ORDER BY id
+----
+4
+22
+100
+
+statement ok
+RESET enable_seqscan
+
+query I
+SELECT id FROM idx_dm_t WHERE d = DATE '2024-01-06' ORDER BY id
+----
+5
+
+query I
+SELECT id FROM idx_dm_t WHERE d >= DATE '2024-01-15' ORDER BY d, id
+----
+15
+16
+17
+18
+20
+23
+
+query I
+SELECT id FROM idx_dm_t WHERE d IS NULL ORDER BY id
+----
+4
+22
+100
+
+# 全行を消して、入れ直す
+statement ok
+DELETE FROM idx_dm_t
+
+query I
+SELECT id FROM idx_dm_t WHERE k = 1
+----
+
+statement count 5
+INSERT INTO idx_dm_t SELECT g, g, 's' || g, NULL FROM generate_series(1, 5) g
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT id FROM idx_dm_t WHERE k >= 2 ORDER BY k
+----
+2
+3
+4
+5
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+DROP TABLE idx_dm_t

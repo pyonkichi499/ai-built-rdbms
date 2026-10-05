@@ -1,0 +1,138 @@
+# M4 で追加した 9 カタログの列（attnum・attname・型・NOT NULL・照合順序）が PostgreSQL と一致する
+
+# pg_index
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_index'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 indexrelid oid true 0
+2 indrelid oid true 0
+3 indnatts smallint true 0
+4 indnkeyatts smallint true 0
+5 indisunique boolean true 0
+6 indnullsnotdistinct boolean true 0
+7 indisprimary boolean true 0
+8 indisexclusion boolean true 0
+9 indimmediate boolean true 0
+10 indisclustered boolean true 0
+11 indisvalid boolean true 0
+12 indcheckxmin boolean true 0
+13 indisready boolean true 0
+14 indislive boolean true 0
+15 indisreplident boolean true 0
+16 indkey int2vector true 0
+17 indcollation oidvector true 0
+18 indclass oidvector true 0
+19 indoption int2vector true 0
+20 indexprs pg_node_tree false 950
+21 indpred pg_node_tree false 950
+
+# pg_depend
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_depend'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 classid oid true 0
+2 objid oid true 0
+3 objsubid integer true 0
+4 refclassid oid true 0
+5 refobjid oid true 0
+6 refobjsubid integer true 0
+7 deptype "char" true 0
+
+# pg_sequence
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_sequence'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 seqrelid oid true 0
+2 seqtypid oid true 0
+3 seqstart bigint true 0
+4 seqincrement bigint true 0
+5 seqmax bigint true 0
+6 seqmin bigint true 0
+7 seqcache bigint true 0
+8 seqcycle boolean true 0
+
+# pg_language
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_language'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 oid oid true 0
+2 lanname name true 950
+3 lanowner oid true 0
+4 lanispl boolean true 0
+5 lanpltrusted boolean true 0
+6 lanplcallfoid oid true 0
+7 laninline oid true 0
+8 lanvalidator oid true 0
+9 lanacl aclitem[] false 0
+
+# pg_opfamily
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_opfamily'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 oid oid true 0
+2 opfmethod oid true 0
+3 opfname name true 950
+4 opfnamespace oid true 0
+5 opfowner oid true 0
+
+# pg_opclass
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_opclass'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 oid oid true 0
+2 opcmethod oid true 0
+3 opcname name true 950
+4 opcnamespace oid true 0
+5 opcowner oid true 0
+6 opcfamily oid true 0
+7 opcintype oid true 0
+8 opcdefault boolean true 0
+9 opckeytype oid true 0
+
+# pg_amop
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_amop'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 oid oid true 0
+2 amopfamily oid true 0
+3 amoplefttype oid true 0
+4 amoprighttype oid true 0
+5 amopstrategy smallint true 0
+6 amoppurpose "char" true 0
+7 amopopr oid true 0
+8 amopmethod oid true 0
+9 amopsortfamily oid true 0
+
+# pg_amproc
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_amproc'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 oid oid true 0
+2 amprocfamily oid true 0
+3 amproclefttype oid true 0
+4 amprocrighttype oid true 0
+5 amprocnum smallint true 0
+6 amproc regproc true 0
+
+# pg_description
+query ITTTI
+SELECT attnum, attname, format_type(atttypid, atttypmod), attnotnull::text, attcollation FROM pg_attribute WHERE attrelid = 'pg_description'::regclass AND attnum > 0 ORDER BY attnum
+----
+1 objoid oid true 0
+2 classoid oid true 0
+3 objsubid integer true 0
+4 description text true 950
+
+# 9 カタログが pg_class にある
+query TT
+SELECT relname, relkind::text FROM pg_class WHERE relname IN ('pg_index', 'pg_depend', 'pg_sequence', 'pg_language', 'pg_opfamily', 'pg_opclass', 'pg_amop', 'pg_amproc', 'pg_description') ORDER BY relname
+----
+pg_amop r
+pg_amproc r
+pg_depend r
+pg_description r
+pg_index r
+pg_language r
+pg_opclass r
+pg_opfamily r
+pg_sequence r

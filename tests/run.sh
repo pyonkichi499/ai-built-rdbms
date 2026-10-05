@@ -3,8 +3,8 @@
 #
 #   tests/run.sh --target pg|yuzhu [--host H] [--port N] [--user U] [--db D] [--restart] [--crash] [--] [files or dirs...]
 #
-# - ファイルもディレクトリも指定しなければ tests/slt 以下（m1, m2）の全 .slt を流す。
-#   --restart のときは tests/restart 以下の全シナリオを流す。
+# - ファイルもディレクトリも指定しなければ tests/slt 以下（m1〜m4）の全 .slt を流す（パスの C ロケール昇順。m4/z_final が最後）。
+#   --restart のときは tests/restart 直下と tests/restart/m4（mode が restart か both）の全シナリオを流す。
 # - ランナーは sqllogictest-bin 0.29.1（cargo install sqllogictest-bin --locked --version 0.29.1）。
 # - エンジンは --engine postgres（Simple Query のみ）。
 # - 既定値: user=postgres, db=postgres, host=127.0.0.1, port は pg なら 55432、yuzhu なら 5432。
@@ -12,13 +12,18 @@
 # - 環境変数 SLT_BIN でランナーのパスを、SLT_EXTRA_ARGS で追加の引数を渡せる。
 #
 # --crash: --restart と同じだが、フェーズの間でサーバを kill -9 で落として起動し直す（クラッシュリカバリを通す）。
-#   --crash だけで --restart も有効になる。既定のシナリオは tests/restart/m3、--restart だけなら tests/restart 直下（m3 を除く）。
+#   --crash だけで --restart も有効になる。既定のシナリオは tests/restart/m3 と tests/restart/m4（mode が crash・both・mixed）、
+#   --restart だけなら tests/restart 直下（m3 を除く）と tests/restart/m4（mode が restart・both）。
+#   明示のパスを渡したときは mode を無視して全部流す（mixed のシナリオはフェーズごとの .mode に従う）。
 #   - pg:    環境変数 PG_CRASH_CMD（なければ tests/pg.sh crash。docker なしなら sandbox/pg.sh で起動した PG を kill -9）
 #   - yuzhu: tests/yuzhu.sh crash（SIGKILL → 同じデータディレクトリで起動）
 #   シナリオのディレクトリの追加ファイル:
 #   - yuzhu.only:       あれば pg ではそのシナリオを飛ばす（PG に対応する挙動がないもの。例: ページチェックサムの破損）
 #   - NN-<名前>.after.sh: あれば、フェーズ NN のあと、サーバが止まっている間（起動の前）に実行する。
 #                       環境変数 YUZHU_DATA にデータディレクトリが入る（yuzhu だけ。データファイルを壊す用）
+#   - mode (m4。1 行): restart | crash | both | mixed。なければ both。
+#       restart = --restart だけ、crash = --crash だけ、both = どちらでも、mixed = --crash の中で 1 回だけ（フェーズごとの .mode に従う）
+#   - NN-<名前>.mode (m4。mixed のシナリオ): フェーズ NN の「後」の停止の方法 restart | crash（なければ restart）
 #
 # --restart: 引数は再起動テストのシナリオのディレクトリ（tests/restart/<シナリオ>、または
 #   その親）。シナリオの NN-*.slt をフェーズとして順に流し、フェーズの間でサーバを再起動する
@@ -40,7 +45,7 @@ CRASH=0
 PATHS=()
 
 usage() {
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -125,11 +130,32 @@ restart_server_graceful() {
     return "$rc"
 }
 
+# シナリオの mode（restart | crash | both | mixed。なければ both）を出力する。不正な値なら 1。
+scenario_mode() {
+    local dir="$1" m=both
+    if [ -f "$dir/mode" ]; then m="$(tr -d '[:space:]' < "$dir/mode")"; fi
+    case "$m" in
+        restart|crash|both|mixed) echo "$m" ;;
+        *) echo "invalid mode '$m' in $dir/mode (restart|crash|both|mixed)" >&2; return 1 ;;
+    esac
+}
+
+# フェーズ NN-<名前>.slt の「後」の停止の方法（NN-<名前>.mode。restart | crash。なければ restart）。
+phase_mode() {
+    local f="${1%.slt}.mode" m=restart
+    if [ -f "$f" ]; then m="$(tr -d '[:space:]' < "$f")"; fi
+    case "$m" in
+        restart|crash) echo "$m" ;;
+        *) echo "invalid phase mode '$m' in $f (restart|crash)" >&2; return 1 ;;
+    esac
+}
+
 # シナリオ（NN-*.slt を持つディレクトリ）を流す。失敗したら 1 を返す。
 run_scenario() {
-    local dir="$1" phases=() f applied_args=0
+    local dir="$1" phases=() f applied_args=0 m
+    m="$(scenario_mode "$dir")" || return 2
     while IFS= read -r f; do phases+=("$f"); done < <(find "$dir" -maxdepth 1 -type f -name '*.slt' | LC_ALL=C sort)
-    echo "== scenario $dir (${#phases[@]} phases)"
+    echo "== scenario $dir (${#phases[@]} phases, mode=$m)"
 
     if [ "$TARGET" = pg ] && [ -f "$dir/yuzhu.only" ]; then
         echo "-- skipped on pg (yuzhu.only)"
@@ -142,7 +168,7 @@ run_scenario() {
         applied_args=1
     fi
 
-    local i rc=0 hook
+    local i rc=0 hook saved_crash="$CRASH"
     for i in "${!phases[@]}"; do
         echo "-- phase $((i + 1))/${#phases[@]}: ${phases[$i]}"
         if ! run_slt "${phases[$i]}"; then
@@ -150,12 +176,20 @@ run_scenario() {
             break
         fi
         if [ "$i" -lt $((${#phases[@]} - 1)) ]; then
+            if [ "$m" = mixed ]; then
+                # 停止の方法はフェーズごとの .mode が決める（--crash の中で流す前提）
+                case "$(phase_mode "${phases[$i]}")" in
+                    crash) CRASH=1 ;;
+                    *) CRASH=0 ;;
+                esac
+            fi
             hook="${phases[$i]%.slt}.after.sh"
             if [ -f "$hook" ] && [ "$TARGET" = yuzhu ]; then
-                restart_server --hook "$hook" || { rc=1; break; }
+                restart_server --hook "$hook" || { rc=1; CRASH="$saved_crash"; break; }
             else
-                restart_server || { rc=1; break; }
+                restart_server || { rc=1; CRASH="$saved_crash"; break; }
             fi
+            CRASH="$saved_crash"
         fi
     done
 
@@ -184,13 +218,26 @@ collect_scenarios() {
     fi
 }
 
+# tests/restart/m4 のシナリオのうち、mode が $1（空白区切りの許可する値）に含まれるものを集める。
+collect_m4_scenarios() {
+    local allowed=" $1 " d m
+    [ -d "$SCRIPT_DIR/restart/m4" ] || return 0
+    while IFS= read -r d; do
+        [ -n "$(find "$d" -maxdepth 1 -type f -name '*.slt' -print -quit)" ] || continue
+        m="$(scenario_mode "$d")" || exit 2
+        case "$allowed" in *" $m "*) SCENARIOS+=("$d") ;; esac
+    done < <(find "$SCRIPT_DIR/restart/m4" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
+}
+
 if [ "$RESTART" -eq 1 ]; then
     SCENARIOS=()
     if [ ${#PATHS[@]} -eq 0 ]; then
         if [ "$CRASH" -eq 1 ]; then
             collect_scenarios "$SCRIPT_DIR/restart/m3"
+            collect_m4_scenarios "crash both mixed"
         else
             collect_scenarios "$SCRIPT_DIR/restart" flat
+            collect_m4_scenarios "restart both"
         fi
     else
         for p in "${PATHS[@]}"; do
@@ -198,6 +245,7 @@ if [ "$RESTART" -eq 1 ]; then
             collect_scenarios "$p"
         done
     fi
+    for s in "${SCENARIOS[@]}"; do scenario_mode "$s" >/dev/null || exit 2; done
     [ ${#SCENARIOS[@]} -gt 0 ] || { echo "no scenarios found" >&2; exit 1; }
     echo "running ${#SCENARIOS[@]} restart scenario(s) against $TARGET at $HOST:$PORT (user=$USER_NAME db=$DB, crash=$CRASH)"
     FAILED=()

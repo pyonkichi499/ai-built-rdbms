@@ -1,0 +1,216 @@
+# CREATE SEQUENCE のオプションと検証メッセージ
+
+statement ok
+CREATE SEQUENCE sq_co_a
+
+query TIIIIIT
+SELECT seqtypid::regtype::text, seqstart, seqmin, seqmax, seqincrement, seqcache, seqcycle::text FROM pg_sequence WHERE seqrelid = 'sq_co_a'::regclass
+----
+bigint 1 1 9223372036854775807 1 1 false
+
+statement ok
+CREATE SEQUENCE sq_co_b AS int2
+
+statement ok
+CREATE SEQUENCE sq_co_c AS int4
+
+statement ok
+CREATE SEQUENCE sq_co_d AS int8
+
+statement ok
+CREATE SEQUENCE sq_co_e AS integer
+
+statement ok
+CREATE SEQUENCE sq_co_f AS smallint
+
+statement ok
+CREATE SEQUENCE sq_co_g AS bigint
+
+query TTIII
+SELECT c.relname, seqtypid::regtype::text, seqmin, seqmax, seqstart FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid WHERE c.relname ~ '^sq_co_[b-g]$' ORDER BY c.relname
+----
+sq_co_b smallint 1 32767 1
+sq_co_c integer 1 2147483647 1
+sq_co_d bigint 1 9223372036854775807 1
+sq_co_e integer 1 2147483647 1
+sq_co_f smallint 1 32767 1
+sq_co_g bigint 1 9223372036854775807 1
+
+# 降順の既定値
+statement ok
+CREATE SEQUENCE sq_co_h INCREMENT BY -1
+
+query IIIII
+SELECT seqstart, seqmin, seqmax, seqincrement, seqcache FROM pg_sequence WHERE seqrelid = 'sq_co_h'::regclass
+----
+-1 -9223372036854775808 -1 -1 1
+
+statement ok
+CREATE SEQUENCE sq_co_i AS smallint INCREMENT -2
+
+query III
+SELECT seqstart, seqmin, seqmax FROM pg_sequence WHERE seqrelid = 'sq_co_i'::regclass
+----
+-1 -32768 -1
+
+# 全オプション
+statement ok
+CREATE SEQUENCE sq_co_j AS int4 INCREMENT BY 3 MINVALUE 10 MAXVALUE 1000 START WITH 20 CACHE 7 CYCLE
+
+query IIIIIT
+SELECT seqstart, seqmin, seqmax, seqincrement, seqcache, seqcycle::text FROM pg_sequence WHERE seqrelid = 'sq_co_j'::regclass
+----
+20 10 1000 3 7 true
+
+statement ok
+CREATE SEQUENCE sq_co_k NO MINVALUE NO MAXVALUE NO CYCLE START 5
+
+query IIIT
+SELECT seqstart, seqmin, seqmax, seqcycle::text FROM pg_sequence WHERE seqrelid = 'sq_co_k'::regclass
+----
+5 1 9223372036854775807 false
+
+statement ok
+CREATE SEQUENCE sq_co_l MINVALUE -5 START -2 INCREMENT 1
+
+query I
+SELECT nextval('sq_co_l')
+----
+-2
+
+statement ok
+CREATE SEQUENCE IF NOT EXISTS sq_co_a
+
+# 同名
+statement error (42P07)
+CREATE SEQUENCE sq_co_a
+
+statement error (?s)relation "sq_co_a" already exists
+CREATE SEQUENCE sq_co_a
+
+statement ok
+CREATE TABLE sq_co_t (a int)
+
+statement error (42P07)
+CREATE SEQUENCE sq_co_t
+
+# 検証エラー
+statement error (42601)
+CREATE SEQUENCE sq_co_x MAXVALUE 5 MAXVALUE 6
+
+statement error (?s)conflicting or redundant options
+CREATE SEQUENCE sq_co_x INCREMENT 1 INCREMENT 2
+
+statement error (?s)invalid sequence option SEQUENCE NAME
+CREATE SEQUENCE sq_co_x SEQUENCE NAME sq_co_y
+
+statement error (?s)sequence type must be smallint, integer, or bigint
+CREATE SEQUENCE sq_co_x AS text
+
+statement error (22023)
+CREATE SEQUENCE sq_co_x AS numeric
+
+statement error (?s)type "sq_co_nope" does not exist
+CREATE SEQUENCE sq_co_x AS sq_co_nope
+
+statement error (42704)
+CREATE SEQUENCE sq_co_x AS sq_co_nope
+
+statement error (?s)value "9223372036854775808" is out of range for type bigint
+CREATE SEQUENCE sq_co_x MAXVALUE 9223372036854775808
+
+statement error (22003)
+CREATE SEQUENCE sq_co_x MAXVALUE 9223372036854775808
+
+statement error (?s)invalid input syntax for type bigint: "1\.5"
+CREATE SEQUENCE sq_co_x START 1.5
+
+statement error (22P02)
+CREATE SEQUENCE sq_co_x START 1.5
+
+statement error (?s)INCREMENT must not be zero
+CREATE SEQUENCE sq_co_x INCREMENT 0
+
+statement error (22023)
+CREATE SEQUENCE sq_co_x INCREMENT 0
+
+statement error (?s)MAXVALUE \(40000\) is out of range for sequence data type smallint
+CREATE SEQUENCE sq_co_x AS smallint MAXVALUE 40000
+
+statement error (?s)MINVALUE \(-40000\) is out of range for sequence data type smallint
+CREATE SEQUENCE sq_co_x AS smallint MINVALUE -40000
+
+statement error (?s)MINVALUE \(5\) must be less than MAXVALUE \(1\)
+CREATE SEQUENCE sq_co_x MINVALUE 5 MAXVALUE 1
+
+statement error (?s)START value \(0\) cannot be less than MINVALUE \(1\)
+CREATE SEQUENCE sq_co_x START 0
+
+statement error (?s)START value \(11\) cannot be greater than MAXVALUE \(10\)
+CREATE SEQUENCE sq_co_x START 11 MAXVALUE 10
+
+statement error (?s)CACHE \(0\) must be greater than zero
+CREATE SEQUENCE sq_co_x CACHE 0
+
+statement error (22023)
+CREATE SEQUENCE sq_co_x CACHE -1
+
+# システムカタログのスキーマ
+statement error (42501)
+CREATE SEQUENCE pg_catalog.sq_co_zz
+
+# 失敗した CREATE は何も作らない
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'sq\_co\_x%' OR relname LIKE 'sq\_co\_y%' OR relname LIKE 'sq\_co\_zz%'
+----
+
+# OWNED BY
+statement ok
+CREATE TABLE sq_co_u (a int, b int)
+
+statement ok
+CREATE SEQUENCE sq_co_ob OWNED BY sq_co_u.a
+
+query T
+SELECT deptype::text FROM pg_depend WHERE objid = 'sq_co_ob'::regclass AND refobjid = 'sq_co_u'::regclass AND refobjsubid = 1
+----
+a
+
+statement ok
+CREATE SEQUENCE sq_co_on OWNED BY NONE
+
+statement error (?s)invalid OWNED BY option.*HINT: Specify OWNED BY table\.column or OWNED BY NONE\.
+CREATE SEQUENCE sq_co_x OWNED BY sq_co_u
+
+statement error (42601)
+CREATE SEQUENCE sq_co_x OWNED BY sq_co_u
+
+statement error (?s)sequence cannot be owned by relation "sq_co_a"
+CREATE SEQUENCE sq_co_x OWNED BY sq_co_a.last_value
+
+statement error (42809)
+CREATE SEQUENCE sq_co_x OWNED BY sq_co_a.last_value
+
+statement error (?s)column "nope" of relation "sq_co_u" does not exist
+CREATE SEQUENCE sq_co_x OWNED BY sq_co_u.nope
+
+statement error (42703)
+CREATE SEQUENCE sq_co_x OWNED BY sq_co_u.nope
+
+# 所有する表を消すとシーケンスも消える
+statement ok
+DROP TABLE sq_co_u
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'sq_co_ob'
+----
+
+# OWNED BY の所有側の表と一緒に消えているので IF EXISTS で明示する（lint L01 用）
+statement ok
+DROP SEQUENCE IF EXISTS sq_co_ob
+
+statement ok
+DROP TABLE sq_co_t
+
+statement ok
+DROP SEQUENCE sq_co_a, sq_co_b, sq_co_c, sq_co_d, sq_co_e, sq_co_f, sq_co_g, sq_co_h, sq_co_i, sq_co_j, sq_co_k, sq_co_l, sq_co_on

@@ -1,0 +1,86 @@
+# シーケンスへの SELECT・DML・DDL
+
+statement ok
+CREATE SEQUENCE sq_sf_s START 10
+
+query IIT
+SELECT * FROM sq_sf_s
+----
+10 0 f
+
+query IIT
+SELECT last_value, log_cnt, is_called FROM sq_sf_s
+----
+10 0 f
+
+query T
+SELECT ctid::text FROM sq_sf_s
+----
+(0,1)
+
+query I
+SELECT nextval('sq_sf_s')
+----
+10
+
+query IT
+SELECT last_value, is_called::text FROM sq_sf_s
+----
+10 true
+
+# 結合
+query II
+SELECT s.last_value, c.relpages FROM sq_sf_s s JOIN pg_class c ON c.relname = 'sq_sf_s'
+----
+10 1
+
+query I
+SELECT count(*) FROM sq_sf_s
+----
+1
+
+# DML はエラー
+statement error (42809)
+INSERT INTO sq_sf_s VALUES (1, 1, true)
+
+statement error (?s)cannot change sequence "sq_sf_s"
+INSERT INTO sq_sf_s VALUES (1, 1, true)
+
+statement error (42809)
+UPDATE sq_sf_s SET last_value = 1
+
+statement error (?s)cannot change sequence "sq_sf_s"
+UPDATE sq_sf_s SET last_value = 1
+
+statement error (42809)
+DELETE FROM sq_sf_s
+
+statement error (42809)
+TRUNCATE sq_sf_s
+
+statement error (?s)"sq_sf_s" is not a table
+TRUNCATE sq_sf_s
+
+statement error (42809)
+CREATE INDEX ON sq_sf_s (last_value)
+
+statement error (42809)
+ALTER TABLE sq_sf_s ADD PRIMARY KEY (last_value)
+
+statement error (42809)
+ALTER TABLE sq_sf_s ADD UNIQUE (last_value)
+
+statement error (42809)
+DROP INDEX sq_sf_s
+
+statement error (?s)"sq_sf_s" is not an index.*HINT: Use DROP SEQUENCE to remove a sequence\.
+DROP INDEX sq_sf_s
+
+# 値は変わっていない
+query IT
+SELECT last_value, is_called::text FROM sq_sf_s
+----
+10 true
+
+statement ok
+DROP SEQUENCE sq_sf_s

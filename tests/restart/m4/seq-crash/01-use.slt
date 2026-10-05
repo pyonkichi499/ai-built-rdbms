@@ -1,0 +1,34 @@
+# フェーズ 1: シーケンスを使ってコミットし、kill -9 される。
+
+statement ok
+CREATE SEQUENCE m4r_sk_a
+
+query I
+SELECT nextval('m4r_sk_a') FROM generate_series(1, 3)
+----
+1
+2
+3
+
+statement ok
+CREATE SEQUENCE m4r_sk_b CACHE 5
+
+query I
+SELECT nextval('m4r_sk_b') FROM generate_series(1, 2)
+----
+1
+2
+
+statement ok
+CREATE TABLE m4r_sk_t (id serial, v int)
+
+statement count 3
+INSERT INTO m4r_sk_t (v) VALUES (1), (2), (3)
+
+statement ok
+CREATE SEQUENCE m4r_sk_c
+
+query I
+SELECT setval('m4r_sk_c', 100)
+----
+100

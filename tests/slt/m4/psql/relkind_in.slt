@@ -1,0 +1,49 @@
+# c.relkind IN ('r','p','')（'' は "char" の空）、IN ('i','I','')、IN ('r','p','t','s','')、IN ('S','')
+
+statement ok
+CREATE TABLE psql_t_ri (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE SEQUENCE psql_t_ri_seq
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_ri%' AND c.relkind IN ('r','p','') ORDER BY 1
+----
+psql_t_ri
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_ri%' AND c.relkind IN ('i','I','') ORDER BY 1
+----
+psql_t_ri_pkey
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_ri%' AND c.relkind IN ('r','p','t','s','') ORDER BY 1
+----
+psql_t_ri
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_ri%' AND c.relkind IN ('S','') ORDER BY 1
+----
+psql_t_ri_seq
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_ri%' AND c.relkind NOT IN ('r','p','') ORDER BY 1
+----
+psql_t_ri_pkey
+psql_t_ri_seq
+
+query T
+SELECT c.relname FROM pg_class c WHERE c.relname LIKE 'psql\_t\_ri%' AND c.relkind = 'r'
+----
+psql_t_ri
+
+query ??
+SELECT ''::"char" = ''::"char", 'r'::"char" IN ('r', '')
+----
+t t
+
+statement ok
+DROP TABLE psql_t_ri
+
+statement ok
+DROP SEQUENCE psql_t_ri_seq

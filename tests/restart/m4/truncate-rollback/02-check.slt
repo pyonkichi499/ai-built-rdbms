@@ -1,0 +1,37 @@
+# フェーズ 2: ROLLBACK した TRUNCATE は元のデータを残す。索引の件数も一致する。
+
+query III
+SELECT id, k, v FROM m4r_tr_t ORDER BY id
+----
+1 10 1
+2 20 2
+3 30 0
+4 40 1
+5 50 2
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM m4r_tr_t WHERE k >= 0
+----
+5
+
+query I
+SELECT count(*) FROM m4r_tr_t WHERE v >= 0
+----
+5
+
+query I
+SELECT id FROM m4r_tr_t WHERE k = 30
+----
+3
+
+statement ok
+RESET enable_seqscan
+
+statement error (23505)
+INSERT INTO m4r_tr_t VALUES (6, 30, 0)
+
+statement count 1
+INSERT INTO m4r_tr_t VALUES (6, 60, 0)

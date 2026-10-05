@@ -1,0 +1,100 @@
+# WITH (fillfactor): 表・索引・PRIMARY KEY / UNIQUE の範囲と 22023
+
+statement ok
+CREATE TABLE ddl_ro_a (a int) WITH (fillfactor = 70)
+
+statement ok
+CREATE TABLE ddl_ro_b (a int) WITH (fillfactor = 10)
+
+statement ok
+CREATE TABLE ddl_ro_c (a int) WITH (fillfactor = 100)
+
+statement error (22023)
+CREATE TABLE ddl_ro_x (a int) WITH (fillfactor = 9)
+
+statement error (?s)value 9 out of bounds for option "fillfactor".*Valid values are between "10" and "100"\.
+CREATE TABLE ddl_ro_x (a int) WITH (fillfactor = 9)
+
+statement error (?s)value 101 out of bounds for option "fillfactor"
+CREATE TABLE ddl_ro_x (a int) WITH (fillfactor = 101)
+
+statement error (?s)unrecognized parameter "foo"
+CREATE TABLE ddl_ro_x (a int) WITH (foo = 1)
+
+statement error (22023)
+CREATE TABLE ddl_ro_x (a int) WITH (foo = 1)
+
+# KNOWN-DIFF: KD-18 小数の fillfactor は yuzhu では 22023（PostgreSQL は受け付ける）
+skipif yuzhu
+statement ok
+CREATE TABLE ddl_ro_f (a int) WITH (fillfactor = 50.5)
+
+statement ok
+DROP TABLE IF EXISTS ddl_ro_f
+
+# KNOWN-DIFF: KD-18 小数の fillfactor は yuzhu では 22023（PostgreSQL は受け付ける）
+onlyif yuzhu
+statement error (22023)
+CREATE TABLE ddl_ro_f (a int) WITH (fillfactor = 50.5)
+
+# 値は整数でなければならない
+statement error (22023)
+CREATE TABLE ddl_ro_x (a int) WITH (fillfactor = 'abc')
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'ddl\_ro\_x%'
+----
+
+# 索引
+statement ok
+CREATE INDEX ddl_ro_ia ON ddl_ro_a (a) WITH (fillfactor = 10)
+
+statement ok
+CREATE INDEX ddl_ro_ib ON ddl_ro_a (a) WITH (fillfactor = 100)
+
+statement error (22023)
+CREATE INDEX ddl_ro_ic ON ddl_ro_a (a) WITH (fillfactor = 9)
+
+statement error (22023)
+CREATE INDEX ddl_ro_ic ON ddl_ro_a (a) WITH (foo = 1)
+
+# PRIMARY KEY / UNIQUE
+statement ok
+CREATE TABLE ddl_ro_d (a int PRIMARY KEY WITH (fillfactor = 50), b int UNIQUE WITH (fillfactor = 100), c int, UNIQUE (c) WITH (fillfactor = 10))
+
+statement error (22023)
+CREATE TABLE ddl_ro_e (a int PRIMARY KEY WITH (fillfactor = 5))
+
+statement error (22023)
+CREATE TABLE ddl_ro_e (a int, UNIQUE (a) WITH (bar = 1))
+
+statement ok
+ALTER TABLE ddl_ro_a ADD CONSTRAINT ddl_ro_a_u UNIQUE (a) WITH (fillfactor = 80)
+
+statement error (22023)
+ALTER TABLE ddl_ro_a ADD CONSTRAINT ddl_ro_a_u2 UNIQUE (a) WITH (fillfactor = 1)
+
+# reloptions を設定した表・索引も普通に使える
+statement count 3
+INSERT INTO ddl_ro_a VALUES (1), (2), (3)
+
+statement error (23505)
+INSERT INTO ddl_ro_a VALUES (2)
+
+statement count 2
+INSERT INTO ddl_ro_d VALUES (1, 1, 1), (2, 2, 2)
+
+statement error (23505)
+INSERT INTO ddl_ro_d VALUES (3, 1, 3)
+
+statement ok
+DROP TABLE ddl_ro_a
+
+statement ok
+DROP TABLE ddl_ro_b
+
+statement ok
+DROP TABLE ddl_ro_c
+
+statement ok
+DROP TABLE ddl_ro_d

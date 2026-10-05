@@ -1,0 +1,183 @@
+# PRIMARY KEY: 重複（23505）・NULL（23502）・DELETE 後の再利用・ROLLBACK した行と同じキー・複数列
+
+statement ok
+CREATE TABLE cst_pk_a (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE cst_pk_b (a int, b int, v text, PRIMARY KEY (a, b))
+
+statement ok
+CREATE TABLE cst_pk_c (id int, v text, CONSTRAINT cst_pk_c_named PRIMARY KEY (id))
+
+statement count 3
+INSERT INTO cst_pk_a VALUES (1, 'x'), (2, 'y'), (3, 'z')
+
+# 重複: SQLSTATE、メッセージ、DETAIL
+statement error (23505)
+INSERT INTO cst_pk_a VALUES (2, 'dup')
+
+statement error (?s)duplicate key value violates unique constraint "cst_pk_a_pkey".*Key \(id\)=\(2\) already exists\.
+INSERT INTO cst_pk_a VALUES (2, 'dup')
+
+# 失敗した文の行は残らない
+query IT
+SELECT id, v FROM cst_pk_a ORDER BY id
+----
+1 x
+2 y
+3 z
+
+# 1 文の中の重複（先に入った行も巻き戻る）
+statement error (23505)
+INSERT INTO cst_pk_a VALUES (10, 'a'), (11, 'b'), (10, 'c')
+
+query I
+SELECT id FROM cst_pk_a ORDER BY id
+----
+1
+2
+3
+
+# NULL は 23502
+statement error (?s)null value in column "id" of relation "cst_pk_a" violates not-null constraint
+INSERT INTO cst_pk_a VALUES (NULL, 'n')
+
+statement error (23502)
+INSERT INTO cst_pk_a (v) VALUES ('no id')
+
+statement error (23502)
+UPDATE cst_pk_a SET id = NULL WHERE id = 1
+
+# PRIMARY KEY の列は NOT NULL になる
+query TT
+SELECT attname, attnotnull::text FROM pg_attribute WHERE attrelid = 'cst_pk_a'::regclass AND attnum > 0 ORDER BY attnum
+----
+id true
+v false
+
+# キー以外の UPDATE は成功する
+statement count 1
+UPDATE cst_pk_a SET v = 'x2' WHERE id = 1
+
+# 自分自身と同じキーへの UPDATE は成功する
+statement count 1
+UPDATE cst_pk_a SET id = 1, v = 'x3' WHERE id = 1
+
+# 他の行のキーへの UPDATE は衝突する
+statement error (23505)
+UPDATE cst_pk_a SET id = 2 WHERE id = 1
+
+# キーを入れ替える（1 文で順に衝突しない場合）
+statement count 3
+UPDATE cst_pk_a SET id = id + 10
+
+query IT
+SELECT id, v FROM cst_pk_a ORDER BY id
+----
+11 x3
+12 y
+13 z
+
+statement count 3
+UPDATE cst_pk_a SET id = id - 10
+
+# DELETE した後の同じキーの INSERT
+statement count 1
+DELETE FROM cst_pk_a WHERE id = 2
+
+statement count 1
+INSERT INTO cst_pk_a VALUES (2, 'again')
+
+statement error (23505)
+INSERT INTO cst_pk_a VALUES (2, 'dup again')
+
+# 同じトランザクションでの DELETE → 同じキーの INSERT
+statement ok
+BEGIN
+
+statement count 1
+DELETE FROM cst_pk_a WHERE id = 3
+
+statement count 1
+INSERT INTO cst_pk_a VALUES (3, 'tx')
+
+statement error (23505)
+INSERT INTO cst_pk_a VALUES (3, 'tx dup')
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT id, v FROM cst_pk_a ORDER BY id
+----
+1 x3
+2 again
+3 z
+
+# ROLLBACK した行と同じキー
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO cst_pk_a VALUES (100, 'rolled back')
+
+statement ok
+ROLLBACK
+
+statement count 1
+INSERT INTO cst_pk_a VALUES (100, 'committed')
+
+query T
+SELECT v FROM cst_pk_a WHERE id = 100
+----
+committed
+
+# 複数列
+statement count 4
+INSERT INTO cst_pk_b VALUES (1, 1, 'a'), (1, 2, 'b'), (2, 1, 'c'), (2, 2, 'd')
+
+statement error (?s)Key \(a, b\)=\(1, 2\) already exists\.
+INSERT INTO cst_pk_b VALUES (1, 2, 'dup')
+
+statement error (23502)
+INSERT INTO cst_pk_b VALUES (1, NULL, 'null b')
+
+statement error (23502)
+INSERT INTO cst_pk_b VALUES (NULL, 1, 'null a')
+
+statement count 1
+UPDATE cst_pk_b SET b = 3 WHERE a = 1 AND b = 2
+
+statement error (23505)
+UPDATE cst_pk_b SET b = 1 WHERE a = 1 AND b = 3
+
+query IIT
+SELECT a, b, v FROM cst_pk_b ORDER BY a, b
+----
+1 1 a
+1 3 b
+2 1 c
+2 2 d
+
+# 表制約の名前つき PRIMARY KEY
+statement count 1
+INSERT INTO cst_pk_c VALUES (1, 'a')
+
+statement error (?s)duplicate key value violates unique constraint "cst_pk_c_named"
+INSERT INTO cst_pk_c VALUES (1, 'b')
+
+# 同一キーを 2 回含む複数行の UPDATE（途中の衝突）
+statement count 2
+INSERT INTO cst_pk_c VALUES (2, 'b'), (3, 'c')
+
+statement error (23505)
+UPDATE cst_pk_c SET id = 1 WHERE id IN (2, 3)
+
+statement ok
+DROP TABLE cst_pk_a
+
+statement ok
+DROP TABLE cst_pk_b
+
+statement ok
+DROP TABLE cst_pk_c

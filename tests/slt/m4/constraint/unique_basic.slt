@@ -1,0 +1,137 @@
+# UNIQUE: NULL の重複は可、複数列の NULL、型ごとのキー、UPDATE での衝突
+
+statement ok
+CREATE TABLE cst_uq_a (id int, k int UNIQUE)
+
+statement ok
+CREATE TABLE cst_uq_m (a int, b int, UNIQUE (a, b))
+
+statement ok
+CREATE TABLE cst_uq_t (id int, s text UNIQUE, v varchar(10) UNIQUE, c char(3) UNIQUE, n numeric(8,2) UNIQUE, d date UNIQUE, ts timestamp UNIQUE)
+
+# NULL は何個でも入る
+statement count 4
+INSERT INTO cst_uq_a VALUES (1, 1), (2, NULL), (3, NULL), (4, NULL)
+
+statement error (?s)duplicate key value violates unique constraint "cst_uq_a_k_key".*Key \(k\)=\(1\) already exists\.
+INSERT INTO cst_uq_a VALUES (5, 1)
+
+query II
+SELECT id, k FROM cst_uq_a ORDER BY id
+----
+1 1
+2 NULL
+3 NULL
+4 NULL
+
+# UNIQUE の列は NOT NULL にならない
+query T
+SELECT attnotnull::text FROM pg_attribute WHERE attrelid = 'cst_uq_a'::regclass AND attname = 'k'
+----
+false
+
+# NULL を持つ行の UPDATE
+statement count 1
+UPDATE cst_uq_a SET k = 2 WHERE id = 2
+
+statement error (23505)
+UPDATE cst_uq_a SET k = 2 WHERE id = 3
+
+statement count 1
+UPDATE cst_uq_a SET k = NULL WHERE id = 2
+
+statement count 1
+UPDATE cst_uq_a SET k = 2 WHERE id = 3
+
+query II
+SELECT id, k FROM cst_uq_a ORDER BY id
+----
+1 1
+2 NULL
+3 2
+4 NULL
+
+# 複数列: 1 つでも NULL なら一致しない
+statement count 6
+INSERT INTO cst_uq_m VALUES (1, 1), (1, NULL), (1, NULL), (NULL, 1), (NULL, 1), (NULL, NULL)
+
+statement count 1
+INSERT INTO cst_uq_m VALUES (NULL, NULL)
+
+statement error (?s)Key \(a, b\)=\(1, 1\) already exists\.
+INSERT INTO cst_uq_m VALUES (1, 1)
+
+statement count 1
+INSERT INTO cst_uq_m VALUES (2, 1)
+
+statement error (23505)
+UPDATE cst_uq_m SET a = 1 WHERE a = 2
+
+# 型ごとのキー
+statement count 1
+INSERT INTO cst_uq_t VALUES (1, 'a', 'va', 'ca', 1.50, '2024-01-01', '2024-01-01 10:00:00')
+
+statement error (?s)cst_uq_t_s_key.*Key \(s\)=\(a\) already exists\.
+INSERT INTO cst_uq_t (id, s) VALUES (2, 'a')
+
+statement error (?s)cst_uq_t_v_key.*Key \(v\)=\(va\) already exists\.
+INSERT INTO cst_uq_t (id, v) VALUES (2, 'va')
+
+# char(n) は末尾の空白を無視して比べる
+statement error (?s)cst_uq_t_c_key.*already exists\.
+INSERT INTO cst_uq_t (id, c) VALUES (2, 'ca ')
+
+statement count 1
+INSERT INTO cst_uq_t (id, c) VALUES (2, 'cb')
+
+# numeric は値で比べる（1.5 と 1.50 は同じ）
+statement error (?s)cst_uq_t_n_key.*Key \(n\)=\(1\.50\) already exists\.
+INSERT INTO cst_uq_t (id, n) VALUES (3, 1.5)
+
+statement count 1
+INSERT INTO cst_uq_t (id, n) VALUES (3, 1.51)
+
+statement error (?s)cst_uq_t_d_key.*Key \(d\)=\(2024-01-01\) already exists\.
+INSERT INTO cst_uq_t (id, d) VALUES (4, '2024-01-01')
+
+statement count 1
+INSERT INTO cst_uq_t (id, d) VALUES (4, '2024-01-02')
+
+statement error (?s)cst_uq_t_ts_key.*Key \(ts\)=\(2024-01-01 10:00:00\) already exists\.
+INSERT INTO cst_uq_t (id, ts) VALUES (5, '2024-01-01 10:00:00')
+
+statement count 1
+INSERT INTO cst_uq_t (id, ts) VALUES (5, '2024-01-01 10:00:01')
+
+# text の大文字・小文字は別の値
+statement count 1
+INSERT INTO cst_uq_t (id, s) VALUES (6, 'A')
+
+statement count 1
+INSERT INTO cst_uq_t (id, s) VALUES (7, '')
+
+statement error (23505)
+INSERT INTO cst_uq_t (id, s) VALUES (8, '')
+
+# UPDATE での衝突（複数行の UPDATE が途中で衝突する）
+statement error (23505)
+UPDATE cst_uq_t SET s = 'a' WHERE id = 6
+
+statement count 1
+UPDATE cst_uq_t SET s = 'zz' WHERE id = 6
+
+query IT
+SELECT id, s FROM cst_uq_t WHERE s IS NOT NULL ORDER BY id
+----
+1 a
+6 zz
+7 (empty)
+
+statement ok
+DROP TABLE cst_uq_a
+
+statement ok
+DROP TABLE cst_uq_m
+
+statement ok
+DROP TABLE cst_uq_t

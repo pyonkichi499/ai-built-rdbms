@@ -1,0 +1,231 @@
+# EXPLAIN (VERBOSE): Output 行と、列・表の修飾の規則
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_v_t (a int PRIMARY KEY, b int, c text)
+
+statement ok
+INSERT INTO ex_v_t SELECT g, g % 10, 'c' || g FROM generate_series(1, 100) g
+
+statement ok
+CREATE TABLE ex_v_u (a int, x text)
+
+statement ok
+INSERT INTO ex_v_u SELECT g, 'x' || g FROM generate_series(1, 300) g
+
+statement ok
+CREATE INDEX ex_v_u_a_idx ON ex_v_u (a)
+
+statement ok
+ANALYZE ex_v_t
+
+statement ok
+ANALYZE ex_v_u
+
+# 単一表: スキーマ修飾と Output。VERBOSE のとき式の中の列は表名で修飾される
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM ex_v_t WHERE b > 5
+----
+Seq Scan on public.ex_v_t
+  Output: a, b, c
+  Filter: (ex_v_t.b > 5)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT x.a FROM ex_v_t x WHERE x.b = 1
+----
+Seq Scan on public.ex_v_t x
+  Output: a
+  Filter: (x.b = 1)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a, b FROM ex_v_t WHERE c = 'c5'
+----
+Seq Scan on public.ex_v_t
+  Output: a, b
+  Filter: (ex_v_t.c = 'c5'::text)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a + b, c || 'x' FROM ex_v_t
+----
+Seq Scan on public.ex_v_t
+  Output: (a + b), (c || 'x'::text)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT lower(c), upper(c) || 'x', length(c), c::varchar, a::text, abs(-a) FROM ex_v_t
+----
+Seq Scan on public.ex_v_t
+  Output: lower(c), (upper(c) || 'x'::text), length(c), (c)::character varying, (a)::text, abs((- a))
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a FROM ex_v_t WHERE a % 2 = 0 AND b IS NOT NULL
+----
+Seq Scan on public.ex_v_t
+  Output: a
+  Filter: ((ex_v_t.b IS NOT NULL) AND ((ex_v_t.a % 2) = 0))
+
+# 集約・ソート
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT count(*), sum(a), min(c) FROM ex_v_t
+----
+Aggregate
+  Output: count(*), sum(a), min(c)
+  ->  Seq Scan on public.ex_v_t
+        Output: a, b, c
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a, b + 1 AS x FROM ex_v_t ORDER BY x
+----
+Sort
+  Output: a, ((b + 1))
+  Sort Key: ((ex_v_t.b + 1))
+  ->  Seq Scan on public.ex_v_t
+        Output: a, (b + 1)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT b, count(*) FROM ex_v_t GROUP BY b ORDER BY b
+----
+Sort
+  Output: b, (count(*))
+  Sort Key: ex_v_t.b
+  ->  HashAggregate
+        Output: b, count(*)
+        Group Key: ex_v_t.b
+        ->  Seq Scan on public.ex_v_t
+              Output: a, b, c
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM ex_v_t ORDER BY b DESC, c LIMIT 3
+----
+Limit
+  Output: a, b, c
+  ->  Sort
+        Output: a, b, c
+        Sort Key: ex_v_t.b DESC, ex_v_t.c
+        ->  Seq Scan on public.ex_v_t
+              Output: a, b, c
+
+# VALUES と Result
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT 1 + 1 AS two, 'a'::text
+----
+Result
+  Output: 2, 'a'::text
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT 1 WHERE false
+----
+Result
+  Output: 1
+  One-Time Filter: false
+
+# generate_series の Function Scan（タイトルだけスキーマ修飾）
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM generate_series(1, 10) g
+----
+Function Scan on pg_catalog.generate_series g
+  Output: g
+  Function Call: generate_series(1, 10)
+
+query T
+EXPLAIN (COSTS OFF) SELECT g FROM generate_series(1, 10) g WHERE g > 3
+----
+Function Scan on generate_series g
+  Filter: (g > 3)
+
+# インデックススキャン
+statement ok
+SET enable_seqscan = off
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM ex_v_u WHERE a = 3 AND x = 'y'
+----
+Index Scan using ex_v_u_a_idx on public.ex_v_u
+  Output: a, x
+  Index Cond: (ex_v_u.a = 3)
+  Filter: (ex_v_u.x = 'y'::text)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM ex_v_t WHERE a > 90
+----
+Index Scan using ex_v_t_pkey on public.ex_v_t
+  Output: a, b, c
+  Index Cond: (ex_v_t.a > 90)
+
+statement ok
+RESET enable_seqscan
+
+# DML
+query T
+EXPLAIN (COSTS OFF, VERBOSE) INSERT INTO ex_v_u VALUES (1000, 'a'), (1001, 'b')
+----
+Insert on public.ex_v_u
+  ->  Values Scan on "*VALUES*"
+        Output: "*VALUES*".column1, "*VALUES*".column2
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) INSERT INTO ex_v_u SELECT a, c FROM ex_v_t WHERE b = 1
+----
+Insert on public.ex_v_u
+  ->  Seq Scan on public.ex_v_t
+        Output: ex_v_t.a, ex_v_t.c
+        Filter: (ex_v_t.b = 1)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) UPDATE ex_v_t SET b = b + 1 WHERE a = 5
+----
+Update on public.ex_v_t
+  ->  Seq Scan on public.ex_v_t
+        Output: (b + 1), ctid
+        Filter: (ex_v_t.a = 5)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) DELETE FROM ex_v_t WHERE b = 3
+----
+Delete on public.ex_v_t
+  ->  Seq Scan on public.ex_v_t
+        Output: ctid
+        Filter: (ex_v_t.b = 3)
+
+# 副問い合わせ
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT a, (SELECT count(*) FROM ex_v_u WHERE ex_v_u.a = ex_v_t.a) FROM ex_v_t
+----
+Seq Scan on public.ex_v_t
+  Output: ex_v_t.a, (SubPlan 1)
+  SubPlan 1
+    ->  Aggregate
+          Output: count(*)
+          ->  Seq Scan on public.ex_v_u
+                Output: ex_v_u.a, ex_v_u.x
+                Filter: (ex_v_u.a = ex_v_t.a)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM ex_v_t WHERE b = (SELECT max(a) FROM ex_v_u)
+----
+Seq Scan on public.ex_v_t
+  Output: ex_v_t.a, ex_v_t.b, ex_v_t.c
+  Filter: (ex_v_t.b = (InitPlan 2).col1)
+  InitPlan 2
+    ->  Result
+          Output: (InitPlan 1).col1
+          InitPlan 1
+            ->  Limit
+                  Output: ex_v_u.a
+                  ->  Index Scan Backward using ex_v_u_a_idx on public.ex_v_u
+                        Output: ex_v_u.a
+                        Index Cond: (ex_v_u.a IS NOT NULL)
+
+statement ok
+DROP TABLE ex_v_t
+
+statement ok
+DROP TABLE ex_v_u
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

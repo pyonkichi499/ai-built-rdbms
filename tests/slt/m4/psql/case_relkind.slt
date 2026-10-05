@@ -1,0 +1,47 @@
+# 単純な CASE c.relkind WHEN ... THEN ...（"char" と unknown リテラルの比較）
+
+query T
+SELECT CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END
+FROM pg_class c WHERE c.oid = 'pg_class'::regclass
+----
+table
+
+query TT
+SELECT 'r'::"char", CASE 'r'::"char" WHEN 'r' THEN 'table' WHEN 'S' THEN 'sequence' END
+----
+r table
+
+query T
+SELECT CASE 'S'::"char" WHEN 'r' THEN 'table' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' END
+----
+sequence
+
+query T
+SELECT CASE 'x'::"char" WHEN 'r' THEN 'table' WHEN 'i' THEN 'index' END
+----
+NULL
+
+query T
+SELECT CASE 'x'::"char" WHEN 'r' THEN 'table' ELSE 'other' END
+----
+other
+
+statement ok
+CREATE TABLE psql_t_cr (id int PRIMARY KEY)
+
+statement ok
+CREATE SEQUENCE psql_t_cr_seq
+
+query TT
+SELECT c.relname, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END
+FROM pg_class c WHERE c.relname LIKE 'psql\_t\_cr%' ORDER BY c.relname
+----
+psql_t_cr table
+psql_t_cr_pkey index
+psql_t_cr_seq sequence
+
+statement ok
+DROP TABLE psql_t_cr
+
+statement ok
+DROP SEQUENCE psql_t_cr_seq

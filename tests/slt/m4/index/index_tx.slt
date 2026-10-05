@@ -1,0 +1,181 @@
+# トランザクションと索引: CREATE INDEX / DROP INDEX の ROLLBACK、同じトランザクションで作った表への PRIMARY KEY
+
+statement ok
+CREATE TABLE idx_tx_t (a int, b int)
+
+statement count 3
+INSERT INTO idx_tx_t VALUES (1, 10), (2, 20), (3, 30)
+
+# CREATE INDEX の ROLLBACK: 索引が残らず、同じ名前で再作成できる
+statement ok
+BEGIN
+
+statement ok
+CREATE INDEX idx_tx_a ON idx_tx_t (a)
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'idx_tx_a'
+----
+1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'idx_tx_a'
+----
+0
+
+query I
+SELECT count(*) FROM pg_index WHERE indrelid = 'idx_tx_t'::regclass
+----
+0
+
+statement ok
+CREATE INDEX idx_tx_a ON idx_tx_t (a)
+
+# DROP INDEX の ROLLBACK: 索引が残り、使える
+statement ok
+BEGIN
+
+statement ok
+DROP INDEX idx_tx_a
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'idx_tx_a'
+----
+0
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'idx_tx_a'
+----
+1
+
+statement ok
+SET enable_seqscan = off
+
+query II
+SELECT a, b FROM idx_tx_t WHERE a = 2
+----
+2 20
+
+statement ok
+RESET enable_seqscan
+
+# 同じトランザクションで作った表に PRIMARY KEY と索引を付けて COMMIT
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE idx_tx_n (id int PRIMARY KEY, v int)
+
+statement count 2
+INSERT INTO idx_tx_n VALUES (1, 1), (2, 2)
+
+statement ok
+CREATE INDEX idx_tx_n_v ON idx_tx_n (v)
+
+statement error (23505)
+INSERT INTO idx_tx_n VALUES (1, 9)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'idx\_tx\_n%'
+----
+0
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE idx_tx_n (id int PRIMARY KEY, v int)
+
+statement count 2
+INSERT INTO idx_tx_n VALUES (1, 1), (2, 2)
+
+statement ok
+CREATE INDEX idx_tx_n_v ON idx_tx_n (v)
+
+statement ok
+COMMIT
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'idx\_tx\_n%' ORDER BY relname
+----
+idx_tx_n
+idx_tx_n_pkey
+idx_tx_n_v
+
+# 同じトランザクションで作った表への ADD PRIMARY KEY
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE idx_tx_m (id int, v int)
+
+statement count 2
+INSERT INTO idx_tx_m VALUES (1, 1), (2, 2)
+
+statement ok
+ALTER TABLE idx_tx_m ADD PRIMARY KEY (id)
+
+statement error (23505)
+INSERT INTO idx_tx_m VALUES (2, 3)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'idx\_tx\_m%'
+----
+0
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE idx_tx_m (id int, v int)
+
+statement count 2
+INSERT INTO idx_tx_m VALUES (1, 1), (2, 2)
+
+statement ok
+ALTER TABLE idx_tx_m ADD PRIMARY KEY (id)
+
+statement ok
+COMMIT
+
+statement error (23505)
+INSERT INTO idx_tx_m VALUES (2, 3)
+
+# ADD PRIMARY KEY の ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE idx_tx_t ADD PRIMARY KEY (a)
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conrelid = 'idx_tx_t'::regclass
+----
+0
+
+statement count 1
+INSERT INTO idx_tx_t VALUES (1, 11)
+
+statement ok
+DROP TABLE idx_tx_t
+
+statement ok
+DROP TABLE idx_tx_n
+
+statement ok
+DROP TABLE idx_tx_m

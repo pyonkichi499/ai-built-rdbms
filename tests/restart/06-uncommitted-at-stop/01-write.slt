@@ -23,6 +23,7 @@ connection other
 statement count 1
 DELETE FROM rs6_t WHERE id = 2
 
+# LINT-ALLOW: L01 コミットされない作成（再起動後に存在しないことを確かめる）
 connection other
 statement ok
 CREATE TABLE rs6_ghost (g int)

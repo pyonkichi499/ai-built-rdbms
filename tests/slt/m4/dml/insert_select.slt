@@ -1,0 +1,341 @@
+# INSERT ... SELECT: 結合・集約・集合演算・CTE・generate_series（pgbench -i の形）、unknown の代入、シーケンス・索引への DML
+
+statement ok
+CREATE TABLE dm_src (id int, g int, v text, n numeric(8,2))
+
+statement ok
+CREATE TABLE dm_src2 (g int, label text)
+
+statement ok
+CREATE TABLE dm_dst (id int, g int, v text, n numeric(8,2))
+
+statement ok
+INSERT INTO dm_src VALUES (1, 1, 'a', 1.50), (2, 1, 'b', 2.25), (3, 2, 'c', NULL), (4, NULL, 'd', 4.00)
+
+statement ok
+INSERT INTO dm_src2 VALUES (1, 'one'), (2, 'two'), (3, 'three')
+
+# 単純な SELECT（行数は文のタグで確かめる）
+statement count 4
+INSERT INTO dm_dst SELECT * FROM dm_src
+
+query ITTT
+SELECT id, g, v, n FROM dm_dst ORDER BY id
+----
+1 1 a 1.50
+2 1 b 2.25
+3 2 c NULL
+4 NULL d 4.00
+
+statement ok
+DELETE FROM dm_dst
+
+# 列リストと並べ替え。指定しない列は DEFAULT（NULL）
+statement ok
+INSERT INTO dm_dst (v, id) SELECT v, id * 10 FROM dm_src WHERE id <= 2
+
+query ITTT
+SELECT id, g, v, n FROM dm_dst ORDER BY id
+----
+10 NULL a NULL
+20 NULL b NULL
+
+statement ok
+DELETE FROM dm_dst
+
+# 結合
+statement ok
+INSERT INTO dm_dst (id, g, v) SELECT s.id, s.g, t.label FROM dm_src s JOIN dm_src2 t ON s.g = t.g
+
+query ITT
+SELECT id, g, v FROM dm_dst ORDER BY id
+----
+1 1 one
+2 1 one
+3 2 two
+
+statement ok
+DELETE FROM dm_dst
+
+statement ok
+INSERT INTO dm_dst (id, g, v) SELECT s.id, t.g, t.label FROM dm_src s RIGHT JOIN dm_src2 t ON s.g = t.g ORDER BY t.g, s.id
+
+query ITT
+SELECT id, g, v FROM dm_dst ORDER BY g, id
+----
+1 1 one
+2 1 one
+3 2 two
+NULL 3 three
+
+statement ok
+DELETE FROM dm_dst
+
+# 集約
+statement ok
+INSERT INTO dm_dst (g, id, n) SELECT g, count(*), sum(n) FROM dm_src GROUP BY g
+
+query IIT
+SELECT g, id, n FROM dm_dst ORDER BY g
+----
+1 2 3.75
+2 1 NULL
+NULL 1 4.00
+
+statement ok
+DELETE FROM dm_dst
+
+# 集約（GROUP BY なし。空入力でも 1 行）
+statement ok
+INSERT INTO dm_dst (id) SELECT count(*) FROM dm_src WHERE false
+
+query I
+SELECT id FROM dm_dst
+----
+0
+
+statement ok
+DELETE FROM dm_dst
+
+# 集合演算
+statement ok
+INSERT INTO dm_dst (id, g) SELECT id, g FROM dm_src WHERE id < 3 UNION ALL SELECT id + 100, g FROM dm_src WHERE id >= 3
+
+query II
+SELECT id, g FROM dm_dst ORDER BY id
+----
+1 1
+2 1
+103 2
+104 NULL
+
+statement ok
+DELETE FROM dm_dst
+
+statement ok
+INSERT INTO dm_dst (g) SELECT g FROM dm_src UNION SELECT g FROM dm_src2
+
+query I
+SELECT count(*) FROM dm_dst
+----
+4
+
+statement ok
+DELETE FROM dm_dst
+
+# CTE
+statement ok
+INSERT INTO dm_dst (id, v) WITH c AS (SELECT id, v FROM dm_src WHERE id > 2) SELECT id, v FROM c
+
+query IT
+SELECT id, v FROM dm_dst ORDER BY id
+----
+3 c
+4 d
+
+statement ok
+DELETE FROM dm_dst
+
+# 表自身から（INSERT の対象を SELECT が読む。Halloween 問題: 文の開始時点の行だけ読む）
+statement ok
+INSERT INTO dm_dst SELECT * FROM dm_src
+
+statement ok
+INSERT INTO dm_dst SELECT id + 100, g, v, n FROM dm_dst
+
+query I
+SELECT count(*) FROM dm_dst
+----
+8
+
+statement ok
+DELETE FROM dm_dst
+
+# 副問い合わせを含む SELECT
+statement ok
+INSERT INTO dm_dst (id, g) SELECT id, (SELECT max(g) FROM dm_src2 WHERE dm_src2.g = dm_src.g) FROM dm_src
+
+query II
+SELECT id, g FROM dm_dst ORDER BY id
+----
+1 1
+2 1
+3 2
+4 NULL
+
+statement ok
+DELETE FROM dm_dst
+
+# generate_series（pgbench -i の形）
+statement ok
+INSERT INTO dm_dst (id, g, v) SELECT aid, (aid - 1) / 10 + 1, '' FROM generate_series(1, 50) AS aid
+
+query III
+SELECT count(*), min(g), max(g) FROM dm_dst
+----
+50 1 5
+
+query I
+SELECT count(*) FROM dm_dst WHERE v = ''
+----
+50
+
+statement ok
+DELETE FROM dm_dst
+
+statement count 0
+INSERT INTO dm_dst SELECT * FROM dm_src WHERE false
+
+# unknown 型のリテラルの代入（text / int / numeric の列へ）
+statement ok
+INSERT INTO dm_dst (id, g, v, n) SELECT 1, 2, 'x', 3.5
+
+query ITTT
+SELECT id, g, v, n FROM dm_dst
+----
+1 2 x 3.50
+
+statement ok
+DELETE FROM dm_dst
+
+statement ok
+INSERT INTO dm_dst (id, v) SELECT '7', NULL
+
+query IT
+SELECT id, v FROM dm_dst
+----
+7 NULL
+
+statement ok
+DELETE FROM dm_dst
+
+# unknown の定数だけの SELECT（VALUES でなく SELECT）
+statement ok
+INSERT INTO dm_dst (v) SELECT 'lit'
+
+query T
+SELECT v FROM dm_dst
+----
+lit
+
+statement ok
+DELETE FROM dm_dst
+
+# 型の変換（代入キャスト: int → numeric(8,2)、numeric → int は不可）
+statement ok
+INSERT INTO dm_dst (n) SELECT id FROM dm_src WHERE id = 2
+
+query T
+SELECT n::text FROM dm_dst
+----
+2.00
+
+statement ok
+DELETE FROM dm_dst
+
+# numeric(8,2) への丸め
+statement ok
+INSERT INTO dm_dst (n) SELECT 1.005::numeric(8,3) + 0.001
+
+query T
+SELECT n::text FROM dm_dst
+----
+1.01
+
+statement ok
+DELETE FROM dm_dst
+
+# 範囲外は 22003
+statement error (22003)
+INSERT INTO dm_dst (n) SELECT 1000000
+
+statement error (42804)
+INSERT INTO dm_dst (id) SELECT v FROM dm_src
+
+statement error (22P02)
+INSERT INTO dm_dst (id) SELECT 'abc'
+
+# 列数の不一致
+statement error (42601)
+INSERT INTO dm_dst (id, g) SELECT id FROM dm_src
+
+statement error (42601)
+INSERT INTO dm_dst (id) SELECT id, g FROM dm_src
+
+# 存在しない列・表
+statement error (42703)
+INSERT INTO dm_dst (nosuch) SELECT 1
+
+statement error (42P01)
+INSERT INTO dm_nosuch SELECT 1
+
+# 途中でエラーになれば 1 行も入らない
+statement error (22012)
+INSERT INTO dm_dst (id) SELECT 10 / (id - 3) FROM dm_src ORDER BY id
+
+query I
+SELECT count(*) FROM dm_dst
+----
+0
+
+# NOT NULL・CHECK も効く
+statement ok
+CREATE TABLE dm_nn (id int NOT NULL, v int CHECK (v > 0))
+
+statement error (23502)
+INSERT INTO dm_nn SELECT NULL, 1
+
+statement error (23514)
+INSERT INTO dm_nn SELECT 1, 0
+
+statement ok
+INSERT INTO dm_nn SELECT 1, 1
+
+query II
+SELECT id, v FROM dm_nn
+----
+1 1
+
+# シーケンスと索引への DML は 42809
+statement ok
+CREATE SEQUENCE dm_seq
+
+statement ok
+CREATE INDEX dm_idx ON dm_src (id)
+
+statement error (42809)
+INSERT INTO dm_seq SELECT 1
+
+statement error (42809)
+INSERT INTO dm_seq VALUES (1, 2, true)
+
+statement error (42809)
+UPDATE dm_seq SET last_value = 1
+
+statement error (42809)
+DELETE FROM dm_seq
+
+statement error (42809)
+INSERT INTO dm_idx SELECT 1
+
+statement error (42809)
+UPDATE dm_idx SET id = 1
+
+statement error (42809)
+DELETE FROM dm_idx
+
+# 索引に対する SELECT の FROM は 42809（PostgreSQL は 42809 cannot open relation）
+statement error (42809)
+SELECT * FROM dm_idx
+
+# シーケンスの SELECT は動く
+query I
+SELECT count(*) FROM dm_seq
+----
+1
+
+statement ok
+DROP SEQUENCE dm_seq
+
+statement ok
+DROP TABLE dm_src, dm_src2, dm_dst, dm_nn

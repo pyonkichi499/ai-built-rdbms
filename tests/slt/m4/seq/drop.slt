@@ -1,0 +1,178 @@
+# DROP SEQUENCE
+
+statement ok
+CREATE SEQUENCE sq_dr_a
+
+statement ok
+CREATE SEQUENCE sq_dr_b
+
+statement ok
+CREATE SEQUENCE sq_dr_c
+
+# 存在しない
+statement error (?s)sequence "sq_dr_nope" does not exist
+DROP SEQUENCE sq_dr_nope
+
+statement error (42P01)
+DROP SEQUENCE sq_dr_nope
+
+statement ok
+DROP SEQUENCE IF EXISTS sq_dr_nope
+
+# 種類が違う
+statement ok
+CREATE TABLE sq_dr_t (a int PRIMARY KEY)
+
+statement error (?s)"sq_dr_t" is not a sequence.*HINT: Use DROP TABLE to remove a table\.
+DROP SEQUENCE sq_dr_t
+
+statement error (42809)
+DROP SEQUENCE sq_dr_t
+
+statement error (42809)
+DROP TABLE sq_dr_a
+
+statement error (42809)
+DROP SEQUENCE sq_dr_t_pkey
+
+# 複数対象
+statement ok
+DROP SEQUENCE sq_dr_a, sq_dr_b
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'sq\_dr\_%' AND relkind = 'S' ORDER BY relname
+----
+sq_dr_c
+
+statement error (42P01)
+SELECT nextval('sq_dr_a')
+
+statement ok
+DROP SEQUENCE IF EXISTS sq_dr_a, sq_dr_c
+
+# DEFAULT nextval を持つ表がある間は 2BP01（DETAIL は依存元の列挙）
+statement ok
+CREATE SEQUENCE sq_dr_d
+
+statement ok
+CREATE TABLE sq_dr_u1 (a int DEFAULT nextval('sq_dr_d'))
+
+statement ok
+CREATE TABLE sq_dr_u2 (b int DEFAULT nextval('sq_dr_d'))
+
+statement error (2BP01)
+DROP SEQUENCE sq_dr_d
+
+statement error (?s)cannot drop sequence sq_dr_d because other objects depend on it.*default value for column a of table sq_dr_u1 depends on sequence sq_dr_d\ndefault value for column b of table sq_dr_u2 depends on sequence sq_dr_d.*HINT: Use DROP \.\.\. CASCADE to drop the dependent objects too\.
+DROP SEQUENCE sq_dr_d
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'sq_dr_d'
+----
+sq_dr_d
+
+# CASCADE: 1 つの依存
+statement ok
+DROP TABLE sq_dr_u2
+
+statement ok
+DROP SEQUENCE sq_dr_d CASCADE
+
+query TT
+SELECT attname, atthasdef::text FROM pg_attribute WHERE attrelid = 'sq_dr_u1'::regclass AND attnum > 0
+----
+a false
+
+query I
+SELECT count(*) FROM pg_attrdef WHERE adrelid = 'sq_dr_u1'::regclass
+----
+0
+
+# CASCADE: 複数の依存
+statement ok
+CREATE SEQUENCE sq_dr_e
+
+statement ok
+ALTER TABLE sq_dr_u1 ADD UNIQUE (a)
+
+statement ok
+DROP TABLE sq_dr_u1
+
+statement ok
+CREATE TABLE sq_dr_u1 (a int DEFAULT nextval('sq_dr_e'))
+
+statement ok
+CREATE TABLE sq_dr_u2 (b int DEFAULT nextval('sq_dr_e'))
+
+statement ok
+CREATE TABLE sq_dr_u3 (c int DEFAULT nextval('sq_dr_e'))
+
+statement ok
+DROP SEQUENCE sq_dr_e CASCADE
+
+query I
+SELECT count(*) FROM pg_attrdef WHERE adrelid IN ('sq_dr_u1'::regclass, 'sq_dr_u2'::regclass, 'sq_dr_u3'::regclass)
+----
+0
+
+statement count 1
+INSERT INTO sq_dr_u1 VALUES (1)
+
+# 所有されたシーケンスは直接 DROP できる（所有の依存は自動）
+statement ok
+CREATE SEQUENCE sq_dr_o OWNED BY sq_dr_u1.a
+
+statement ok
+DROP SEQUENCE sq_dr_o
+
+query I
+SELECT count(*) FROM pg_depend WHERE refobjid = 'sq_dr_u1'::regclass AND classid = 'pg_class'::regclass
+----
+0
+
+# SERIAL のシーケンスも DROP SEQUENCE できる（既定値が依存するので CASCADE が要る）
+statement ok
+CREATE TABLE sq_dr_s (id serial)
+
+statement error (2BP01)
+DROP SEQUENCE sq_dr_s_id_seq
+
+statement ok
+DROP SEQUENCE sq_dr_s_id_seq CASCADE
+
+query T
+SELECT atthasdef::text FROM pg_attribute WHERE attrelid = 'sq_dr_s'::regclass AND attname = 'id'
+----
+false
+
+# IDENTITY のシーケンスは CASCADE でも 2BP01
+statement ok
+CREATE TABLE sq_dr_i (id int GENERATED ALWAYS AS IDENTITY)
+
+statement error (?s)cannot drop sequence sq_dr_i_id_seq because column id of table sq_dr_i requires it.*HINT: You can drop column id of table sq_dr_i instead\.
+DROP SEQUENCE sq_dr_i_id_seq
+
+statement error (2BP01)
+DROP SEQUENCE sq_dr_i_id_seq CASCADE
+
+statement ok
+DROP TABLE sq_dr_i
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'sq_dr_i_id_seq'
+----
+
+statement ok
+DROP TABLE sq_dr_t
+
+statement ok
+DROP TABLE sq_dr_u1
+
+statement ok
+DROP TABLE sq_dr_u2
+
+statement ok
+DROP TABLE sq_dr_u3
+
+statement ok
+DROP TABLE sq_dr_s

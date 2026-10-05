@@ -1,0 +1,229 @@
+# EXPLAIN ANALYZE: actual rows / loops、Rows Removed by Filter、never executed、DML が実際に書くこと
+# Sort / Hash / HashAggregate は PostgreSQL だけが Memory や Buckets の行を出すので、ここでは使わない
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_a_t (a int PRIMARY KEY, b int, c text)
+
+statement ok
+INSERT INTO ex_a_t SELECT g, g % 10, 'c' || g FROM generate_series(1, 100) g
+
+statement ok
+CREATE TABLE ex_a_u (a int, x text)
+
+statement ok
+INSERT INTO ex_a_u SELECT g % 50, 'x' || g FROM generate_series(1, 200) g
+
+statement ok
+CREATE INDEX ex_a_u_a_idx ON ex_a_u (a)
+
+statement ok
+ANALYZE ex_a_t
+
+statement ok
+ANALYZE ex_a_u
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t
+----
+Seq Scan on ex_a_t (actual rows=100 loops=1)
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE b > 5
+----
+Seq Scan on ex_a_t (actual rows=40 loops=1)
+  Filter: (b > 5)
+  Rows Removed by Filter: 60
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE b > 100
+----
+Seq Scan on ex_a_t (actual rows=0 loops=1)
+  Filter: (b > 100)
+  Rows Removed by Filter: 100
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE a = 5
+----
+Seq Scan on ex_a_t (actual rows=1 loops=1)
+  Filter: (a = 5)
+  Rows Removed by Filter: 99
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE b > 5 LIMIT 3
+----
+Limit (actual rows=3 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=3 loops=1)
+        Filter: (b > 5)
+        Rows Removed by Filter: 5
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM ex_a_t WHERE b = 1
+----
+Aggregate (actual rows=1 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=10 loops=1)
+        Filter: (b = 1)
+        Rows Removed by Filter: 90
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT 1 WHERE false
+----
+Result (actual rows=0 loops=1)
+  One-Time Filter: false
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) VALUES (1), (2), (3)
+----
+Values Scan on "*VALUES*" (actual rows=3 loops=1)
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT a FROM ex_a_t UNION ALL SELECT a FROM ex_a_u
+----
+Append (actual rows=300 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=100 loops=1)
+  ->  Seq Scan on ex_a_u (actual rows=200 loops=1)
+
+# ネステッドループの内側は loops が増える
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_mergejoin = off
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t, ex_a_u WHERE ex_a_t.b = 1 AND ex_a_t.a = ex_a_u.a
+----
+Nested Loop (actual rows=20 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=10 loops=1)
+        Filter: (b = 1)
+        Rows Removed by Filter: 90
+  ->  Index Scan using ex_a_u_a_idx on ex_a_u (actual rows=2 loops=10)
+        Index Cond: (a = ex_a_t.a)
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_mergejoin
+
+# 実行されない InitPlan
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE a < 0 AND b = (SELECT count(*) FROM ex_a_u)
+----
+Seq Scan on ex_a_t (actual rows=0 loops=1)
+  Filter: ((a < 0) AND (b = (InitPlan 1).col1))
+  Rows Removed by Filter: 100
+  InitPlan 1
+    ->  Aggregate (never executed)
+          ->  Seq Scan on ex_a_u (never executed)
+
+# 副問い合わせ
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT a, (SELECT count(*) FROM ex_a_u WHERE ex_a_u.a = ex_a_t.a) FROM ex_a_t WHERE a <= 3
+----
+Seq Scan on ex_a_t (actual rows=3 loops=1)
+  Filter: (a <= 3)
+  Rows Removed by Filter: 97
+  SubPlan 1
+    ->  Aggregate (actual rows=1 loops=3)
+          ->  Seq Scan on ex_a_u (actual rows=4 loops=3)
+                Filter: (a = ex_a_t.a)
+                Rows Removed by Filter: 196
+
+# DML は実際に書く
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) INSERT INTO ex_a_u SELECT a, c FROM ex_a_t WHERE b = 1
+----
+Insert on ex_a_u (actual rows=0 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=10 loops=1)
+        Filter: (b = 1)
+        Rows Removed by Filter: 90
+
+query I
+SELECT count(*) FROM ex_a_u
+----
+210
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) UPDATE ex_a_t SET b = 99 WHERE a <= 5
+----
+Update on ex_a_t (actual rows=0 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=5 loops=1)
+        Filter: (a <= 5)
+        Rows Removed by Filter: 95
+
+query I
+SELECT count(*) FROM ex_a_t WHERE b = 99
+----
+5
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) DELETE FROM ex_a_t WHERE b = 99
+----
+Delete on ex_a_t (actual rows=0 loops=1)
+  ->  Seq Scan on ex_a_t (actual rows=5 loops=1)
+        Filter: (b = 99)
+        Rows Removed by Filter: 95
+
+query I
+SELECT count(*) FROM ex_a_t
+----
+95
+
+# ROLLBACK で戻る
+statement ok
+BEGIN
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) DELETE FROM ex_a_u
+----
+Delete on ex_a_u (actual rows=0 loops=1)
+  ->  Seq Scan on ex_a_u (actual rows=210 loops=1)
+
+query I
+SELECT count(*) FROM ex_a_u
+----
+0
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM ex_a_u
+----
+210
+
+# ANALYZE を付けない EXPLAIN は実行しない
+query T
+EXPLAIN (COSTS OFF) DELETE FROM ex_a_u
+----
+Delete on ex_a_u
+  ->  Seq Scan on ex_a_u
+
+query I
+SELECT count(*) FROM ex_a_u
+----
+210
+
+# エラーは実行時に出る
+statement error (22012)
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT 1 / (a - a) FROM ex_a_t
+
+# 制約違反も実行時に出る
+statement error (23505)
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) INSERT INTO ex_a_t VALUES (10, 1, 'dup')
+
+statement ok
+DROP TABLE ex_a_t
+
+statement ok
+DROP TABLE ex_a_u
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

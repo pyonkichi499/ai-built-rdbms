@@ -1,0 +1,27 @@
+# フェーズ 1: ROLLBACK した CREATE SEQUENCE / CREATE TABLE（serial）のあと kill -9。
+
+statement ok
+BEGIN
+
+statement ok
+CREATE SEQUENCE m4r_sr_s
+
+query I
+SELECT nextval('m4r_sr_s')
+----
+1
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE m4r_sr_t (id serial, v int)
+
+statement count 2
+INSERT INTO m4r_sr_t (v) VALUES (1), (2)
+
+statement ok
+ROLLBACK

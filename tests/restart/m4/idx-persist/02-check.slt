@@ -1,0 +1,49 @@
+# フェーズ 2: 再起動後に、等値・範囲・一意性が保たれる。さらに更新する。
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM m4r_ip_t WHERE k = 7
+----
+30
+
+query I
+SELECT count(*) FROM m4r_ip_t WHERE id BETWEEN 100 AND 199
+----
+100
+
+query I
+SELECT id FROM m4r_ip_t WHERE s = 'key02500'
+----
+2500
+
+query I
+SELECT count(*) FROM m4r_ip_t WHERE s >= 'key02000' AND s < 'key02100'
+----
+100
+
+query I
+SELECT id FROM m4r_ip_t ORDER BY id DESC LIMIT 3
+----
+3000
+2999
+2998
+
+statement ok
+RESET enable_seqscan
+
+statement error (23505)
+INSERT INTO m4r_ip_t VALUES (1500, 0, 'new1')
+
+statement error (23505)
+INSERT INTO m4r_ip_t VALUES (3001, 0, 'key00001')
+
+statement count 1000
+UPDATE m4r_ip_t SET k = k + 1000 WHERE id <= 1000
+
+statement count 500
+DELETE FROM m4r_ip_t WHERE id > 2500
+
+statement count 100
+INSERT INTO m4r_ip_t SELECT g, 5000, 'new' || g FROM generate_series(2501, 2600) g

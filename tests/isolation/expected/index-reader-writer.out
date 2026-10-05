@@ -1,0 +1,63 @@
+Parsed test spec with 2 sessions
+
+starting permutation: r_set w_begin w_ins w_upd r_idx r_pk w_commit r_idx r_pk
+step r_set: SET enable_seqscan = off;
+step w_begin: BEGIN;
+step w_ins: INSERT INTO iso_ix SELECT g, g % 10 FROM generate_series(201, 3000) g;
+step w_upd: UPDATE iso_ix SET v = v + 100 WHERE id <= 50;
+step r_idx: SELECT count(*), sum(v) FROM iso_ix WHERE v BETWEEN 0 AND 9;
+count|sum
+-----+---
+  200|900
+(1 row)
+
+step r_pk: SELECT count(*) FROM iso_ix WHERE id BETWEEN 1 AND 3000;
+count
+-----
+  200
+(1 row)
+
+step w_commit: COMMIT;
+step r_idx: SELECT count(*), sum(v) FROM iso_ix WHERE v BETWEEN 0 AND 9;
+count|  sum
+-----+-----
+ 2950|13275
+(1 row)
+
+step r_pk: SELECT count(*) FROM iso_ix WHERE id BETWEEN 1 AND 3000;
+count
+-----
+ 3000
+(1 row)
+
+
+starting permutation: r_set w_begin w_ins w_upd r_idx r_pk w_rollback r_idx r_pk
+step r_set: SET enable_seqscan = off;
+step w_begin: BEGIN;
+step w_ins: INSERT INTO iso_ix SELECT g, g % 10 FROM generate_series(201, 3000) g;
+step w_upd: UPDATE iso_ix SET v = v + 100 WHERE id <= 50;
+step r_idx: SELECT count(*), sum(v) FROM iso_ix WHERE v BETWEEN 0 AND 9;
+count|sum
+-----+---
+  200|900
+(1 row)
+
+step r_pk: SELECT count(*) FROM iso_ix WHERE id BETWEEN 1 AND 3000;
+count
+-----
+  200
+(1 row)
+
+step w_rollback: ROLLBACK;
+step r_idx: SELECT count(*), sum(v) FROM iso_ix WHERE v BETWEEN 0 AND 9;
+count|sum
+-----+---
+  200|900
+(1 row)
+
+step r_pk: SELECT count(*) FROM iso_ix WHERE id BETWEEN 1 AND 3000;
+count
+-----
+  200
+(1 row)
+

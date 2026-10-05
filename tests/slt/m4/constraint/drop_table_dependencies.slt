@@ -1,0 +1,174 @@
+# DROP TABLE の依存: 2BP01 の DETAIL / HINT、複数対象、CASCADE の NOTICE と既定値の消失
+
+statement ok
+CREATE TABLE cst_dd_o1 (id serial PRIMARY KEY, v int UNIQUE)
+
+statement ok
+CREATE TABLE cst_dd_o2 (id int DEFAULT nextval('cst_dd_o1_id_seq'::regclass), x text)
+
+statement ok
+CREATE TABLE cst_dd_o3 (id int DEFAULT nextval('cst_dd_o1_id_seq'::regclass), y text)
+
+statement ok
+CREATE TABLE cst_dd_o4 (z int)
+
+# 他の表の既定値が、シーケンスを使っている
+statement error (2BP01)
+DROP TABLE cst_dd_o1
+
+statement error (?s)cannot drop table cst_dd_o1 because other objects depend on it.*DETAIL: default value for column id of table cst_dd_o2 depends on sequence cst_dd_o1_id_seq\ndefault value for column id of table cst_dd_o3 depends on sequence cst_dd_o1_id_seq.*HINT: Use DROP \.\.\. CASCADE to drop the dependent objects too\.
+DROP TABLE cst_dd_o1
+
+# 失敗した DROP は何も消さない
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cst\_dd\_o1%' ORDER BY relname
+----
+cst_dd_o1
+cst_dd_o1_id_seq
+cst_dd_o1_pkey
+cst_dd_o1_v_key
+
+# 複数の対象
+statement error (?s)cannot drop desired object\(s\) because other objects depend on them.*default value for column id of table cst_dd_o2 depends on sequence cst_dd_o1_id_seq
+DROP TABLE cst_dd_o1, cst_dd_o4
+
+statement error (2BP01)
+DROP TABLE cst_dd_o1, cst_dd_o4
+
+query T
+SELECT relname FROM pg_class WHERE relname = 'cst_dd_o4'
+----
+cst_dd_o4
+
+# 依存元も一緒に消すなら成功する（o3 だけが残るので o3 の分で失敗する）
+statement error (?s)default value for column id of table cst_dd_o3 depends on sequence cst_dd_o1_id_seq
+DROP TABLE cst_dd_o1, cst_dd_o2
+
+statement ok
+DROP TABLE cst_dd_o1, cst_dd_o2, cst_dd_o3
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cst\_dd\_o%' ORDER BY relname
+----
+cst_dd_o4
+
+# CASCADE: 既定値だけが消える（NOTICE）。表は残る
+statement ok
+CREATE TABLE cst_dd_o1 (id serial PRIMARY KEY, v int UNIQUE)
+
+statement ok
+CREATE TABLE cst_dd_o2 (id int DEFAULT nextval('cst_dd_o1_id_seq'::regclass), x text)
+
+statement ok
+DROP TABLE cst_dd_o1 CASCADE
+
+query TT
+SELECT attname, atthasdef::text FROM pg_attribute WHERE attrelid = 'cst_dd_o2'::regclass AND attnum > 0 ORDER BY attnum
+----
+id false
+x false
+
+query I
+SELECT count(*) FROM pg_attrdef WHERE adrelid = 'cst_dd_o2'::regclass
+----
+0
+
+statement ok
+INSERT INTO cst_dd_o2 (x) VALUES ('after cascade')
+
+query IT
+SELECT id, x FROM cst_dd_o2
+----
+NULL after cascade
+
+# 2 つ以上の連鎖
+statement ok
+CREATE TABLE cst_dd_o1 (id serial PRIMARY KEY)
+
+statement ok
+DROP TABLE cst_dd_o2
+
+statement ok
+CREATE TABLE cst_dd_o2 (id int DEFAULT nextval('cst_dd_o1_id_seq'::regclass))
+
+statement ok
+CREATE TABLE cst_dd_o3 (id int DEFAULT nextval('cst_dd_o1_id_seq'::regclass))
+
+statement ok
+DROP TABLE cst_dd_o1 CASCADE
+
+query I
+SELECT count(*) FROM pg_attrdef WHERE adrelid IN ('cst_dd_o2'::regclass, 'cst_dd_o3'::regclass)
+----
+0
+
+# 所有するシーケンス・索引・制約・自分の既定値は静かに一緒に消える
+statement ok
+CREATE TABLE cst_dd_p (id serial PRIMARY KEY, a int UNIQUE, b int DEFAULT 5, CONSTRAINT cst_dd_p_chk CHECK (b > 0))
+
+statement ok
+CREATE INDEX cst_dd_p_idx ON cst_dd_p (b)
+
+statement ok
+DROP TABLE cst_dd_p
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cst\_dd\_p%'
+----
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conname LIKE 'cst\_dd\_p%'
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d JOIN pg_class c ON d.objid = c.oid WHERE c.relname LIKE 'cst\_dd\_p%'
+----
+0
+
+# 存在しない・種類が違う対象
+statement error (?s)table "cst_dd_nosuch" does not exist
+DROP TABLE cst_dd_nosuch
+
+statement error (42P01)
+DROP TABLE cst_dd_nosuch
+
+statement ok
+DROP TABLE IF EXISTS cst_dd_nosuch
+
+statement ok
+CREATE TABLE cst_dd_q (id int PRIMARY KEY)
+
+statement error (42809)
+DROP TABLE cst_dd_q_pkey
+
+statement error (?s)"cst_dd_q_pkey" is not a table.*HINT: Use DROP INDEX to remove an index\.
+DROP TABLE cst_dd_q_pkey
+
+statement ok
+CREATE SEQUENCE cst_dd_s
+
+statement error (42809)
+DROP TABLE cst_dd_s
+
+statement error (?s)"cst_dd_s" is not a table.*HINT: Use DROP SEQUENCE to remove a sequence\.
+DROP TABLE cst_dd_s
+
+statement ok
+DROP SEQUENCE cst_dd_s
+
+# システムカタログ
+statement error (42501)
+DROP TABLE pg_class
+
+statement ok
+DROP TABLE cst_dd_q
+
+statement ok
+DROP TABLE cst_dd_o2
+
+statement ok
+DROP TABLE cst_dd_o3
+
+statement ok
+DROP TABLE cst_dd_o4

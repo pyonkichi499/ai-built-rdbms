@@ -1,0 +1,121 @@
+# 一意索引の構築（ADD PRIMARY KEY / UNIQUE、CREATE UNIQUE INDEX）は、死んだ版を重複と誤判定しない
+
+statement ok
+CREATE TABLE cst_bv_a (a int, b text)
+
+statement count 3
+INSERT INTO cst_bv_a VALUES (1, 'v1'), (2, 'v1'), (3, 'v1')
+
+# 削除した行と同じキーの行
+statement count 1
+DELETE FROM cst_bv_a WHERE a = 1
+
+statement count 1
+INSERT INTO cst_bv_a VALUES (1, 'v2')
+
+# UPDATE で作られる古い版（キーは同じ）
+statement count 1
+UPDATE cst_bv_a SET b = 'v2' WHERE a = 2
+
+statement count 1
+UPDATE cst_bv_a SET b = 'v3' WHERE a = 2
+
+# 同じトランザクションの UPDATE 2 回（同じ行の版が 3 つ、うち 2 つが死んでいる）
+statement ok
+BEGIN
+
+statement count 1
+UPDATE cst_bv_a SET b = 'w1' WHERE a = 3
+
+statement count 1
+UPDATE cst_bv_a SET b = 'w2' WHERE a = 3
+
+statement ok
+COMMIT
+
+# ROLLBACK した INSERT と、ROLLBACK した UPDATE の版
+statement ok
+BEGIN
+
+statement count 1
+INSERT INTO cst_bv_a VALUES (3, 'aborted')
+
+statement count 1
+INSERT INTO cst_bv_a VALUES (4, 'aborted')
+
+statement count 1
+UPDATE cst_bv_a SET b = 'aborted' WHERE a = 1
+
+statement ok
+ROLLBACK
+
+# キーが同じ複数の版があっても構築できる
+statement ok
+ALTER TABLE cst_bv_a ADD PRIMARY KEY (a)
+
+query IT
+SELECT a, b FROM cst_bv_a ORDER BY a
+----
+1 v2
+2 v3
+3 w2
+
+statement error (23505)
+INSERT INTO cst_bv_a VALUES (3, 'dup')
+
+statement error (23505)
+INSERT INTO cst_bv_a VALUES (4, 'x'), (4, 'y')
+
+statement ok
+DROP TABLE cst_bv_a
+
+# CREATE UNIQUE INDEX でも同じ
+statement ok
+CREATE TABLE cst_bv_u (a int, b int)
+
+statement count 2
+INSERT INTO cst_bv_u VALUES (1, 1), (1, 2)
+
+statement count 1
+DELETE FROM cst_bv_u WHERE b = 1
+
+statement count 1
+UPDATE cst_bv_u SET b = 10 WHERE b = 2
+
+statement ok
+CREATE UNIQUE INDEX cst_bv_u_a ON cst_bv_u (a)
+
+# 生きている版の重複は失敗する
+statement ok
+DROP INDEX cst_bv_u_a
+
+statement count 1
+INSERT INTO cst_bv_u VALUES (1, 3)
+
+statement error (23505)
+CREATE UNIQUE INDEX cst_bv_u_a ON cst_bv_u (a)
+
+statement error (?s)could not create unique index "cst_bv_u_a".*Key \(a\)=\(1\) is duplicated\.
+CREATE UNIQUE INDEX cst_bv_u_a ON cst_bv_u (a)
+
+# 失敗した構築の後に、索引は残らない。重複を直せば作れる
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'cst_bv_u_a'
+----
+0
+
+statement count 1
+DELETE FROM cst_bv_u WHERE b = 3
+
+statement ok
+CREATE UNIQUE INDEX cst_bv_u_a ON cst_bv_u (a)
+
+# 重複する版が UPDATE で作られた場合（同じ文で 2 つの行を同じキーにする）は失敗する
+statement count 1
+INSERT INTO cst_bv_u VALUES (2, 20)
+
+statement error (23505)
+UPDATE cst_bv_u SET a = 2 WHERE b = 10
+
+statement ok
+DROP TABLE cst_bv_u

@@ -1,0 +1,19 @@
+# フェーズ 2: s も t も t_id_seq もない。CREATE SEQUENCE をコミットして nextval、kill -9。
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'm4r\_sr\_%'
+----
+
+statement error (42P01)
+SELECT nextval('m4r_sr_s')
+
+statement error (42P01)
+SELECT nextval('m4r_sr_t_id_seq')
+
+statement ok
+CREATE SEQUENCE m4r_sr_s
+
+query I
+SELECT nextval('m4r_sr_s')
+----
+1

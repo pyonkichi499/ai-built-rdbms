@@ -1,0 +1,272 @@
+# EXPLAIN (COSTS OFF) のノードごとの出力: インデックススキャン・結合・集約・集合演算・DML
+# 表は spec/design/m4/10 §3.11 と同じ形。PostgreSQL では enable_* で形をそろえる（目的は書式の一致）
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_n_t (a int PRIMARY KEY, b int, c text)
+
+statement ok
+INSERT INTO ex_n_t SELECT g, g % 10, 'c' || (g % 7) FROM generate_series(1, 1000) g
+
+statement ok
+CREATE TABLE ex_n_u (a int, x text)
+
+statement ok
+INSERT INTO ex_n_u SELECT g % 500, 'x' || (g % 13) FROM generate_series(1, 2000) g
+
+statement ok
+CREATE INDEX ex_n_u_a_idx ON ex_n_u (a)
+
+statement ok
+CREATE TABLE ex_n_u2 (b int)
+
+statement ok
+INSERT INTO ex_n_u2 SELECT g FROM generate_series(1, 50) g
+
+statement ok
+ANALYZE ex_n_t
+
+statement ok
+ANALYZE ex_n_u
+
+statement ok
+ANALYZE ex_n_u2
+
+# --- インデックススキャン（seqscan を避ける）---
+statement ok
+SET enable_seqscan = off
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u WHERE a = 3 AND x = 'y'
+----
+Index Scan using ex_n_u_a_idx on ex_n_u
+  Index Cond: (a = 3)
+  Filter: (x = 'y'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u WHERE a BETWEEN 3 AND 5
+----
+Index Scan using ex_n_u_a_idx on ex_n_u
+  Index Cond: ((a >= 3) AND (a <= 5))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u WHERE a > 3 AND a < 5 AND x = 'q'
+----
+Index Scan using ex_n_u_a_idx on ex_n_u
+  Index Cond: ((a > 3) AND (a < 5))
+  Filter: (x = 'q'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u WHERE a IS NULL
+----
+Index Scan using ex_n_u_a_idx on ex_n_u
+  Index Cond: (a IS NULL)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u ORDER BY a DESC
+----
+Index Scan Backward using ex_n_u_a_idx on ex_n_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t WHERE a > 3 ORDER BY a LIMIT 5 OFFSET 2
+----
+Limit
+  ->  Index Scan using ex_n_t_pkey on ex_n_t
+        Index Cond: (a > 3)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t WHERE a = 5
+----
+Index Scan using ex_n_t_pkey on ex_n_t
+  Index Cond: (a = 5)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT * FROM ex_n_u WHERE a = 3 AND x = 'y'
+----
+Index Scan using ex_n_u_a_idx on public.ex_n_u
+  Output: a, x
+  Index Cond: (ex_n_u.a = 3)
+  Filter: (ex_n_u.x = 'y'::text)
+
+statement ok
+RESET enable_seqscan
+
+# --- 結合 ---
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_indexscan = off
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t LEFT JOIN ex_n_u ON ex_n_t.a = ex_n_u.a AND ex_n_u.x > 'a'
+----
+Nested Loop Left Join
+  Join Filter: (ex_n_t.a = ex_n_u.a)
+  ->  Seq Scan on ex_n_t
+  ->  Materialize
+        ->  Seq Scan on ex_n_u
+              Filter: (x > 'a'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t, ex_n_u2
+----
+Nested Loop
+  ->  Seq Scan on ex_n_t
+  ->  Materialize
+        ->  Seq Scan on ex_n_u2
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_indexscan
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t, ex_n_u WHERE ex_n_t.a = ex_n_u.a AND ex_n_t.b > 5 ORDER BY ex_n_t.a
+----
+Sort
+  Sort Key: ex_n_t.a
+  ->  Hash Join
+        Hash Cond: (ex_n_u.a = ex_n_t.a)
+        ->  Seq Scan on ex_n_u
+        ->  Hash
+              ->  Seq Scan on ex_n_t
+                    Filter: (b > 5)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t RIGHT JOIN ex_n_u ON ex_n_t.a = ex_n_u.a
+----
+Hash Left Join
+  Hash Cond: (ex_n_u.a = ex_n_t.a)
+  ->  Seq Scan on ex_n_u
+  ->  Hash
+        ->  Seq Scan on ex_n_t
+
+# --- 集約・DISTINCT・ソート ---
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT count(*), sum(a), avg(b)::int FROM ex_n_t
+----
+Aggregate
+  Output: count(*), sum(a), (avg(b))::integer
+  ->  Seq Scan on public.ex_n_t
+        Output: a, b, c
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT b, count(*) FROM ex_n_t GROUP BY b ORDER BY b
+----
+Sort
+  Output: b, (count(*))
+  Sort Key: ex_n_t.b
+  ->  HashAggregate
+        Output: b, count(*)
+        Group Key: ex_n_t.b
+        ->  Seq Scan on public.ex_n_t
+              Output: a, b, c
+
+statement ok
+SET enable_hashagg = off
+
+query T
+EXPLAIN (COSTS OFF) SELECT b, count(*) FROM ex_n_t GROUP BY b
+----
+GroupAggregate
+  Group Key: b
+  ->  Sort
+        Sort Key: b
+        ->  Seq Scan on ex_n_t
+
+statement ok
+RESET enable_hashagg
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT ex_n_t.a, ex_n_t.b + 1 AS x FROM ex_n_u2 JOIN ex_n_t ON ex_n_u2.b = ex_n_t.a ORDER BY x
+----
+Sort
+  Output: ex_n_t.a, ((ex_n_t.b + 1))
+  Sort Key: ((ex_n_t.b + 1))
+  ->  Hash Join
+        Output: ex_n_t.a, (ex_n_t.b + 1)
+        Hash Cond: (ex_n_t.a = ex_n_u2.b)
+        ->  Seq Scan on public.ex_n_t
+              Output: ex_n_t.a, ex_n_t.b, ex_n_t.c
+        ->  Hash
+              Output: ex_n_u2.b
+              ->  Seq Scan on public.ex_n_u2
+                    Output: ex_n_u2.b
+
+# --- 集合演算 ---
+query T
+EXPLAIN (COSTS OFF) SELECT a FROM ex_n_t EXCEPT ALL SELECT a FROM ex_n_u
+----
+HashSetOp Except All
+  ->  Append
+        ->  Subquery Scan on "*SELECT* 1"
+              ->  Seq Scan on ex_n_t
+        ->  Subquery Scan on "*SELECT* 2"
+              ->  Seq Scan on ex_n_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT a FROM ex_n_t UNION SELECT a FROM ex_n_u
+----
+HashAggregate
+  Group Key: ex_n_t.a
+  ->  Append
+        ->  Seq Scan on ex_n_t
+        ->  Seq Scan on ex_n_u
+
+# --- DML ---
+query T
+EXPLAIN (COSTS OFF) INSERT INTO ex_n_u VALUES (1, 'a')
+----
+Insert on ex_n_u
+  ->  Result
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) INSERT INTO ex_n_u VALUES (1, 'a'), (2, 'b')
+----
+Insert on public.ex_n_u
+  ->  Values Scan on "*VALUES*"
+        Output: "*VALUES*".column1, "*VALUES*".column2
+
+query T
+EXPLAIN (COSTS OFF) INSERT INTO ex_n_u SELECT a, c FROM ex_n_t WHERE b = 1
+----
+Insert on ex_n_u
+  ->  Seq Scan on ex_n_t
+        Filter: (b = 1)
+
+query T
+EXPLAIN (COSTS OFF) UPDATE ex_n_t SET b = b + 1 WHERE a = 5
+----
+Update on ex_n_t
+  ->  Index Scan using ex_n_t_pkey on ex_n_t
+        Index Cond: (a = 5)
+
+query T
+EXPLAIN (COSTS OFF) DELETE FROM ex_n_t USING ex_n_u2 WHERE ex_n_t.a = ex_n_u2.b
+----
+Delete on ex_n_t
+  ->  Hash Join
+        Hash Cond: (ex_n_t.a = ex_n_u2.b)
+        ->  Seq Scan on ex_n_t
+        ->  Hash
+              ->  Seq Scan on ex_n_u2
+
+statement ok
+DROP TABLE ex_n_t
+
+statement ok
+DROP TABLE ex_n_u
+
+statement ok
+DROP TABLE ex_n_u2
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

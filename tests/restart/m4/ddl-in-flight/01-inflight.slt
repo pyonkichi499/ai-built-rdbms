@@ -1,0 +1,29 @@
+# フェーズ 1: 大きな表に対する未コミットの CREATE INDEX と ALTER TABLE ADD PRIMARY KEY を残して終わる。
+
+statement ok
+CREATE TABLE m4r_df_a (id int, k int, pad text)
+
+statement ok
+CREATE TABLE m4r_df_b (id int, k int, pad text)
+
+statement count 20000
+INSERT INTO m4r_df_a SELECT g, g % 100, repeat('x', 50) FROM generate_series(1, 20000) g
+
+statement count 20000
+INSERT INTO m4r_df_b SELECT g, g % 100, repeat('x', 50) FROM generate_series(1, 20000) g
+
+connection other
+statement ok
+BEGIN
+
+connection other
+statement ok
+CREATE INDEX m4r_df_a_k ON m4r_df_a (k)
+
+connection other
+statement ok
+ALTER TABLE m4r_df_b ADD PRIMARY KEY (id)
+
+connection other
+statement ok
+CREATE TABLE m4r_df_c (id int PRIMARY KEY)

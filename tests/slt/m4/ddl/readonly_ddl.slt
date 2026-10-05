@@ -1,0 +1,115 @@
+# BEGIN READ ONLY の中の DDL は 25006。VACUUM と ANALYZE は成功する
+
+statement ok
+CREATE TABLE ddl_rd_t (a int PRIMARY KEY, b int)
+
+statement ok
+CREATE INDEX ddl_rd_i ON ddl_rd_t (b)
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute CREATE TABLE in a read-only transaction
+CREATE TABLE ddl_rd_n (a int)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute DROP TABLE in a read-only transaction
+DROP TABLE ddl_rd_t
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute CREATE INDEX in a read-only transaction
+CREATE INDEX ddl_rd_i2 ON ddl_rd_t (a, b)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute DROP INDEX in a read-only transaction
+DROP INDEX ddl_rd_i
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute ALTER TABLE in a read-only transaction
+ALTER TABLE ddl_rd_t ADD UNIQUE (b)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute TRUNCATE TABLE in a read-only transaction
+TRUNCATE ddl_rd_t
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+CREATE SEQUENCE ddl_rd_s
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+ALTER TABLE ddl_rd_t OWNER TO postgres
+
+statement ok
+ROLLBACK
+
+# VACUUM と ANALYZE は読み取り専用でも成功する（PostgreSQL は VACUUM を BEGIN の外で、ANALYZE はブロック内で許す）
+statement ok
+SET default_transaction_read_only = on
+
+statement ok
+VACUUM ddl_rd_t
+
+statement ok
+ANALYZE ddl_rd_t
+
+statement error (25006)
+CREATE TABLE ddl_rd_n (a int)
+
+statement ok
+RESET default_transaction_read_only
+
+statement ok
+BEGIN READ ONLY
+
+statement ok
+ANALYZE ddl_rd_t
+
+statement ok
+COMMIT
+
+# 何も作られていない
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'ddl\_rd\_%' ORDER BY relname
+----
+ddl_rd_i
+ddl_rd_t
+ddl_rd_t_pkey
+
+statement ok
+DROP TABLE ddl_rd_t

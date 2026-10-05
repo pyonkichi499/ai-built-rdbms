@@ -1,0 +1,139 @@
+# IN / NOT IN / ANY / ALL / EXISTS の三値論理と空集合、列数と型のエラー
+
+statement ok
+CREATE TABLE sb_t (a int, b int, c text)
+
+statement ok
+CREATE TABLE sb_u (a int, e int, c text)
+
+statement ok
+INSERT INTO sb_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, NULL, 'z'), (NULL, 40, 'n')
+
+statement ok
+INSERT INTO sb_u VALUES (1, 100, 'x'), (3, 300, 'q'), (NULL, 400, 'w')
+
+# 一致があれば true、なくて集合に NULL があれば NULL、なければ false
+query I
+SELECT a FROM sb_t WHERE a IN (SELECT a FROM sb_u) ORDER BY a
+----
+1
+3
+
+query I
+SELECT a FROM sb_t WHERE a NOT IN (SELECT a FROM sb_u) ORDER BY a
+----
+
+# NOT IN の集合に NULL がなければ（WHERE で NULL を除く）
+query I
+SELECT a FROM sb_t WHERE a NOT IN (SELECT a FROM sb_u WHERE a IS NOT NULL) ORDER BY a
+----
+2
+
+# 式の値として（NULL が見える）
+query I? rowsort
+SELECT a, a IN (SELECT a FROM sb_u) FROM sb_t
+----
+1 t
+2 NULL
+3 t
+NULL NULL
+
+# 空集合: IN は false、NOT IN は true、ANY は false、ALL は true。左辺が NULL でも
+query ????
+SELECT NULL IN (SELECT 1 WHERE false), NULL NOT IN (SELECT 1 WHERE false),
+       NULL = ANY (SELECT 1 WHERE false), NULL = ALL (SELECT 1 WHERE false)
+----
+f t f t
+
+# 左辺が NULL で集合が空でなければ NULL
+query ??
+SELECT NULL IN (SELECT 1), NULL NOT IN (SELECT 1)
+----
+NULL NULL
+
+# ALL / ANY の比較
+query I
+SELECT a FROM sb_t WHERE a < ALL (SELECT a FROM sb_u WHERE a IS NOT NULL) ORDER BY a
+----
+
+query I
+SELECT a FROM sb_t WHERE a <= ANY (SELECT a FROM sb_u WHERE a IS NOT NULL) ORDER BY a
+----
+1
+2
+3
+
+query I
+SELECT a FROM sb_t WHERE a <> ALL (SELECT a FROM sb_u WHERE a IS NOT NULL) ORDER BY a
+----
+2
+
+# EXISTS は NULL を返さない。相関と非相関
+query I
+SELECT a FROM sb_t WHERE EXISTS (SELECT 1 FROM sb_u WHERE sb_u.a = sb_t.a) ORDER BY a
+----
+1
+3
+
+query I
+SELECT a FROM sb_t WHERE NOT EXISTS (SELECT 1 FROM sb_u WHERE sb_u.a = sb_t.a) ORDER BY a
+----
+2
+NULL
+
+query ?
+SELECT EXISTS (SELECT 1 WHERE false)
+----
+f
+
+# 列のない EXISTS の対象
+query I
+SELECT count(*) FROM sb_t WHERE EXISTS (SELECT)
+----
+4
+
+# スカラー副問い合わせ: 0 行は NULL、2 行以上は 21000
+query II
+SELECT a, (SELECT e FROM sb_u WHERE sb_u.a = sb_t.a) FROM sb_t ORDER BY a
+----
+1 100
+2 NULL
+3 300
+NULL NULL
+
+statement error (21000)
+SELECT (SELECT a FROM sb_u)
+
+query ?
+SELECT (SELECT a FROM sb_u WHERE false) IS NULL
+----
+t
+
+# 行値の IN
+query I
+SELECT a FROM sb_t WHERE (a, c) IN (SELECT a, c FROM sb_u) ORDER BY a
+----
+1
+
+# エラー: 列数
+statement error subquery must return only one column
+SELECT (SELECT a, e FROM sb_u)
+
+statement error subquery has too many columns
+SELECT a FROM sb_t WHERE a IN (SELECT a, e FROM sb_u)
+
+statement error subquery has too few columns
+SELECT a FROM sb_t WHERE (a, c) IN (SELECT a FROM sb_u)
+
+# エラー: 型（副問い合わせの出力の unknown は text に解決される）
+statement error operator does not exist: integer = text
+SELECT a FROM sb_t WHERE a = ANY (SELECT c FROM sb_u)
+
+statement error operator does not exist: integer = text
+SELECT 1 IN (SELECT NULL)
+
+statement error invalid input syntax for type integer: "a"
+SELECT 'a' IN (SELECT 1)
+
+statement ok
+DROP TABLE sb_t, sb_u

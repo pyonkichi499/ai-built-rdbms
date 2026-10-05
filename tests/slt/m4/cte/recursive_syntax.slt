@@ -1,0 +1,130 @@
+# WITH RECURSIVE: 再帰しない CTE は通る。再帰とデータ変更 CTE は PostgreSQL だけ（yuzhu は 0A000。KD-4）
+
+statement ok
+CREATE TABLE ct_r (id int, parent int, name text)
+
+statement ok
+INSERT INTO ct_r VALUES (1, NULL, 'root'), (2, 1, 'a'), (3, 1, 'b'), (4, 2, 'c')
+
+# RECURSIVE を付けても、自分自身を参照しなければ通常の CTE
+query I
+WITH RECURSIVE s AS (SELECT id FROM ct_r WHERE id < 3) SELECT count(*) FROM s
+----
+2
+
+query IT
+WITH RECURSIVE s AS (SELECT id, name FROM ct_r), t AS (SELECT id FROM s WHERE id > 2) SELECT t.id, s.name FROM t JOIN s ON s.id = t.id ORDER BY 1
+----
+3 b
+4 c
+
+query I
+WITH RECURSIVE s(x) AS (VALUES (1), (2)) SELECT sum(x) FROM s
+----
+3
+
+# 再帰（PostgreSQL だけ）
+# KNOWN-DIFF: KD-4 再帰 CTE は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query I
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5) SELECT sum(i) FROM n
+----
+15
+
+# KNOWN-DIFF: KD-4 再帰 CTE は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5) SELECT sum(i) FROM n
+
+# KNOWN-DIFF: KD-4 再帰 CTE（表の木たどり）は yuzhu で 0A000
+skipif yuzhu
+query IT
+WITH RECURSIVE tree AS (
+  SELECT id, name, 0 AS depth FROM ct_r WHERE parent IS NULL
+  UNION ALL
+  SELECT c.id, c.name, tree.depth + 1 FROM ct_r c JOIN tree ON c.parent = tree.id
+)
+SELECT id, depth::text FROM tree ORDER BY id
+----
+1 0
+2 1
+3 1
+4 2
+
+# KNOWN-DIFF: KD-4 再帰 CTE（表の木たどり）は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH RECURSIVE tree AS (
+  SELECT id, name, 0 AS depth FROM ct_r WHERE parent IS NULL
+  UNION ALL
+  SELECT c.id, c.name, tree.depth + 1 FROM ct_r c JOIN tree ON c.parent = tree.id
+)
+SELECT id, depth::text FROM tree ORDER BY id
+
+# RECURSIVE なしで自分自身を参照すると、PostgreSQL は 42P01（yuzhu も同じ）
+statement error (42P01)
+WITH n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5) SELECT sum(i) FROM n
+
+# データ変更 CTE（PostgreSQL だけ）
+# KNOWN-DIFF: KD-4 データ変更 CTE は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query I
+WITH ins AS (INSERT INTO ct_r VALUES (10, 1, 'new') RETURNING id) SELECT id FROM ins
+----
+10
+
+# KNOWN-DIFF: KD-4 データ変更 CTE は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH ins AS (INSERT INTO ct_r VALUES (10, 1, 'new') RETURNING id) SELECT id FROM ins
+
+# KNOWN-DIFF: KD-4 データ変更 CTE（UPDATE / DELETE）は yuzhu で 0A000
+skipif yuzhu
+query I
+WITH d AS (DELETE FROM ct_r WHERE id = 10 RETURNING id) SELECT id FROM d
+----
+10
+
+# KNOWN-DIFF: KD-4 データ変更 CTE（UPDATE / DELETE）は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH d AS (DELETE FROM ct_r WHERE id = 10 RETURNING id) SELECT id FROM d
+
+# KNOWN-DIFF: KD-4 WITH ... INSERT は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+statement ok
+WITH s AS (SELECT 20 AS id) INSERT INTO ct_r (id, name) SELECT id, 'w' FROM s
+
+# KNOWN-DIFF: KD-4 WITH ... INSERT は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH s AS (SELECT 20 AS id) INSERT INTO ct_r (id, name) SELECT id, 'w' FROM s
+
+# KNOWN-DIFF: KD-4 WITH ... UPDATE は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+statement ok
+WITH s AS (SELECT 20 AS id) UPDATE ct_r SET name = 'w2' WHERE id IN (SELECT id FROM s)
+
+# KNOWN-DIFF: KD-4 WITH ... UPDATE は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH s AS (SELECT 20 AS id) UPDATE ct_r SET name = 'w2' WHERE id IN (SELECT id FROM s)
+
+# KNOWN-DIFF: KD-4 WITH ... DELETE は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+statement ok
+WITH s AS (SELECT 20 AS id) DELETE FROM ct_r WHERE id IN (SELECT id FROM s)
+
+# KNOWN-DIFF: KD-4 WITH ... DELETE は yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+WITH s AS (SELECT 20 AS id) DELETE FROM ct_r WHERE id IN (SELECT id FROM s)
+
+# 変更の結果（PostgreSQL では上の変更が入っているが、最後に元の 4 行に戻っている）
+query I
+SELECT count(*) FROM ct_r
+----
+4
+
+statement ok
+DROP TABLE ct_r

@@ -1,0 +1,18 @@
+# psql 17 の \l が送る SQL（17 の列構成）。組み込みの 3 つのデータベースだけに絞る
+
+query TTTTTTTTT
+SELECT
+  d.datname as "Name",
+  pg_catalog.pg_get_userbyid(d.datdba) as "Owner",
+  pg_catalog.pg_encoding_to_char(d.encoding) as "Encoding",
+  CASE d.datlocprovider WHEN 'b' THEN 'builtin' WHEN 'c' THEN 'libc' WHEN 'i' THEN 'icu' END AS "Locale Provider",
+  d.datcollate as "Collate",
+  d.datctype as "Ctype",
+  d.datlocale as "Locale",
+  d.daticurules as "ICU Rules",
+  CASE WHEN pg_catalog.array_length(d.datacl, 1) = 0 THEN '(none)' ELSE pg_catalog.array_to_string(d.datacl, E'\n') END AS "Access privileges"
+FROM pg_catalog.pg_database d
+WHERE d.datname = 'postgres'
+ORDER BY 1
+----
+postgres postgres UTF8 libc C C NULL NULL NULL

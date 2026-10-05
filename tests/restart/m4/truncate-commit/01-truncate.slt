@@ -1,0 +1,19 @@
+# フェーズ 1: 索引つきの表の TRUNCATE を COMMIT する。
+
+statement ok
+CREATE TABLE m4r_tc_t (id int PRIMARY KEY, k int UNIQUE, v int)
+
+statement ok
+CREATE INDEX m4r_tc_v ON m4r_tc_t (v)
+
+statement count 5
+INSERT INTO m4r_tc_t SELECT g, g * 10, g % 3 FROM generate_series(1, 5) g
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE m4r_tc_t
+
+statement ok
+COMMIT

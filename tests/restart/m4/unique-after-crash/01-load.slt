@@ -1,0 +1,25 @@
+# フェーズ 1: PRIMARY KEY・UNIQUE つきの表に多数の INSERT / UPDATE / DELETE をコミットする。
+
+statement ok
+CREATE TABLE m4r_ua_t (id int PRIMARY KEY, u int UNIQUE, v int)
+
+statement count 10000
+INSERT INTO m4r_ua_t SELECT g, g, g % 7 FROM generate_series(1, 10000) g
+
+statement count 3000
+UPDATE m4r_ua_t SET u = u + 50000 WHERE id <= 3000
+
+statement count 2000
+DELETE FROM m4r_ua_t WHERE id > 8000
+
+statement count 500
+INSERT INTO m4r_ua_t SELECT g, g + 10000, 1 FROM generate_series(8001, 8500) g
+
+statement ok
+BEGIN
+
+statement count 100
+UPDATE m4r_ua_t SET v = 99 WHERE id BETWEEN 5000 AND 5099
+
+statement ok
+COMMIT

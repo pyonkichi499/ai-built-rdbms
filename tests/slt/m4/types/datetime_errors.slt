@@ -1,0 +1,132 @@
+# 日時の入力エラー: 22007（形式）、22008（範囲）、22009（オフセット）、22023（ゾーン名）
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement error (22007)
+SELECT 'garbage'::timestamp
+
+statement error (22007)
+SELECT 'garbage'::date
+
+statement error (22007)
+SELECT 'garbage'::timestamptz
+
+statement error (22007)
+SELECT ''::date
+
+statement error (22007)
+SELECT '2024-03'::date
+
+statement error (22007)
+SELECT '2024-03-15 25'::timestamp
+
+statement error (22007)
+SELECT '2024-03-15 12:34:56 extra'::timestamp
+
+statement error (22007)
+SELECT '12:34:56'::timestamp
+
+statement error (22007)
+SELECT 'tomorrow 3'::date
+
+# 月と日の範囲（22008）。MDY で 13 月は HINT で DateStyle を促す
+statement error (22008)
+SELECT '2024-13-01'::date
+
+statement error (22008)
+SELECT '13/01/2024'::date
+
+statement error (22008)
+SELECT '2024-02-30'::date
+
+statement error (22008)
+SELECT '2023-02-29'::date
+
+statement error (22008)
+SELECT '2024-00-10'::date
+
+statement error (22008)
+SELECT '2024-03-15 24:00:01'::timestamp
+
+statement error (22008)
+SELECT '2024-03-15 12:60:00'::timestamp
+
+statement error (22008)
+SELECT '2024-03-15 12:00:61'::timestamp
+
+# 範囲外の年
+statement error (22008)
+SELECT '5874898-01-01'::date
+
+statement error (22008)
+SELECT '4714-11-23 BC'::date
+
+statement error (22008)
+SELECT '294277-01-01 00:00:00'::timestamp
+
+statement error (22008)
+SELECT '4714-01-01 00:00:00 BC'::timestamp
+
+statement error (22008)
+SELECT '294277-01-01 00:00:00+00'::timestamptz
+
+statement error (22008)
+SELECT '2024-03-15'::date - 2147483647 - 2147483647
+
+# オフセットの範囲（22009）
+statement error (22009)
+SELECT '2024-03-15 12:00:00+16'::timestamptz
+
+statement error (22009)
+SELECT '2024-03-15 12:00:00-16'::timestamp
+
+statement error (22009)
+SELECT '2024-03-15 12:00:00+99:00'::timestamptz
+
+# 未知のゾーン名
+statement error (22023)
+SELECT '2024-03-15 12:00:00 Foo/Bar'::timestamptz
+
+statement error (22007)
+SELECT '2024-03-15 12:00:00 XYZ'::timestamp
+
+statement error (22023)
+SET TIME ZONE 'Mars/Olympus'
+
+# 列への代入でも同じエラー
+statement ok
+CREATE TABLE ty_de_t (d date, ts timestamp, tz timestamptz)
+
+statement error (22007)
+INSERT INTO ty_de_t (d) VALUES ('garbage')
+
+statement error (22008)
+INSERT INTO ty_de_t (ts) VALUES ('2024-13-45 00:00:00')
+
+statement error (22009)
+INSERT INTO ty_de_t (tz) VALUES ('2024-03-15 12:00:00+16')
+
+statement ok
+INSERT INTO ty_de_t VALUES ('2024-03-15', '2024-03-15 12:00:00', '2024-03-15 12:00:00+00')
+
+# テキスト列からのキャストでのエラー
+statement error (22007)
+SELECT ('not a date' || '')::date
+
+query I
+SELECT count(*) FROM ty_de_t
+----
+1
+
+statement ok
+DROP TABLE ty_de_t
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE

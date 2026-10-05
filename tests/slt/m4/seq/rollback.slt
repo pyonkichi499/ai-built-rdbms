@@ -1,0 +1,126 @@
+# ROLLBACK してもシーケンスは戻らない。作成・SERIAL の ROLLBACK は消える
+
+statement ok
+CREATE SEQUENCE sq_rb_s
+
+statement ok
+BEGIN
+
+query I
+SELECT nextval('sq_rb_s')
+----
+1
+
+query I
+SELECT nextval('sq_rb_s')
+----
+2
+
+statement ok
+ROLLBACK
+
+query I
+SELECT nextval('sq_rb_s')
+----
+3
+
+# setval も戻らない
+statement ok
+BEGIN
+
+query I
+SELECT setval('sq_rb_s', 50)
+----
+50
+
+statement ok
+ROLLBACK
+
+query I
+SELECT nextval('sq_rb_s')
+----
+51
+
+# 失敗したトランザクションでも戻らない
+statement ok
+BEGIN
+
+query I
+SELECT nextval('sq_rb_s')
+----
+52
+
+statement error (22012)
+SELECT 1 / 0
+
+statement ok
+ROLLBACK
+
+query I
+SELECT nextval('sq_rb_s')
+----
+53
+
+# CREATE SEQUENCE の ROLLBACK
+statement ok
+BEGIN
+
+statement ok
+CREATE SEQUENCE sq_rb_n
+
+query I
+SELECT nextval('sq_rb_n')
+----
+1
+
+statement ok
+ROLLBACK
+
+statement error (42P01)
+SELECT nextval('sq_rb_n')
+
+statement ok
+CREATE SEQUENCE sq_rb_n
+
+query I
+SELECT nextval('sq_rb_n')
+----
+1
+
+# SERIAL を持つ表の ROLLBACK で、シーケンスも消える
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE sr_rb_t (id serial, v int)
+
+statement count 1
+INSERT INTO sr_rb_t (v) VALUES (1)
+
+statement ok
+ROLLBACK
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'sr\_rb\_t%'
+----
+
+statement error (42P01)
+SELECT nextval('sr_rb_t_id_seq')
+
+# DROP SEQUENCE の ROLLBACK: 値が残る
+statement ok
+BEGIN
+
+statement ok
+DROP SEQUENCE sq_rb_s
+
+statement ok
+ROLLBACK
+
+query I
+SELECT nextval('sq_rb_s')
+----
+54
+
+statement ok
+DROP SEQUENCE sq_rb_s, sq_rb_n

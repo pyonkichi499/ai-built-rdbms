@@ -1,0 +1,42 @@
+# フェーズ 2: 正常停止の後は、続きから（欠番なし。CACHE の残りは捨てられる）。
+
+query I
+SELECT nextval('m4r_sc_a')
+----
+4
+
+query I
+SELECT nextval('m4r_sc_b')
+----
+6
+
+statement count 1
+INSERT INTO m4r_sc_t (v) VALUES (3)
+
+query II
+SELECT id, v FROM m4r_sc_t ORDER BY id
+----
+1 1
+2 2
+3 3
+
+query I
+SELECT nextval('m4r_sc_c')
+----
+101
+
+query I
+SELECT nextval('m4r_sc_d')
+----
+7
+
+statement ok
+DROP TABLE m4r_sc_t
+
+statement ok
+DROP SEQUENCE m4r_sc_a, m4r_sc_b, m4r_sc_c, m4r_sc_d
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'm4r\_sc\_%'
+----
+0

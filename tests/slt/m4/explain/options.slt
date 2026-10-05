@@ -1,0 +1,171 @@
+# EXPLAIN のオプションの解釈とエラー
+
+# COSTS OFF / ANALYZE / TIMING / SUMMARY の組み合わせ
+query T
+EXPLAIN (COSTS OFF) SELECT 1
+----
+Result
+
+query T
+EXPLAIN (COSTS false) SELECT 1
+----
+Result
+
+query T
+EXPLAIN (COSTS 0) SELECT 1
+----
+Result
+
+query T
+EXPLAIN (COSTS 'off') SELECT 1
+----
+Result
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT 1
+----
+Result
+  Output: 1
+
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT 1
+----
+Result (actual rows=1 loops=1)
+
+query T
+EXPLAIN (ANALYZE true, COSTS off, TIMING off, SUMMARY off) SELECT 1
+----
+Result (actual rows=1 loops=1)
+
+query T
+EXPLAIN (ANALYSE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT 1
+----
+Result (actual rows=1 loops=1)
+
+# 同じ option を繰り返すと最後が有効
+query T
+EXPLAIN (COSTS ON, COSTS OFF) SELECT 1
+----
+Result
+
+query T
+EXPLAIN (ANALYZE, ANALYZE off, COSTS OFF) SELECT 1
+----
+Result
+
+# 大文字小文字を区別しない
+query T
+EXPLAIN (costs Off, Verbose On) SELECT 1
+----
+Result
+  Output: 1
+
+# 受け付けて無視するオプション
+query T
+EXPLAIN (COSTS OFF, BUFFERS) SELECT 1
+----
+Result
+
+query T
+EXPLAIN (COSTS OFF, BUFFERS OFF, SETTINGS OFF, WAL OFF) SELECT 1
+----
+Result
+
+query T
+EXPLAIN (COSTS OFF, GENERIC_PLAN) SELECT 1
+----
+Result
+
+# ブール値でない値
+statement error (42601)
+EXPLAIN (ANALYZE foo) SELECT 1
+
+statement error (42601)
+EXPLAIN (ANALYZE 2) SELECT 1
+
+statement error (42601)
+EXPLAIN (COSTS t) SELECT 1
+
+statement error (42601)
+EXPLAIN (VERBOSE 'maybe') SELECT 1
+
+statement error (42601)
+EXPLAIN (ANALYZE true false) SELECT 1
+
+# 未知の option
+statement error (42601)
+EXPLAIN (foo) SELECT 1
+
+statement error (42601)
+EXPLAIN (COSTS OFF, nosuch on) SELECT 1
+
+# ANALYZE を要する option
+statement error (22023)
+EXPLAIN (TIMING ON) SELECT 1
+
+statement error (22023)
+EXPLAIN (ANALYZE off, TIMING true) SELECT 1
+
+query T
+EXPLAIN (COSTS OFF, TIMING OFF) SELECT 1
+----
+Result
+
+# FORMAT
+query T
+EXPLAIN (COSTS OFF, FORMAT TEXT) SELECT 1
+----
+Result
+
+statement error (22023)
+EXPLAIN (FORMAT foo) SELECT 1
+
+# KNOWN-DIFF: KD-19 FORMAT JSON / XML / YAML は M4 では 0A000
+skipif yuzhu
+statement ok
+EXPLAIN (COSTS OFF, FORMAT JSON) SELECT 1
+
+# KNOWN-DIFF: KD-19 FORMAT JSON / XML / YAML は M4 では 0A000
+onlyif yuzhu
+statement error (0A000)
+EXPLAIN (COSTS OFF, FORMAT JSON) SELECT 1
+
+# KNOWN-DIFF: KD-19 FORMAT JSON / XML / YAML は M4 では 0A000
+onlyif yuzhu
+statement error (0A000)
+EXPLAIN (COSTS OFF, FORMAT XML) SELECT 1
+
+# KNOWN-DIFF: KD-19 FORMAT JSON / XML / YAML は M4 では 0A000
+onlyif yuzhu
+statement error (0A000)
+EXPLAIN (COSTS OFF, FORMAT yaml) SELECT 1
+
+# 構文エラー
+statement error (42601)
+EXPLAIN VERBOSE ANALYZE SELECT 1
+
+statement error (42601)
+EXPLAIN CREATE TABLE ex_o_t (a int)
+
+statement error (42601)
+EXPLAIN EXPLAIN SELECT 1
+
+statement error (42601)
+EXPLAIN BEGIN
+
+statement error (42601)
+EXPLAIN
+
+statement error (42601)
+EXPLAIN (COSTS OFF)
+
+# 対象の文
+query T
+EXPLAIN (COSTS OFF) VALUES (1), (2)
+----
+Values Scan on "*VALUES*"
+
+query T
+EXPLAIN (COSTS OFF) (SELECT 1)
+----
+Result

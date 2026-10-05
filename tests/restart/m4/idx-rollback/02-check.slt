@@ -1,0 +1,38 @@
+# フェーズ 2: カタログに残らない。同じ名前で再作成できる。
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'm4r\_ir\_%' ORDER BY relname
+----
+m4r_ir_keep
+
+query I
+SELECT count(*) FROM pg_index WHERE indrelid = 'm4r_ir_keep'::regclass
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conname LIKE 'm4r\_ir\_%'
+----
+0
+
+query II
+SELECT id, v FROM m4r_ir_keep ORDER BY id
+----
+1 10
+2 20
+3 30
+
+statement error (42P01)
+SELECT id FROM m4r_ir_new
+
+statement ok
+CREATE INDEX m4r_ir_keep_v ON m4r_ir_keep (v)
+
+statement ok
+CREATE TABLE m4r_ir_new (id int PRIMARY KEY, v int UNIQUE)
+
+statement count 2
+INSERT INTO m4r_ir_new VALUES (1, 1), (2, 2)
+
+statement error (23505)
+INSERT INTO m4r_ir_new VALUES (3, 1)

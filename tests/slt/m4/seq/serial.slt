@@ -1,0 +1,217 @@
+# SERIAL / SMALLSERIAL / BIGSERIAL
+
+statement ok
+CREATE TABLE sr_t (a serial, b smallserial, c bigserial, d serial2, e serial4, f serial8)
+
+query TT
+SELECT attname, format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'sr_t'::regclass AND attnum > 0 ORDER BY attnum
+----
+a integer
+b smallint
+c bigint
+d smallint
+e integer
+f bigint
+
+query TT
+SELECT attname, attnotnull::text FROM pg_attribute WHERE attrelid = 'sr_t'::regclass AND attnum > 0 ORDER BY attnum LIMIT 2
+----
+a true
+b true
+
+query TTI
+SELECT c.relname, s.seqtypid::regtype::text, s.seqmax FROM pg_sequence s JOIN pg_class c ON c.oid = s.seqrelid WHERE c.relname LIKE 'sr\_t\_%' ORDER BY c.relname
+----
+sr_t_a_seq integer 2147483647
+sr_t_b_seq smallint 32767
+sr_t_c_seq bigint 9223372036854775807
+sr_t_d_seq smallint 32767
+sr_t_e_seq integer 2147483647
+sr_t_f_seq bigint 9223372036854775807
+
+# 既定値の式
+query T
+SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = 'sr_t'::regclass AND adnum = 1
+----
+nextval('sr_t_a_seq'::regclass)
+
+# pg_depend: シーケンス → 列（a）、既定値 → シーケンス（n）
+query TTI
+SELECT d.deptype::text, d.refobjid::regclass::text, d.refobjsubid FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = 'sr_t_a_seq'::regclass AND d.refclassid = 'pg_class'::regclass
+----
+a sr_t 1
+
+query T
+SELECT d.deptype::text FROM pg_depend d JOIN pg_attrdef ad ON ad.oid = d.objid WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = 'sr_t_a_seq'::regclass
+----
+n
+
+# INSERT: 1, 2, ...。明示の値はシーケンスを消費しない
+statement count 2
+INSERT INTO sr_t (a) VALUES (DEFAULT), (DEFAULT)
+
+statement count 1
+INSERT INTO sr_t (a) VALUES (100)
+
+statement count 1
+INSERT INTO sr_t (b) VALUES (DEFAULT)
+
+query III
+SELECT a, b, c FROM sr_t ORDER BY a, b
+----
+1 1 1
+2 2 2
+3 4 4
+100 3 3
+
+query I
+SELECT lastval()
+----
+4
+
+# 明示の NULL は NOT NULL 違反
+statement error (23502)
+INSERT INTO sr_t (a) VALUES (NULL)
+
+# NOT NULL を暗黙に付ける
+statement error (23502)
+INSERT INTO sr_t (a, b) VALUES (DEFAULT, NULL)
+
+statement ok
+DROP TABLE sr_t
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'sr\_t%'
+----
+
+# 名前の衝突: y_a_seq と y_a_seq1 が既にある → y_a_seq2
+statement ok
+CREATE SEQUENCE sr_y_a_seq
+
+statement ok
+CREATE SEQUENCE sr_y_a_seq1
+
+statement ok
+CREATE TABLE sr_y (a serial)
+
+query T
+SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = 'sr_y'::regclass
+----
+nextval('sr_y_a_seq2'::regclass)
+
+statement ok
+DROP TABLE sr_y
+
+statement ok
+DROP SEQUENCE sr_y_a_seq, sr_y_a_seq1
+
+# 長い名前: 切り詰める
+statement ok
+CREATE TABLE sr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (very_long_column_name_here serial)
+
+query IT
+SELECT length(relname), relname FROM pg_class WHERE relkind = 'S' AND relname LIKE 'sr\_aaa%'
+----
+63 sr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaa_very_long_column_name_here_seq
+
+statement ok
+DROP TABLE sr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+# 引用符つきの名前
+statement ok
+CREATE TABLE "sr_Q T" ("Id" serial)
+
+query T
+SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = '"sr_Q T"'::regclass
+----
+nextval('"sr_Q T_Id_seq"'::regclass)
+
+statement ok
+DROP TABLE "sr_Q T"
+
+# エラー
+statement error (?s)array of serial is not implemented
+CREATE TABLE sr_e (a serial[])
+
+statement error (0A000)
+CREATE TABLE sr_e (a serial[])
+
+statement error (?s)conflicting NULL/NOT NULL declarations for column "a" of table "sr_e"
+CREATE TABLE sr_e (a serial NULL)
+
+statement error (42601)
+CREATE TABLE sr_e (a serial NULL)
+
+statement error (?s)multiple default values specified for column "a" of table "sr_e"
+CREATE TABLE sr_e (a serial DEFAULT 5)
+
+statement error (42601)
+CREATE TABLE sr_e (a serial DEFAULT 5)
+
+statement ok
+CREATE TABLE sr_e (a serial NOT NULL PRIMARY KEY)
+
+statement ok
+DROP TABLE sr_e
+
+# CREATE TABLE IF NOT EXISTS は何も作らない
+statement ok
+CREATE TABLE sr_x (a serial)
+
+statement ok
+CREATE TABLE IF NOT EXISTS sr_x (a serial, b serial)
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'sr\_x%' ORDER BY relname
+----
+sr_x
+sr_x_a_seq
+
+# INSERT の後の lastval
+statement count 1
+INSERT INTO sr_x DEFAULT VALUES
+
+query I
+SELECT lastval()
+----
+1
+
+# PRIMARY KEY と組み合わせ
+statement ok
+CREATE TABLE sr_p (id serial PRIMARY KEY, v text)
+
+statement count 3
+INSERT INTO sr_p (v) VALUES ('a'), ('b'), ('c')
+
+statement error (23505)
+INSERT INTO sr_p (id, v) VALUES (2, 'dup')
+
+query IT
+SELECT id, v FROM sr_p ORDER BY id
+----
+1 a
+2 b
+3 c
+
+# 失敗した INSERT も nextval を消費する
+statement error (23505)
+INSERT INTO sr_p (id, v) VALUES (2, 'dup')
+
+statement count 1
+INSERT INTO sr_p (v) VALUES ('d')
+
+query I
+SELECT id FROM sr_p WHERE v = 'd'
+----
+4
+
+# DROP TABLE でシーケンスが消える
+statement ok
+DROP TABLE sr_p
+
+statement ok
+DROP TABLE sr_x
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'sr\_%' AND relkind IN ('r', 'S')
+----

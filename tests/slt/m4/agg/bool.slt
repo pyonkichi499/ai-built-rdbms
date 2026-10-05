@@ -1,0 +1,81 @@
+# bool_and / bool_or / every と NULL
+
+statement ok
+CREATE TABLE ag_b (g int, b bool)
+
+statement ok
+INSERT INTO ag_b VALUES
+  (1, true), (1, true),
+  (2, true), (2, false),
+  (3, false), (3, false),
+  (4, NULL), (4, NULL),
+  (5, true), (5, NULL),
+  (6, false), (6, NULL)
+
+query ITTT
+SELECT g, bool_and(b), bool_or(b), every(b) FROM ag_b GROUP BY g ORDER BY g
+----
+1 t t t
+2 f t f
+3 f f f
+4 NULL NULL NULL
+5 t t t
+6 f f f
+
+query TTT
+SELECT bool_and(b), bool_or(b), every(b) FROM ag_b
+----
+f t f
+
+query TT
+SELECT bool_and(b), bool_or(b) FROM ag_b WHERE g = 4
+----
+NULL NULL
+
+# 式
+query TT
+SELECT bool_and(g > 0), bool_or(g > 5) FROM ag_b
+----
+t t
+
+query TT
+SELECT bool_and(g > 1), bool_or(g > 6) FROM ag_b
+----
+f f
+
+# FILTER
+query T
+SELECT bool_and(b) FILTER (WHERE g = 2) FROM ag_b
+----
+f
+
+query T
+SELECT bool_or(b) FILTER (WHERE g = 3) FROM ag_b
+----
+f
+
+# 条件が全部落ちると NULL
+query T
+SELECT bool_and(b) FILTER (WHERE g = 99) FROM ag_b
+----
+NULL
+
+# HAVING で使う
+query I
+SELECT g FROM ag_b GROUP BY g HAVING bool_and(b) ORDER BY g
+----
+1
+5
+
+query I
+SELECT g FROM ag_b GROUP BY g HAVING NOT bool_or(b) ORDER BY g
+----
+3
+6
+
+# 型エラー
+statement error (42883)
+SELECT bool_and(g) FROM ag_b
+
+statement ok
+DROP TABLE ag_b

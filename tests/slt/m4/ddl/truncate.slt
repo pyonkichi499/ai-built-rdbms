@@ -1,0 +1,302 @@
+# TRUNCATE: 単一・複数・ONLY・トランザクション・索引つき・RESTART IDENTITY・relfilenode・エラー
+
+statement ok
+CREATE TABLE ddl_tr_a (id serial PRIMARY KEY, v int UNIQUE, w text)
+
+statement ok
+CREATE TABLE ddl_tr_b (id int PRIMARY KEY, v int)
+
+statement ok
+CREATE TABLE ddl_tr_c (x int)
+
+statement ok
+CREATE TABLE ddl_tr_fn (name text, fn oid)
+
+statement count 5
+INSERT INTO ddl_tr_a (v, w) SELECT g, 'w' || g FROM generate_series(1, 5) g
+
+statement count 3
+INSERT INTO ddl_tr_b VALUES (1, 1), (2, 2), (3, 3)
+
+statement count 2
+INSERT INTO ddl_tr_c VALUES (1), (2)
+
+# relfilenode が変わる
+statement count 1
+INSERT INTO ddl_tr_fn SELECT 'before', relfilenode FROM pg_class WHERE oid = 'ddl_tr_a'::regclass
+
+statement ok
+TRUNCATE ddl_tr_a
+
+statement count 1
+INSERT INTO ddl_tr_fn SELECT 'after', relfilenode FROM pg_class WHERE oid = 'ddl_tr_a'::regclass
+
+query T
+SELECT (SELECT fn FROM ddl_tr_fn WHERE name = 'before') <> (SELECT fn FROM ddl_tr_fn WHERE name = 'after')
+----
+t
+
+query I
+SELECT id FROM ddl_tr_a
+----
+
+# TRUNCATE の後、索引走査が空で、一意性検査が働く
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT id FROM ddl_tr_a WHERE v = 3
+----
+
+statement ok
+RESET enable_seqscan
+
+statement count 2
+INSERT INTO ddl_tr_a (v, w) VALUES (1, 'x'), (2, 'y')
+
+statement error (23505)
+INSERT INTO ddl_tr_a (v, w) VALUES (1, 'dup')
+
+# SERIAL は CONTINUE IDENTITY（既定）なので続きから
+query II
+SELECT id, v FROM ddl_tr_a ORDER BY id
+----
+6 1
+7 2
+
+# RESTART IDENTITY
+statement ok
+TRUNCATE ddl_tr_a RESTART IDENTITY
+
+statement count 2
+INSERT INTO ddl_tr_a (v, w) VALUES (1, 'x'), (2, 'y')
+
+query II
+SELECT id, v FROM ddl_tr_a ORDER BY id
+----
+1 1
+2 2
+
+statement ok
+TRUNCATE ddl_tr_a CONTINUE IDENTITY
+
+statement count 1
+INSERT INTO ddl_tr_a (v, w) VALUES (1, 'x')
+
+query I
+SELECT id FROM ddl_tr_a
+----
+3
+
+# 複数表、TRUNCATE t, t、ONLY、CASCADE / RESTRICT
+statement ok
+TRUNCATE ddl_tr_b, ddl_tr_c
+
+query I
+SELECT (SELECT count(*) FROM ddl_tr_b) + (SELECT count(*) FROM ddl_tr_c)
+----
+0
+
+statement count 1
+INSERT INTO ddl_tr_c VALUES (1)
+
+statement ok
+TRUNCATE ddl_tr_c, ddl_tr_c
+
+statement count 1
+INSERT INTO ddl_tr_c VALUES (1)
+
+statement ok
+TRUNCATE ONLY ddl_tr_c
+
+statement count 1
+INSERT INTO ddl_tr_c VALUES (1)
+
+statement ok
+TRUNCATE TABLE ddl_tr_c CASCADE
+
+statement count 1
+INSERT INTO ddl_tr_c VALUES (1)
+
+statement ok
+TRUNCATE TABLE ddl_tr_c RESTRICT
+
+query I
+SELECT count(*) FROM ddl_tr_c
+----
+0
+
+# トランザクション内: COMMIT / ROLLBACK
+statement count 3
+INSERT INTO ddl_tr_b VALUES (1, 1), (2, 2), (3, 3)
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE ddl_tr_b
+
+query I
+SELECT count(*) FROM ddl_tr_b
+----
+0
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, v FROM ddl_tr_b ORDER BY id
+----
+1 1
+2 2
+3 3
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE ddl_tr_b
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM ddl_tr_b
+----
+0
+
+# TRUNCATE → INSERT → ROLLBACK
+statement count 3
+INSERT INTO ddl_tr_b VALUES (1, 1), (2, 2), (3, 3)
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE ddl_tr_b
+
+statement count 2
+INSERT INTO ddl_tr_b VALUES (10, 10), (11, 11)
+
+query I
+SELECT id FROM ddl_tr_b ORDER BY id
+----
+10
+11
+
+statement ok
+ROLLBACK
+
+query I
+SELECT id FROM ddl_tr_b ORDER BY id
+----
+1
+2
+3
+
+statement error (23505)
+INSERT INTO ddl_tr_b VALUES (2, 0)
+
+# 同じトランザクションで TRUNCATE → INSERT → COMMIT
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE ddl_tr_b
+
+statement count 1
+INSERT INTO ddl_tr_b VALUES (2, 22)
+
+statement ok
+COMMIT
+
+query II
+SELECT id, v FROM ddl_tr_b
+----
+2 22
+
+# 同じトランザクションで作った表の TRUNCATE
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE ddl_tr_n (a int PRIMARY KEY)
+
+statement count 1
+INSERT INTO ddl_tr_n VALUES (1)
+
+statement ok
+TRUNCATE ddl_tr_n
+
+statement count 1
+INSERT INTO ddl_tr_n VALUES (1)
+
+statement ok
+COMMIT
+
+query I
+SELECT a FROM ddl_tr_n
+----
+1
+
+# エラー
+statement error (42P01)
+TRUNCATE ddl_tr_nosuch
+
+statement error (?s)relation "ddl_tr_nosuch" does not exist
+TRUNCATE ddl_tr_nosuch
+
+statement error (42809)
+TRUNCATE ddl_tr_b_pkey
+
+statement error (?s)"ddl_tr_b_pkey" is not a table
+TRUNCATE ddl_tr_b_pkey
+
+statement error (42809)
+TRUNCATE ddl_tr_a_id_seq
+
+statement error (42501)
+TRUNCATE pg_class
+
+# 失敗した TRUNCATE は何も消さない
+statement error (42P01)
+TRUNCATE ddl_tr_b, ddl_tr_nosuch
+
+query I
+SELECT count(*) FROM ddl_tr_b
+----
+1
+
+# 読み取り専用のトランザクション
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute TRUNCATE TABLE in a read-only transaction
+TRUNCATE ddl_tr_b
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+TRUNCATE ddl_tr_b
+
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE ddl_tr_a
+
+statement ok
+DROP TABLE ddl_tr_b
+
+statement ok
+DROP TABLE ddl_tr_c
+
+statement ok
+DROP TABLE ddl_tr_fn
+
+statement ok
+DROP TABLE ddl_tr_n

@@ -1,0 +1,55 @@
+Parsed test spec with 3 sessions
+
+starting permutation: a_b a_ins b_ins a_c c_sel
+step a_b: BEGIN;
+step a_ins: INSERT INTO iso_uw VALUES (1, 'x');
+step b_ins: INSERT INTO iso_uw VALUES (1, 'y'); <waiting ...>
+step a_c: COMMIT;
+step b_ins: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_uw_pkey"
+step c_sel: SELECT id, s FROM iso_uw ORDER BY id;
+id|s
+--+-
+ 1|x
+(1 row)
+
+
+starting permutation: a_b a_ins b_ins a_r c_sel
+step a_b: BEGIN;
+step a_ins: INSERT INTO iso_uw VALUES (1, 'x');
+step b_ins: INSERT INTO iso_uw VALUES (1, 'y'); <waiting ...>
+step a_r: ROLLBACK;
+step b_ins: <... completed>
+step c_sel: SELECT id, s FROM iso_uw ORDER BY id;
+id|s
+--+-
+ 1|y
+(1 row)
+
+
+starting permutation: a_b a_ins b_ins_s a_c c_sel
+step a_b: BEGIN;
+step a_ins: INSERT INTO iso_uw VALUES (1, 'x');
+step b_ins_s: INSERT INTO iso_uw VALUES (2, 'x'); <waiting ...>
+step a_c: COMMIT;
+step b_ins_s: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_uw_s_key"
+step c_sel: SELECT id, s FROM iso_uw ORDER BY id;
+id|s
+--+-
+ 1|x
+(1 row)
+
+
+starting permutation: a_b a_ins b_ins_s a_r c_sel
+step a_b: BEGIN;
+step a_ins: INSERT INTO iso_uw VALUES (1, 'x');
+step b_ins_s: INSERT INTO iso_uw VALUES (2, 'x'); <waiting ...>
+step a_r: ROLLBACK;
+step b_ins_s: <... completed>
+step c_sel: SELECT id, s FROM iso_uw ORDER BY id;
+id|s
+--+-
+ 2|x
+(1 row)
+

@@ -1,0 +1,274 @@
+# ALTER TABLE ADD PRIMARY KEY / UNIQUE、OWNER TO
+
+statement ok
+CREATE TABLE cst_ad_a (a int, b text)
+
+statement count 4
+INSERT INTO cst_ad_a VALUES (1, 'x'), (2, 'y'), (3, 'z'), (3, 'z2')
+
+# 重複があると失敗する（メッセージと DETAIL）
+statement error (23505)
+ALTER TABLE cst_ad_a ADD PRIMARY KEY (a)
+
+statement error (?s)could not create unique index "cst_ad_a_pkey".*Key \(a\)=\(3\) is duplicated\.
+ALTER TABLE cst_ad_a ADD PRIMARY KEY (a)
+
+# 失敗した ADD の後に索引・制約の行が残らない。NOT NULL にもならない
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'cst\_ad\_a%' ORDER BY relname
+----
+cst_ad_a
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conrelid = 'cst_ad_a'::regclass
+----
+0
+
+query T
+SELECT attnotnull::text FROM pg_attribute WHERE attrelid = 'cst_ad_a'::regclass AND attname = 'a'
+----
+false
+
+query T
+SELECT relhasindex::text FROM pg_class WHERE oid = 'cst_ad_a'::regclass
+----
+false
+
+# 複数列の重複
+statement count 1
+INSERT INTO cst_ad_a VALUES (3, 'z')
+
+statement error (23505)
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_u1 UNIQUE (a, b)
+
+statement error (?s)could not create unique index "cst_ad_u1".*Key \(a, b\)=\(3, z\) is duplicated\.
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_u1 UNIQUE (a, b)
+
+# 解消してから ADD
+statement count 2
+DELETE FROM cst_ad_a WHERE a = 3 AND b = 'z'
+
+statement count 1
+DELETE FROM cst_ad_a WHERE b = 'z2'
+
+statement count 1
+INSERT INTO cst_ad_a VALUES (3, 'z')
+
+statement ok
+ALTER TABLE cst_ad_a ADD PRIMARY KEY (a)
+
+query TTT
+SELECT conname, contype::text, conkey::text FROM pg_constraint WHERE conrelid = 'cst_ad_a'::regclass
+----
+cst_ad_a_pkey p {1}
+
+query TT
+SELECT attname, attnotnull::text FROM pg_attribute WHERE attrelid = 'cst_ad_a'::regclass AND attnum > 0 ORDER BY attnum
+----
+a true
+b false
+
+query T
+SELECT relhasindex::text FROM pg_class WHERE oid = 'cst_ad_a'::regclass
+----
+true
+
+statement error (23505)
+INSERT INTO cst_ad_a VALUES (1, 'dup')
+
+# 2 つ目の PRIMARY KEY
+statement error (42P16)
+ALTER TABLE cst_ad_a ADD PRIMARY KEY (b)
+
+statement error (?s)multiple primary keys for table "cst_ad_a" are not allowed
+ALTER TABLE cst_ad_a ADD PRIMARY KEY (b)
+
+# 同じ列の UNIQUE を 2 回 ADD すると _key、_key1
+statement ok
+ALTER TABLE cst_ad_a ADD UNIQUE (b)
+
+statement ok
+ALTER TABLE cst_ad_a ADD UNIQUE (b)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'cst_ad_a'::regclass ORDER BY conname
+----
+cst_ad_a_b_key
+cst_ad_a_b_key1
+cst_ad_a_pkey
+
+# 明示名
+statement ok
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_named UNIQUE (a, b)
+
+# 同名のリレーション（制約と同名の索引を含む）
+statement error (42P07)
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_named UNIQUE (b, a)
+
+statement error (?s)relation "cst_ad_named" already exists
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_named UNIQUE (b, a)
+
+statement error (42P07)
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_a UNIQUE (b, a)
+
+# 同名の制約（CHECK）
+statement ok
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_chk CHECK (a > 0)
+
+statement error (42710)
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_chk UNIQUE (b, a)
+
+statement error (?s)constraint "cst_ad_chk" for relation "cst_ad_a" already exists
+ALTER TABLE cst_ad_a ADD CONSTRAINT cst_ad_chk CHECK (a > 1)
+
+# キー列のエラー
+statement error (?s)column "a" appears twice in unique constraint
+ALTER TABLE cst_ad_a ADD UNIQUE (a, a)
+
+statement error (42701)
+ALTER TABLE cst_ad_a ADD UNIQUE (a, a)
+
+statement error (?s)column "zz" named in key does not exist
+ALTER TABLE cst_ad_a ADD UNIQUE (zz)
+
+statement error (42703)
+ALTER TABLE cst_ad_a ADD UNIQUE (zz)
+
+# 表がない
+statement error (42P01)
+ALTER TABLE cst_ad_nosuch ADD PRIMARY KEY (a)
+
+statement ok
+ALTER TABLE IF EXISTS cst_ad_nosuch ADD PRIMARY KEY (a)
+
+# NULL があると PRIMARY KEY は付けられない
+statement ok
+CREATE TABLE cst_ad_n (a int, b int)
+
+statement count 3
+INSERT INTO cst_ad_n VALUES (1, 1), (2, NULL), (3, 3)
+
+statement error (23502)
+ALTER TABLE cst_ad_n ADD PRIMARY KEY (b)
+
+statement error (?s)column "b" of relation "cst_ad_n" contains null values
+ALTER TABLE cst_ad_n ADD PRIMARY KEY (b)
+
+# UNIQUE は NULL があっても付けられる
+statement ok
+ALTER TABLE cst_ad_n ADD UNIQUE (b)
+
+# 重複と NULL が両方ある表では 23505 が先
+statement ok
+CREATE TABLE cst_ad_dn (a int)
+
+statement count 4
+INSERT INTO cst_ad_dn VALUES (1), (1), (NULL), (2)
+
+statement error (23505)
+ALTER TABLE cst_ad_dn ADD PRIMARY KEY (a)
+
+statement count 2
+DELETE FROM cst_ad_dn WHERE a = 1
+
+statement error (23502)
+ALTER TABLE cst_ad_dn ADD PRIMARY KEY (a)
+
+statement count 1
+DELETE FROM cst_ad_dn WHERE a IS NULL
+
+statement ok
+ALTER TABLE cst_ad_dn ADD PRIMARY KEY (a)
+
+# 空の表
+statement ok
+CREATE TABLE cst_ad_e (a int, b int)
+
+statement ok
+ALTER TABLE cst_ad_e ADD PRIMARY KEY (a, b)
+
+statement error (23502)
+INSERT INTO cst_ad_e VALUES (1, NULL)
+
+# 既存の行がある表に ADD した後の検索と一意性
+statement count 3
+INSERT INTO cst_ad_e VALUES (1, 1), (1, 2), (2, 1)
+
+statement error (23505)
+INSERT INTO cst_ad_e VALUES (1, 2)
+
+query II
+SELECT a, b FROM cst_ad_e WHERE a = 1 ORDER BY b
+----
+1 1
+1 2
+
+# WITH (fillfactor)
+statement ok
+ALTER TABLE cst_ad_e ADD CONSTRAINT cst_ad_ff UNIQUE (b, a) WITH (fillfactor = 60)
+
+statement error (22023)
+ALTER TABLE cst_ad_e ADD CONSTRAINT cst_ad_ff2 UNIQUE (b) WITH (fillfactor = 5)
+
+# 対象が索引・シーケンス
+statement ok
+CREATE SEQUENCE cst_ad_seq
+
+statement error (42809)
+ALTER TABLE cst_ad_seq ADD PRIMARY KEY (a)
+
+statement error (42809)
+ALTER TABLE cst_ad_e_pkey ADD PRIMARY KEY (a)
+
+statement ok
+DROP SEQUENCE cst_ad_seq
+
+# OWNER TO
+query T
+SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'cst_ad_e'::regclass
+----
+postgres
+
+statement ok
+ALTER TABLE cst_ad_e OWNER TO postgres
+
+statement ok
+ALTER TABLE cst_ad_e OWNER TO pg_database_owner
+
+query T
+SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'cst_ad_e'::regclass
+----
+pg_database_owner
+
+# 索引の所有者も変わる
+query TT
+SELECT c.relname, pg_get_userbyid(c.relowner) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'cst_ad_e'::regclass ORDER BY c.relname
+----
+cst_ad_e_pkey pg_database_owner
+cst_ad_ff pg_database_owner
+
+statement error (42704)
+ALTER TABLE cst_ad_e OWNER TO cst_ad_nosuchrole
+
+statement error (?s)role "cst_ad_nosuchrole" does not exist
+ALTER TABLE cst_ad_e OWNER TO cst_ad_nosuchrole
+
+statement ok
+ALTER TABLE cst_ad_e OWNER TO postgres
+
+query T
+SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'cst_ad_e'::regclass
+----
+postgres
+
+statement ok
+DROP TABLE cst_ad_a
+
+statement ok
+DROP TABLE cst_ad_n
+
+statement ok
+DROP TABLE cst_ad_dn
+
+statement ok
+DROP TABLE cst_ad_e

@@ -1,0 +1,14 @@
+# フェーズ 3: チェックポイントがページを書き出した後なので、飛ばずに続きから。続けて nextval ×1 → CHECKPOINT のあと kill -9。
+
+query I
+SELECT nextval('m4r_sp_b')
+----
+3
+
+query I
+SELECT nextval('m4r_sp_c')
+----
+1
+
+statement ok
+CHECKPOINT

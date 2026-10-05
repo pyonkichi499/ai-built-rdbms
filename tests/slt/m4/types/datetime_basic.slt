@@ -1,0 +1,430 @@
+# date / timestamp / timestamptz の入出力、比較、date の加減算、列への代入、min / max
+# interval を使う演算は M5（KD-1）
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+# 入力と出力
+query ???
+SELECT '2024-03-15'::date, '2024-03-15 12:34:56'::timestamp, '2024-03-15 12:34:56+00'::timestamptz
+----
+2024-03-15 2024-03-15 12:34:56 2024-03-15 12:34:56+00
+
+query ???
+SELECT '3/15/2024'::date, 'March 15, 2024'::date, '20240315'::date
+----
+2024-03-15 2024-03-15 2024-03-15
+
+query ???
+SELECT '2024-03-15 12:34:56.789'::timestamp, '2024-03-15 12:34:56.1234565'::timestamp, '2024-03-15 12:34:56.999999'::timestamp
+----
+2024-03-15 12:34:56.789 2024-03-15 12:34:56.123456 2024-03-15 12:34:56.999999
+
+query ??
+SELECT '2024-03-15 12:34:56.9999996'::timestamp, '2024-03-15 23:59:59.9999999'::timestamp
+----
+2024-03-15 12:34:57 2024-03-16 00:00:00
+
+query ??
+SELECT '2024-03-15 12:34'::timestamp, '2024-03-15 12:34:56'::timestamp(0)
+----
+2024-03-15 12:34:00 2024-03-15 12:34:56
+
+query ??
+SELECT '2024-03-15 12:34:56.5'::timestamp(0), '2024-03-15 12:34:56.4'::timestamp(0)
+----
+2024-03-15 12:34:57 2024-03-15 12:34:56
+
+query ??
+SELECT '2024-03-15 12:34:56.123456'::timestamp(3), '2024-03-15 12:34:56.123456'::timestamp(1)
+----
+2024-03-15 12:34:56.123 2024-03-15 12:34:56.1
+
+# 特殊な値
+query ?????
+SELECT 'infinity'::date, '-infinity'::date, 'infinity'::timestamp, '-infinity'::timestamp, 'epoch'::timestamp
+----
+infinity -infinity infinity -infinity 1970-01-01 00:00:00
+
+query ??
+SELECT 'infinity'::timestamptz, '-infinity'::timestamptz
+----
+infinity -infinity
+
+query ??
+SELECT 'epoch'::date, 'epoch'::timestamptz
+----
+1970-01-01 1970-01-01 00:00:00+00
+
+# 紀元前と範囲の端
+query ???
+SELECT '0001-01-01 BC'::date, '4713-01-01 BC'::date, '5874897-12-31'::date
+----
+0001-01-01 BC 4713-01-01 BC 5874897-12-31
+
+query ??
+SELECT '4713-01-01 00:00:00 BC'::timestamp, '294276-12-31 23:59:59.999999'::timestamp
+----
+4713-01-01 00:00:00 BC 294276-12-31 23:59:59.999999
+
+query ?
+SELECT '2000-02-29'::date
+----
+2000-02-29
+
+# タイムゾーンつきの入力
+query ????
+SELECT '2024-03-15 12:00:00+09'::timestamptz, '2024-03-15 12:00:00-05'::timestamptz, '2024-03-15 12:00:00 Asia/Tokyo'::timestamptz, '2024-03-15 12:00:00+05:30'::timestamptz
+----
+2024-03-15 03:00:00+00 2024-03-15 17:00:00+00 2024-03-15 03:00:00+00 2024-03-15 06:30:00+00
+
+query ??
+SELECT '2024-03-15 12:00:00+09'::timestamp, '2024-03-15 12:00:00 America/New_York'::timestamp
+----
+2024-03-15 12:00:00 2024-03-15 12:00:00
+
+query ??
+SELECT '2024-03-15 12:00:00'::timestamptz, '2024-03-15'::timestamptz
+----
+2024-03-15 12:00:00+00 2024-03-15 00:00:00+00
+
+# 型
+query TTT
+SELECT pg_typeof('2024-03-15'::date), pg_typeof('2024-03-15'::timestamp), pg_typeof('2024-03-15'::timestamptz)
+----
+date timestamp without time zone timestamp with time zone
+
+query TTT
+SELECT pg_typeof('2024-03-15'::timestamp(3)), pg_typeof(now()), pg_typeof(CURRENT_DATE)
+----
+timestamp without time zone timestamp with time zone date
+
+query TT
+SELECT pg_typeof(CURRENT_TIMESTAMP), pg_typeof(LOCALTIMESTAMP)
+----
+timestamp with time zone timestamp without time zone
+
+# 比較
+query ??????
+SELECT '2024-03-15'::date = '2024-03-15'::date, '2024-03-15'::date <> '2024-03-16'::date, '2024-03-15'::date < '2024-03-16'::date, '2024-03-15'::date <= '2024-03-15'::date, '2024-03-16'::date > '2024-03-15'::date, '2024-03-16'::date >= '2024-03-17'::date
+----
+t t t t t f
+
+query ????
+SELECT '2024-03-15 12:00'::timestamp < '2024-03-15 12:00:00.000001'::timestamp, '2024-03-15 12:00'::timestamp = '2024-03-15 12:00:00'::timestamp, 'infinity'::timestamp > '2024-03-15'::timestamp, '-infinity'::timestamp < '0001-01-01 BC'::timestamp
+----
+t t t t
+
+query ????
+SELECT '2024-03-15 12:00+09'::timestamptz = '2024-03-15 03:00+00'::timestamptz, '2024-03-15 12:00+09'::timestamptz < '2024-03-15 12:00+00'::timestamptz, 'infinity'::timestamptz > now(), '-infinity'::timestamptz < '0001-01-01 BC'::timestamptz
+----
+t t t t
+
+# 型をまたぐ比較（暗黙のキャストで同じ結果になる）
+query ????
+SELECT '2024-03-15'::date = '2024-03-15 00:00:00'::timestamp, '2024-03-15'::date < '2024-03-15 00:00:01'::timestamp, '2024-03-15'::date = '2024-03-15 00:00:00+00'::timestamptz, '2024-03-15 12:00:00'::timestamp = '2024-03-15 12:00:00+00'::timestamptz
+----
+t t t t
+
+query ??
+SELECT '2024-03-15'::date > '2024-03-14 23:59:59+00'::timestamptz, '2024-03-15 00:00:00'::timestamp < '2024-03-15 09:00:00+09'::timestamptz
+----
+t f
+
+# 比較の定数側が unknown のとき
+query ?
+SELECT '2024-03-15'::date = '2024-3-15'
+----
+t
+
+# date の加減算
+query ????
+SELECT '2024-03-15'::date + 1, '2024-03-15'::date - 1, 1 + '2024-03-15'::date, '2024-03-15'::date + 0
+----
+2024-03-16 2024-03-14 2024-03-16 2024-03-15
+
+query ????
+SELECT '2024-02-28'::date + 2, '2024-03-01'::date - 1, '2023-12-31'::date + 1, '2024-12-31'::date + 366
+----
+2024-03-01 2024-02-29 2024-01-01 2026-01-01
+
+query ?????
+SELECT '2024-03-15'::date - '2024-03-01'::date, '2024-03-01'::date - '2024-03-15'::date, '2025-03-15'::date - '2024-03-15'::date, '2024-03-15'::date - '2024-03-15'::date, '2000-01-01'::date - '1999-01-01'::date
+----
+14 -14 365 0 365
+
+query TTT
+SELECT pg_typeof('2024-03-15'::date + 1), pg_typeof('2024-03-15'::date - '2024-03-01'::date), pg_typeof(1 + '2024-03-15'::date)
+----
+date integer date
+
+statement error (22008)
+SELECT '2024-03-15'::date + 2147483647
+
+statement error (22008)
+SELECT '5874897-12-31'::date + 1
+
+statement error (22008)
+SELECT 'infinity'::date - '2024-03-15'::date
+
+query ??
+SELECT 'infinity'::date + 1, '-infinity'::date - 1
+----
+infinity -infinity
+
+# 日付 date の列
+statement ok
+CREATE TABLE ty_dt_t (id int, d date, ts timestamp, tz timestamptz, ts0 timestamp(0), ts3 timestamp(3), tz0 timestamptz(0))
+
+statement ok
+INSERT INTO ty_dt_t VALUES (1, '2024-03-15', '2024-03-15 10:00:00', '2024-03-15 10:00:00+00', '2024-03-15 10:00:00.5', '2024-03-15 10:00:00.1236', '2024-03-15 10:00:00.5+00')
+
+statement ok
+INSERT INTO ty_dt_t VALUES (2, '2024-01-01', '2023-12-31 23:59:59.999999', '2023-12-31 23:59:59.999999+00', '2023-12-31 23:59:59.4', '2023-12-31 23:59:59.9996', '2023-12-31 23:59:59.4+00')
+
+statement ok
+INSERT INTO ty_dt_t VALUES (3, NULL, NULL, NULL, NULL, NULL, NULL), (4, 'infinity', 'infinity', 'infinity', 'infinity', 'infinity', 'infinity'), (5, '-infinity', '-infinity', '-infinity', '-infinity', '-infinity', '-infinity')
+
+query I?
+SELECT id, d FROM ty_dt_t ORDER BY d NULLS FIRST, id
+----
+3 NULL
+5 -infinity
+2 2024-01-01
+1 2024-03-15
+4 infinity
+
+query I?
+SELECT id, ts FROM ty_dt_t ORDER BY ts DESC, id
+----
+3 NULL
+4 infinity
+1 2024-03-15 10:00:00
+2 2023-12-31 23:59:59.999999
+5 -infinity
+
+query I?
+SELECT id, tz FROM ty_dt_t ORDER BY tz, id
+----
+5 -infinity
+2 2023-12-31 23:59:59.999999+00
+1 2024-03-15 10:00:00+00
+4 infinity
+3 NULL
+
+query I??
+SELECT id, ts0, tz0 FROM ty_dt_t ORDER BY id
+----
+1 2024-03-15 10:00:01 2024-03-15 10:00:01+00
+2 2023-12-31 23:59:59 2023-12-31 23:59:59+00
+3 NULL NULL
+4 infinity infinity
+5 -infinity -infinity
+
+query I?
+SELECT id, ts3 FROM ty_dt_t ORDER BY id
+----
+1 2024-03-15 10:00:00.124
+2 2024-01-01 00:00:00
+3 NULL
+4 infinity
+5 -infinity
+
+# timestamp(0) の丸めが日付をまたぐ
+statement ok
+INSERT INTO ty_dt_t (id, ts0) VALUES (6, '2024-12-31 23:59:59.6')
+
+query ?
+SELECT ts0 FROM ty_dt_t WHERE id = 6
+----
+2025-01-01 00:00:00
+
+# min / max（infinity を含む）
+query ??
+SELECT min(d), max(d) FROM ty_dt_t
+----
+-infinity infinity
+
+query ??
+SELECT min(ts), max(ts) FROM ty_dt_t WHERE ts < 'infinity' AND ts > '-infinity'
+----
+2023-12-31 23:59:59.999999 2024-03-15 10:00:00
+
+query ??
+SELECT min(tz), max(tz) FROM ty_dt_t
+----
+-infinity infinity
+
+query ??
+SELECT pg_typeof(min(d)), pg_typeof(max(ts)) FROM ty_dt_t
+----
+date timestamp without time zone
+
+# 範囲検索とグルーピング
+query I
+SELECT id FROM ty_dt_t WHERE d BETWEEN '2024-01-01' AND '2024-12-31' ORDER BY id
+----
+1
+2
+
+query I
+SELECT id FROM ty_dt_t WHERE ts >= '2024-01-01' AND ts < 'infinity' ORDER BY id
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT d FROM ty_dt_t) x
+----
+5
+
+query ?I
+SELECT d, count(*) FROM ty_dt_t GROUP BY d ORDER BY d NULLS LAST
+----
+-infinity 1
+2024-01-01 1
+2024-03-15 1
+infinity 1
+NULL 2
+
+query I
+SELECT id FROM ty_dt_t WHERE d = '2024-01-01' ORDER BY id
+----
+2
+
+query I
+SELECT id FROM ty_dt_t WHERE d IN ('2024-01-01', '2024-03-15') ORDER BY id
+----
+1
+2
+
+query I
+SELECT id FROM ty_dt_t WHERE tz = '2024-03-15 19:00:00+09' ORDER BY id
+----
+1
+
+# date の列と date の演算
+query I?
+SELECT id, d + 10 FROM ty_dt_t WHERE d BETWEEN '2024-01-01' AND '2024-12-31' ORDER BY id
+----
+1 2024-03-25
+2 2024-01-11
+
+query II
+SELECT id, d - '2024-01-01'::date FROM ty_dt_t WHERE d BETWEEN '2024-01-01' AND '2024-12-31' ORDER BY id
+----
+1 74
+2 0
+
+# timestamptz を timestamp / date の列へ代入する（CURRENT_TIMESTAMP は pgbench が使う）
+statement ok
+INSERT INTO ty_dt_t (id, ts, d) VALUES (7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+
+statement ok
+INSERT INTO ty_dt_t (id, ts, d, ts0) VALUES (8, now(), now(), LOCALTIMESTAMP)
+
+query I
+SELECT count(*) FROM ty_dt_t WHERE id IN (7, 8) AND ts IS NOT NULL AND d IS NOT NULL
+----
+2
+
+query T
+SELECT pg_typeof(ts) FROM ty_dt_t WHERE id = 7
+----
+timestamp without time zone
+
+query ?
+SELECT d IS NOT NULL AND ts IS NOT NULL FROM ty_dt_t WHERE id = 7
+----
+t
+
+statement ok
+UPDATE ty_dt_t SET ts = '2024-03-15 10:00:00+09'::timestamptz WHERE id = 7
+
+query ?
+SELECT ts FROM ty_dt_t WHERE id = 7
+----
+2024-03-15 01:00:00
+
+# 変換
+query ????
+SELECT '2024-03-15 10:20:30'::timestamp::date, '2024-03-15 10:20:30+09'::timestamptz::date, '2024-03-15'::date::timestamp, '2024-03-15'::date::timestamptz
+----
+2024-03-15 2024-03-15 2024-03-15 00:00:00 2024-03-15 00:00:00+00
+
+query ??
+SELECT '2024-03-15 10:20:30'::timestamp::timestamptz, '2024-03-15 10:20:30+09'::timestamptz::timestamp
+----
+2024-03-15 10:20:30+00 2024-03-15 01:20:30
+
+query ???
+SELECT date('2024-03-15 10:20:30'::timestamp), timestamp '2024-03-15 10:20:30', timestamptz '2024-03-15 10:20:30+00'
+----
+2024-03-15 2024-03-15 10:20:30 2024-03-15 10:20:30+00
+
+query ?
+SELECT now()::date = CURRENT_DATE
+----
+t
+
+query ???
+SELECT now() IS NOT NULL, CURRENT_TIMESTAMP IS NOT NULL, clock_timestamp() IS NOT NULL
+----
+t t t
+
+query ??
+SELECT now() = transaction_timestamp(), statement_timestamp() <= clock_timestamp()
+----
+t t
+
+# タイムゾーンなしの文字列との変換
+query TTT
+SELECT '2024-03-15'::date::text, '2024-03-15 10:20:30'::timestamp::text, '2024-03-15 10:20:30+09'::timestamptz::text
+----
+2024-03-15 2024-03-15 10:20:30 2024-03-15 01:20:30+00
+
+query ??
+SELECT '2024-03-15 10:20:30.120'::timestamp::text, '2024-03-15 10:20:30.12'::timestamptz::text
+----
+2024-03-15 10:20:30.12 2024-03-15 10:20:30.12+00
+
+query ?
+SELECT '2024-03-15 10:20:30'::text::timestamp
+----
+2024-03-15 10:20:30
+
+# timestamp - timestamp は interval を返す（M4 の yuzhu にはない。KD-1）
+# KNOWN-DIFF: KD-1 interval は M5。timestamp - timestamp は 42883
+skipif yuzhu
+query T
+SELECT ('2025-03-15'::timestamp - '2024-03-15'::timestamp)::text
+----
+365 days
+
+# KNOWN-DIFF: KD-1 interval は M5。timestamp - timestamp は 42883
+onlyif yuzhu
+statement error (42883)
+SELECT '2025-03-15'::timestamp - '2024-03-15'::timestamp
+
+# KNOWN-DIFF: KD-1 interval リテラルは M5
+skipif yuzhu
+query T
+SELECT ('2024-03-15'::timestamp + '1 day'::interval)::text
+----
+2024-03-16 00:00:00
+
+# KNOWN-DIFF: KD-1 interval リテラルは M5
+onlyif yuzhu
+statement error (0A000)
+SELECT '2024-03-15'::timestamp + '1 day'::interval
+
+statement ok
+DROP TABLE ty_dt_t
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE

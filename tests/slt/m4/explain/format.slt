@@ -1,0 +1,332 @@
+# プランの選び方に依らず PostgreSQL と同じになる単一表・結合なしの EXPLAIN (COSTS OFF)
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけ、yuzhu が作らないノードを選ばないようにする（書式の一致が目的）
+skipif yuzhu
+statement ok
+SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_memoize = off; SET enable_mergejoin = off; SET enable_tidscan = off; SET max_parallel_workers_per_gather = 0; SET jit = off
+
+statement ok
+CREATE TABLE ex_f_t (a int, b int, c text)
+
+statement ok
+INSERT INTO ex_f_t SELECT g, g % 5, 'c' || g FROM generate_series(1, 200) g
+
+statement ok
+CREATE TABLE ex_f_u (a int, x text)
+
+statement ok
+INSERT INTO ex_f_u SELECT g, 'x' || g FROM generate_series(1, 50) g
+
+statement ok
+CREATE TABLE ex_f_e (z int)
+
+statement ok
+ANALYZE ex_f_t
+
+statement ok
+ANALYZE ex_f_u
+
+statement ok
+ANALYZE ex_f_e
+
+# Seq Scan + Filter
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t
+----
+Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE b > 3
+----
+Seq Scan on ex_f_t
+  Filter: (b > 3)
+
+query T
+EXPLAIN (COSTS OFF) SELECT a FROM ex_f_t WHERE b = 1 AND c = 'c6'
+----
+Seq Scan on ex_f_t
+  Filter: ((b = 1) AND (c = 'c6'::text))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE b = 1 OR a = 5
+----
+Seq Scan on ex_f_t
+  Filter: ((b = 1) OR (a = 5))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE c IS NULL
+----
+Seq Scan on ex_f_t
+  Filter: (c IS NULL)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE c IS NOT NULL AND a <> 3
+----
+Seq Scan on ex_f_t
+  Filter: ((c IS NOT NULL) AND (a <> 3))
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE c LIKE 'c1%'
+----
+Seq Scan on ex_f_t
+  Filter: (c ~~ 'c1%'::text)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t x WHERE x.b = 2
+----
+Seq Scan on ex_f_t x
+  Filter: (b = 2)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE a + b > 10
+----
+Seq Scan on ex_f_t
+  Filter: ((a + b) > 10)
+
+# Result
+query T
+EXPLAIN (COSTS OFF) SELECT 1 WHERE false
+----
+Result
+  One-Time Filter: false
+
+query T
+EXPLAIN (COSTS OFF) SELECT 1 + 1
+----
+Result
+
+query T
+EXPLAIN (COSTS OFF) SELECT now() IS NOT NULL
+----
+Result
+
+# Values Scan
+query T
+EXPLAIN (COSTS OFF) VALUES (1, 'a'), (2, 'b')
+----
+Values Scan on "*VALUES*"
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) VALUES (1, 'a'), (2, 'b')
+----
+Values Scan on "*VALUES*"
+  Output: column1, column2
+
+# Sort / Limit
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t ORDER BY b DESC, c
+----
+Sort
+  Sort Key: b DESC, c
+  ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t ORDER BY a LIMIT 5
+----
+Limit
+  ->  Sort
+        Sort Key: a
+        ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t ORDER BY c LIMIT 5 OFFSET 2
+----
+Limit
+  ->  Sort
+        Sort Key: c
+        ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t LIMIT 3
+----
+Limit
+  ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t OFFSET 3
+----
+Limit
+  ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t ORDER BY b DESC NULLS FIRST, c LIMIT 3
+----
+Limit
+  ->  Sort
+        Sort Key: b DESC, c
+        ->  Seq Scan on ex_f_t
+
+# 集約
+query T
+EXPLAIN (COSTS OFF) SELECT count(*), sum(a), max(c) FROM ex_f_t
+----
+Aggregate
+  ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT b, count(*) FROM ex_f_t GROUP BY b ORDER BY b
+----
+Sort
+  Sort Key: b
+  ->  HashAggregate
+        Group Key: b
+        ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT b, count(*) FROM ex_f_t GROUP BY b HAVING sum(a) > 5 ORDER BY b
+----
+Sort
+  Sort Key: b
+  ->  HashAggregate
+        Group Key: b
+        Filter: (sum(a) > 5)
+        ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT DISTINCT b FROM ex_f_t
+----
+HashAggregate
+  Group Key: b
+  ->  Seq Scan on ex_f_t
+
+query T
+EXPLAIN (COSTS OFF) SELECT DISTINCT ON (b) b, c FROM ex_f_t ORDER BY b, c
+----
+Unique
+  ->  Sort
+        Sort Key: b, c
+        ->  Seq Scan on ex_f_t
+
+# Append と集合演算
+query T
+EXPLAIN (COSTS OFF) SELECT a FROM ex_f_t UNION ALL SELECT a FROM ex_f_u
+----
+Append
+  ->  Seq Scan on ex_f_t
+  ->  Seq Scan on ex_f_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT a FROM ex_f_t UNION SELECT a FROM ex_f_u
+----
+HashAggregate
+  Group Key: ex_f_t.a
+  ->  Append
+        ->  Seq Scan on ex_f_t
+        ->  Seq Scan on ex_f_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT a FROM ex_f_t WHERE b = 1 UNION ALL SELECT a FROM ex_f_u WHERE x = 'x1'
+----
+Append
+  ->  Seq Scan on ex_f_t
+        Filter: (b = 1)
+  ->  Seq Scan on ex_f_u
+        Filter: (x = 'x1'::text)
+
+# CTE Scan
+query T
+EXPLAIN (COSTS OFF) WITH c AS MATERIALIZED (SELECT a, b FROM ex_f_t WHERE b > 3) SELECT * FROM c WHERE a < 10
+----
+CTE Scan on c
+  Filter: (a < 10)
+  CTE c
+    ->  Seq Scan on ex_f_t
+          Filter: (b > 3)
+
+query T
+EXPLAIN (COSTS OFF, VERBOSE) WITH c AS MATERIALIZED (SELECT a, b FROM ex_f_t WHERE b > 3) SELECT * FROM c WHERE a < 10
+----
+CTE Scan on c
+  Output: c.a, c.b
+  Filter: (c.a < 10)
+  CTE c
+    ->  Seq Scan on public.ex_f_t
+          Output: ex_f_t.a, ex_f_t.b
+          Filter: (ex_f_t.b > 3)
+
+# InitPlan / SubPlan
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE b = (SELECT max(z) FROM ex_f_e)
+----
+Seq Scan on ex_f_t
+  Filter: (b = (InitPlan 1).col1)
+  InitPlan 1
+    ->  Aggregate
+          ->  Seq Scan on ex_f_e
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE b = (SELECT 1) + (SELECT 2)
+----
+Seq Scan on ex_f_t
+  Filter: (b = ((InitPlan 1).col1 + (InitPlan 2).col1))
+  InitPlan 1
+    ->  Result
+  InitPlan 2
+    ->  Result
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE b = (SELECT 1) ORDER BY a
+----
+Sort
+  Sort Key: ex_f_t.a
+  InitPlan 1
+    ->  Result
+  ->  Seq Scan on ex_f_t
+        Filter: (b = (InitPlan 1).col1)
+
+query T
+EXPLAIN (COSTS OFF) SELECT a, (SELECT count(*) FROM ex_f_u WHERE ex_f_u.a = ex_f_t.a) FROM ex_f_t
+----
+Seq Scan on ex_f_t
+  SubPlan 1
+    ->  Aggregate
+          ->  Seq Scan on ex_f_u
+                Filter: (a = ex_f_t.a)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE EXISTS (SELECT 1 FROM ex_f_u) OR b = 1
+----
+Seq Scan on ex_f_t
+  Filter: ((InitPlan 1).col1 OR (b = 1))
+  InitPlan 1
+    ->  Seq Scan on ex_f_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE EXISTS (SELECT 1 FROM ex_f_u WHERE ex_f_u.a < ex_f_t.a) OR b = 1
+----
+Seq Scan on ex_f_t
+  Filter: (EXISTS(SubPlan 1) OR (b = 1))
+  SubPlan 1
+    ->  Seq Scan on ex_f_u
+          Filter: (a < ex_f_t.a)
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE a NOT IN (SELECT a FROM ex_f_u)
+----
+Seq Scan on ex_f_t
+  Filter: (NOT (ANY (a = (hashed SubPlan 1).col1)))
+  SubPlan 1
+    ->  Seq Scan on ex_f_u
+
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_f_t WHERE a NOT IN (SELECT a FROM ex_f_u WHERE ex_f_u.x = ex_f_t.c)
+----
+Seq Scan on ex_f_t
+  Filter: (NOT (ANY (a = (SubPlan 1).col1)))
+  SubPlan 1
+    ->  Seq Scan on ex_f_u
+          Filter: (x = ex_f_t.c)
+
+statement ok
+DROP TABLE ex_f_t
+
+statement ok
+DROP TABLE ex_f_u
+
+statement ok
+DROP TABLE ex_f_e
+
+# KNOWN-DIFF: KD-25 PostgreSQL の側だけの設定を戻す
+skipif yuzhu
+statement ok
+RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_memoize; RESET enable_mergejoin; RESET enable_tidscan; RESET max_parallel_workers_per_gather; RESET jit

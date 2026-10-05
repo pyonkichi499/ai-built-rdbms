@@ -1,0 +1,102 @@
+# 追加カタログの OID 参照が閉じている（NOT IN の件数が 0）
+
+query I
+SELECT count(*) FROM pg_opfamily WHERE opfmethod NOT IN (SELECT oid FROM pg_am)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opfamily WHERE opfnamespace NOT IN (SELECT oid FROM pg_namespace)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opfamily WHERE opfowner NOT IN (SELECT oid FROM pg_authid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opclass WHERE opcfamily NOT IN (SELECT oid FROM pg_opfamily)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opclass WHERE opcintype NOT IN (SELECT oid FROM pg_type)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opclass WHERE opcmethod NOT IN (SELECT oid FROM pg_am)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opclass WHERE opcnamespace NOT IN (SELECT oid FROM pg_namespace)
+----
+0
+
+query I
+SELECT count(*) FROM pg_opclass WHERE opcowner NOT IN (SELECT oid FROM pg_authid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amop WHERE amopfamily NOT IN (SELECT oid FROM pg_opfamily)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amop WHERE amoplefttype NOT IN (SELECT oid FROM pg_type) OR amoprighttype NOT IN (SELECT oid FROM pg_type)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amop WHERE amopopr NOT IN (SELECT oid FROM pg_operator)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amop WHERE amopmethod NOT IN (SELECT oid FROM pg_am)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amproc WHERE amprocfamily NOT IN (SELECT oid FROM pg_opfamily)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amproc WHERE amproclefttype NOT IN (SELECT oid FROM pg_type) OR amprocrighttype NOT IN (SELECT oid FROM pg_type)
+----
+0
+
+query I
+SELECT count(*) FROM pg_amproc WHERE amproc NOT IN (SELECT oid FROM pg_proc)
+----
+0
+
+query I
+SELECT count(*) FROM pg_language WHERE lanowner NOT IN (SELECT oid FROM pg_authid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_proc WHERE prolang NOT IN (SELECT oid FROM pg_language)
+----
+0
+
+# pg_index / pg_depend / pg_sequence の参照（ユーザーオブジェクト）
+query I
+SELECT count(*) FROM pg_index WHERE indexrelid NOT IN (SELECT oid FROM pg_class) OR indrelid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_sequence WHERE seqrelid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_sequence WHERE seqtypid NOT IN (SELECT oid FROM pg_type)
+----
+0

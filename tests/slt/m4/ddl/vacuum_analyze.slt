@@ -1,0 +1,146 @@
+# VACUUM / ANALYZE: ブロック内の VACUUM は 25001、ANALYZE は成功、オプション、対象のエラー
+
+statement ok
+CREATE TABLE ddl_va_t (a int PRIMARY KEY, b int)
+
+statement count 3
+INSERT INTO ddl_va_t VALUES (1, 1), (2, 2), (3, 3)
+
+statement ok
+VACUUM
+
+statement ok
+VACUUM ddl_va_t
+
+statement ok
+VACUUM ANALYZE ddl_va_t
+
+statement ok
+ANALYZE
+
+statement ok
+ANALYZE ddl_va_t
+
+statement ok
+ANALYZE ddl_va_t (a)
+
+statement ok
+ANALYZE ddl_va_t (a, b)
+
+statement ok
+VACUUM ANALYZE ddl_va_t (b)
+
+statement ok
+VACUUM (ANALYZE) ddl_va_t
+
+statement ok
+VACUUM (VERBOSE) ddl_va_t
+
+statement ok
+ANALYZE (VERBOSE) ddl_va_t
+
+statement ok
+VACUUM (FULL) ddl_va_t
+
+# VACUUM / ANALYZE の後もデータは同じ
+query II
+SELECT a, b FROM ddl_va_t ORDER BY a
+----
+1 1
+2 2
+3 3
+
+# DELETE した後の VACUUM
+statement count 2
+DELETE FROM ddl_va_t WHERE a > 1
+
+statement ok
+VACUUM ddl_va_t
+
+query II
+SELECT a, b FROM ddl_va_t ORDER BY a
+----
+1 1
+
+statement count 1
+INSERT INTO ddl_va_t VALUES (2, 20)
+
+statement error (23505)
+INSERT INTO ddl_va_t VALUES (2, 21)
+
+# ブロックの中: ANALYZE は成功、VACUUM は 25001
+statement ok
+BEGIN
+
+statement ok
+ANALYZE ddl_va_t
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN
+
+statement error (?s)VACUUM cannot run inside a transaction block
+VACUUM ddl_va_t
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM ANALYZE ddl_va_t
+
+statement ok
+ROLLBACK
+
+# 対象のエラー
+statement error (42P01)
+VACUUM ddl_va_nosuch
+
+statement error (42P01)
+ANALYZE ddl_va_nosuch
+
+statement error (42703)
+ANALYZE ddl_va_t (zz)
+
+statement error (?s)column "zz" of relation "ddl_va_t" does not exist
+ANALYZE ddl_va_t (zz)
+
+# 索引・シーケンスは警告だけ（成功）
+statement ok
+VACUUM ddl_va_t_pkey
+
+statement ok
+ANALYZE ddl_va_t_pkey
+
+# オプションのエラー
+statement error (42601)
+VACUUM (foo) ddl_va_t
+
+statement error (?s)unrecognized VACUUM option "foo"
+VACUUM (foo) ddl_va_t
+
+statement error (?s)unrecognized ANALYZE option "foo"
+ANALYZE (foo) ddl_va_t
+
+statement error (0A000)
+VACUUM ddl_va_t (a)
+
+statement error (?s)ANALYZE option must be specified when a column list is provided
+VACUUM ddl_va_t (a)
+
+# 読み取り専用のトランザクションでも ANALYZE は成功する（readonly_ddl.slt も参照）
+statement ok
+DROP TABLE ddl_va_t

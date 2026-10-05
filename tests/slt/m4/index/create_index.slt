@@ -1,0 +1,217 @@
+# CREATE INDEX: 基本、DESC / NULLS、複数列、自動名、IF NOT EXISTS、空の表・既存の行、CONCURRENTLY、WITH (fillfactor)
+
+statement ok
+CREATE TABLE idx_ci_t (a int, b int, c text)
+
+# 空の表への CREATE INDEX
+statement ok
+CREATE INDEX idx_ci_empty ON idx_ci_t (a)
+
+query T
+SELECT a FROM idx_ci_t WHERE a = 1
+----
+
+statement count 6
+INSERT INTO idx_ci_t VALUES (3, 30, 'c'), (1, 10, 'a'), (2, 20, 'b'), (NULL, 5, 'n'), (1, 11, 'a2'), (2, NULL, 'b2')
+
+query ITT
+SELECT i.indnatts, i.indisunique::text, i.indisprimary::text FROM pg_index i WHERE i.indexrelid = 'idx_ci_empty'::regclass
+----
+1 false false
+
+# 既存の行がある表への CREATE INDEX
+statement ok
+CREATE INDEX idx_ci_b ON idx_ci_t (b)
+
+statement ok
+SET enable_seqscan = off
+
+query IIT
+SELECT a, b, c FROM idx_ci_t WHERE a = 1 ORDER BY b
+----
+1 10 a
+1 11 a2
+
+query IIT
+SELECT a, b, c FROM idx_ci_t WHERE b >= 11 AND b < 30 ORDER BY b
+----
+1 11 a2
+2 20 b
+
+query IIT
+SELECT a, b, c FROM idx_ci_t WHERE b IS NULL
+----
+2 NULL b2
+
+statement ok
+RESET enable_seqscan
+
+# 自動名: t_a_idx、t_a_idx1（同じ列の 2 つ目）、複数列は t_a_b_idx
+statement ok
+CREATE INDEX ON idx_ci_t (a)
+
+statement ok
+CREATE INDEX ON idx_ci_t (a)
+
+statement ok
+CREATE INDEX ON idx_ci_t (a, b)
+
+statement ok
+CREATE INDEX ON idx_ci_t (c, a, b)
+
+query T
+SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'idx_ci_t'::regclass ORDER BY c.relname
+----
+idx_ci_b
+idx_ci_empty
+idx_ci_t_a_b_idx
+idx_ci_t_a_idx
+idx_ci_t_a_idx1
+idx_ci_t_c_a_b_idx
+
+# DESC / NULLS FIRST / NULLS LAST の indoption（DESC は NULLS FIRST を含む 3、DESC NULLS LAST は 1、ASC NULLS FIRST は 2）
+statement ok
+CREATE INDEX idx_ci_d1 ON idx_ci_t (a DESC)
+
+statement ok
+CREATE INDEX idx_ci_d2 ON idx_ci_t (a DESC NULLS LAST)
+
+statement ok
+CREATE INDEX idx_ci_d3 ON idx_ci_t (a NULLS FIRST)
+
+statement ok
+CREATE INDEX idx_ci_d4 ON idx_ci_t (a ASC NULLS LAST, b DESC)
+
+query TT
+SELECT c.relname, i.indoption::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname LIKE 'idx\_ci\_d%' ORDER BY c.relname
+----
+idx_ci_d1 3
+idx_ci_d2 1
+idx_ci_d3 2
+idx_ci_d4 0 3
+
+# 複数列の索引のキー
+query TT
+SELECT indkey::text, indnatts::text || '/' || indnkeyatts::text FROM pg_index WHERE indexrelid = 'idx_ci_t_c_a_b_idx'::regclass
+----
+3 1 2 3/3
+
+statement ok
+SET enable_seqscan = off
+
+query ITT
+SELECT a, b, c FROM idx_ci_t WHERE c = 'a2' AND a = 1 AND b = 11
+----
+1 11 a2
+
+query I
+SELECT a FROM idx_ci_t WHERE a IS NOT NULL ORDER BY a DESC, b DESC
+----
+3
+2
+2
+1
+1
+
+statement ok
+RESET enable_seqscan
+
+# IF NOT EXISTS: 同名なら何もしない
+statement ok
+CREATE INDEX IF NOT EXISTS idx_ci_b ON idx_ci_t (b)
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'idx_ci_b'
+----
+1
+
+statement ok
+CREATE INDEX IF NOT EXISTS idx_ci_new ON idx_ci_t (c)
+
+# UNIQUE
+statement ok
+CREATE UNIQUE INDEX idx_ci_u ON idx_ci_t (c)
+
+query TT
+SELECT indisunique::text, indisprimary::text FROM pg_index WHERE indexrelid = 'idx_ci_u'::regclass
+----
+true false
+
+statement error (23505)
+INSERT INTO idx_ci_t VALUES (9, 90, 'a')
+
+# CONCURRENTLY（ブロックの外では成功する。ブロック内は 25001）
+statement ok
+CREATE INDEX CONCURRENTLY idx_ci_conc ON idx_ci_t (b, a)
+
+query TT
+SELECT indisvalid::text, indisready::text FROM pg_index WHERE indexrelid = 'idx_ci_conc'::regclass
+----
+true true
+
+statement ok
+BEGIN
+
+statement error (25001)
+CREATE INDEX CONCURRENTLY idx_ci_conc2 ON idx_ci_t (c)
+
+statement ok
+ROLLBACK
+
+# WITH (fillfactor)
+statement ok
+CREATE INDEX idx_ci_ff ON idx_ci_t (a) WITH (fillfactor = 50)
+
+statement ok
+CREATE INDEX idx_ci_ff2 ON idx_ci_t (b) WITH (fillfactor = 100)
+
+statement ok
+CREATE INDEX idx_ci_ff3 ON idx_ci_t (b) WITH (fillfactor = 10)
+
+# USING btree は明示できる
+statement ok
+CREATE INDEX idx_ci_bt ON idx_ci_t USING btree (c)
+
+query T
+SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'idx_ci_bt'
+----
+btree
+
+# 索引を作った後も表の内容は変わらない
+query IIT
+SELECT a, b, c FROM idx_ci_t ORDER BY c
+----
+1 10 a
+1 11 a2
+2 20 b
+2 NULL b2
+3 30 c
+NULL 5 n
+
+# 索引つきの表への INSERT / UPDATE / DELETE の後も、索引の結果が一致する
+statement count 1
+INSERT INTO idx_ci_t VALUES (4, 40, 'd')
+
+statement count 1
+UPDATE idx_ci_t SET a = 5 WHERE c = 'd'
+
+statement count 1
+DELETE FROM idx_ci_t WHERE c = 'c'
+
+statement ok
+SET enable_seqscan = off
+
+query IIT
+SELECT a, b, c FROM idx_ci_t WHERE a >= 3 ORDER BY a
+----
+5 40 d
+
+query IIT
+SELECT a, b, c FROM idx_ci_t WHERE b = 30
+----
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+DROP TABLE idx_ci_t

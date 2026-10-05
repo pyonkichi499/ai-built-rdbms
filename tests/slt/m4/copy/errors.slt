@@ -1,0 +1,223 @@
+# COPY ... FROM STDIN が CopyInResponse を返す「前」に失敗するもの。
+# データを送るテストは slt ではできない（tests/compat/copy）。成功する COPY はここに置かない
+
+statement ok
+CREATE TABLE cp_e_t (a int NOT NULL, b text, c int DEFAULT 5)
+
+statement ok
+CREATE SEQUENCE cp_e_s
+
+# 存在しない表・列
+statement error (42P01)
+COPY cp_e_nosuch FROM STDIN
+
+statement error (42P01)
+COPY public.cp_e_nosuch (a) FROM STDIN
+
+statement error (42703)
+COPY cp_e_t (a, zz) FROM STDIN
+
+statement error (42703)
+COPY cp_e_t (zz) FROM STDIN
+
+# 列の重複
+statement error (42701)
+COPY cp_e_t (a, a) FROM STDIN
+
+statement error (42701)
+COPY cp_e_t (a, b, a) FROM STDIN
+
+# シーケンスへの COPY（42809）は PostgreSQL が CopyInResponse を返した後に失敗するので slt では確かめない（tests/compat/copy）
+
+# option の誤り
+statement error (42601)
+COPY cp_e_t FROM STDIN WITH (foo)
+
+statement error (42601)
+COPY cp_e_t FROM STDIN WITH (foo 'bar')
+
+statement error (42601)
+COPY cp_e_t FROM STDIN WITH (freeze on, freeze off)
+
+statement error (42601)
+COPY cp_e_t FROM STDIN WITH (delimiter ',', delimiter '|')
+
+statement error (42601)
+COPY cp_e_t FROM STDIN WITH (header 'x')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (format foo)
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (delimiter E'\n')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (delimiter E'\r')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (delimiter '\')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (delimiter '.')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (delimiter 'a')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (delimiter '5')
+
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (delimiter 'ab')
+
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (delimiter '')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (null E'a\nb')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (null 'a|b', delimiter '|')
+
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (null 'X', default 'X')
+
+# 設計書 10 §5.1 は 22023 としているが、PostgreSQL 17.11 は 0A000
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (default 'a|b', delimiter '|')
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (log_verbosity foo)
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (on_error foo)
+
+statement error (22023)
+COPY cp_e_t FROM STDIN WITH (encoding 'no_such_encoding')
+
+# text 形式で CSV 専用の option
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (quote '"')
+
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (escape '\')
+
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (force_null (a))
+
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (force_not_null (a))
+
+# 旧構文の誤り
+statement error (42601)
+COPY cp_e_t FROM STDIN, null
+
+statement error (42601)
+COPY cp_e_t FROM
+
+statement error (42601)
+COPY FROM STDIN
+
+# 列リストが空
+statement error (42601)
+COPY cp_e_t () FROM STDIN
+
+# 読み取り専用のトランザクション
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+COPY cp_e_t FROM STDIN
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+SET TRANSACTION READ ONLY
+
+statement error (25006)
+COPY cp_e_t FROM STDIN
+
+statement ok
+ROLLBACK
+
+# エラーの後も接続は使える
+query I
+SELECT 1
+----
+1
+
+# yuzhu が対応しない形（M4 では 0A000。KD-19）。PostgreSQL は CopyIn / CopyOut に入ってしまうので yuzhu だけ
+# KNOWN-DIFF: KD-19 CSV は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (format csv)
+
+# KNOWN-DIFF: KD-19 CSV は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN CSV
+
+# KNOWN-DIFF: KD-19 CSV は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN CSV HEADER
+
+# KNOWN-DIFF: KD-19 バイナリは 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (format binary)
+
+# KNOWN-DIFF: KD-19 バイナリは 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY BINARY cp_e_t FROM STDIN
+
+# KNOWN-DIFF: KD-19 COPY TO は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t TO STDOUT
+
+# KNOWN-DIFF: KD-19 COPY (query) TO は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY (SELECT 1) TO STDOUT
+
+# KNOWN-DIFF: KD-19 COPY FROM ... WHERE は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN WHERE a > 1
+
+# KNOWN-DIFF: KD-19 on_error ignore は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (on_error ignore)
+
+# KNOWN-DIFF: KD-19 header match は 0A000
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM STDIN WITH (header match)
+
+# YUZHU-ONLY: ファイルとプログラムからの COPY は常に拒否する
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM '/tmp/cp_e_nosuch.dat'
+
+# YUZHU-ONLY: ファイルとプログラムからの COPY は常に拒否する
+onlyif yuzhu
+statement error (0A000)
+COPY cp_e_t FROM PROGRAM 'true'
+
+# 失敗したあとで何も書かれていない
+query I
+SELECT count(*) FROM cp_e_t
+----
+0
+
+statement ok
+DROP TABLE cp_e_t
+
+statement ok
+DROP SEQUENCE cp_e_s

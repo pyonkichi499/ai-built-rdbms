@@ -1,0 +1,25 @@
+# フェーズ 1: nextval ×3 → CHECKPOINT → nextval のあと kill -9。
+
+statement ok
+CREATE SEQUENCE m4r_sp_a
+
+statement ok
+CREATE SEQUENCE m4r_sp_b
+
+statement ok
+CREATE SEQUENCE m4r_sp_c
+
+query I
+SELECT nextval('m4r_sp_a') FROM generate_series(1, 3)
+----
+1
+2
+3
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT nextval('m4r_sp_a')
+----
+4

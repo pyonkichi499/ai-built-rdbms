@@ -44,7 +44,7 @@ float8 0 0 0 t
 unknown 0 0 0 t
 varchar 0 0 100 t
 
-query T?TT?III
+query T?T?III
 SELECT typname, typispreferred, typdelim, typnotnull, typndims, typbasetype, typtypmod FROM pg_type WHERE oid IN (16, 23, 25, 1043, 701) ORDER BY oid
 ----
 bool t , f 0 0 -1

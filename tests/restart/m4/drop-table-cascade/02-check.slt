@@ -1,0 +1,32 @@
+# フェーズ 2: DROP のコミットが残る。b の既定値は消えている。
+
+query T
+SELECT relname FROM pg_class WHERE relname LIKE 'm4r\_dc\_%' ORDER BY relname
+----
+m4r_dc_b
+m4r_dc_keep
+m4r_dc_keep_id_seq
+m4r_dc_keep_pkey
+
+query TT
+SELECT attname, atthasdef::text FROM pg_attribute WHERE attrelid = 'm4r_dc_b'::regclass AND attnum > 0 ORDER BY attnum
+----
+id false
+x false
+
+query I
+SELECT count(*) FROM pg_attrdef WHERE adrelid = 'm4r_dc_b'::regclass
+----
+0
+
+statement count 1
+INSERT INTO m4r_dc_b (x) VALUES ('after')
+
+query IT
+SELECT id, x FROM m4r_dc_b ORDER BY x
+----
+NULL after
+3 before
+
+statement count 1
+INSERT INTO m4r_dc_keep (y) VALUES ('k')

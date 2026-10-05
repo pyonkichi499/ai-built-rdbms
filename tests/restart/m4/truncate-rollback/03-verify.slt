@@ -1,0 +1,116 @@
+# フェーズ 3: 追加した行も含めて残る。後始末と整合。
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM m4r_tr_t WHERE k >= 0
+----
+6
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+DROP TABLE m4r_tr_t
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'm4r\_tr\_%'
+----
+0
+
+# --- カタログの整合（07 §8.3 の条件 1〜9。ユーザーオブジェクト oid >= 16384）---
+query I
+SELECT count(*) FROM pg_attribute a WHERE a.attrelid >= 16384 AND a.attrelid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attrdef d WHERE d.adrelid >= 16384 AND d.adrelid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint c WHERE c.conrelid <> 0 AND c.conrelid >= 16384 AND c.conrelid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_index i WHERE i.indexrelid >= 16384 AND (i.indrelid NOT IN (SELECT oid FROM pg_class) OR i.indexrelid NOT IN (SELECT oid FROM pg_class))
+----
+0
+
+query I
+SELECT count(*) FROM pg_index i WHERE i.indexrelid >= 16384 AND ((SELECT relkind::text FROM pg_class WHERE oid = i.indexrelid) <> 'i' OR (SELECT relkind::text FROM pg_class WHERE oid = i.indrelid) NOT IN ('r', 't'))
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'i' AND c.oid NOT IN (SELECT indexrelid FROM pg_index)
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint c WHERE c.conrelid >= 16384 AND c.contype IN ('p', 'u') AND (c.conindid = 0 OR c.conindid NOT IN (SELECT indexrelid FROM pg_index WHERE indrelid = c.conrelid))
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint c WHERE c.conrelid >= 16384 AND c.contype IN ('p', 'u') AND (SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.conindid AND d.refclassid = 'pg_constraint'::regclass AND d.refobjid = c.oid AND d.deptype = 'i') <> 1
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.refclassid <> 'pg_namespace'::regclass AND d.objid >= 16384 AND d.objid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.refclassid = 'pg_class'::regclass AND d.refobjid >= 16384 AND d.refobjid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_constraint'::regclass AND d.objid >= 16384 AND d.objid NOT IN (SELECT oid FROM pg_constraint)
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'S' AND c.oid NOT IN (SELECT seqrelid FROM pg_sequence)
+----
+0
+
+query I
+SELECT count(*) FROM pg_sequence s WHERE s.seqrelid >= 16384 AND s.seqrelid NOT IN (SELECT oid FROM pg_class)
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'r' AND c.relnatts <> (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped)
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'r' AND c.relchecks <> (SELECT count(*) FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c')
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'r' AND NOT c.relhasindex AND EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attribute a WHERE a.attrelid >= 16384 AND a.attnum > 0 AND a.atthasdef AND NOT EXISTS (SELECT 1 FROM pg_attrdef d WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attrdef d WHERE d.adrelid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = d.adrelid AND a.attnum = d.adnum AND a.atthasdef)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attribute a WHERE a.attrelid >= 16384 AND a.attidentity <> '' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = a.attrelid AND d.refobjsubid = a.attnum AND d.deptype = 'i')
+----
+0

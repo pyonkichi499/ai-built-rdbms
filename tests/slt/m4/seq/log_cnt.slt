@@ -1,0 +1,96 @@
+# yuzhu だけ: log_cnt（WAL に先に記録した値の残り数）の挙動。PostgreSQL はチェックポイントの時機で変わるので比べない
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+CREATE SEQUENCE sq_lc_a
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_a
+----
+1 0 0
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+SELECT nextval('sq_lc_a')
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_a
+----
+1 32 1
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+SELECT nextval('sq_lc_a')
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_a
+----
+2 31 1
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+CREATE SEQUENCE sq_lc_b CACHE 5
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+SELECT nextval('sq_lc_b')
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_b
+----
+5 32 1
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+SELECT setval('sq_lc_a', 100)
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_a
+----
+100 0 1
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+SELECT nextval('sq_lc_a')
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_a
+----
+101 32 1
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+ALTER SEQUENCE sq_lc_a INCREMENT 2
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+query III
+SELECT last_value, log_cnt, is_called::int FROM sq_lc_a
+----
+101 0 1
+
+# YUZHU-ONLY: log_cnt は PostgreSQL の実装と時機が違う
+onlyif yuzhu
+statement ok
+DROP SEQUENCE sq_lc_a, sq_lc_b
+

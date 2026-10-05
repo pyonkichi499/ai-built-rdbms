@@ -1,0 +1,62 @@
+# 読み取り専用のトランザクションでは nextval / setval は 25006（currval は通る）
+
+statement ok
+CREATE SEQUENCE sq_ro_s
+
+query I
+SELECT nextval('sq_ro_s')
+----
+1
+
+statement ok
+BEGIN READ ONLY
+
+query I
+SELECT currval('sq_ro_s')
+----
+1
+
+statement error (?s)cannot execute nextval\(\) in a read-only transaction
+SELECT nextval('sq_ro_s')
+
+statement error (25P02)
+SELECT currval('sq_ro_s')
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+SELECT nextval('sq_ro_s')
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (?s)cannot execute setval\(\) in a read-only transaction
+SELECT setval('sq_ro_s', 10)
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+SELECT setval('sq_ro_s', 10)
+
+statement ok
+ROLLBACK
+
+# 値は変わっていない
+query I
+SELECT nextval('sq_ro_s')
+----
+2
+
+statement ok
+DROP SEQUENCE sq_ro_s

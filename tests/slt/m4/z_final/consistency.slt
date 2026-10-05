@@ -1,0 +1,118 @@
+# 07 §8.3 の SQL 版（slttools consistency が tests/slt/_include/consistency.slt.part からコピーする。直接編集しない）
+
+# カタログの整合（07 §8.3 の条件 1〜9。ユーザーオブジェクト oid >= 16384 だけ）。すべて 0 件で正常。
+# このファイルが正本。slttools consistency が z_final/consistency.slt と tests/restart/m4 の各シナリオの最後のフェーズへコピーする。
+
+# 1. 参照先の pg_class が存在する
+query I
+SELECT count(*) FROM pg_attribute a WHERE a.attrelid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = a.attrelid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attrdef d WHERE d.adrelid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = d.adrelid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint k WHERE k.conrelid <> 0 AND k.conrelid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = k.conrelid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_index i WHERE (i.indrelid >= 16384 OR i.indexrelid >= 16384) AND (NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = i.indrelid) OR NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = i.indexrelid))
+----
+0
+
+# 2. 索引の relkind と pg_index の対応（索引の表は通常の表 r か TOAST 表 t。設計書は r だけだが PostgreSQL では TOAST 表の索引もある）
+query I
+SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indexrelid >= 16384 AND c.relkind <> 'i'
+----
+0
+
+query I
+SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid WHERE i.indexrelid >= 16384 AND c.relkind NOT IN ('r', 't')
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'i' AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indexrelid = c.oid)
+----
+0
+
+# 3. 制約が指す索引
+query I
+SELECT count(*) FROM pg_constraint k WHERE k.oid >= 16384 AND k.conindid <> 0 AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indexrelid = k.conindid AND i.indrelid = k.conrelid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint k WHERE k.oid >= 16384 AND k.contype IN ('p', 'u') AND k.conindid = 0
+----
+0
+
+# 4. 制約が所有する索引には（索引 -> 制約, i）がちょうど 1 行。制約には表の列への（制約 -> 列, a）がある
+query I
+SELECT count(*) FROM pg_constraint k WHERE k.oid >= 16384 AND k.conindid <> 0 AND k.contype IN ('p', 'u') AND (SELECT count(*) FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = k.conindid AND d.refclassid = 'pg_constraint'::regclass AND d.refobjid = k.oid AND d.deptype = 'i') <> 1
+----
+0
+
+query I
+SELECT count(*) FROM pg_constraint k WHERE k.oid >= 16384 AND k.contype IN ('p', 'u') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_constraint'::regclass AND d.objid = k.oid AND d.refclassid = 'pg_class'::regclass AND d.refobjid = k.conrelid AND d.refobjsubid > 0 AND d.deptype = 'a')
+----
+0
+
+# 5. pg_depend の両端が実在する
+query I
+SELECT count(*) FROM pg_depend d WHERE d.objid >= 16384 AND ((d.classid = 'pg_class'::regclass AND NOT EXISTS (SELECT 1 FROM pg_class x WHERE x.oid = d.objid)) OR (d.classid = 'pg_constraint'::regclass AND NOT EXISTS (SELECT 1 FROM pg_constraint x WHERE x.oid = d.objid)) OR (d.classid = 'pg_attrdef'::regclass AND NOT EXISTS (SELECT 1 FROM pg_attrdef x WHERE x.oid = d.objid)))
+----
+0
+
+query I
+SELECT count(*) FROM pg_depend d WHERE d.refobjid >= 16384 AND ((d.refclassid = 'pg_class'::regclass AND NOT EXISTS (SELECT 1 FROM pg_class x WHERE x.oid = d.refobjid)) OR (d.refclassid = 'pg_constraint'::regclass AND NOT EXISTS (SELECT 1 FROM pg_constraint x WHERE x.oid = d.refobjid)) OR (d.refclassid = 'pg_attrdef'::regclass AND NOT EXISTS (SELECT 1 FROM pg_attrdef x WHERE x.oid = d.refobjid)))
+----
+0
+
+# 6. シーケンスと pg_sequence
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'S' AND NOT EXISTS (SELECT 1 FROM pg_sequence s WHERE s.seqrelid = c.oid)
+----
+0
+
+query I
+SELECT count(*) FROM pg_sequence s WHERE s.seqrelid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = s.seqrelid AND c.relkind = 'S')
+----
+0
+
+# 7. 索引のある表は relhasindex = t
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'r' AND NOT c.relhasindex AND EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid)
+----
+0
+
+# 8. relnatts と relchecks
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'r' AND c.relnatts <> (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0)
+----
+0
+
+query I
+SELECT count(*) FROM pg_class c WHERE c.oid >= 16384 AND c.relkind = 'r' AND c.relchecks <> (SELECT count(*) FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'c')
+----
+0
+
+# 9. atthasdef と pg_attrdef、identity 列のシーケンスの従属
+query I
+SELECT count(*) FROM pg_attribute a WHERE a.attrelid >= 16384 AND a.attnum > 0 AND NOT a.attisdropped AND a.atthasdef AND NOT EXISTS (SELECT 1 FROM pg_attrdef d WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attrdef d WHERE d.adrelid >= 16384 AND NOT EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = d.adrelid AND a.attnum = d.adnum AND a.atthasdef)
+----
+0
+
+query I
+SELECT count(*) FROM pg_attribute a WHERE a.attrelid >= 16384 AND a.attnum > 0 AND NOT a.attisdropped AND a.attidentity <> '' AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = a.attrelid AND d.refobjsubid = a.attnum AND d.deptype = 'i')
+----
+0

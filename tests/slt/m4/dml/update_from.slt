@@ -1,0 +1,129 @@
+# UPDATE ... FROM / DELETE ... USING: 結合、SET の右辺、複数一致、別名、解析の順序、エラー
+
+statement ok
+CREATE TABLE dm_r (id int PRIMARY KEY, v int, w text)
+
+statement ok
+CREATE TABLE dm_t (a int, c text)
+
+statement ok
+CREATE TABLE dm_u (a int, e int)
+
+statement ok
+INSERT INTO dm_r VALUES (1, 1, 'a'), (2, 2, 'b'), (3, 3, 'c'), (4, 4, 'd')
+
+statement ok
+INSERT INTO dm_t VALUES (1, 'x'), (2, 'y'), (3, 'z'), (3, 'zz'), (NULL, 'n')
+
+statement ok
+INSERT INTO dm_u VALUES (1, 100), (3, 300), (4, 400)
+
+# FROM の列を SET の右辺に使う。一致しない行は変わらない
+statement count 3
+UPDATE dm_r SET v = dm_u.e FROM dm_u WHERE dm_u.a = dm_r.id
+
+query IIT
+SELECT id, v, w FROM dm_r ORDER BY id
+----
+1 100 a
+2 2 b
+3 300 c
+4 400 d
+
+# 複数の FROM 項目（結合）。ON に FROM の項目だけが見える
+statement count 2
+UPDATE dm_r SET v = 0 FROM dm_t JOIN dm_u ON dm_u.a = dm_t.a WHERE dm_u.a = dm_r.id AND dm_t.c IN ('x', 'z')
+
+# 対象の行が複数の FROM 行に一致しても 1 回だけ更新する（どの値になるかは不定なので件数だけ）
+statement count 1
+UPDATE dm_r SET w = dm_t.c FROM dm_t WHERE dm_t.a = dm_r.id AND dm_r.id = 3
+
+# 自己結合（別名）。FROM の中で古い値を読む
+statement count 4
+UPDATE dm_r SET v = n.id FROM dm_r AS n WHERE n.id = dm_r.id
+
+query II
+SELECT id, v FROM dm_r ORDER BY id
+----
+1 1
+2 2
+3 3
+4 4
+
+# 派生表・VALUES・generate_series を FROM に
+statement count 2
+UPDATE dm_r SET v = s.x * 10 FROM (SELECT id AS i, id AS x FROM dm_r WHERE id <= 2) s WHERE s.i = dm_r.id
+
+statement count 2
+UPDATE dm_r SET v = vv.x FROM (VALUES (3, 33), (4, 44)) AS vv(i, x) WHERE vv.i = dm_r.id
+
+statement count 1
+UPDATE dm_r SET v = g FROM generate_series(1, 2) AS g WHERE g = dm_r.id AND g = 1
+
+query II
+SELECT id, v FROM dm_r ORDER BY id
+----
+1 1
+2 20
+3 33
+4 44
+
+# SET の右辺に副問い合わせと集約（FROM と併用しない）
+statement count 4
+UPDATE dm_r SET v = (SELECT max(e) FROM dm_u WHERE dm_u.a = dm_r.id)
+
+query II
+SELECT id, v FROM dm_r ORDER BY id
+----
+1 100
+2 NULL
+3 300
+4 400
+
+# DELETE ... USING
+statement count 2
+DELETE FROM dm_r USING dm_t WHERE dm_t.a = dm_r.id AND dm_t.c IN ('x', 'y')
+
+statement count 1
+DELETE FROM dm_r USING dm_t JOIN dm_u ON dm_u.a = dm_t.a WHERE dm_t.a = dm_r.id
+
+query I
+SELECT count(*) FROM dm_r
+----
+1
+
+# 解析のエラー
+# 同じ表を別名なしで 2 回
+statement error table name "dm_r" specified more than once
+UPDATE dm_r SET v = 1 FROM dm_r
+
+# 対象表に別名があれば元の名前では参照できない
+statement error invalid reference to FROM-clause entry for table "dm_r"
+UPDATE dm_r x SET v = 1 WHERE dm_r.id = 1
+
+# FROM の中から対象表は見えない
+statement error invalid reference to FROM-clause entry for table "dm_r"
+UPDATE dm_r SET v = 1 FROM (SELECT dm_r.id) s
+
+statement error invalid reference to FROM-clause entry for table "dm_r"
+UPDATE dm_r SET v = 1 FROM dm_t JOIN dm_u ON dm_u.a = dm_r.id
+
+# 修飾なしの列が曖昧
+statement error column reference "a" is ambiguous
+UPDATE dm_r SET v = 3 FROM dm_t, dm_u WHERE a = dm_r.id
+
+# 解析の順序は FROM → WHERE → SET（WHERE の列のエラーが先）
+statement error column "yy" does not exist
+UPDATE dm_r SET v = zz WHERE yy = 1
+
+statement error aggregate functions are not allowed in UPDATE
+UPDATE dm_r SET v = count(*)
+
+statement error aggregate functions are not allowed in WHERE
+DELETE FROM dm_r WHERE count(*) > 1
+
+statement error relation "nosuch" does not exist
+DELETE FROM dm_r USING nosuch
+
+statement ok
+DROP TABLE dm_r, dm_t, dm_u

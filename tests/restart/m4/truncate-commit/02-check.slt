@@ -1,0 +1,29 @@
+# フェーズ 2: TRUNCATE のコミットが残り、表は空。索引も空で一貫している。
+
+query I
+SELECT count(*) FROM m4r_tc_t
+----
+0
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM m4r_tc_t WHERE k >= 0
+----
+0
+
+query I
+SELECT count(*) FROM m4r_tc_t WHERE v >= 0
+----
+0
+
+statement ok
+RESET enable_seqscan
+
+# 索引は空なので、前の行のキーを入れ直せる
+statement count 2
+INSERT INTO m4r_tc_t VALUES (1, 10, 1), (2, 20, 2)
+
+statement error (23505)
+INSERT INTO m4r_tc_t VALUES (3, 10, 0)

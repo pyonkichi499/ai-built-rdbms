@@ -1,0 +1,19 @@
+# フェーズ 2: 正常停止の後は続きから（r1 = 4、r2 = 6、rt の id = 3）。この後は kill -9（02-clean.mode = crash）。
+
+query I
+SELECT nextval('m4r_sm_r1')
+----
+4
+
+query I
+SELECT nextval('m4r_sm_r2')
+----
+6
+
+statement count 1
+INSERT INTO m4r_sm_rt (v) VALUES (3)
+
+query I
+SELECT id FROM m4r_sm_rt WHERE v = 3
+----
+3

@@ -1,0 +1,96 @@
+# count(DISTINCT) / sum(DISTINCT) / avg(DISTINCT) / FILTER / GROUP BY との組み合わせ
+
+statement ok
+CREATE TABLE ag_df (g int, a int, n numeric, t text)
+
+statement ok
+INSERT INTO ag_df VALUES
+  (1, 1, 1.5, 'x'), (1, 1, 1.5, 'x'), (1, 2, 2.5, 'y'), (1, NULL, NULL, NULL),
+  (2, 3, 3.0, 'z'), (2, 3, 3.00, 'z'), (2, 3, 3.0, NULL),
+  (3, NULL, NULL, NULL)
+
+query IIII
+SELECT count(*), count(a), count(DISTINCT a), count(DISTINCT t) FROM ag_df
+----
+8 6 3 3
+
+query ITT
+SELECT sum(DISTINCT a), sum(DISTINCT n)::text, avg(DISTINCT a)::text FROM ag_df
+----
+6 7.0 2.0000000000000000
+
+# numeric の DISTINCT は値で比べる（3.0 と 3.00 は同じ）
+query IT
+SELECT count(DISTINCT n), sum(DISTINCT n)::text FROM ag_df WHERE g = 2
+----
+1 3.0
+
+query IIIT
+SELECT g, count(DISTINCT a), sum(DISTINCT a), avg(DISTINCT a)::text FROM ag_df GROUP BY g ORDER BY g
+----
+1 2 3 1.5000000000000000
+2 1 3 3.0000000000000000
+3 0 NULL NULL
+
+# DISTINCT と通常の集約を混ぜる
+query IIII
+SELECT g, count(*), count(DISTINCT t), sum(a) FROM ag_df GROUP BY g ORDER BY g
+----
+1 4 2 4
+2 3 1 9
+3 1 0 NULL
+
+# FILTER
+query II
+SELECT count(*) FILTER (WHERE a = 1), count(a) FILTER (WHERE g = 2) FROM ag_df
+----
+2 3
+
+query II
+SELECT g, sum(a) FILTER (WHERE a > 1) FROM ag_df GROUP BY g ORDER BY g
+----
+1 2
+2 9
+3 NULL
+
+# FILTER が全部落とす
+query IIT
+SELECT count(*) FILTER (WHERE false), sum(a) FILTER (WHERE false), (avg(a) FILTER (WHERE false))::text FROM ag_df
+----
+0 NULL NULL
+
+# FILTER の条件が NULL の行は落ちる
+query I
+SELECT count(*) FILTER (WHERE a > 1) FROM ag_df
+----
+4
+
+# DISTINCT と FILTER
+query I
+SELECT count(DISTINCT a) FILTER (WHERE g = 1) FROM ag_df
+----
+2
+
+# 式の DISTINCT
+query I
+SELECT count(DISTINCT a % 2) FROM ag_df
+----
+2
+
+query I
+SELECT count(DISTINCT g * 0) FROM ag_df
+----
+1
+
+# DISTINCT のある集約は ORDER BY / HAVING でも使える
+query I
+SELECT g FROM ag_df GROUP BY g HAVING count(DISTINCT a) > 1 ORDER BY g
+----
+1
+
+# count(DISTINCT *) / 引数なしの DISTINCT は構文エラー
+statement error (42601)
+SELECT count(DISTINCT *) FROM ag_df
+
+statement ok
+DROP TABLE ag_df

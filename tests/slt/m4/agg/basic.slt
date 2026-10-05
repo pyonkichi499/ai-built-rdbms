@@ -1,0 +1,150 @@
+# 集約: 結果型、NULL と空入力、DISTINCT、FILTER、解決のエラー、禁止位置
+
+statement ok
+CREATE TABLE ag_t (a int, b int, c text, f bool)
+
+statement ok
+INSERT INTO ag_t VALUES (1, 10, 'x', true), (2, 20, 'y', false), (3, NULL, 'x', NULL), (3, 30, NULL, true)
+
+# 結果型（sum(int4) = int8、sum(int8) = numeric、avg(整数) = numeric、avg(float) = float8）
+query TTTTTT
+SELECT pg_typeof(count(*)), pg_typeof(sum(a)), pg_typeof(sum(a::bigint)), pg_typeof(avg(a)), pg_typeof(avg(a::float8)), pg_typeof(max(c)) FROM ag_t
+----
+bigint bigint numeric numeric double precision text
+
+query IIRI
+SELECT count(*), count(b), avg(b::float8), sum(b) FROM ag_t
+----
+4 3 20 60
+
+query ITT
+SELECT min(a), max(c), min(c) FROM ag_t
+----
+1 y x
+
+# 空入力: GROUP BY なしは 1 行（count は 0、他は NULL）。GROUP BY ありは 0 行
+query IIIT
+SELECT count(*), count(a), sum(a), max(c) FROM ag_t WHERE false
+----
+0 0 NULL NULL
+
+query II
+SELECT a, count(*) FROM ag_t WHERE false GROUP BY a
+----
+
+# DISTINCT と FILTER
+query IIII
+SELECT count(DISTINCT a), count(DISTINCT c), sum(DISTINCT a), count(*) FILTER (WHERE a > 1) FROM ag_t
+----
+3 2 6 3
+
+query ??? 
+SELECT bool_and(f), bool_or(f), every(f) FROM ag_t
+----
+f t f
+
+query ?
+SELECT sum(a) FILTER (WHERE false) IS NULL FROM ag_t
+----
+t
+
+# NULL を含むキーのグループ化（NULL どうしは同じグループ）
+query TI
+SELECT c, count(*) FROM ag_t GROUP BY c ORDER BY c NULLS LAST
+----
+x 2
+y 1
+NULL 1
+
+# 集約の入った式・HAVING・CASE
+query IIR
+SELECT a, sum(b) + 1, avg(b::float8) FROM ag_t GROUP BY a HAVING count(*) >= 1 ORDER BY a
+----
+1 11 10
+2 21 20
+3 31 30
+
+query T
+SELECT CASE WHEN count(*) > 3 THEN 'many' ELSE 'few' END FROM ag_t
+----
+many
+
+# 解決のエラー（5.5.1）
+statement error DISTINCT specified, but abs is not an aggregate function
+SELECT abs(DISTINCT a) FROM ag_t
+
+statement error FILTER specified, but abs is not an aggregate function
+SELECT abs(a) FILTER (WHERE true) FROM ag_t
+
+statement error function abs\(\) does not exist
+SELECT abs(*) FROM ag_t
+
+statement error count\(\*\) must be used to call a parameterless aggregate function
+SELECT count() FROM ag_t
+
+statement error function sum\(text\) does not exist
+SELECT sum(c) FROM ag_t
+
+statement error function sum\(unknown\) is not unique
+SELECT sum('1') FROM ag_t
+
+statement error function min\(boolean\) does not exist
+SELECT min(f) FROM ag_t
+
+statement error function count\(integer, integer\) does not exist
+SELECT count(a, b) FROM ag_t
+
+statement error argument of FILTER must be type boolean, not type integer
+SELECT count(*) FILTER (WHERE a) FROM ag_t
+
+# 禁止位置と入れ子
+statement error aggregate functions are not allowed in WHERE
+SELECT count(*) FROM ag_t WHERE count(*) > 1
+
+statement error aggregate functions are not allowed in GROUP BY
+SELECT 1 FROM ag_t GROUP BY count(*)
+
+statement error aggregate functions are not allowed in LIMIT
+SELECT a FROM ag_t LIMIT count(*)
+
+statement error aggregate functions are not allowed in VALUES
+VALUES (count(*))
+
+statement error aggregate functions are not allowed in FILTER
+SELECT count(*) FILTER (WHERE count(*) > 1) FROM ag_t
+
+statement error aggregate function calls cannot be nested
+SELECT sum(count(*)) FROM ag_t
+
+# KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+statement ok
+SELECT string_agg(c, ',') FROM ag_t
+
+# KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
+onlyif yuzhu
+statement error (0A000)
+SELECT string_agg(c, ',') FROM ag_t
+
+# KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+statement ok
+SELECT count(*) OVER () FROM ag_t
+
+# KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
+onlyif yuzhu
+statement error (0A000)
+SELECT count(*) OVER () FROM ag_t
+
+# KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+statement ok
+SELECT a FROM ag_t GROUP BY ROLLUP (a)
+
+# KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
+onlyif yuzhu
+statement error (0A000)
+SELECT a FROM ag_t GROUP BY ROLLUP (a)
+
+statement ok
+DROP TABLE ag_t

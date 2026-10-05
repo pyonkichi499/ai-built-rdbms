@@ -1,0 +1,104 @@
+# フェーズ 1: 昇順・降順気味・ばらばらの順で 9000 行を入れて B+Tree を分割させる（キーは text が 300 バイトで 1 ページに 20 件ほど）。
+# 副索引は DESC NULLS FIRST。
+
+statement ok
+CREATE TABLE m4r_bg_t (k int PRIMARY KEY, s text NOT NULL, v int)
+
+statement ok
+CREATE UNIQUE INDEX m4r_bg_t_s ON m4r_bg_t (s)
+
+statement ok
+CREATE INDEX m4r_bg_t_v ON m4r_bg_t (v DESC NULLS FIRST)
+
+# 昇順
+statement count 3000
+INSERT INTO m4r_bg_t SELECT g, lpad(g::text, 300, '0'), g % 50 FROM generate_series(1, 3000) g
+
+# 降順に近い順（6000 ... 3001）。v は NULL を混ぜる
+statement count 3000
+INSERT INTO m4r_bg_t SELECT 9001 - g, lpad((9001 - g)::text, 300, '0'), CASE WHEN g % 10 = 0 THEN NULL ELSE g % 50 END FROM generate_series(1, 3000) g
+
+# ばらばらの順（3001 ... 6000 の置換）
+statement count 3000
+INSERT INTO m4r_bg_t SELECT 3001 + (g * 7) % 3000, lpad((3001 + (g * 7) % 3000)::text, 300, '0'), g % 50 FROM generate_series(1, 3000) g
+
+# --- 索引走査（enable_seqscan = off）と全走査の件数・合計が一致する
+statement ok
+SET enable_seqscan = off
+
+query III
+SELECT count(*), min(k), max(k) FROM m4r_bg_t
+----
+9000 1 9000
+
+query II
+SELECT count(*), sum(v) FROM m4r_bg_t WHERE k BETWEEN 100 AND 7000
+----
+6901 167050
+
+query II
+SELECT count(*), sum(k) FROM m4r_bg_t WHERE v = 7
+----
+180 811560
+
+query I
+SELECT count(*) FROM m4r_bg_t WHERE v IS NULL
+----
+300
+
+query II
+SELECT k, length(s) FROM m4r_bg_t WHERE s = lpad('4321', 300, '0')
+----
+4321 300
+
+query I
+SELECT k FROM m4r_bg_t ORDER BY k DESC LIMIT 3
+----
+9000
+8999
+8998
+
+query I
+SELECT k FROM m4r_bg_t WHERE k >= 2990 ORDER BY k LIMIT 4
+----
+2990
+2991
+2992
+2993
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+SET enable_indexscan = off
+
+statement ok
+SET enable_bitmapscan = off
+
+query III
+SELECT count(*), min(k), max(k) FROM m4r_bg_t
+----
+9000 1 9000
+
+query II
+SELECT count(*), sum(v) FROM m4r_bg_t WHERE k BETWEEN 100 AND 7000
+----
+6901 167050
+
+query II
+SELECT count(*), sum(k) FROM m4r_bg_t WHERE v = 7
+----
+180 811560
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+RESET enable_bitmapscan
+
+# --- 一意性（PRIMARY KEY と UNIQUE INDEX）
+statement error (23505)
+INSERT INTO m4r_bg_t VALUES (4321, 'dup-pk', 0)
+
+statement error (23505)
+INSERT INTO m4r_bg_t VALUES (-1, lpad('4321', 300, '0'), 0)

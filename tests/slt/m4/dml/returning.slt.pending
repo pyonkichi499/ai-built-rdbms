@@ -1,0 +1,200 @@
+# RETURNING（INSERT / UPDATE / DELETE）。対象表の列・式・別名・システム列・集約のエラー・他の表の列（KD-26）
+#
+# 注意: yuzhu の RETURNING_ENABLED が true になってから有効にする（任意項目。03 D3-17）。
+#       それまでは returning.slt.pending という名前で置き、有効にするときに returning.slt へ改名する。
+
+statement ok
+CREATE TABLE dm_rt (id int PRIMARY KEY, a int, b text DEFAULT 'dflt')
+
+statement ok
+CREATE TABLE dm_rt2 (id int, w text)
+
+statement ok
+INSERT INTO dm_rt2 VALUES (1, 'w1'), (2, 'w2')
+
+# INSERT ... VALUES RETURNING
+query ITT
+INSERT INTO dm_rt VALUES (1, 10, 'x') RETURNING id, a, b
+----
+1 10 x
+
+# 複数行
+query IIT rowsort
+INSERT INTO dm_rt VALUES (2, 20, 'y'), (3, NULL, NULL) RETURNING id, a, b
+----
+2 20 y
+3 NULL NULL
+
+# *、DEFAULT が入った列
+query IIT
+INSERT INTO dm_rt (id, a) VALUES (4, 40) RETURNING *
+----
+4 40 dflt
+
+query IIT
+INSERT INTO dm_rt (id) VALUES (5) RETURNING dm_rt.*
+----
+5 NULL dflt
+
+# 式と別名
+query IIT
+INSERT INTO dm_rt (id, a) VALUES (6, 60) RETURNING id * 2 AS dbl, a + 1, upper(b)
+----
+12 61 DFLT
+
+query T
+INSERT INTO dm_rt (id, a) VALUES (7, 70) RETURNING pg_typeof(a)
+----
+integer
+
+# INSERT ... SELECT RETURNING（SELECT の FROM は見えない）
+query IT rowsort
+INSERT INTO dm_rt (id, a, b) SELECT id + 100, id, w FROM dm_rt2 RETURNING id, b
+----
+101 w1
+102 w2
+
+# UPDATE: 更新後の値
+query III
+UPDATE dm_rt SET a = a + 1 WHERE id = 1 RETURNING id, a, a * 2
+----
+1 11 22
+
+query IT rowsort
+UPDATE dm_rt SET a = 0, b = 'u' WHERE id IN (2, 3) RETURNING id, b
+----
+2 u
+3 u
+
+# 0 行
+query I
+UPDATE dm_rt SET a = 0 WHERE id = 999 RETURNING id
+----
+
+# 更新しても値が同じ行も返る
+query II
+UPDATE dm_rt SET a = a WHERE id = 1 RETURNING id, a
+----
+1 11
+
+# SET の右辺の評価は更新前の値を使う（RETURNING は新しい値）
+query II
+UPDATE dm_rt SET a = id, id = id + 1000 WHERE id = 4 RETURNING id, a
+----
+1004 4
+
+# DELETE: 削除した行の値
+query ITT
+DELETE FROM dm_rt WHERE id = 1004 RETURNING id, a, b
+----
+1004 4 dflt
+
+query IT rowsort
+DELETE FROM dm_rt WHERE id IN (101, 102) RETURNING id, b
+----
+101 w1
+102 w2
+
+query I
+DELETE FROM dm_rt WHERE id = 999 RETURNING id
+----
+
+# システム列
+query T
+INSERT INTO dm_rt (id) VALUES (8) RETURNING ctid IS NOT NULL
+----
+t
+
+query T
+UPDATE dm_rt SET a = 1 WHERE id = 8 RETURNING xmin::text <> '0'
+----
+t
+
+# ORDER BY / LIMIT なしの結果と件数が一致する
+statement count 3
+INSERT INTO dm_rt SELECT 200 + n, n, 'g' FROM generate_series(1, 3) n RETURNING id
+
+statement count 3
+DELETE FROM dm_rt WHERE b = 'g' RETURNING id
+
+# 集約・存在しない列・表なし
+statement error (42803)
+INSERT INTO dm_rt (id) VALUES (9) RETURNING count(*)
+
+statement error (42803)
+UPDATE dm_rt SET a = 1 RETURNING sum(a)
+
+statement error (42703)
+INSERT INTO dm_rt (id) VALUES (9) RETURNING nosuch
+
+statement error (42P01)
+INSERT INTO dm_rt (id) VALUES (9) RETURNING t.a
+
+# 制約違反のとき RETURNING は何も返さず、行も入らない
+statement error (23505)
+INSERT INTO dm_rt VALUES (2, 1, 'dup') RETURNING id
+
+query I
+SELECT count(*) FROM dm_rt WHERE id = 9
+----
+0
+
+# 他の表の列（UPDATE ... FROM / DELETE ... USING）
+# KNOWN-DIFF: KD-26 FROM / USING の列を RETURNING に使うと yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query ITT rowsort
+UPDATE dm_rt SET b = dm_rt2.w FROM dm_rt2 WHERE dm_rt.id = dm_rt2.id RETURNING dm_rt.id, dm_rt2.w, dm_rt.b
+----
+1 w1 w1
+2 w2 w2
+
+# KNOWN-DIFF: KD-26 FROM / USING の列を RETURNING に使うと yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+UPDATE dm_rt SET b = dm_rt2.w FROM dm_rt2 WHERE dm_rt.id = dm_rt2.id RETURNING dm_rt.id, dm_rt2.w, dm_rt.b
+
+# KNOWN-DIFF: KD-26 UPDATE ... FROM の RETURNING * は他の表の列を含むので yuzhu で 0A000
+skipif yuzhu
+query IITTIT
+UPDATE dm_rt SET a = 5 FROM dm_rt2 WHERE dm_rt.id = dm_rt2.id AND dm_rt2.id = 2 RETURNING *
+----
+2 5 w2 2 w2
+
+# KNOWN-DIFF: KD-26 UPDATE ... FROM の RETURNING * は他の表の列を含むので yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+UPDATE dm_rt SET a = 5 FROM dm_rt2 WHERE dm_rt.id = dm_rt2.id AND dm_rt2.id = 2 RETURNING *
+
+# 他の表に触れない RETURNING は FROM があっても通る
+query I
+UPDATE dm_rt SET a = 6 FROM dm_rt2 WHERE dm_rt.id = dm_rt2.id AND dm_rt2.id = 2 RETURNING dm_rt.a
+----
+6
+
+# KNOWN-DIFF: KD-26 DELETE ... USING で USING の列を RETURNING に使うと yuzhu で 0A000
+skipif yuzhu
+query IT
+DELETE FROM dm_rt USING dm_rt2 WHERE dm_rt.id = dm_rt2.id AND dm_rt2.id = 2 RETURNING dm_rt.id, dm_rt2.w
+----
+2 w2
+
+# KNOWN-DIFF: KD-26 DELETE ... USING で USING の列を RETURNING に使うと yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+DELETE FROM dm_rt USING dm_rt2 WHERE dm_rt.id = dm_rt2.id AND dm_rt2.id = 2 RETURNING dm_rt.id, dm_rt2.w
+
+# RETURNING の副問い合わせ（yuzhu は 0A000: 03 5.10.2）
+# KNOWN-DIFF: KD-26 RETURNING の副問い合わせは yuzhu で 0A000（PostgreSQL は成功する）
+skipif yuzhu
+query IT
+INSERT INTO dm_rt (id) VALUES (10) RETURNING id, (SELECT max(w) FROM dm_rt2)
+----
+10 w2
+
+# KNOWN-DIFF: KD-26 RETURNING の副問い合わせは yuzhu で 0A000
+onlyif yuzhu
+statement error (0A000)
+INSERT INTO dm_rt (id) VALUES (10) RETURNING id, (SELECT max(w) FROM dm_rt2)
+
+statement ok
+DROP TABLE dm_rt, dm_rt2

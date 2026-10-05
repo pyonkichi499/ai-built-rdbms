@@ -1,0 +1,14 @@
+# フェーズ 4: 同じく続きから。
+
+query I
+SELECT nextval('m4r_sp_c')
+----
+2
+
+statement ok
+DROP SEQUENCE m4r_sp_a, m4r_sp_b, m4r_sp_c
+
+query I
+SELECT count(*) FROM pg_class WHERE relname LIKE 'm4r\_sp\_%'
+----
+0

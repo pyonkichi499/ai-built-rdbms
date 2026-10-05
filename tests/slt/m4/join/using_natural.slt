@@ -1,0 +1,153 @@
+# JOIN ... USING / NATURAL JOIN: 併合列の位置・型・修飾、FULL の COALESCE、連鎖、エラー
+
+statement ok
+CREATE TABLE jn_t (a int, b int, c text)
+
+statement ok
+CREATE TABLE jn_u (a int, e int, c text)
+
+statement ok
+CREATE TABLE jn_k1 (k smallint, s varchar(5))
+
+statement ok
+CREATE TABLE jn_k2 (k bigint, s text)
+
+statement ok
+INSERT INTO jn_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, NULL, 'z')
+
+statement ok
+INSERT INTO jn_u VALUES (1, 100, 'x'), (3, 300, 'q'), (4, 400, 'w')
+
+statement ok
+INSERT INTO jn_k1 VALUES (1, 'a'), (2, 'b')
+
+statement ok
+INSERT INTO jn_k2 VALUES (1, 'a'), (3, 'c')
+
+# 併合列は先頭に 1 回だけ。その後に左の残り、右の残り
+query IITIT
+SELECT * FROM jn_t JOIN jn_u USING (a) ORDER BY a
+----
+1 10 x 100 x
+3 NULL z 300 q
+
+# 修飾すれば元の列（t.* / u.* は USING の列も含む）
+query IITIIT
+SELECT jn_t.*, jn_u.* FROM jn_t JOIN jn_u USING (a) ORDER BY 1
+----
+1 10 x 1 100 x
+3 NULL z 3 300 q
+
+# FULL JOIN の併合列は COALESCE。t.a と u.a は元の列（NULL になりうる）
+query IIII
+SELECT a, jn_t.a, jn_u.a, e FROM jn_t FULL JOIN jn_u USING (a) ORDER BY 1
+----
+1 1 1 100
+2 2 NULL NULL
+3 3 3 300
+4 NULL 4 400
+
+# LEFT / RIGHT の併合列
+query II
+SELECT a, e FROM jn_t LEFT JOIN jn_u USING (a) ORDER BY a
+----
+1 100
+2 NULL
+3 300
+
+query II
+SELECT a, b FROM jn_t RIGHT JOIN jn_u USING (a) ORDER BY a
+----
+1 10
+3 NULL
+4 NULL
+
+# 複数列の USING。指定順に先頭へ
+query ITII
+SELECT * FROM jn_t JOIN jn_u USING (a, c) ORDER BY a
+----
+1 x 10 100
+
+# NATURAL JOIN は共通名（a と c）がすべて USING になる
+query ITII
+SELECT * FROM jn_t NATURAL JOIN jn_u ORDER BY a
+----
+1 x 10 100
+
+query ITII
+SELECT * FROM jn_t NATURAL LEFT JOIN jn_u ORDER BY a
+----
+1 x 10 100
+2 y 20 NULL
+3 z NULL NULL
+
+# 共通名がなければ直積（エラーにならない）
+statement ok
+CREATE TABLE jn_p (id int, v int)
+
+statement ok
+CREATE TABLE jn_kt (k text)
+
+statement ok
+INSERT INTO jn_p VALUES (1, 1), (2, 2)
+
+query I
+SELECT count(*) FROM jn_t NATURAL JOIN jn_p
+----
+6
+
+# 型が違う列の USING: 併合列の型は共通型、元の列は元の型
+query TTT
+SELECT pg_typeof(k), pg_typeof(jn_k1.k), pg_typeof(jn_k2.k) FROM jn_k1 JOIN jn_k2 USING (k)
+----
+bigint smallint bigint
+
+query TTT
+SELECT pg_typeof(k), pg_typeof(jn_k1.k), pg_typeof(jn_k2.k) FROM jn_k1 FULL JOIN jn_k2 USING (k) LIMIT 1
+----
+bigint smallint bigint
+
+# varchar と text: 併合列は左（varchar）の型が残る
+query T
+SELECT pg_typeof(s) FROM jn_k1 JOIN jn_k2 USING (s) LIMIT 1
+----
+character varying
+
+# 連鎖: 2 つ目の USING の左は結合。a は 1 つに見える
+query IIITTT
+SELECT * FROM jn_t JOIN jn_u USING (a) JOIN jn_u jn_u2 USING (a, e) ORDER BY a
+----
+1 100 10 x x x
+3 300 NULL z q q
+
+# WHERE / ORDER BY / GROUP BY で併合列を修飾なしで使う
+query II
+SELECT a, e FROM jn_t JOIN jn_u USING (a) WHERE a > 1 ORDER BY a
+----
+3 300
+
+# エラー
+statement error specified in USING clause does not exist in left table
+SELECT * FROM jn_t JOIN jn_u USING (zz)
+
+statement error does not exist in left table
+SELECT * FROM jn_t JOIN jn_u USING (e)
+
+statement error does not exist in right table
+SELECT * FROM jn_t JOIN jn_u USING (b)
+
+statement error appears more than once in USING clause
+SELECT * FROM jn_t JOIN jn_u USING (a, a)
+
+# 結合の左に同名の列が 2 つ残っている（c）
+statement error common column name "c" appears more than once in left table
+SELECT * FROM jn_t JOIN jn_u USING (a) JOIN jn_u jn_u2 USING (c)
+
+statement error operator does not exist: smallint = text
+SELECT * FROM jn_k1 JOIN jn_kt USING (k)
+
+statement error column reference "b" is ambiguous
+SELECT b FROM jn_t JOIN jn_t jn_t2 USING (a)
+
+statement ok
+DROP TABLE jn_t, jn_u, jn_k1, jn_k2, jn_p, jn_kt
