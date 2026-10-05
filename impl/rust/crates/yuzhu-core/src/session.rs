@@ -595,6 +595,8 @@ impl Session {
                     snapshot: &snap,
                     session: &info,
                     interrupts: &interrupts,
+                    // 担当 S が Session の RuntimeInfo 実装に置き換える
+                    runtime: &executor::NullRuntime,
                 };
                 while let Some(row) = exec.next(&mut ctx)? {
                     if out.columns.is_some() {
@@ -651,9 +653,9 @@ impl Session {
             .catalog
             .allocate_child_oids(alloc, &c.columns, &c.checks)?;
         // The file is created first and remembered, so an abort removes it.
-        cluster.storage().create_storage(locator)?;
-        self.txn.pending_creates.push(locator);
         let w = self.txn.write_ctx()?;
+        cluster.storage().create_storage(&w, locator)?;
+        self.txn.pending_creates.push(locator);
         db.catalog.create_table(
             &w,
             snap,

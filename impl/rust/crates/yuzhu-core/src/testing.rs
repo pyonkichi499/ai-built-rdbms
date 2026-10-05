@@ -242,7 +242,9 @@ mod persistence_tests {
             .unwrap();
         let snap = t.snapshot(Some(xid), 1);
         let def: TableDef = db.catalog.load_table_def(&snap, oid).unwrap().unwrap();
-        c.storage().create_storage(def.locator).unwrap();
+        c.storage()
+            .create_storage(&WriteCtx { xid, cid: 1 }, def.locator)
+            .unwrap();
         let rel = RelHandle::from_table(&def);
         c.storage()
             .insert(&rel, &WriteCtx { xid, cid: 1 }, &[Datum::Int4(42)])

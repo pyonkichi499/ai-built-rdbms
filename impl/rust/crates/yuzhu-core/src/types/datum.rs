@@ -27,6 +27,10 @@ pub enum Datum {
     Tid(super::Tid),
     /// `oidvector`.
     OidVector(Vec<u32>),
+    /// `int4[]` (一次元だけ。M3 でテキスト入出力だけ持つ)。
+    Int4Array(Vec<Option<i32>>),
+    /// `void`（出力は空文字列）。
+    Void,
 }
 
 /// A row of values, in column order.
@@ -83,6 +87,8 @@ impl Datum {
             Datum::Cid(_) => 8,
             Datum::Tid(_) => 9,
             Datum::OidVector(_) => 10,
+            Datum::Int4Array(_) => 11,
+            Datum::Void => 12,
             Datum::Null => 4,
         }
     }

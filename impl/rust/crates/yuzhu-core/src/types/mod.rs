@@ -37,6 +37,10 @@ pub mod oid {
     pub const INT2_ARRAY: Oid = 1005;
     pub const OID_ARRAY: Oid = 1028;
     pub const CHAR_ARRAY: Oid = 1002;
+    /// `int4[]`（M3。テキスト入出力だけ）。
+    pub const INT4_ARRAY: Oid = 1007;
+    /// `void`（M3。`pg_sleep` の戻り値）。
+    pub const VOID: Oid = 2278;
     /// First OID handed out for objects created by genbki (initdb), as in
     /// `src/include/access/transam.h`.
     pub const FIRST_GENBKI_OBJECT_ID: Oid = 10000;

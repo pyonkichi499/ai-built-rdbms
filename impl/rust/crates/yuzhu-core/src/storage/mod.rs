@@ -10,6 +10,7 @@ pub mod heap;
 pub mod heap_store;
 pub mod page;
 pub mod smgr;
+pub mod smgr_wal;
 pub mod stack;
 pub mod testing;
 pub mod vfs;
@@ -37,7 +38,7 @@ pub const MAX_HEAP_TUPLE_SIZE: usize = 8160;
 pub const MAX_HEAP_TUPLES_PER_PAGE: usize = 185;
 pub const MAX_HEAP_ATTRIBUTE_NUMBER: usize = 1600;
 pub const PAGE_LAYOUT_VERSION: u8 = 1;
-pub const CATALOG_VERSION_NO: u32 = 2_026_100_401;
+pub const CATALOG_VERSION_NO: u32 = 2_026_100_501;
 /// How many XIDs are reserved in the control file at a time.
 pub const XID_PREFETCH: u64 = 1024;
 /// How many OIDs are reserved in the control file at a time (same as
@@ -185,8 +186,9 @@ pub struct HeapTuple {
 
 pub trait TableStore: Send + Sync + std::fmt::Debug {
     /// Creates the file. Tying the creation to the transaction is the
-    /// caller's job (`Transaction::pending_creates`).
-    fn create_storage(&self, rel: RelFileLocator) -> Result<()>;
+    /// caller's job (`Transaction::pending_creates`). `w.xid` is the XID of
+    /// the `SMGR_CREATE` WAL record (`m3.md` §4.5, §4.11).
+    fn create_storage(&self, w: &WriteCtx, rel: RelFileLocator) -> Result<()>;
     /// Whether the file exists (a 0-byte leftover of D13 counts).
     fn storage_exists(&self, rel: RelFileLocator) -> Result<bool>;
     /// Drops buffers and the insertion hint, then `smgr.unlink` (D13).

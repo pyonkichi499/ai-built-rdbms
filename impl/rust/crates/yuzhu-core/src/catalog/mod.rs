@@ -17,7 +17,7 @@ pub use builtin::{
 };
 
 use crate::error::Result;
-use crate::executor::SessionInfo;
+use crate::executor::{RuntimeInfo, SessionInfo};
 use crate::storage::smgr::RelFileLocator;
 use crate::types::ops::BuiltinFn;
 use crate::types::{Datum, Oid, SqlType, oid};
@@ -156,6 +156,8 @@ pub enum FnKind {
     /// Uses the catalog or session (`pg_get_userbyid`, `pg_table_is_visible`,
     /// `format_type`, ...).
     Context(fn(&[Datum], &dyn CatalogReader, &SessionInfo) -> Result<Datum>),
+    /// 実行時の情報を使う（`pg_backend_pid`、`pg_sleep`、`pg_isolation_test_session_is_blocked`。`m3.md` §4.9）。
+    Runtime(fn(&[Datum], &dyn RuntimeInfo) -> Result<Datum>),
 }
 
 impl std::fmt::Debug for FnKind {
@@ -163,6 +165,7 @@ impl std::fmt::Debug for FnKind {
         match self {
             FnKind::Pure(_) => f.write_str("FnKind::Pure(..)"),
             FnKind::Context(_) => f.write_str("FnKind::Context(..)"),
+            FnKind::Runtime(_) => f.write_str("FnKind::Runtime(..)"),
         }
     }
 }

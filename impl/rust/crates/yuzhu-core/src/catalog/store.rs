@@ -559,7 +559,7 @@ impl CatalogStore {
     pub fn bootstrap(&self, w: &WriteCtx, params: &InitParams) -> Result<()> {
         for def in schema::CATALOGS.iter().filter(|d| !d.shared) {
             let rel = self.rel(def.oid)?;
-            self.storage.create_storage(rel.locator)?;
+            self.storage.create_storage(w, rel.locator)?;
             for row in rows::initial_rows(def.oid, params) {
                 self.storage.insert(rel, w, &row)?;
             }
@@ -685,7 +685,7 @@ impl SharedCatalogStore {
             (oids::PG_AUTHID, &self.authid.1),
             (oids::PG_TABLESPACE, &self.tablespace.1),
         ] {
-            self.storage.create_storage(rel.locator)?;
+            self.storage.create_storage(w, rel.locator)?;
             for row in rows::initial_rows(oid, params) {
                 self.storage.insert(rel, w, &row)?;
             }
@@ -774,7 +774,7 @@ pub(crate) mod fake_store {
     }
 
     impl TableStore for FakeStore {
-        fn create_storage(&self, rel: RelFileLocator) -> Result<()> {
+        fn create_storage(&self, _w: &WriteCtx, rel: RelFileLocator) -> Result<()> {
             let mut g = self.inner.lock().unwrap();
             if !g.files.insert(rel) {
                 return Err(Error::internal(format!("{rel:?} already exists")));
@@ -1030,7 +1030,7 @@ mod tests {
             columns: vec![],
             checks: vec![],
         };
-        e.fake.create_storage(def.locator).unwrap();
+        e.fake.create_storage(&wctx(), def.locator).unwrap();
         e.store.create_table(&wctx(), &snap(), &spec).unwrap();
         spec
     }
@@ -1311,11 +1311,14 @@ mod tests {
         // Occupy the file for the next OID without a pg_class row.
         let next = e.oids.next_raw().unwrap() + 1;
         e.fake
-            .create_storage(RelFileLocator {
-                spc_oid: DEFAULTTABLESPACE_OID,
-                db_oid: DB,
-                rel_number: RelFileNumber(next),
-            })
+            .create_storage(
+                &wctx(),
+                RelFileLocator {
+                    spc_oid: DEFAULTTABLESPACE_OID,
+                    db_oid: DB,
+                    rel_number: RelFileNumber(next),
+                },
+            )
             .unwrap();
         let got = e.store.get_new_relation_oid(&e.oids).unwrap();
         assert_ne!(got, next);

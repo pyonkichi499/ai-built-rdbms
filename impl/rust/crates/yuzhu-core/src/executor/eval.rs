@@ -21,6 +21,7 @@ pub fn eval_ctx<'a>(ctx: &ExecCtx<'a>) -> EvalCtx<'a> {
     EvalCtx {
         session: ctx.session,
         catalog: ctx.catalog,
+        runtime: ctx.runtime,
     }
 }
 
@@ -82,6 +83,7 @@ fn call_function(func: &BuiltinFunction, vals: &[Datum], ctx: &EvalCtx<'_>) -> R
     match func.kind {
         FnKind::Pure(f) => f(vals),
         FnKind::Context(f) => f(vals, ctx.catalog, ctx.session),
+        FnKind::Runtime(f) => f(vals, ctx.runtime),
     }
 }
 
@@ -525,6 +527,7 @@ pub(crate) mod tests {
         EvalCtx {
             session: s,
             catalog,
+            runtime: &crate::executor::NullRuntime,
         }
     }
 

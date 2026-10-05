@@ -8,9 +8,19 @@ use super::buffer::{BufferPool, NoWal};
 use super::heap_store::HeapStore;
 use super::smgr::StorageManager;
 use super::vfs::Vfs;
+use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result};
 use crate::txn::Xid;
 use crate::txn::clog::Clog;
+
+/// `StorageStack::new` に渡す設定（`m3.md` §4.5）。担当 C が `StorageStack::new` をこれを
+/// 受け取る形にする。
+#[derive(Clone, Copy, Debug)]
+pub struct StackConfig {
+    pub rel_seg_blocks: u32,
+    pub nframes: usize,
+    pub knobs: DebugKnobs,
+}
 
 #[derive(Debug)]
 pub struct StorageStack {

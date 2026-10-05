@@ -7,3 +7,4 @@ pub mod hio;
 pub mod scan;
 pub mod tuple;
 pub mod visibility;
+pub mod wal;

@@ -96,7 +96,7 @@ pub(crate) mod test_util {
     }
 
     impl TableStore for FakeStore {
-        fn create_storage(&self, _rel: RelFileLocator) -> Result<()> {
+        fn create_storage(&self, _w: &WriteCtx, _rel: RelFileLocator) -> Result<()> {
             Ok(())
         }
         fn storage_exists(&self, _rel: RelFileLocator) -> Result<bool> {
@@ -239,6 +239,7 @@ pub(crate) mod test_util {
                 snapshot: &self.snapshot,
                 session: &self.session,
                 interrupts: &self.interrupts,
+                runtime: &crate::executor::NullRuntime,
             };
             let mut out = Vec::new();
             while let Some(r) = exec.next(&mut ctx)? {

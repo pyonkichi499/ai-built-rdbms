@@ -51,6 +51,15 @@ pub fn output_text_with(d: &Datum, ty: SqlType, opts: &OutputOpts) -> Option<Str
         Datum::Float4(v) => float4_out_with(*v, efd),
         Datum::Float8(v) => float8_out_with(*v, efd),
         Datum::Text(s) => s.clone(),
+        // 仮実装。担当 F が types/sys.rs へ移して整える。
+        Datum::Void => String::new(),
+        Datum::Int4Array(v) => {
+            let items: Vec<String> = v
+                .iter()
+                .map(|e| e.map_or_else(|| "NULL".to_owned(), |x| x.to_string()))
+                .collect();
+            format!("{{{}}}", items.join(","))
+        }
         Datum::Oid(_)
         | Datum::Char(_)
         | Datum::Xid(_)

@@ -92,7 +92,8 @@ fn stamp_xmax(
 }
 
 impl TableStore for HeapStore {
-    fn create_storage(&self, rel: RelFileLocator) -> Result<()> {
+    fn create_storage(&self, _w: &WriteCtx, rel: RelFileLocator) -> Result<()> {
+        // 担当 D が smgr_wal::log_and_create に置き換える
         self.pool.smgr().create(rel, ForkNumber::Main)
     }
 
@@ -242,7 +243,16 @@ mod tests {
             db_oid: 5,
             rel_number: RelFileNumber(16384),
         };
-        stack.heap.create_storage(locator).unwrap();
+        stack
+            .heap
+            .create_storage(
+                &WriteCtx {
+                    xid: Xid(3),
+                    cid: 0,
+                },
+                locator,
+            )
+            .unwrap();
         let rel = RelHandle {
             oid: 16384,
             locator,

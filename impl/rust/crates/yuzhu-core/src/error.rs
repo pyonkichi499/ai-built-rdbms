@@ -56,11 +56,14 @@ pub mod sqlstate {
     pub const READ_ONLY_SQL_TRANSACTION: SqlState = SqlState("25006");
     pub const NO_ACTIVE_SQL_TRANSACTION: SqlState = SqlState("25P01");
     pub const IN_FAILED_SQL_TRANSACTION: SqlState = SqlState("25P02");
+    pub const IDLE_IN_TRANSACTION_SESSION_TIMEOUT: SqlState = SqlState("25P03");
     // Class 27
     pub const TRIGGERED_DATA_CHANGE_VIOLATION: SqlState = SqlState("27000");
     // Class 28
     pub const INVALID_AUTHORIZATION_SPECIFICATION: SqlState = SqlState("28000");
     pub const INVALID_PASSWORD: SqlState = SqlState("28P01");
+    // Class 3B
+    pub const INVALID_SAVEPOINT_SPECIFICATION: SqlState = SqlState("3B001");
     // Class 3D
     pub const INVALID_CATALOG_NAME: SqlState = SqlState("3D000");
     // Class 3F
@@ -104,6 +107,7 @@ pub mod sqlstate {
     pub const QUERY_CANCELED: SqlState = SqlState("57014");
     pub const ADMIN_SHUTDOWN: SqlState = SqlState("57P01");
     pub const CANNOT_CONNECT_NOW: SqlState = SqlState("57P03");
+    pub const IDLE_SESSION_TIMEOUT: SqlState = SqlState("57P05");
     pub const IO_ERROR: SqlState = SqlState("58030");
     pub const UNDEFINED_FILE: SqlState = SqlState("58P01");
     // Class XX

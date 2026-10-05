@@ -9,7 +9,7 @@ pub use build::build;
 pub use eval::eval;
 
 use crate::catalog::CatalogReader;
-use crate::error::{Error, Result, Severity, sqlstate};
+use crate::error::Result;
 use crate::interrupt::InterruptFlag;
 use crate::storage::{TableStore, WriteCtx};
 use crate::txn::{Snapshot, Transaction};
@@ -28,6 +28,34 @@ pub struct SessionInfo {
     pub current_schema: Option<String>,
 }
 
+/// クラスタやセッションの実行時の情報。session が実装する（`m3.md` §4.9）。
+pub trait RuntimeInfo: std::fmt::Debug {
+    fn backend_pid(&self) -> i32;
+    /// `TxnManager::is_blocked_by` に委ねる。
+    fn is_blocked_by(&self, pid: i32, among: &[i32]) -> bool;
+    /// `InterruptFlag::check` に委ねる（`pg_sleep` が 10ms ごとに呼ぶ）。
+    fn check_interrupts(&self) -> Result<()>;
+}
+
+/// 何も持たない `RuntimeInfo`（pid 0、ブロックされない、中断なし）。
+/// 単体テストと、本物の実装に置き換わるまでの仮置き。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NullRuntime;
+
+impl RuntimeInfo for NullRuntime {
+    fn backend_pid(&self) -> i32 {
+        0
+    }
+
+    fn is_blocked_by(&self, _pid: i32, _among: &[i32]) -> bool {
+        false
+    }
+
+    fn check_interrupts(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// What expression evaluation may look at: the session and the catalog
 /// (`FnKind::Context` functions such as `pg_get_userbyid` need the latter).
 /// 担当 H2 が `eval_expr` をこれを受け取る形にする（`m2.md` §4.6）。
@@ -35,6 +63,8 @@ pub struct SessionInfo {
 pub struct EvalCtx<'a> {
     pub session: &'a SessionInfo,
     pub catalog: &'a dyn CatalogReader,
+    /// `FnKind::Runtime` の関数（`pg_backend_pid` など）が使う。
+    pub runtime: &'a dyn RuntimeInfo,
 }
 
 impl std::fmt::Debug for EvalCtx<'_> {
@@ -56,6 +86,8 @@ pub struct ExecCtx<'a> {
     pub session: &'a SessionInfo,
     /// Shutdown request (`m2.md` §6.11).
     pub interrupts: &'a InterruptFlag,
+    /// クラスタやセッションの実行時の情報（`m3.md` §4.9）。
+    pub runtime: &'a dyn RuntimeInfo,
 }
 
 impl std::fmt::Debug for ExecCtx<'_> {
@@ -75,16 +107,9 @@ impl ExecCtx<'_> {
         self.txn.write_ctx()
     }
 
-    /// `57P01` (FATAL) if a shutdown was requested. Call once per row.
+    /// 停止（FATAL 57P01）・キャンセル・文の期限（57014）を検査する。1 行ごとに呼ぶ。
     pub fn check_interrupts(&self) -> Result<()> {
-        if self.interrupts.is_terminate_requested() {
-            return Err(Error::new(
-                sqlstate::ADMIN_SHUTDOWN,
-                "terminating connection due to administrator command",
-            )
-            .with_severity(Severity::Fatal));
-        }
-        Ok(())
+        self.interrupts.check()
     }
 }
 
@@ -105,6 +130,7 @@ pub type BoxedExecutor = Box<dyn Executor>;
 mod tests {
     use super::*;
     use crate::catalog::fake::FakeCatalog;
+    use crate::error::{Severity, sqlstate};
     use crate::executor::nodes::test_util::FakeStore;
     use crate::txn::Xid;
 
@@ -142,6 +168,7 @@ mod tests {
             snapshot: &snap,
             session: &info,
             interrupts: &flag,
+            runtime: &NullRuntime,
         };
         // No XID yet: the writer lock was not taken.
         assert!(ctx.write_ctx().is_err());

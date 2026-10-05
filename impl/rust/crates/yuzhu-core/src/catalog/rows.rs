@@ -629,6 +629,17 @@ fn put_datum(out: &mut Vec<u8>, d: &Datum) {
                 out.extend(o.to_le_bytes());
             }
         }
+        Datum::Int4Array(v) => {
+            out.push(14);
+            out.extend(u32::try_from(v.len()).unwrap_or(u32::MAX).to_le_bytes());
+            for e in v {
+                match e {
+                    Some(x) => out.extend([1u8].into_iter().chain(x.to_le_bytes())),
+                    None => out.push(0),
+                }
+            }
+        }
+        Datum::Void => out.push(15),
     }
 }
 
@@ -690,6 +701,8 @@ pub fn datum_matches_type(d: &Datum, type_oid: Oid) -> bool {
         Datum::Cid(_) => type_oid == oid::CID,
         Datum::Tid(_) => type_oid == oid::TID,
         Datum::OidVector(_) => type_oid == oid::OIDVECTOR,
+        Datum::Int4Array(_) => type_oid == oid::INT4_ARRAY,
+        Datum::Void => type_oid == oid::VOID,
     }
 }
 
