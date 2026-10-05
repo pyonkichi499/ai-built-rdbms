@@ -9,7 +9,7 @@
 
 use super::{CatalogReader, FnKind};
 use crate::error::Result;
-use crate::executor::SessionInfo;
+use crate::executor::{RuntimeInfo, SessionInfo};
 use crate::types::ops::{self, BuiltinFn};
 use crate::types::{Datum, Oid, oid};
 
@@ -238,6 +238,7 @@ pub static TYPES: &[BuiltinType] = &[
     ty(1002, "_char", -1, false, 'b', 'A', false, ',', 0, 18, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1003, "_name", -1, false, 'b', 'A', false, ',', 0, 19, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 950),
     ty(1005, "_int2", -1, false, 'b', 'A', false, ',', 0, 21, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
+    ty(1007, "_int4", -1, false, 'b', 'A', false, ',', 0, 23, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1008, "_regproc", -1, false, 'b', 'A', false, ',', 0, 24, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1009, "_text", -1, false, 'b', 'A', false, ',', 0, 25, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 100),
     ty(1010, "_tid", -1, false, 'b', 'A', false, ',', 0, 27, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
@@ -256,6 +257,7 @@ pub static TYPES: &[BuiltinType] = &[
     ty(2249, "record", -1, false, 'p', 'P', false, ',', 0, 0, 2287, ("record_in", 2290), ("record_out", 2291), 'd', 'x', 0),
     ty(2275, "cstring", -2, false, 'p', 'P', false, ',', 0, 0, 1263, ("cstring_in", 2292), ("cstring_out", 2293), 'c', 'p', 0),
     ty(2277, "anyarray", -1, false, 'p', 'P', false, ',', 0, 0, 0, ("anyarray_in", 2296), ("anyarray_out", 2297), 'd', 'x', 0),
+    ty(2278, "void", 4, true, 'p', 'P', false, ',', 0, 0, 0, ("void_in", 2298), ("void_out", 2299), 'i', 'p', 0),
     ty(2281, "internal", 8, true, 'p', 'P', false, ',', 0, 0, 0, ("internal_in", 2304), ("internal_out", 2305), 'd', 'p', 0),
     ty(2776, "anynonarray", 4, true, 'p', 'P', false, ',', 0, 0, 0, ("anynonarray_in", 2777), ("anynonarray_out", 2778), 'i', 'p', 0),
     ty(2842, "pg_authid", -1, false, 'c', 'C', false, ',', 1260, 0, 10057, ("record_in", 2290), ("record_out", 2291), 'd', 'x', 0),
@@ -298,6 +300,8 @@ pub fn is_supported_type(t: Oid) -> bool {
             | oid::CID
             | oid::OIDVECTOR
             | oid::PG_NODE_TREE
+            | oid::INT4_ARRAY
+            | oid::VOID
     )
 }
 
@@ -417,6 +421,25 @@ const fn ctx_func(
         result,
         strict: true,
         kind: FnKind::Context(f),
+    }
+}
+
+/// A strict function that reads the execution environment
+/// (`FnKind::Runtime`).
+const fn runtime_func(
+    oid: Oid,
+    name: &'static str,
+    args: &'static [Oid],
+    result: Oid,
+    f: fn(&[Datum], &dyn RuntimeInfo) -> Result<Datum>,
+) -> BuiltinFunction {
+    BuiltinFunction {
+        oid,
+        name,
+        args,
+        result,
+        strict: true,
+        kind: FnKind::Runtime(f),
     }
 }
 
@@ -1128,6 +1151,9 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     ctx_func(2079, "pg_table_is_visible", &[oid::OID], oid::BOOL, pg_table_is_visible),
     nonstrict_func(1081, "format_type", &[oid::OID, oid::INT4], oid::TEXT, format_type),
     func(1716, "pg_get_expr", &[oid::PG_NODE_TREE, oid::OID], oid::TEXT, ops::pg_get_expr),
+    runtime_func(2026, "pg_backend_pid", &[], oid::INT4, pg_backend_pid),
+    runtime_func(2626, "pg_sleep", &[oid::FLOAT8], oid::VOID, pg_sleep),
+    runtime_func(3378, "pg_isolation_test_session_is_blocked", &[oid::INT4, oid::INT4_ARRAY], oid::BOOL, pg_isolation_test_session_is_blocked),
 ];
 
 /// Every `pg_proc` row of yuzhu (`m2.md` §6.8.2), ordered by OID: the callable
@@ -1482,6 +1508,7 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1915, name: "numeric_uplus", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_uplus" },
     BuiltinProc { oid: 2003, name: "textanycat", args: &[25, 2776], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "select $1 operator(pg_catalog.||) $2::pg_catalog.text" },
     BuiltinProc { oid: 2004, name: "anytextcat", args: &[2776, 25], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "select $1::pg_catalog.text operator(pg_catalog.||) $2" },
+    BuiltinProc { oid: 2026, name: "pg_backend_pid", args: &[], result: 23, strict: true, volatility: 's', parallel: 'r', leakproof: false, cost: 1.0, prosrc: "pg_backend_pid" },
     BuiltinProc { oid: 2079, name: "pg_table_is_visible", args: &[26], result: 16, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 10.0, prosrc: "pg_table_is_visible" },
     BuiltinProc { oid: 2176, name: "array_length", args: &[2277, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "array_length" },
     BuiltinProc { oid: 2290, name: "record_in", args: &[2275, 26, 23], result: 2249, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "record_in" },
@@ -1490,11 +1517,14 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 2293, name: "cstring_out", args: &[2275], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "cstring_out" },
     BuiltinProc { oid: 2296, name: "anyarray_in", args: &[2275], result: 2277, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "anyarray_in" },
     BuiltinProc { oid: 2297, name: "anyarray_out", args: &[2277], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "anyarray_out" },
+    BuiltinProc { oid: 2298, name: "void_in", args: &[2275], result: 2278, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "void_in" },
+    BuiltinProc { oid: 2299, name: "void_out", args: &[2278], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "void_out" },
     BuiltinProc { oid: 2304, name: "internal_in", args: &[2275], result: 2281, strict: false, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "internal_in" },
     BuiltinProc { oid: 2305, name: "internal_out", args: &[2281], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "internal_out" },
     BuiltinProc { oid: 2550, name: "integer_pl_date", args: &[23, 1082], result: 1082, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "" },
     BuiltinProc { oid: 2557, name: "bool", args: &[23], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int4_bool" },
     BuiltinProc { oid: 2558, name: "int4", args: &[16], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bool_int4" },
+    BuiltinProc { oid: 2626, name: "pg_sleep", args: &[701], result: 2278, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_sleep" },
     BuiltinProc { oid: 2777, name: "anynonarray_in", args: &[2275], result: 2776, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "anynonarray_in" },
     BuiltinProc { oid: 2778, name: "anynonarray_out", args: &[2776], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "anynonarray_out" },
     BuiltinProc { oid: 2790, name: "tidgt", args: &[27, 27], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "tidgt" },
@@ -1504,6 +1534,7 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 2971, name: "text", args: &[16], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "booltext" },
     BuiltinProc { oid: 3308, name: "xidneq", args: &[28, 28], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "xidneq" },
     BuiltinProc { oid: 3309, name: "xidneqint4", args: &[28, 23], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "xidneq" },
+    BuiltinProc { oid: 3378, name: "pg_isolation_test_session_is_blocked", args: &[23, 1007], result: 16, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_isolation_test_session_is_blocked" },
 ];
 
 // ----- catalog-aware function bodies ---------------------------------------
@@ -1523,6 +1554,56 @@ fn pg_get_userbyid(
         Some(name) => name,
         None => format!("unknown (OID={role})"),
     }))
+}
+
+/// `pg_backend_pid() -> int4`.
+#[allow(clippy::unnecessary_wraps)]
+fn pg_backend_pid(_args: &[Datum], runtime: &dyn RuntimeInfo) -> Result<Datum> {
+    Ok(Datum::Int4(runtime.backend_pid()))
+}
+
+/// Interval between interrupt checks of `pg_sleep`.
+const SLEEP_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// `pg_sleep(float8) -> void`: returns at once for a non-positive or NaN
+/// argument; otherwise sleeps in slices of 10 ms, checking for cancellation
+/// (statement timeout, `CancelRequest`) before each slice.
+fn pg_sleep(args: &[Datum], runtime: &dyn RuntimeInfo) -> Result<Datum> {
+    let Some(Datum::Float8(secs)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "pg_sleep expects a float8 argument",
+        ));
+    };
+    // `!(secs > 0.0)` also covers NaN.
+    if secs.is_nan() || *secs <= 0.0 {
+        return Ok(Datum::Void);
+    }
+    let total = std::time::Duration::try_from_secs_f64(*secs).unwrap_or(std::time::Duration::MAX);
+    let start = std::time::Instant::now();
+    loop {
+        runtime.check_interrupts()?;
+        let elapsed = start.elapsed();
+        if elapsed >= total {
+            return Ok(Datum::Void);
+        }
+        std::thread::sleep(total.saturating_sub(elapsed).min(SLEEP_CHECK_INTERVAL));
+    }
+}
+
+/// `pg_isolation_test_session_is_blocked(int4, int4[]) -> bool`. NULL
+/// elements of the array are ignored.
+fn pg_isolation_test_session_is_blocked(
+    args: &[Datum],
+    runtime: &dyn RuntimeInfo,
+) -> Result<Datum> {
+    let (Some(Datum::Int4(pid)), Some(Datum::Int4Array(among))) = (args.first(), args.get(1))
+    else {
+        return Err(crate::error::Error::internal(
+            "pg_isolation_test_session_is_blocked expects (int4, int4[])",
+        ));
+    };
+    let among: Vec<i32> = among.iter().flatten().copied().collect();
+    Ok(Datum::Bool(runtime.is_blocked_by(*pid, &among)))
 }
 
 /// `pg_table_is_visible(oid) -> bool`: NULL when the relation does not
@@ -1682,6 +1763,121 @@ mod tests {
     use crate::catalog::TableDef;
     use crate::catalog::fake::table_def;
     use crate::error::Error;
+
+    #[derive(Debug)]
+    struct FakeRuntime {
+        pid: i32,
+        blocked_by: Vec<i32>,
+        /// `check_interrupts` fails from this call on.
+        cancel_after: std::cell::Cell<Option<u32>>,
+        checks: std::cell::Cell<u32>,
+    }
+
+    impl FakeRuntime {
+        fn new(pid: i32, blocked_by: Vec<i32>) -> Self {
+            FakeRuntime {
+                pid,
+                blocked_by,
+                cancel_after: std::cell::Cell::new(None),
+                checks: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl RuntimeInfo for FakeRuntime {
+        fn backend_pid(&self) -> i32 {
+            self.pid
+        }
+
+        fn is_blocked_by(&self, pid: i32, among: &[i32]) -> bool {
+            pid == self.pid && among.iter().any(|p| self.blocked_by.contains(p))
+        }
+
+        fn check_interrupts(&self) -> Result<()> {
+            let n = self.checks.get() + 1;
+            self.checks.set(n);
+            match self.cancel_after.get() {
+                Some(limit) if n > limit => Err(Error::new(
+                    crate::error::sqlstate::QUERY_CANCELED,
+                    "canceling statement due to user request",
+                )),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    fn call_runtime(oid: Oid, args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
+        let f = FUNCTIONS.iter().find(|f| f.oid == oid).unwrap();
+        assert!(f.strict);
+        let FnKind::Runtime(func) = f.kind else {
+            panic!("not a runtime function");
+        };
+        func(args, rt)
+    }
+
+    #[test]
+    fn backend_functions_are_runtime_kind() {
+        for (oid, name, volatility) in [
+            (2026, "pg_backend_pid", 's'),
+            (2626, "pg_sleep", 'v'),
+            (3378, "pg_isolation_test_session_is_blocked", 'v'),
+        ] {
+            assert!(matches!(functions_named(name)[0].kind, FnKind::Runtime(_)));
+            let p = proc_by_oid(oid).unwrap();
+            assert_eq!((p.name, p.volatility), (name, volatility));
+        }
+        assert_eq!(type_by_oid(oid::VOID).unwrap().typtype, 'p');
+        assert_eq!(type_by_oid(oid::INT4_ARRAY).unwrap().elem, oid::INT4);
+        assert_eq!(type_by_oid(oid::INT4).unwrap().array_oid, oid::INT4_ARRAY);
+        assert_eq!(format_type_name(oid::INT4_ARRAY, None), "integer[]");
+        assert_eq!(format_type_name(oid::VOID, None), "void");
+    }
+
+    #[test]
+    fn pg_backend_pid_and_blocked() {
+        let rt = FakeRuntime::new(4242, vec![7]);
+        assert_eq!(call_runtime(2026, &[], &rt).unwrap(), Datum::Int4(4242));
+        let blocked = |pid, among: Vec<Option<i32>>| {
+            call_runtime(3378, &[Datum::Int4(pid), Datum::Int4Array(among)], &rt).unwrap()
+        };
+        assert_eq!(blocked(4242, vec![Some(7)]), Datum::Bool(true));
+        assert_eq!(blocked(4242, vec![None, Some(7)]), Datum::Bool(true));
+        assert_eq!(blocked(4242, vec![Some(8)]), Datum::Bool(false));
+        assert_eq!(blocked(4242, vec![None]), Datum::Bool(false));
+        assert_eq!(blocked(4242, vec![]), Datum::Bool(false));
+        assert_eq!(blocked(1, vec![Some(7)]), Datum::Bool(false));
+    }
+
+    #[test]
+    fn pg_sleep_returns_void_and_checks_interrupts() {
+        let rt = FakeRuntime::new(1, vec![]);
+        for secs in [0.0, -5.0, f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(
+                call_runtime(2626, &[Datum::Float8(secs)], &rt).unwrap(),
+                Datum::Void
+            );
+        }
+        assert_eq!(rt.checks.get(), 0);
+        let start = std::time::Instant::now();
+        assert_eq!(
+            call_runtime(2626, &[Datum::Float8(0.05)], &rt).unwrap(),
+            Datum::Void
+        );
+        assert!(start.elapsed() >= std::time::Duration::from_millis(50));
+        assert!(rt.checks.get() >= 2);
+    }
+
+    #[test]
+    fn pg_sleep_is_cancelable() {
+        let rt = FakeRuntime::new(1, vec![]);
+        rt.cancel_after.set(Some(3));
+        let start = std::time::Instant::now();
+        let e = call_runtime(2626, &[Datum::Float8(60.0)], &rt).unwrap_err();
+        assert_eq!(e.sqlstate, crate::error::sqlstate::QUERY_CANCELED);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        let e = call_runtime(2626, &[Datum::Float8(f64::INFINITY)], &rt).unwrap_err();
+        assert_eq!(e.sqlstate, crate::error::sqlstate::QUERY_CANCELED);
+    }
 
     #[test]
     fn type_lookup() {

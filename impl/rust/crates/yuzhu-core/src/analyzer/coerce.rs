@@ -97,8 +97,12 @@ impl Analyzer<'_> {
 
     /// PostgreSQL's `can_coerce_type` for one argument.
     pub(super) fn can_coerce(&self, input: Oid, target: Oid, ctx: CoercionContext) -> bool {
-        if input == target || builtin::is_polymorphic(target) {
+        if input == target {
             return true;
+        }
+        // `anynonarray` does not accept arrays.
+        if builtin::is_polymorphic(target) {
+            return self.category(input) != 'A';
         }
         if target == oid::ANYARRAY && self.category(input) == 'A' {
             return true;

@@ -29,19 +29,28 @@ use self::table::MappingTable;
 use self::track::LatchMode;
 use super::page::Page;
 use super::smgr::{BlockNumber, BufferTag, ForkNumber, RelFileLocator, StorageManager, relpath};
+use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result, Severity};
 use crate::util::sync::{lock, lock_ignore_poison, wait};
 
 /// `BM_MAX_USAGE_COUNT`.
 pub const MAX_USAGE_COUNT: u8 = 5;
 
-/// WAL flush hook for WAL-before-data. M2 uses [`NoWal`].
+/// WAL hook for WAL-before-data (`m3.md` §6.5.3). The only real
+/// implementation is `wal::Wal`; [`NoWal`] is for tests without a WAL.
 pub trait WalFlush: Send + Sync + std::fmt::Debug {
+    /// Makes the WAL durable up to `lsn` (a page LSN, the end of its last
+    /// record).
     fn flush_to(&self, lsn: u64) -> Result<()>;
     fn redo_ptr(&self) -> u64;
+    /// The durable end of the WAL, for the `assert_wal_before_data` check.
+    /// The default (`u64::MAX`) means "unknown": the check passes.
+    fn flushed_ptr(&self) -> u64 {
+        u64::MAX
+    }
 }
 
-/// M2: no WAL, nothing to flush.
+/// No WAL: nothing to flush (unit tests of the pool and the smgr).
 #[derive(Debug)]
 pub struct NoWal;
 
@@ -91,6 +100,7 @@ pub struct BufferPool {
     clock: ClockHand,
     smgr: Arc<StorageManager>,
     wal: Arc<dyn WalFlush>,
+    knobs: DebugKnobs,
     poison: Arc<PoisonFlag>,
     ext_locks: ExtLocks,
     stats: Stats,
@@ -115,7 +125,12 @@ fn unmapped_internal(what: &str, tag: BufferTag) -> Error {
 }
 
 impl BufferPool {
-    pub fn new(nframes: usize, smgr: Arc<StorageManager>, wal: Arc<dyn WalFlush>) -> Arc<Self> {
+    pub fn new(
+        nframes: usize,
+        smgr: Arc<StorageManager>,
+        wal: Arc<dyn WalFlush>,
+        knobs: DebugKnobs,
+    ) -> Arc<Self> {
         assert!(nframes > 0, "the buffer pool needs at least one frame");
         let n = u32::try_from(nframes).expect("nframes fits u32");
         Arc::new(BufferPool {
@@ -126,6 +141,7 @@ impl BufferPool {
             clock: ClockHand::default(),
             smgr,
             wal,
+            knobs,
             poison: Arc::new(PoisonFlag::default()),
             ext_locks: Mutex::new(HashMap::new()),
             stats: Stats::default(),
@@ -413,9 +429,25 @@ impl BufferPool {
     /// Discards a relation's buffers without writing (DROP). Pinned buffers
     /// are an internal error.
     pub fn drop_relation_buffers(&self, rel: RelFileLocator) -> Result<()> {
+        self.drop_buffers_where(|t| t.rel == rel)
+    }
+
+    /// TRUNCATE: discards the buffers of blocks `nblocks..` of one fork
+    /// without writing them. A pinned buffer among them is an internal
+    /// error (the buffers before it are already gone).
+    pub fn drop_relation_buffers_from(
+        &self,
+        rel: RelFileLocator,
+        fork: ForkNumber,
+        nblocks: BlockNumber,
+    ) -> Result<()> {
+        self.drop_buffers_where(|t| t.rel == rel && t.fork == fork && t.block >= nblocks)
+    }
+
+    fn drop_buffers_where(&self, matches: impl Fn(&BufferTag) -> bool) -> Result<()> {
         for i in 0..self.frames.len() {
             let fid = FrameId(u32::try_from(i).expect("fits"));
-            let Some(tag) = self.header(fid)?.tag.filter(|t| t.rel == rel) else {
+            let Some(tag) = self.header(fid)?.tag.filter(&matches) else {
                 continue;
             };
             let mut map = lock(self.table.part(&tag))?;

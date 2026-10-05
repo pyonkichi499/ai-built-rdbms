@@ -6,7 +6,9 @@ pub mod clog;
 pub mod manager;
 pub mod xact_wal;
 
-pub use self::manager::{BarrierRead, BarrierWrite, Transaction, TxnManager, WriterGuard};
+pub use self::manager::{
+    BarrierRead, BarrierWrite, GateWrite, Transaction, TxnManager, WaitCtl, WriterGuard,
+};
 
 /// A 64-bit transaction ID (wraparound is not handled; `m2.md` D2).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Default)]

@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::analyzer::{self, BoundCreateTable, BoundDropTable, BoundSelect, BoundStatement};
 use crate::catalog::CatalogReader;
@@ -23,20 +24,20 @@ use crate::catalog::store::NewTable;
 use crate::engine::{Cluster, DatabaseHandle};
 use crate::error::{Error, Result, Severity, SqlState, sqlstate};
 use crate::executor::eval::row_to_text;
-use crate::executor::{self, ExecCtx, SessionInfo};
+use crate::executor::{self, ExecCtx, RuntimeInfo, SessionInfo};
 use crate::interrupt::InterruptFlag;
 use crate::planner;
-use crate::settings::Settings;
+use crate::settings::{Isolation, Settings, TxnCharacteristics};
 use crate::sql::{
     self,
     ast::{
-        ParamTarget, SetArg, SetStmt, SetValue, ShowStmt, Statement, TransactionKind,
-        TransactionMode,
+        ParamTarget, SetArg, SetStmt, SetTransaction, SetValue, ShowStmt, Statement,
+        TransactionKind, TransactionMode, TransactionStmt,
     },
 };
 use crate::storage::buffer;
 use crate::storage::smgr::{DEFAULTTABLESPACE_OID, RelFileLocator, RelFileNumber};
-use crate::txn::Transaction;
+use crate::txn::{Transaction, TxnManager, WaitCtl, WriterGuard, Xid};
 use crate::types::{Datum, Oid, SqlType, io, oid};
 
 /// Values from the `StartupMessage`.
@@ -163,6 +164,12 @@ pub struct Session {
     /// (PostgreSQL's implicit transaction *block*, where SET LOCAL works).
     multi_statement: bool,
     interrupt: Arc<InterruptFlag>,
+    /// Characteristics of the current transaction (`m3.md` §6.11.1); the
+    /// defaults come from `default_transaction_*` when the transaction starts.
+    chars: TxnCharacteristics,
+    /// A statement that references a table has run in this transaction
+    /// (PostgreSQL's `FirstSnapshotSet`; `SELECT 1` does not count).
+    txn_snapshot_taken: bool,
 }
 
 impl Session {
@@ -172,6 +179,13 @@ impl Session {
     pub fn new(cluster: Arc<Cluster>, params: StartupParams) -> Result<Session> {
         let (db, role) = cluster.connect(&params.database, &params.user)?;
         let id = cluster.next_session_id();
+        if i32::try_from(id).is_err() {
+            return Err(Error::new(
+                sqlstate::TOO_MANY_CONNECTIONS,
+                "sorry, too many clients already",
+            )
+            .with_severity(Severity::Fatal));
+        }
         let mut s = Session::build(Some(cluster), id, params);
         if let Some(c) = &s.cluster {
             for (name, value) in c.server_settings() {
@@ -199,6 +213,8 @@ impl Session {
             settings,
             reported,
             interrupt: Arc::new(InterruptFlag::default()),
+            chars: TxnCharacteristics::default(),
+            txn_snapshot_taken: false,
         }
     }
 
@@ -233,6 +249,40 @@ impl Session {
         self.closing
     }
 
+    /// The process ID shown to the client (`BackendKeyData`,
+    /// `pg_backend_pid()`): the session ID as an `i32`.
+    pub fn backend_pid(&self) -> i32 {
+        i32::try_from(self.id).unwrap_or(i32::MAX)
+    }
+
+    /// How long the connection may stay idle in the current state before the
+    /// server must end it (`m3.md` §5.10): `idle_in_transaction_session_timeout`
+    /// in a block, `idle_session_timeout` otherwise. `None` means no limit.
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        match self.state {
+            TxState::Block | TxState::Failed => self.settings.idle_in_transaction_session_timeout(),
+            TxState::Idle => self.settings.idle_session_timeout(),
+            TxState::Implicit => None,
+        }
+    }
+
+    /// The FATAL error to send when [`Session::idle_timeout`] expires. The
+    /// caller then calls [`Session::terminate`] and closes the connection.
+    pub fn idle_timeout_error(&self) -> Error {
+        let (state, msg) = if self.state == TxState::Idle {
+            (
+                sqlstate::IDLE_SESSION_TIMEOUT,
+                "terminating connection due to idle-session timeout",
+            )
+        } else {
+            (
+                sqlstate::IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
+                "terminating connection due to idle-in-transaction timeout",
+            )
+        };
+        Error::new(state, msg).with_severity(Severity::Fatal)
+    }
+
     /// The flag through which the server asks this session to stop.
     pub fn interrupt_flag(&self) -> Arc<InterruptFlag> {
         Arc::clone(&self.interrupt)
@@ -253,6 +303,8 @@ impl Session {
         parsed: Result<Vec<Statement>>,
         sink: &mut dyn ResultSink,
     ) -> std::io::Result<()> {
+        // A cancel that arrived while idle is dropped (`m3.md` §5.2 step 0).
+        self.interrupt.clear_cancel();
         let r = self.run_statements(sql, parsed, sink);
         if r.is_err() && self.state == TxState::Implicit {
             // The client is gone part-way through the message: the implicit
@@ -277,7 +329,7 @@ impl Session {
         }
         self.multi_statement = stmts.len() > 1;
         for stmt in &stmts {
-            if self.state == TxState::Failed && !is_transaction_end(stmt) {
+            if self.state == TxState::Failed && !allowed_when_failed(stmt) {
                 let e = Error::new(sqlstate::IN_FAILED_SQL_TRANSACTION, IN_FAILED_MSG);
                 return self.report_error(e, sql, sink);
             }
@@ -285,7 +337,14 @@ impl Session {
                 self.begin_transaction(TxState::Implicit);
             }
             let mut out = Output::default();
+            // `statement_timeout` is per statement (`m3.md` D31).
+            self.interrupt.set_statement_deadline(
+                self.settings
+                    .statement_timeout()
+                    .and_then(|d| Instant::now().checked_add(d)),
+            );
             let result = self.exec_statement(stmt, &mut out);
+            self.interrupt.set_statement_deadline(None);
             self.send_output(&out, sink)?;
             match result {
                 Ok(tag) => sink.command_complete(&tag)?,
@@ -372,6 +431,8 @@ impl Session {
     fn begin_transaction(&mut self, state: TxState) {
         self.txn = Transaction::new();
         self.settings.begin();
+        self.chars = self.settings.default_characteristics();
+        self.txn_snapshot_taken = false;
         self.state = state;
     }
 
@@ -390,18 +451,19 @@ impl Session {
         }
         let mgr = cluster.txn_manager();
         // 1. clog + running list. The cache is invalidated only after this.
-        mgr.commit(xid)?;
+        mgr_commit(mgr, xid, &txn.pending_unlinks)?;
         // 2.
         if txn.catalog_dirty {
             cluster.invalidate_all_catalog_caches();
         }
         // 3. Remove the files of dropped tables once no statement can be
         // reading them. A failure does not undo the commit.
+        // 4. Release the writer lock first: waiting for the barrier must not
+        // hold up other writers.
+        txn.writer = None;
         if !txn.pending_unlinks.is_empty() {
             Self::unlink_files(cluster, &txn.pending_unlinks);
         }
-        // 4. Release the writer lock.
-        txn.writer = None;
         Ok(())
     }
 
@@ -415,28 +477,40 @@ impl Session {
         let (Some(cluster), Some(xid)) = (self.cluster.as_ref(), txn.xid) else {
             return;
         };
-        if let Err(e) = cluster.txn_manager().abort(xid) {
+        if let Err(e) = mgr_abort(cluster.txn_manager(), xid, &txn.pending_creates) {
             warn(&format!("could not record the abort: {}", e.message));
             cluster.poison();
         }
+        txn.writer = None;
         if !txn.pending_creates.is_empty() {
             Self::unlink_files(cluster, &txn.pending_creates);
         }
-        txn.writer = None;
     }
 
-    /// Removes relation files under the exclusive storage barrier. Errors
-    /// are only warned about: the transaction is already decided.
+    /// Removes relation files under the exclusive storage barrier. The wait
+    /// is never blocking: while another session runs a statement the files
+    /// stay queued and the next statement end (of any session) retries.
+    /// Errors are only warned about: the transaction is already decided.
     fn unlink_files(cluster: &Cluster, rels: &[RelFileLocator]) {
-        let guard = match cluster.txn_manager().exclusive_barrier() {
-            Ok(g) => g,
+        cluster.txn_manager().defer_unlinks(rels);
+        Self::flush_deferred_unlinks(cluster);
+    }
+
+    fn flush_deferred_unlinks(cluster: &Cluster) {
+        let mgr = cluster.txn_manager();
+        if !mgr.has_deferred_unlinks() {
+            return;
+        }
+        let guard = match mgr.try_exclusive_barrier() {
+            Ok(Some(g)) => g,
+            Ok(None) => return,
             Err(e) => {
                 warn(&format!("could not remove relation files: {}", e.message));
                 return;
             }
         };
-        for rel in rels {
-            if let Err(e) = cluster.storage().unlink_storage(*rel) {
+        for rel in mgr.take_deferred_unlinks() {
+            if let Err(e) = cluster.storage().unlink_storage(rel) {
                 warn(&format!(
                     "could not remove relation file {}: {}",
                     rel.rel_number.0, e.message
@@ -451,11 +525,14 @@ impl Session {
     /// Executes one statement and returns its command tag.
     fn exec_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<String> {
         match stmt {
-            Statement::Transaction(t) => self.exec_transaction(t.kind, &t.modes, out),
+            Statement::Transaction(t) => self.exec_transaction(t, out),
             Statement::Set(s) => self.exec_set(s, out),
             Statement::Reset(r) => {
                 match &r.target {
                     ParamTarget::All => self.settings.reset_all(),
+                    ParamTarget::Name(n) if is_characteristic(n) => {
+                        return Err(cannot_reset(n));
+                    }
                     ParamTarget::Name(n) => self.settings.reset(n)?,
                 }
                 Ok("RESET".into())
@@ -498,17 +575,21 @@ impl Session {
         Self::check_not_poisoned(&cluster)?;
         // 1. The writer lock comes before the snapshot, so that no other
         // writer's commit lands between the snapshot and our first write.
-        let is_write = matches!(
-            stmt,
-            Statement::Insert(_)
-                | Statement::Update(_)
-                | Statement::Delete(_)
-                | Statement::CreateTable(_)
-                | Statement::DropTable(_)
-        );
+        let write_tag = write_statement_tag(stmt);
+        // A read-only transaction is rejected before the writer lock is
+        // taken. PostgreSQL checks utility statements (CREATE / DROP TABLE)
+        // up front, but INSERT / UPDATE / DELETE only at executor start, i.e.
+        // after analysis (`run_under_barrier`).
+        let read_only_write = write_tag.filter(|_| self.chars.read_only);
+        if let Some(tag) = read_only_write
+            && matches!(stmt, Statement::CreateTable(_) | Statement::DropTable(_))
+        {
+            return Err(read_only_error(tag));
+        }
         let mgr = Arc::clone(cluster.txn_manager());
-        if is_write && self.txn.writer.is_none() {
-            let (xid, guard) = mgr.begin_write(self.id, self.settings.lock_timeout())?;
+        if write_tag.is_some() && read_only_write.is_none() && self.txn.writer.is_none() {
+            let (xid, guard) =
+                mgr_begin_write(&mgr, self.id, self.settings.lock_timeout(), &self.interrupt)?;
             self.txn.xid = Some(xid);
             self.txn.writer = Some(guard);
             // The cluster may have been poisoned while we waited for the lock.
@@ -521,9 +602,10 @@ impl Session {
             return Err(e);
         }
         buffer::track::barrier_acquired();
-        let result = self.run_under_barrier(stmt, &cluster, &db, out);
+        let result = self.run_under_barrier(stmt, &cluster, &db, read_only_write, out);
         buffer::track::barrier_released();
         drop(barrier);
+        Self::flush_deferred_unlinks(&cluster);
         // 8.
         buffer::assert_no_pins();
         let tag = result?;
@@ -538,11 +620,15 @@ impl Session {
         stmt: &Statement,
         cluster: &Cluster,
         db: &Arc<DatabaseHandle>,
+        read_only_write: Option<&'static str>,
         out: &mut Output,
     ) -> Result<String> {
         // 3. The generation is read before the snapshot.
         let generation = db.cache.generation();
         // 4.
+        // Any statement but SET / SHOW / BEGIN / COMMIT / CHECKPOINT counts as
+        // having used a snapshot (PostgreSQL 17, also for `SELECT 1`).
+        self.txn_snapshot_taken = true;
         let snap = cluster.txn_manager().snapshot(self.txn.xid, self.txn.cid);
         // 5.
         let search_path = self.settings.search_path();
@@ -565,6 +651,10 @@ impl Session {
             )),
             bound => {
                 let plan = planner::plan(&bound)?;
+                // PostgreSQL rejects at executor start: after analysis and planning.
+                if let Some(tag) = read_only_write {
+                    return Err(read_only_error(tag));
+                }
                 let (columns, types) = match &bound {
                     BoundStatement::Select(sel) => (Some(column_descs(sel, &catalog)), {
                         sel.columns
@@ -587,6 +677,11 @@ impl Session {
                 };
                 let info = self.session_info();
                 let interrupts = Arc::clone(&self.interrupt);
+                let runtime = SessionRuntime {
+                    pid: self.backend_pid(),
+                    mgr: Some(Arc::clone(cluster.txn_manager())),
+                    interrupts: Arc::clone(&self.interrupt),
+                };
                 let mut exec = executor::build(&plan);
                 let mut ctx = ExecCtx {
                     catalog: &catalog,
@@ -595,8 +690,7 @@ impl Session {
                     snapshot: &snap,
                     session: &info,
                     interrupts: &interrupts,
-                    // 担当 S が Session の RuntimeInfo 実装に置き換える
-                    runtime: &executor::NullRuntime,
+                    runtime: &runtime,
                 };
                 while let Some(row) = exec.next(&mut ctx)? {
                     if out.columns.is_some() {
@@ -652,6 +746,7 @@ impl Session {
         let (attrdef_oids, constraint_oids) = db
             .catalog
             .allocate_child_oids(alloc, &c.columns, &c.checks)?;
+        Self::check_rel_limit(self.txn.pending_creates.len())?;
         // The file is created first and remembered, so an abort removes it.
         let w = self.txn.write_ctx()?;
         cluster.storage().create_storage(&w, locator)?;
@@ -672,6 +767,17 @@ impl Session {
         )?;
         self.txn.catalog_dirty = true;
         Ok("CREATE TABLE".into())
+    }
+
+    /// One COMMIT / ABORT record must hold every relation of the transaction.
+    fn check_rel_limit(pending: usize) -> Result<()> {
+        if pending >= crate::txn::xact_wal::MAX_RELS_PER_RECORD {
+            return Err(Error::new(
+                sqlstate::PROGRAM_LIMIT_EXCEEDED,
+                "too many relations created or dropped in one transaction",
+            ));
+        }
+        Ok(())
     }
 
     /// DROP TABLE (`m2.md` §5.4). The files go at commit.
@@ -698,6 +804,7 @@ impl Session {
             }
         }
         for def in &d.tables {
+            Self::check_rel_limit(self.txn.pending_unlinks.len())?;
             let w = self.txn.write_ctx()?;
             db.catalog.drop_table(&w, snap, def)?;
             self.txn.pending_unlinks.push(def.locator);
@@ -706,16 +813,21 @@ impl Session {
         Ok("DROP TABLE".into())
     }
 
-    fn exec_transaction(
-        &mut self,
-        kind: TransactionKind,
-        modes: &[TransactionMode],
-        out: &mut Output,
-    ) -> Result<String> {
-        match kind {
+    fn exec_transaction(&mut self, t: &TransactionStmt, out: &mut Output) -> Result<String> {
+        match &t.kind {
             TransactionKind::Begin | TransactionKind::StartTransaction => {
-                check_transaction_modes(modes)?;
-                if self.state == TxState::Block {
+                // An unsupported level fails before anything changes.
+                for m in &t.modes {
+                    if let TransactionMode::IsolationLevel(l) = m {
+                        Isolation::parse("transaction_isolation", l)?;
+                    }
+                }
+                let was_block = self.state == TxState::Block;
+                // The modes apply even to a block that was already open. A
+                // failing mode leaves the state unchanged (the block has not
+                // started yet).
+                self.apply_modes(&t.modes)?;
+                if was_block {
                     out.notices.push(Notice::new(
                         Severity::Warning,
                         sqlstate::ACTIVE_SQL_TRANSACTION,
@@ -726,41 +838,207 @@ impl Session {
                     // of the block, as in PostgreSQL.
                     self.state = TxState::Block;
                 }
-                Ok(if kind == TransactionKind::Begin {
+                Ok(if t.kind == TransactionKind::Begin {
                     "BEGIN"
                 } else {
                     "START TRANSACTION"
                 }
                 .into())
             }
-            TransactionKind::Commit | TransactionKind::End => match self.state {
-                TxState::Failed => {
-                    self.rollback_transaction();
-                    Ok("ROLLBACK".into())
-                }
-                state => {
-                    if state != TxState::Block {
-                        out.notices.push(no_transaction_warning());
-                    }
-                    self.commit_transaction()?;
-                    Ok("COMMIT".into())
-                }
-            },
+            TransactionKind::Commit | TransactionKind::End => {
+                self.end_transaction(true, t.chain, out)
+            }
             TransactionKind::Rollback | TransactionKind::Abort => {
-                if !matches!(self.state, TxState::Block | TxState::Failed) {
-                    out.notices.push(no_transaction_warning());
+                self.end_transaction(false, t.chain, out)
+            }
+            // Sub-transactions do not exist yet; the errors follow
+            // PostgreSQL's order (`m3.md` §6.11.3). A failed block never
+            // gets here for SAVEPOINT / RELEASE (25P02 comes first).
+            TransactionKind::Savepoint(_) => {
+                if self.state == TxState::Block {
+                    Err(Error::not_supported("SAVEPOINT is not supported yet"))
+                } else {
+                    Err(not_in_block("SAVEPOINT"))
                 }
-                self.rollback_transaction();
-                Ok("ROLLBACK".into())
+            }
+            TransactionKind::Release(name) => {
+                if self.state == TxState::Block {
+                    Err(no_such_savepoint(name))
+                } else {
+                    Err(not_in_block("RELEASE SAVEPOINT"))
+                }
+            }
+            TransactionKind::RollbackTo(name) => {
+                if matches!(self.state, TxState::Block | TxState::Failed) {
+                    Err(no_such_savepoint(name))
+                } else {
+                    Err(not_in_block("ROLLBACK TO SAVEPOINT"))
+                }
             }
         }
     }
 
+    /// COMMIT / END / ROLLBACK / ABORT, with or without AND CHAIN
+    /// (`m3.md` §6.11.2). A failed block ends with the tag `ROLLBACK`; the
+    /// chained block then starts from the defaults, because the abort has
+    /// already restored the settings (PostgreSQL 17 does not carry READ ONLY
+    /// over from a failed block).
+    fn end_transaction(&mut self, commit: bool, chain: bool, out: &mut Output) -> Result<String> {
+        let tag = if commit { "COMMIT" } else { "ROLLBACK" };
+        if self.state == TxState::Failed {
+            self.rollback_transaction();
+            if chain {
+                self.begin_transaction(TxState::Block);
+            }
+            return Ok("ROLLBACK".into());
+        }
+        if self.state != TxState::Block {
+            if chain {
+                return Err(not_in_block(&format!("{tag} AND CHAIN")));
+            }
+            out.notices.push(no_transaction_warning());
+        }
+        let saved = self.chars;
+        if commit {
+            self.commit_transaction()?;
+        } else {
+            self.rollback_transaction();
+        }
+        if chain {
+            self.begin_transaction(TxState::Block);
+            self.chars = saved;
+        }
+        Ok(tag.into())
+    }
+
+    /// Whether `SET LOCAL` / `SET TRANSACTION` are allowed: in an explicit
+    /// block, or in the implicit block of a multi-statement Query
+    /// (PostgreSQL's `TBLOCK_IMPLICIT_INPROGRESS`).
+    fn in_block_for_set(&self) -> bool {
+        self.state == TxState::Block || (self.state == TxState::Implicit && self.multi_statement)
+    }
+
+    fn apply_modes(&mut self, modes: &[TransactionMode]) -> Result<()> {
+        modes.iter().try_for_each(|m| self.apply_mode(m))
+    }
+
+    /// Changes one characteristic of the current transaction. The checks
+    /// are PostgreSQL's `check_XactIsoLevel` and friends: they only apply
+    /// when the value changes, and only after a statement has used a
+    /// snapshot (`txn_snapshot_taken`).
+    fn apply_mode(&mut self, mode: &TransactionMode) -> Result<()> {
+        let too_late = |what: &str| {
+            Error::new(
+                sqlstate::ACTIVE_SQL_TRANSACTION,
+                format!("{what} must be called before any query"),
+            )
+        };
+        match mode {
+            TransactionMode::IsolationLevel(level) => {
+                let iso = match Isolation::parse("transaction_isolation", level) {
+                    Ok(iso) => iso,
+                    // Valid but not supported yet: it differs from the current
+                    // level, so PostgreSQL's 25001 comes first.
+                    Err(e)
+                        if e.sqlstate == sqlstate::FEATURE_NOT_SUPPORTED
+                            && self.txn_snapshot_taken =>
+                    {
+                        return Err(too_late("SET TRANSACTION ISOLATION LEVEL"));
+                    }
+                    Err(e) => return Err(e),
+                };
+                if iso != self.chars.isolation && self.txn_snapshot_taken {
+                    return Err(too_late("SET TRANSACTION ISOLATION LEVEL"));
+                }
+                self.chars.isolation = iso;
+            }
+            TransactionMode::ReadOnly => self.chars.read_only = true,
+            TransactionMode::ReadWrite => {
+                if self.chars.read_only && self.txn_snapshot_taken {
+                    return Err(Error::new(
+                        sqlstate::ACTIVE_SQL_TRANSACTION,
+                        "transaction read-write mode must be set before any query",
+                    ));
+                }
+                self.chars.read_only = false;
+            }
+            TransactionMode::Deferrable => {
+                if self.txn_snapshot_taken {
+                    return Err(too_late("SET TRANSACTION [NOT] DEFERRABLE"));
+                }
+                self.chars.deferrable = true;
+            }
+            TransactionMode::NotDeferrable => {
+                if self.txn_snapshot_taken {
+                    return Err(too_late("SET TRANSACTION [NOT] DEFERRABLE"));
+                }
+                self.chars.deferrable = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// `SET SESSION CHARACTERISTICS AS TRANSACTION ...`: changes the
+    /// `default_transaction_*` parameters.
+    fn set_session_characteristics(&mut self, t: &SetTransaction) -> Result<String> {
+        for mode in &t.modes {
+            let (name, value) = match mode {
+                TransactionMode::IsolationLevel(l) => ("default_transaction_isolation", l.as_str()),
+                TransactionMode::ReadOnly => ("default_transaction_read_only", "on"),
+                TransactionMode::ReadWrite => ("default_transaction_read_only", "off"),
+                TransactionMode::Deferrable => ("default_transaction_deferrable", "on"),
+                TransactionMode::NotDeferrable => ("default_transaction_deferrable", "off"),
+            };
+            self.settings.set(name, Some(&[value.to_owned()]), false)?;
+        }
+        Ok("SET".into())
+    }
+
+    /// `SET transaction_isolation / transaction_read_only /
+    /// transaction_deferrable`: the same as the matching `SET TRANSACTION`
+    /// mode. (`RESET` / `SET ... TO DEFAULT` are rejected, as in PostgreSQL.)
+    fn set_characteristic(&mut self, name: &str, args: &[String]) -> Result<()> {
+        let name = name.to_ascii_lowercase();
+        let value = self.settings.validate(&name, args)?;
+        let on = value == "on";
+        let mode = match name.as_str() {
+            "transaction_isolation" => TransactionMode::IsolationLevel(value),
+            "transaction_read_only" if on => TransactionMode::ReadOnly,
+            "transaction_read_only" => TransactionMode::ReadWrite,
+            _ if on => TransactionMode::Deferrable,
+            _ => TransactionMode::NotDeferrable,
+        };
+        self.apply_mode(&mode)
+    }
+
+    /// The current value of a `transaction_*` parameter, which the session
+    /// (not `Settings`) owns.
+    fn characteristic_value(&self, name: &str) -> Option<String> {
+        match name.to_ascii_lowercase().as_str() {
+            "transaction_isolation" => Some(self.chars.isolation.as_str().to_owned()),
+            "transaction_read_only" => Some(on_off(self.chars.read_only).to_owned()),
+            "transaction_deferrable" => Some(on_off(self.chars.deferrable).to_owned()),
+            _ => None,
+        }
+    }
+
     fn exec_set(&mut self, s: &SetStmt, out: &mut Output) -> Result<String> {
-        // An implicit transaction of a multi-statement Query is a block for
-        // SET LOCAL (PostgreSQL's TBLOCK_IMPLICIT_INPROGRESS).
-        let in_block = self.state == TxState::Block
-            || (self.state == TxState::Implicit && self.multi_statement);
+        let in_block = self.in_block_for_set();
+        if let Some(t) = &s.transaction {
+            if t.session_characteristics {
+                return self.set_session_characteristics(t);
+            }
+            if !in_block {
+                out.notices.push(Notice::new(
+                    Severity::Warning,
+                    sqlstate::NO_ACTIVE_SQL_TRANSACTION,
+                    "SET TRANSACTION can only be used in transaction blocks",
+                ));
+                return Ok("SET".into());
+            }
+            self.apply_modes(&t.modes)?;
+            return Ok("SET".into());
+        }
         if s.local && !in_block {
             out.notices.push(Notice::new(
                 Severity::Warning,
@@ -776,17 +1054,23 @@ impl Session {
             }
             return Ok("SET".into());
         }
-        match &s.value {
-            SetValue::Default => self.settings.set(&s.name, None, s.local)?,
-            SetValue::Values(args) => {
-                let texts: Vec<String> = args
-                    .iter()
+        let texts: Option<Vec<String>> = match &s.value {
+            SetValue::Default => None,
+            SetValue::Values(args) => Some(
+                args.iter()
                     .map(|a| match a {
                         SetArg::Word(w) | SetArg::String(w) | SetArg::Number(w) => w.clone(),
                     })
-                    .collect();
-                self.settings.set(&s.name, Some(&texts), s.local)?;
-            }
+                    .collect(),
+            ),
+        };
+        if is_characteristic(&s.name) {
+            let Some(texts) = texts.as_deref() else {
+                return Err(cannot_reset(&s.name));
+            };
+            self.set_characteristic(&s.name, texts)?;
+        } else {
+            self.settings.set(&s.name, texts.as_deref(), s.local)?;
         }
         Ok("SET".into())
     }
@@ -794,7 +1078,10 @@ impl Session {
     fn exec_show(&mut self, s: &ShowStmt, out: &mut Output) -> Result<String> {
         match &s.target {
             ParamTarget::Name(n) => {
-                let (name, value) = self.settings.show(n)?;
+                let (name, value) = match self.characteristic_value(n) {
+                    Some(v) => (n.to_ascii_lowercase(), v),
+                    None => self.settings.show(n)?,
+                };
                 out.columns = Some(vec![text_column(name)]);
                 out.rows.push(vec![Some(value)]);
             }
@@ -805,6 +1092,7 @@ impl Session {
                     text_column("description"),
                 ]);
                 for (n, v, d) in self.settings.show_all() {
+                    let v = self.characteristic_value(&n).unwrap_or(v);
                     out.rows.push(vec![Some(n), Some(v), Some(d)]);
                 }
             }
@@ -827,7 +1115,9 @@ impl Session {
     }
 }
 
-fn is_transaction_end(stmt: &Statement) -> bool {
+/// What a failed transaction still accepts: the statements that end it,
+/// and `ROLLBACK TO` (`m3.md` §6.11.3).
+fn allowed_when_failed(stmt: &Statement) -> bool {
     matches!(
         stmt,
         Statement::Transaction(t) if matches!(
@@ -836,29 +1126,130 @@ fn is_transaction_end(stmt: &Statement) -> bool {
                 | TransactionKind::End
                 | TransactionKind::Rollback
                 | TransactionKind::Abort
+                | TransactionKind::RollbackTo(_)
         )
     )
 }
 
-fn check_transaction_modes(modes: &[TransactionMode]) -> Result<()> {
-    for m in modes {
-        match m {
-            TransactionMode::IsolationLevel(l)
-                if l != "read committed" && l != "read uncommitted" =>
-            {
-                return Err(Error::not_supported(format!(
-                    "transaction isolation level \"{l}\" is not supported yet"
-                )));
-            }
-            TransactionMode::ReadOnly => {
-                return Err(Error::not_supported(
-                    "read-only transactions are not supported yet",
-                ));
-            }
-            _ => {}
-        }
+fn read_only_error(tag: &str) -> Error {
+    Error::new(
+        sqlstate::READ_ONLY_SQL_TRANSACTION,
+        format!("cannot execute {tag} in a read-only transaction"),
+    )
+}
+
+fn cannot_reset(name: &str) -> Error {
+    Error::not_supported(format!(
+        "parameter \"{}\" cannot be reset",
+        name.to_ascii_lowercase()
+    ))
+}
+
+fn not_in_block(what: &str) -> Error {
+    Error::new(
+        sqlstate::NO_ACTIVE_SQL_TRANSACTION,
+        format!("{what} can only be used in transaction blocks"),
+    )
+}
+
+fn no_such_savepoint(name: &str) -> Error {
+    Error::new(
+        sqlstate::INVALID_SAVEPOINT_SPECIFICATION,
+        format!("savepoint \"{name}\" does not exist"),
+    )
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
+/// `transaction_isolation` and friends: the parameters of the current
+/// transaction, owned by the session.
+fn is_characteristic(name: &str) -> bool {
+    [
+        "transaction_isolation",
+        "transaction_read_only",
+        "transaction_deferrable",
+    ]
+    .iter()
+    .any(|n| n.eq_ignore_ascii_case(name))
+}
+
+/// The command tag used in `25006` for a statement that writes, judged on
+/// the raw parse tree (`m3.md` §5.2 d).
+fn write_statement_tag(stmt: &Statement) -> Option<&'static str> {
+    match stmt {
+        Statement::Insert(_) => Some("INSERT"),
+        Statement::Update(_) => Some("UPDATE"),
+        Statement::Delete(_) => Some("DELETE"),
+        Statement::CreateTable(_) => Some("CREATE TABLE"),
+        Statement::DropTable(_) => Some("DROP TABLE"),
+        _ => None,
     }
-    Ok(())
+}
+
+// ----- TxnManager calls ----------------------------------------------------
+// Every call into the transaction manager that `m3.md` §4.6 changes goes
+// through these three functions.
+
+/// Takes the writer lock and an XID. The lock wait honours `lock_timeout`.
+fn mgr_begin_write(
+    mgr: &Arc<TxnManager>,
+    session_id: u64,
+    lock_timeout: Option<Duration>,
+    interrupts: &InterruptFlag,
+) -> Result<(Xid, WriterGuard)> {
+    mgr.begin_write(
+        session_id,
+        &WaitCtl {
+            lock_timeout,
+            interrupts,
+        },
+    )
+}
+
+fn mgr_commit(mgr: &TxnManager, xid: Xid, dropped: &[RelFileLocator]) -> Result<()> {
+    mgr.commit(xid, dropped)
+}
+
+fn mgr_abort(mgr: &TxnManager, xid: Xid, created: &[RelFileLocator]) -> Result<()> {
+    mgr.abort(xid, created)
+}
+
+fn mgr_is_blocked_by(mgr: &TxnManager, session_id: u64, among: &[u64]) -> bool {
+    mgr.is_blocked_by(session_id, among)
+}
+
+/// The `RuntimeInfo` a statement's `EvalCtx` gets (`m3.md` §6.11.6).
+#[derive(Debug)]
+struct SessionRuntime {
+    pid: i32,
+    mgr: Option<Arc<TxnManager>>,
+    interrupts: Arc<InterruptFlag>,
+}
+
+impl RuntimeInfo for SessionRuntime {
+    fn backend_pid(&self) -> i32 {
+        self.pid
+    }
+
+    fn is_blocked_by(&self, pid: i32, among: &[i32]) -> bool {
+        let Some(mgr) = &self.mgr else {
+            return false;
+        };
+        let to_id = |p: &i32| u64::try_from(*p).ok();
+        let (Some(id), among) = (
+            to_id(&pid),
+            among.iter().filter_map(to_id).collect::<Vec<_>>(),
+        ) else {
+            return false;
+        };
+        mgr_is_blocked_by(mgr, id, &among)
+    }
+
+    fn check_interrupts(&self) -> Result<()> {
+        self.interrupts.check()
+    }
 }
 
 fn no_transaction_warning() -> Notice {
@@ -1015,6 +1406,7 @@ mod tests {
         Statement::Transaction(TransactionStmt {
             kind,
             modes: vec![],
+            chain: false,
             span: Span::default(),
         })
     }
@@ -1023,6 +1415,7 @@ mod tests {
             local,
             name: name.into(),
             value: SetValue::Values(vec![SetArg::String(v.into())]),
+            transaction: None,
             span: Span::default(),
         })
     }
@@ -1138,6 +1531,7 @@ mod tests {
         let st = Statement::Transaction(TransactionStmt {
             kind: TransactionKind::Begin,
             modes: vec![TransactionMode::IsolationLevel("serializable".into())],
+            chain: false,
             span: Span::default(),
         });
         s.run("", Ok(vec![st]), &mut sink).unwrap();
@@ -1764,5 +2158,483 @@ mod tests {
     fn rel_files(tc: &TestCluster) -> usize {
         let vfs: &dyn crate::storage::vfs::Vfs = &tc.vfs;
         vfs.read_dir(std::path::Path::new("base/5")).unwrap().len()
+    }
+
+    // ----- M3: transaction characteristics, AND CHAIN, savepoints ----------
+
+    fn val(s: &mut Session, q: &str) -> String {
+        one(s, q)
+    }
+
+    #[test]
+    fn savepoint_errors_follow_postgresql() {
+        let (_tc, mut s) = cl();
+        for (q, state) in [
+            ("savepoint a", "25P01"),
+            ("release a", "25P01"),
+            ("rollback to a", "25P01"),
+            ("select 1; savepoint a", "25P01"),
+        ] {
+            assert_eq!(errors(&sql(&mut s, q)), vec![state], "{q}");
+            assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+        }
+        sql(&mut s, "begin");
+        assert_eq!(errors(&sql(&mut s, "savepoint a")), vec!["0A000"]);
+        assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+        sql(&mut s, "rollback");
+        for q in ["release savepoint a", "rollback to savepoint a"] {
+            sql(&mut s, "begin");
+            assert_eq!(errors(&sql(&mut s, q)), vec!["3B001"], "{q}");
+            assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+            sql(&mut s, "rollback");
+        }
+        // Failed block: SAVEPOINT / RELEASE give 25P02, ROLLBACK TO 3B001
+        // and the block stays failed.
+        sql(&mut s, "begin");
+        sql(&mut s, "select 1 / 0");
+        assert_eq!(errors(&sql(&mut s, "savepoint a")), vec!["25P02"]);
+        assert_eq!(errors(&sql(&mut s, "release a")), vec!["25P02"]);
+        assert_eq!(errors(&sql(&mut s, "rollback to a")), vec!["3B001"]);
+        assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+        sql(&mut s, "rollback");
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+    }
+
+    #[test]
+    fn and_chain_keeps_characteristics() {
+        let (_tc, mut s) = cl();
+        for q in [
+            "commit and chain",
+            "rollback and chain",
+            "end and chain",
+            "abort and chain",
+        ] {
+            assert_eq!(errors(&sql(&mut s, q)), vec!["25P01"], "{q}");
+        }
+        // The implicit block of a multi-statement Query is not a block.
+        assert_eq!(
+            errors(&sql(&mut s, "select 1; commit and chain")),
+            vec!["25P01"]
+        );
+        sql(&mut s, "begin read only isolation level read uncommitted");
+        let ev = sql(&mut s, "commit and chain");
+        assert_eq!(tags(&ev), vec!["COMMIT"]);
+        assert_eq!(s.transaction_status(), TransactionStatus::InBlock);
+        assert_eq!(val(&mut s, "show transaction_read_only"), "on");
+        assert_eq!(
+            val(&mut s, "show transaction_isolation"),
+            "read uncommitted"
+        );
+        let ev = sql(&mut s, "rollback and chain");
+        assert_eq!(tags(&ev), vec!["ROLLBACK"]);
+        assert_eq!(val(&mut s, "show transaction_read_only"), "on");
+        sql(&mut s, "commit");
+        assert_eq!(val(&mut s, "show transaction_read_only"), "off");
+        assert_eq!(val(&mut s, "show transaction_isolation"), "read committed");
+        // AND NO CHAIN is a plain COMMIT.
+        sql(&mut s, "begin");
+        sql(&mut s, "commit and no chain");
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+    }
+
+    #[test]
+    fn and_chain_from_a_failed_block_starts_from_the_defaults() {
+        let mut s = session();
+        for q in ["rollback and chain", "commit and chain"] {
+            sql(&mut s, "begin read only");
+            sql(&mut s, "select 1 / 0");
+            assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+            let ev = sql(&mut s, q);
+            assert_eq!(tags(&ev), vec!["ROLLBACK"], "{q}");
+            assert_eq!(s.transaction_status(), TransactionStatus::InBlock);
+            // PostgreSQL 17: READ ONLY is not carried over.
+            assert_eq!(val(&mut s, "show transaction_read_only"), "off", "{q}");
+            sql(&mut s, "rollback");
+        }
+    }
+
+    #[test]
+    fn transaction_characteristics_and_defaults() {
+        let mut s = session();
+        assert_eq!(val(&mut s, "show transaction_isolation"), "read committed");
+        assert_eq!(val(&mut s, "show transaction_read_only"), "off");
+        assert_eq!(val(&mut s, "show transaction_deferrable"), "off");
+        sql(
+            &mut s,
+            "begin isolation level read uncommitted, read only deferrable",
+        );
+        assert_eq!(
+            val(&mut s, "show transaction_isolation"),
+            "read uncommitted"
+        );
+        assert_eq!(val(&mut s, "show transaction_read_only"), "on");
+        assert_eq!(val(&mut s, "show transaction_deferrable"), "on");
+        sql(&mut s, "commit");
+        // The next transaction starts from the defaults again.
+        assert_eq!(val(&mut s, "show transaction_isolation"), "read committed");
+        // SET TRANSACTION in a block, with several modes.
+        sql(&mut s, "begin");
+        sql(
+            &mut s,
+            "set transaction isolation level read uncommitted, read only",
+        );
+        assert_eq!(val(&mut s, "show transaction_read_only"), "on");
+        assert_eq!(
+            val(&mut s, "show transaction_isolation"),
+            "read uncommitted"
+        );
+        sql(&mut s, "set transaction read write");
+        assert_eq!(val(&mut s, "show transaction_read_only"), "off");
+        sql(&mut s, "rollback");
+        // SET TRANSACTION outside a block: WARNING only.
+        let ev = sql(&mut s, "set transaction read only");
+        assert_eq!(
+            ev,
+            vec![
+                Ev::Notice(Severity::Warning, "25P01"),
+                Ev::Complete("SET".into())
+            ]
+        );
+        assert_eq!(val(&mut s, "show transaction_read_only"), "off");
+        // ... but works in the implicit block of a multi-statement Query.
+        let ev = sql(
+            &mut s,
+            "set transaction read only; show transaction_read_only",
+        );
+        assert_eq!(data(&ev), vec![vec![Some("on".to_owned())]]);
+        // Defaults.
+        sql(
+            &mut s,
+            "set session characteristics as transaction read only, isolation level read uncommitted",
+        );
+        assert_eq!(val(&mut s, "show default_transaction_read_only"), "on");
+        assert_eq!(val(&mut s, "show transaction_read_only"), "on");
+        assert_eq!(
+            val(&mut s, "show transaction_isolation"),
+            "read uncommitted"
+        );
+        sql(&mut s, "begin read write");
+        assert_eq!(val(&mut s, "show transaction_read_only"), "off");
+        sql(&mut s, "commit");
+        sql(&mut s, "reset default_transaction_read_only");
+        sql(
+            &mut s,
+            "set default_transaction_isolation = 'read committed'",
+        );
+        assert_eq!(val(&mut s, "show transaction_read_only"), "off");
+        assert_eq!(val(&mut s, "show transaction_isolation"), "read committed");
+        // SET / RESET of the current value.
+        sql(&mut s, "begin");
+        sql(&mut s, "set transaction_read_only = on");
+        assert_eq!(val(&mut s, "show transaction_read_only"), "on");
+        for q in [
+            "reset transaction_read_only",
+            "reset transaction_isolation",
+            "reset transaction_deferrable",
+            "set transaction_read_only = default",
+        ] {
+            assert_eq!(errors(&sql(&mut s, q)), vec!["0A000"], "{q}");
+            sql(&mut s, "rollback");
+            sql(&mut s, "begin");
+        }
+        sql(&mut s, "commit");
+    }
+
+    #[test]
+    fn unsupported_isolation_levels_are_0a000() {
+        let mut s = session();
+        for q in [
+            "begin isolation level repeatable read",
+            "start transaction isolation level serializable",
+            "set default_transaction_isolation = 'serializable'",
+            "set session characteristics as transaction isolation level repeatable read",
+        ] {
+            assert_eq!(errors(&sql(&mut s, q)), vec!["0A000"], "{q}");
+            assert_eq!(s.transaction_status(), TransactionStatus::Idle, "{q}");
+        }
+        sql(&mut s, "begin");
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction isolation level serializable")),
+            vec!["0A000"]
+        );
+        sql(&mut s, "rollback");
+        sql(&mut s, "begin");
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction_isolation = 'nonsense'")),
+            vec!["22023"]
+        );
+        sql(&mut s, "rollback");
+        assert_eq!(
+            val(&mut s, "show default_transaction_isolation"),
+            "read committed"
+        );
+    }
+
+    #[test]
+    fn read_only_rejects_writes_before_the_writer_lock() {
+        let (tc, mut s) = cl();
+        sql(&mut s, "create table ro (a int)");
+        sql(&mut s, "begin read only");
+        for (q, tag) in [
+            ("insert into ro values (1)", "INSERT"),
+            ("update ro set a = 1", "UPDATE"),
+            ("delete from ro", "DELETE"),
+            ("create table ro2 (a int)", "CREATE TABLE"),
+            ("drop table ro", "DROP TABLE"),
+        ] {
+            sql(&mut s, "begin read only");
+            let mut sink = ErrSink::default();
+            s.execute_simple(q, &mut sink).unwrap();
+            assert_eq!(
+                sink.0.as_deref(),
+                Some(&format!("25006 cannot execute {tag} in a read-only transaction")[..]),
+                "{q}"
+            );
+            // No writer lock or XID was taken: another session can write now.
+            let mut other = tc.session("postgres").unwrap();
+            assert_eq!(
+                errors(&sql(&mut other, "insert into ro values (9)")),
+                Vec::<&str>::new()
+            );
+            sql(&mut s, "rollback");
+        }
+        // Analysis errors win over 25006 for INSERT / UPDATE / DELETE.
+        for (q, code) in [
+            ("insert into nonexist values (1)", "42P01"),
+            ("update ro set a = 'x'", "22P02"),
+            ("update ro set b = 1", "42703"),
+            ("delete from nonexist", "42P01"),
+            ("insert into ro values (1, 2)", "42601"),
+        ] {
+            sql(&mut s, "begin read only");
+            assert_eq!(errors(&sql(&mut s, q)), vec![code], "{q}");
+            sql(&mut s, "rollback");
+        }
+        // Reads and CHECKPOINT are fine.
+        sql(&mut s, "begin read only");
+        assert_eq!(val(&mut s, "select a from ro"), "9");
+        assert!(errors(&sql(&mut s, "checkpoint")).is_empty());
+        sql(&mut s, "commit");
+        // default_transaction_read_only; BEGIN READ WRITE overrides it.
+        sql(&mut s, "set default_transaction_read_only = on");
+        assert_eq!(
+            errors(&sql(&mut s, "insert into ro values (2)")),
+            vec!["25006"]
+        );
+        sql(&mut s, "begin read write");
+        assert!(errors(&sql(&mut s, "insert into ro values (2)")).is_empty());
+        sql(&mut s, "commit");
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+    }
+
+    /// Records the SQLSTATE and message of the last error.
+    #[derive(Default)]
+    struct ErrSink(Option<String>);
+
+    impl ResultSink for ErrSink {
+        fn row_description(&mut self, _: &[ColumnDesc]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn data_row(&mut self, _: &[Option<String>]) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn command_complete(&mut self, _: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn empty_query(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn error(&mut self, e: &Error) -> std::io::Result<()> {
+            self.0 = Some(format!("{} {}", e.sqlstate.0, e.message));
+            Ok(())
+        }
+        fn notice(&mut self, _: &Notice) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn parameter_status(&mut self, _: &str, _: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn isolation_and_read_write_changes_after_a_query() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table iso (a int)");
+        // Any query counts, also SELECT without FROM (PostgreSQL 17).
+        sql(&mut s, "begin");
+        sql(&mut s, "select 1");
+        assert_eq!(
+            errors(&sql(
+                &mut s,
+                "set transaction isolation level read uncommitted"
+            )),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+        sql(&mut s, "begin");
+        sql(&mut s, "create table iso_x (a int)");
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction not deferrable")),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+        sql(&mut s, "begin read only");
+        sql(&mut s, "select 1");
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction read write")),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+        // A failing BEGIN mode from idle leaves the session idle.
+        assert_eq!(
+            errors(&sql(
+                &mut s,
+                "select 1; begin isolation level read uncommitted"
+            )),
+            vec!["25001"]
+        );
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+        // A table reference does: a different level is 25001, the same is fine.
+        sql(&mut s, "begin");
+        sql(&mut s, "select * from iso");
+        assert!(
+            errors(&sql(
+                &mut s,
+                "set transaction isolation level read committed"
+            ))
+            .is_empty()
+        );
+        assert_eq!(
+            errors(&sql(
+                &mut s,
+                "set transaction isolation level read uncommitted"
+            )),
+            vec!["25001"]
+        );
+        assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+        sql(&mut s, "rollback");
+        // READ ONLY is allowed after a query; READ WRITE is not.
+        sql(&mut s, "begin read only");
+        sql(&mut s, "select * from iso");
+        assert!(errors(&sql(&mut s, "set transaction read only")).is_empty());
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction read write")),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+        // A write also counts.
+        sql(&mut s, "begin");
+        sql(&mut s, "insert into iso values (1)");
+        assert_eq!(
+            errors(&sql(
+                &mut s,
+                "set transaction isolation level read uncommitted"
+            )),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+        // BEGIN after a table reference in the same Query message.
+        assert_eq!(
+            errors(&sql(
+                &mut s,
+                "select * from iso; begin isolation level read uncommitted"
+            )),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+    }
+
+    #[test]
+    fn set_local_works_in_the_implicit_block_and_reverts() {
+        let (_tc, mut s) = cl();
+        let ev = sql(&mut s, "select 1; set local application_name = 'ib'");
+        assert!(errors(&ev).is_empty());
+        assert_eq!(val(&mut s, "show application_name"), "");
+    }
+
+    #[test]
+    fn timeouts_and_cancel() {
+        let (_tc, mut s) = cl();
+        let flag = s.interrupt_flag();
+        // A cancel that arrived while idle is dropped at the next Query.
+        flag.request_cancel();
+        assert!(errors(&sql(&mut s, "select 1")).is_empty());
+        // The statement deadline is set per statement and cleared after it.
+        sql(&mut s, "set statement_timeout = '1h'");
+        assert!(errors(&sql(&mut s, "select 1")).is_empty());
+        assert!(flag.check().is_ok());
+        assert_eq!(val(&mut s, "show statement_timeout"), "1h");
+        // A deadline already in the past is reported (57014) by the next
+        // check, which a statement over rows makes.
+        sql(&mut s, "create table tm (a int)");
+        sql(&mut s, "insert into tm values (1), (2)");
+        sql(&mut s, "set statement_timeout = '1ms'");
+        std::thread::sleep(Duration::from_millis(0));
+        flag.set_statement_deadline(Some(Instant::now()));
+        assert_eq!(flag.check().unwrap_err().sqlstate, sqlstate::QUERY_CANCELED);
+        flag.set_statement_deadline(None);
+    }
+
+    #[test]
+    fn idle_timeouts_by_state() {
+        let mut s = session();
+        assert_eq!(s.idle_timeout(), None);
+        sql(&mut s, "set idle_session_timeout = '5s'");
+        sql(&mut s, "set idle_in_transaction_session_timeout = '2s'");
+        assert_eq!(s.idle_timeout(), Some(Duration::from_secs(5)));
+        assert_eq!(
+            s.idle_timeout_error().sqlstate,
+            sqlstate::IDLE_SESSION_TIMEOUT
+        );
+        assert_eq!(s.idle_timeout_error().severity, Severity::Fatal);
+        sql(&mut s, "begin");
+        assert_eq!(s.idle_timeout(), Some(Duration::from_secs(2)));
+        assert_eq!(
+            s.idle_timeout_error().sqlstate,
+            sqlstate::IDLE_IN_TRANSACTION_SESSION_TIMEOUT
+        );
+        sql(&mut s, "select 1 / 0");
+        assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+        assert_eq!(s.idle_timeout(), Some(Duration::from_secs(2)));
+        sql(&mut s, "rollback");
+        assert_eq!(s.idle_timeout(), Some(Duration::from_secs(5)));
+        sql(&mut s, "reset idle_session_timeout");
+        assert_eq!(s.idle_timeout(), None);
+    }
+
+    #[test]
+    fn relation_limit_per_record_is_enforced() {
+        use crate::txn::xact_wal::MAX_RELS_PER_RECORD;
+        assert!(Session::check_rel_limit(MAX_RELS_PER_RECORD - 1).is_ok());
+        let e = Session::check_rel_limit(MAX_RELS_PER_RECORD).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::PROGRAM_LIMIT_EXCEEDED);
+    }
+
+    #[test]
+    fn m3_settings_are_registered() {
+        let mut s = session();
+        assert_eq!(val(&mut s, "show deadlock_timeout"), "1s");
+        assert_eq!(val(&mut s, "show synchronous_commit"), "on");
+        sql(&mut s, "set synchronous_commit = 'local'");
+        assert_eq!(val(&mut s, "show synchronous_commit"), "local");
+        assert_eq!(val(&mut s, "show full_page_writes"), "on");
+        assert_eq!(val(&mut s, "show wal_sync_method"), "fdatasync");
+        assert_eq!(
+            errors(&sql(&mut s, "set full_page_writes = off")),
+            vec!["55P02"]
+        );
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction_timeout = 1")),
+            vec!["42704"]
+        );
+        assert_eq!(val(&mut s, "show default_transaction_deferrable"), "off");
+    }
+
+    #[test]
+    fn backend_pid_is_the_session_id() {
+        let (tc, s) = cl();
+        let other = tc.session("postgres").unwrap();
+        assert!(s.backend_pid() > 0);
+        assert_ne!(s.backend_pid(), other.backend_pid());
     }
 }

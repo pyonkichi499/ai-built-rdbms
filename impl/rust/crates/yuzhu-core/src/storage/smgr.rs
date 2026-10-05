@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::BLCKSZ;
@@ -40,6 +40,19 @@ pub enum ForkNumber {
     Fsm = 1,
     VisibilityMap = 2,
     Init = 3,
+}
+
+impl ForkNumber {
+    /// The fork with this number, if any (WAL records and tests).
+    pub fn from_u8(v: u8) -> Option<ForkNumber> {
+        match v {
+            0 => Some(ForkNumber::Main),
+            1 => Some(ForkNumber::Fsm),
+            2 => Some(ForkNumber::VisibilityMap),
+            3 => Some(ForkNumber::Init),
+            _ => None,
+        }
+    }
 }
 
 const ALL_FORKS: [ForkNumber; 4] = [
@@ -103,7 +116,10 @@ pub struct StorageManager {
     rel_seg_blocks: u32,
     rels: Mutex<HashMap<RelKey, Arc<RelEntry>>>,
     pending_sync: Mutex<HashMap<SyncKey, Arc<dyn VfsFile>>>,
-    pending_unlink: Mutex<Vec<RelFileLocator>>,
+    /// D13 leftovers with the unlink cycle in which they were queued (D17).
+    pending_unlink: Mutex<Vec<(RelFileLocator, u64)>>,
+    /// The current unlink cycle (`begin_unlink_cycle` advances it).
+    unlink_cycle: AtomicU64,
     warnings: Mutex<Vec<String>>,
     recovery: AtomicBool,
     broken: AtomicBool,
@@ -131,6 +147,7 @@ impl StorageManager {
             rels: Mutex::new(HashMap::new()),
             pending_sync: Mutex::new(HashMap::new()),
             pending_unlink: Mutex::new(Vec::new()),
+            unlink_cycle: AtomicU64::new(0),
             warnings: Mutex::new(Vec::new()),
             recovery: AtomicBool::new(false),
             broken: AtomicBool::new(false),
@@ -499,9 +516,13 @@ impl StorageManager {
         Ok(n)
     }
 
-    /// Zero-fills up to and including `blk` (M3 REDO; unused in M2).
+    /// Zero-fills up to and including `blk` (REDO). In recovery mode a missing
+    /// file is created first (`m3.md` §6.5.1).
     pub fn extend_to(&self, rel: RelFileLocator, fork: ForkNumber, blk: BlockNumber) -> Result<()> {
         self.check_writable()?;
+        if self.recovery.load(Ordering::SeqCst) && !self.exists(rel, fork)? {
+            self.create(rel, fork)?;
+        }
         let entry = self.entry(rel, fork)?;
         let _ext = lock(&entry.ext)?;
         while entry.nblocks.load(Ordering::Acquire) <= blk {
@@ -511,7 +532,8 @@ impl StorageManager {
     }
 
     /// D13: removes later segments and non-main forks, truncates the first
-    /// segment to 0 bytes and queues it for removal at the next checkpoint.
+    /// segment to 0 bytes and queues it, under the current unlink cycle (D17),
+    /// for removal by `finish_pending_unlinks`.
     pub fn unlink(&self, rel: RelFileLocator) -> Result<()> {
         self.check_writable()?;
         {
@@ -561,10 +583,69 @@ impl StorageManager {
         }
         self.sync_parent(&relpath(rel, ForkNumber::Main, 0))?;
         if queue {
+            let cycle = self.unlink_cycle.load(Ordering::SeqCst);
             let mut q = lock(&self.pending_unlink)?;
-            if !q.contains(&rel) {
-                q.push(rel);
+            match q.iter_mut().find(|(r, _)| *r == rel) {
+                // Unlinked again: the latest drop decides when it may go.
+                Some(entry) => entry.1 = entry.1.max(cycle),
+                None => q.push((rel, cycle)),
             }
+        }
+        Ok(())
+    }
+
+    /// Cuts the fork down to `nblocks` blocks (TRUNCATE, VACUUM). Later
+    /// segments are removed from the end backwards, then the segment that
+    /// holds the new end is shortened; every intermediate state is a valid
+    /// (longer) relation. Everything is made durable before returning
+    /// (`sync_data`, and `sync_dir` if a segment was removed). A fork that is
+    /// already at most `nblocks` long is left alone, so a replay is harmless.
+    /// The caller guarantees that no buffer at or beyond `nblocks` is pinned.
+    pub fn truncate(
+        &self,
+        rel: RelFileLocator,
+        fork: ForkNumber,
+        nblocks: BlockNumber,
+    ) -> Result<()> {
+        self.check_writable()?;
+        let entry = self.entry(rel, fork)?;
+        let _ext = lock(&entry.ext)?;
+        let old = entry.nblocks.load(Ordering::Acquire);
+        if nblocks >= old {
+            return Ok(());
+        }
+        entry.nblocks.store(nblocks, Ordering::Release);
+        let keep_segs = nblocks.div_ceil(self.rel_seg_blocks).max(1) as usize;
+        let last = {
+            let mut segs = lock(&entry.segs)?;
+            segs.truncate(keep_segs);
+            segs.last().cloned()
+        };
+        let total = (old.div_ceil(self.rel_seg_blocks).max(1)) as usize;
+        for segno in (keep_segs..total).rev() {
+            let path = relpath(rel, fork, segno_of(segno));
+            match self.vfs.remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_error(&e, "could not remove file", &path)),
+            }
+        }
+        lock(&self.pending_sync)?
+            .retain(|&(r, f, s), _| !(r == rel && f == fork && s as usize >= keep_segs));
+        let last_segno = segno_of(keep_segs - 1);
+        let path = relpath(rel, fork, last_segno);
+        let file = last.ok_or_else(|| {
+            Error::internal(format!(
+                "segment {last_segno} of \"{}\" is not open",
+                display(&path)
+            ))
+        })?;
+        let blocks_in_last = nblocks - last_segno * self.rel_seg_blocks;
+        file.set_len(u64::from(blocks_in_last) * BLCKSZ as u64)
+            .map_err(|e| io_error(&e, "could not truncate file", &path))?;
+        file.sync_data().map_err(|e| self.fsync_failed(&e, &path))?;
+        if total > keep_segs {
+            self.sync_parent(&path)?;
         }
         Ok(())
     }
@@ -595,10 +676,24 @@ impl StorageManager {
         Ok(())
     }
 
-    /// End of a checkpoint: removes the leftovers queued by `unlink`.
-    pub fn finish_pending_unlinks(&self) -> Result<()> {
-        let mut queue = std::mem::take(&mut *lock(&self.pending_unlink)?);
-        while let Some(&rel) = queue.last() {
+    /// D17: starts a new unlink cycle and returns its number. Called right
+    /// after the checkpoint's REDO point is fixed: leftovers queued before
+    /// this call have a smaller number, later ones are queued under the
+    /// returned number.
+    pub fn begin_unlink_cycle(&self) -> u64 {
+        self.unlink_cycle.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// End of a checkpoint: removes the leftovers queued by `unlink` in
+    /// cycles before `upto`. The rest stay queued.
+    pub fn finish_pending_unlinks(&self, upto: u64) -> Result<()> {
+        let mut todo: Vec<RelFileLocator> = {
+            let mut q = lock(&self.pending_unlink)?;
+            let (done, keep): (Vec<_>, Vec<_>) = q.drain(..).partition(|&(_, c)| c < upto);
+            *q = keep;
+            done.into_iter().map(|(r, _)| r).collect()
+        };
+        while let Some(&rel) = todo.last() {
             let path = relpath(rel, ForkNumber::Main, 0);
             let result = match self.vfs.remove_file(&path) {
                 Ok(()) => Ok(()),
@@ -608,15 +703,18 @@ impl StorageManager {
             .and_then(|()| self.sync_parent(&path));
             if let Err(e) = result {
                 // Keep the rest (including this one) for the next checkpoint.
-                lock(&self.pending_unlink)?.extend(queue);
+                // They were queued before `upto`, so their number is below it.
+                let cycle = upto.saturating_sub(1);
+                lock(&self.pending_unlink)?.extend(todo.into_iter().map(|r| (r, cycle)));
                 return Err(e);
             }
-            queue.pop();
+            todo.pop();
         }
         Ok(())
     }
 
-    /// M3 recovery only; always off in M2.
+    /// Recovery mode (REDO): `extend_to` creates missing files and short
+    /// segments are padded when a relation is opened.
     pub fn set_recovery_mode(&self, on: bool) {
         self.recovery.store(on, Ordering::SeqCst);
     }
@@ -908,16 +1006,16 @@ mod tests {
             "no reuse before the checkpoint"
         );
         mgr.unlink(r).unwrap();
-        mgr.finish_pending_unlinks().unwrap();
+        mgr.finish_pending_unlinks(u64::MAX).unwrap();
         assert!(!mgr.exists(r, ForkNumber::Main).unwrap());
         mgr.create(r, ForkNumber::Main).unwrap();
         // Nothing left to remove: the new file must not be touched.
         mgr.extend(r, ForkNumber::Main).unwrap();
-        mgr.finish_pending_unlinks().unwrap();
+        mgr.finish_pending_unlinks(u64::MAX).unwrap();
         assert!(mgr.exists(r, ForkNumber::Main).unwrap());
         // Unlinking something that does not exist is fine.
         mgr.unlink(rel(777)).unwrap();
-        mgr.finish_pending_unlinks().unwrap();
+        mgr.finish_pending_unlinks(u64::MAX).unwrap();
     }
 
     #[test]
@@ -1087,5 +1185,195 @@ mod tests {
         all.sort_unstable();
         assert_eq!(all, (0..100).collect::<Vec<_>>());
         assert_eq!(mgr.nblocks(r, ForkNumber::Main).unwrap(), 100);
+    }
+
+    // ----- M3: unlink cycles, truncate, recovery-mode extend_to ------------------
+
+    fn make_rel(mgr: &StorageManager, n: u32, blocks: u32) -> RelFileLocator {
+        let r = rel(n);
+        mgr.create(r, ForkNumber::Main).unwrap();
+        for _ in 0..blocks {
+            mgr.extend(r, ForkNumber::Main).unwrap();
+        }
+        r
+    }
+
+    #[test]
+    fn begin_unlink_cycle_counts_up_from_one() {
+        let (_vfs, mgr) = setup(4);
+        assert_eq!(mgr.begin_unlink_cycle(), 1);
+        assert_eq!(mgr.begin_unlink_cycle(), 2);
+    }
+
+    #[test]
+    fn unlink_cycles_keep_leftovers_queued_after_the_redo_point() {
+        let (vfs, mgr) = setup(4);
+        let before = make_rel(&mgr, 30, 1);
+        let after = make_rel(&mgr, 31, 1);
+        mgr.unlink(before).unwrap(); // cycle 0
+        let upto = mgr.begin_unlink_cycle(); // the checkpoint fixes its REDO point
+        assert_eq!(upto, 1);
+        mgr.unlink(after).unwrap(); // cycle 1: after the REDO point
+        mgr.finish_pending_unlinks(upto).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/30"), None, "queued before: removed");
+        assert_eq!(
+            file_len(&vfs, "base/5/31"),
+            Some(0),
+            "queued after: kept (D17)"
+        );
+        // The next checkpoint takes it.
+        let upto2 = mgr.begin_unlink_cycle();
+        mgr.finish_pending_unlinks(upto2).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/31"), None);
+    }
+
+    #[test]
+    fn unlinking_a_queued_relation_again_takes_the_later_cycle() {
+        let (vfs, mgr) = setup(4);
+        let r = make_rel(&mgr, 32, 1);
+        mgr.unlink(r).unwrap();
+        let upto = mgr.begin_unlink_cycle();
+        mgr.unlink(r).unwrap(); // e.g. REDO of a second drop record
+        mgr.finish_pending_unlinks(upto).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/32"), Some(0));
+        let upto = mgr.begin_unlink_cycle();
+        mgr.finish_pending_unlinks(upto).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/32"), None);
+    }
+
+    #[test]
+    fn a_failed_removal_keeps_the_leftovers_for_the_next_checkpoint() {
+        let (vfs, mgr) = setup(4);
+        let r = make_rel(&mgr, 33, 1);
+        mgr.unlink(r).unwrap();
+        let upto = mgr.begin_unlink_cycle();
+        vfs.set_faults(fault(
+            FaultOp::Remove,
+            1,
+            FaultEffect::Error(io::ErrorKind::Other),
+        ));
+        assert!(mgr.finish_pending_unlinks(upto).is_err());
+        assert_eq!(file_len(&vfs, "base/5/33"), Some(0));
+        vfs.set_faults(FaultPlan::default());
+        mgr.finish_pending_unlinks(upto).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/33"), None);
+    }
+
+    #[test]
+    fn truncate_within_a_segment() {
+        let (vfs, mgr) = setup(4);
+        let r = make_rel(&mgr, 40, 3);
+        mgr.write_block(tag(r, 0), &page(1)).unwrap();
+        mgr.truncate(r, ForkNumber::Main, 1).unwrap();
+        assert_eq!(mgr.nblocks(r, ForkNumber::Main).unwrap(), 1);
+        assert_eq!(file_len(&vfs, "base/5/40"), Some(BLCKSZ));
+        let mut buf = [0u8; BLCKSZ];
+        mgr.read_block(tag(r, 0), &mut buf).unwrap();
+        assert_eq!(buf, page(1));
+        assert!(mgr.read_block(tag(r, 1), &mut buf).is_err());
+        assert!(mgr.write_block(tag(r, 1), &page(2)).is_err());
+        // Growing again hands out the truncated block numbers, zero-filled.
+        assert_eq!(mgr.extend(r, ForkNumber::Main).unwrap(), 1);
+        mgr.read_block(tag(r, 1), &mut buf).unwrap();
+        assert_eq!(buf, [0u8; BLCKSZ]);
+    }
+
+    #[test]
+    fn truncate_removes_later_segments_and_shortens_the_last_kept_one() {
+        let (vfs, mgr) = setup(2);
+        let r = make_rel(&mgr, 41, 7); // segments 0..=3 (2+2+2+1 blocks)
+        assert_eq!(file_len(&vfs, "base/5/41.3"), Some(BLCKSZ));
+        mgr.truncate(r, ForkNumber::Main, 3).unwrap();
+        assert_eq!(mgr.nblocks(r, ForkNumber::Main).unwrap(), 3);
+        assert_eq!(file_len(&vfs, "base/5/41"), Some(2 * BLCKSZ));
+        assert_eq!(file_len(&vfs, "base/5/41.1"), Some(BLCKSZ));
+        assert_eq!(file_len(&vfs, "base/5/41.2"), None);
+        assert_eq!(file_len(&vfs, "base/5/41.3"), None);
+        // On a segment boundary the next segment goes entirely.
+        mgr.truncate(r, ForkNumber::Main, 2).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/41"), Some(2 * BLCKSZ));
+        assert_eq!(file_len(&vfs, "base/5/41.1"), None);
+        // To zero: the first segment stays, empty.
+        mgr.truncate(r, ForkNumber::Main, 0).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/41"), Some(0));
+        assert_eq!(mgr.nblocks(r, ForkNumber::Main).unwrap(), 0);
+        assert!(mgr.exists(r, ForkNumber::Main).unwrap());
+        // The relation can grow across segments again.
+        for i in 0..5 {
+            assert_eq!(mgr.extend(r, ForkNumber::Main).unwrap(), i);
+        }
+        assert_eq!(file_len(&vfs, "base/5/41.2"), Some(BLCKSZ));
+    }
+
+    #[test]
+    fn truncate_to_the_current_length_or_more_is_a_no_op() {
+        let (vfs, mgr) = setup(4);
+        let r = make_rel(&mgr, 42, 3);
+        mgr.truncate(r, ForkNumber::Main, 3).unwrap();
+        mgr.truncate(r, ForkNumber::Main, 100).unwrap();
+        assert_eq!(mgr.nblocks(r, ForkNumber::Main).unwrap(), 3);
+        assert_eq!(file_len(&vfs, "base/5/42"), Some(3 * BLCKSZ));
+    }
+
+    #[test]
+    fn truncate_is_durable_across_a_crash() {
+        let (vfs, mgr) = setup(2);
+        let r = make_rel(&mgr, 43, 5);
+        mgr.sync_pending().unwrap();
+        mgr.truncate(r, ForkNumber::Main, 3).unwrap();
+        let after = vfs.crash(CrashMode::DropUnsynced);
+        let mgr2 = StorageManager::new(Arc::new(after.clone()), 2);
+        assert_eq!(mgr2.nblocks(r, ForkNumber::Main).unwrap(), 3);
+        assert_eq!(file_len(&after, "base/5/43.2"), None);
+    }
+
+    #[test]
+    fn truncate_forgets_pending_syncs_of_removed_segments_and_missing_file_errors() {
+        let (_vfs, mgr) = setup(2);
+        let r = make_rel(&mgr, 44, 5);
+        mgr.write_block(tag(r, 4), &page(3)).unwrap();
+        mgr.truncate(r, ForkNumber::Main, 1).unwrap();
+        mgr.sync_pending().unwrap();
+        let e = mgr.truncate(rel(999), ForkNumber::Main, 0).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::UNDEFINED_FILE);
+    }
+
+    #[test]
+    fn truncate_failure_of_fsync_is_a_panic() {
+        let (vfs, mgr) = setup(4);
+        let r = make_rel(&mgr, 45, 3);
+        vfs.set_faults(fault(
+            FaultOp::Sync,
+            1,
+            FaultEffect::Error(io::ErrorKind::Other),
+        ));
+        let e = mgr.truncate(r, ForkNumber::Main, 1).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        assert!(mgr.is_broken());
+    }
+
+    #[test]
+    fn extend_to_creates_a_missing_file_only_in_recovery_mode() {
+        let (vfs, mgr) = setup(2);
+        let r = rel(46);
+        assert!(mgr.extend_to(r, ForkNumber::Main, 2).is_err());
+        mgr.set_recovery_mode(true);
+        mgr.extend_to(r, ForkNumber::Main, 2).unwrap();
+        assert_eq!(mgr.nblocks(r, ForkNumber::Main).unwrap(), 3);
+        assert_eq!(file_len(&vfs, "base/5/46"), Some(2 * BLCKSZ));
+        assert_eq!(file_len(&vfs, "base/5/46.1"), Some(BLCKSZ));
+        // A D13 leftover (0 bytes) is extended, not re-created.
+        let r2 = make_rel(&mgr, 47, 1);
+        mgr.unlink(r2).unwrap();
+        mgr.extend_to(r2, ForkNumber::Main, 0).unwrap();
+        assert_eq!(mgr.nblocks(r2, ForkNumber::Main).unwrap(), 1);
+    }
+
+    #[test]
+    fn fork_numbers_round_trip() {
+        for f in ALL_FORKS {
+            assert_eq!(ForkNumber::from_u8(f as u8), Some(f));
+        }
+        assert_eq!(ForkNumber::from_u8(4), None);
     }
 }

@@ -47,3 +47,16 @@
 - **M2-Q22 slt の後始末**: `m2/catalog/pg_attribute`・`constraint_attrdef`・`m2/ddl/drop_cleanup` が末尾でテーブルを消さず、同じ DB への再実行が失敗する。テスト側に DROP を足すのが推奨（M3 のテスト整備時に対応）。
 - **M2-Q23 CHECK 制約の重複エラー文言**: PG は `check constraint "c" already exists`、yuzhu は `constraint "c" for relation "v" already exists`。PG にそろえるのが推奨（位置の有無は PG で要確認）。
 - **M2-Q24 `finish_pending_unlinks` の残骸**: 失敗して再起動後に残った 0 バイトのファイルは、OID 採番時の `storage_exists` 確認で避ける（m2.md の D13）。回収は M5 の VACUUM か起動時掃除で検討。
+
+## M3 の仮決め（`spec/design/m3.md` 第 10 節の M3-Q1〜Q22 は設計書を参照。ここには実装・レビューで追加で決めたものを記す）
+
+- **M3-Q23 PG 17 の実測を m3.md より優先する**: (1) FROM のないものを含め、最初の文でスナップショットを取るため、その後に現在と異なる分離レベル・READ ONLY→READ WRITE・DEFERRABLE の変更をすると 25001（同じレベルへの変更は成功）。未対応の REPEATABLE READ / SERIALIZABLE も、スナップショット後なら 0A000 より先に 25001 を返す。(2) 失敗状態からの `ROLLBACK AND CHAIN` は READ ONLY を引き継がない。(3) 暗黙のトランザクションブロック（1 つの Simple Query に複数文）では `SET LOCAL` が成功し、Query の終了で元に戻る。m3.md の該当注記は未更新。
+- **M3-Q24 READ ONLY の 25006 は解析後**: INSERT/UPDATE/DELETE は解析・plan のあとで 25006 を出す（42P01 などが先）。読み取り専用では書き込みロックを取らない。CREATE/DROP TABLE は先頭で 25006。定数畳み込みがないため `SET a = 1/0` の 22012 は PG と順序が違う。
+- **M3-Q25 RESET と transaction_* パラメータ**: `transaction_isolation` / `transaction_read_only` / `transaction_deferrable` への RESET と `SET ... TO DEFAULT` は 0A000（`cannot be reset`）。
+- **M3-Q26 追加した M3 パラメータの扱い**: `deadlock_timeout` は最小 1ms。`synchronous_commit` は true/yes/1 を on に、false/no/0 を off に正規化する。`full_page_writes`・`wal_sync_method`・`max_wal_size` は 55P02（再起動が要る設定）、`wal_segment_size` は変更不可。
+- **M3-Q27 排他バリアの待ちとファイルの削除**: DROP のコミットや CREATE を含む ROLLBACK の unlink は、排他バリアが取れなければキューに積み、文の終了後に再試行する（他セッションの文を待たない）。ポーリングで取るので、読み手が途切れない間は遅れる。クラッシュでキューが失われると孤立ファイルが残る（M3-Q5 と同じ扱い）。待ちの間は cancel / statement_timeout が効かない。
+- **M3-Q28 1 レコードあたりのリレーション数の上限**: `MAX_RELS_PER_RECORD` を CREATE/DROP TABLE で検査し、超えると 54000。
+- **M3-Q29 チェックポイントスレッドの panic**: `Cluster::tick` の `run_checkpoint` を `catch_unwind` で包み、panic したら警告を出してクラスタを poison する（panic する経路は未確認の防御）。
+- **M3-Q30 `idle_in_transaction_session_timeout` はメッセージ途中も対象**: 待ち開始時刻からの期限をメッセージ本体の読み取りにも適用する（25P03 / 57P05 の FATAL）。
+- **M3-Q31 RR 用の分離性 spec は yuzhu で失敗する**: `tests/isolation/specs` の `lost-update` と `write-skew-rr` は REPEATABLE READ を使うので、M5 まで yuzhu では失敗する（PG では通る）。
+- **M3-Q32 slt の調整**: `tests/slt/m3/txn/isolation_level_after_select.slt` の後半は、yuzhu が REPEATABLE READ を受け付けないので `READ UNCOMMITTED` に変えた（PG でも通る）。

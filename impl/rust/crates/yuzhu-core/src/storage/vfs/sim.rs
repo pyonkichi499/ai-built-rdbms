@@ -107,6 +107,14 @@ struct SimState {
     faults: Vec<(FaultRule, u64)>,
     rng: SplitMix64,
     stats: SimStats,
+    /// I/O operations since creation or the last crash.
+    op_count: u64,
+    /// `CrashFreeze` fired: every operation fails with EIO until `crash`.
+    frozen: bool,
+    /// `sync_dir` succeeds without doing anything (mutation testing).
+    ignore_sync_dir: bool,
+    /// Renames of files since the last crash, for atomic crash handling.
+    pending_renames: Vec<(PathBuf, PathBuf, u64)>,
 }
 
 fn eio() -> io::Error {
@@ -137,7 +145,7 @@ impl SimState {
     /// Finds the first rule that fires for this operation.
     fn check_fault(&mut self, op: FaultOp, path: &Path) -> Option<FaultEffect> {
         for (rule, count) in &mut self.faults {
-            if rule.op != op {
+            if rule.op != op && rule.op != FaultOp::Any {
                 continue;
             }
             if let Some(prefix) = &rule.path_prefix
@@ -176,24 +184,35 @@ impl SimState {
         self.epoch += 1;
         self.faults.clear();
         self.locks.clear();
-        if matches!(mode, CrashMode::KeepAll) {
-            self.durable_files = self.live_files.clone();
-            self.durable_dirs = self.live_dirs.clone();
-        } else {
-            // Keep only entries whose parent directory is itself durable
-            // (BTreeSet order puts parents before children).
-            let mut dirs = BTreeSet::new();
-            for d in &self.durable_dirs {
-                if parent_of(d).as_os_str().is_empty() || dirs.contains(&parent_of(d)) {
-                    dirs.insert(d.clone());
-                }
+        self.frozen = false;
+        self.op_count = 0;
+        let renames = std::mem::take(&mut self.pending_renames);
+        match mode {
+            CrashMode::KeepAll => {
+                self.durable_files = self.live_files.clone();
+                self.durable_dirs = self.live_dirs.clone();
             }
-            self.durable_files
-                .retain(|f, _| parent_of(f).as_os_str().is_empty() || dirs.contains(&parent_of(f)));
-            self.durable_dirs = dirs;
-            self.live_files = self.durable_files.clone();
-            self.live_dirs = self.durable_dirs.clone();
+            CrashMode::DropUnsynced => {}
+            CrashMode::TornSectors {
+                keep_probability, ..
+            }
+            | CrashMode::RandomSubset { keep_probability } => {
+                self.apply_namespace_subset(keep_probability, &renames);
+            }
         }
+        // Keep only entries whose parent directory is itself durable
+        // (BTreeSet order puts parents before children).
+        let mut dirs = BTreeSet::new();
+        for d in &self.durable_dirs {
+            if parent_of(d).as_os_str().is_empty() || dirs.contains(&parent_of(d)) {
+                dirs.insert(d.clone());
+            }
+        }
+        self.durable_files
+            .retain(|f, _| parent_of(f).as_os_str().is_empty() || dirs.contains(&parent_of(f)));
+        self.durable_dirs = dirs;
+        self.live_files = self.durable_files.clone();
+        self.live_dirs = self.durable_dirs.clone();
         let referenced: BTreeSet<u64> = self.live_files.values().copied().collect();
         self.inodes.retain(|ino, _| referenced.contains(ino));
         let rng = &mut self.rng;
@@ -207,12 +226,106 @@ impl SimState {
                 } => {
                     node.current = torn(node, sector.max(1), keep_probability, rng);
                 }
+                CrashMode::RandomSubset { keep_probability } => {
+                    node.current = random_subset(node, keep_probability, rng);
+                }
             }
             node.durable = node.current.clone();
             node.unsynced.clear();
             node.len_dirty = false;
         }
     }
+
+    /// Applies each not-yet-durable directory operation (create, remove,
+    /// replace) independently with probability `keep`. A file rename whose
+    /// source and target are both unsynced is decided as one unit (renames
+    /// are atomic on real file systems).
+    fn apply_namespace_subset(&mut self, keep: f64, renames: &[(PathBuf, PathBuf, u64)]) {
+        let mut handled: BTreeSet<PathBuf> = BTreeSet::new();
+        for (from, to, ino) in renames {
+            if self.durable_files.get(from) == Some(ino)
+                && !self.live_files.contains_key(from)
+                && self.live_files.get(to) == Some(ino)
+                && self.durable_files.get(to) != Some(ino)
+            {
+                handled.insert(from.clone());
+                handled.insert(to.clone());
+                if self.rng.next_f64() < keep {
+                    self.durable_files.remove(from);
+                    self.durable_files.insert(to.clone(), *ino);
+                }
+            }
+        }
+        let adds: Vec<(PathBuf, u64)> = self
+            .live_files
+            .iter()
+            .filter(|(p, i)| self.durable_files.get(*p) != Some(*i) && !handled.contains(*p))
+            .map(|(p, i)| (p.clone(), *i))
+            .collect();
+        for (p, i) in adds {
+            if self.rng.next_f64() < keep {
+                self.durable_files.insert(p, i);
+            }
+        }
+        let removes: Vec<PathBuf> = self
+            .durable_files
+            .keys()
+            .filter(|p| !self.live_files.contains_key(*p) && !handled.contains(*p))
+            .cloned()
+            .collect();
+        for p in removes {
+            if self.rng.next_f64() < keep {
+                self.durable_files.remove(&p);
+            }
+        }
+        let new_dirs: Vec<PathBuf> = self
+            .live_dirs
+            .difference(&self.durable_dirs)
+            .cloned()
+            .collect();
+        for d in new_dirs {
+            if self.rng.next_f64() < keep {
+                self.durable_dirs.insert(d);
+            }
+        }
+        let gone_dirs: Vec<PathBuf> = self
+            .durable_dirs
+            .difference(&self.live_dirs)
+            .cloned()
+            .collect();
+        for d in gone_dirs {
+            if self.rng.next_f64() < keep {
+                self.durable_dirs.remove(&d);
+            }
+        }
+    }
+}
+
+/// The content after a crash that keeps each unsynced write (and the length
+/// change) independently with probability `keep`. Kept writes copy the
+/// current bytes of their range, so a later overwrite can show through an
+/// earlier dropped one.
+fn random_subset(node: &Inode, keep: f64, rng: &mut SplitMix64) -> Vec<u8> {
+    let mut out = node.durable.clone();
+    if node.len_dirty && rng.next_f64() < keep {
+        out.resize(node.current.len(), 0);
+    }
+    for &(o, l) in &node.unsynced {
+        if rng.next_f64() >= keep {
+            continue;
+        }
+        let len = node.current.len();
+        let start = usize::try_from(o).unwrap_or(usize::MAX).min(len);
+        let end = usize::try_from(o + l).unwrap_or(usize::MAX).min(len);
+        if start >= end {
+            continue;
+        }
+        if out.len() < end {
+            out.resize(end, 0);
+        }
+        out[start..end].copy_from_slice(&node.current[start..end]);
+    }
+    out
 }
 
 /// The content after a crash that keeps each unsynced sector with the given
@@ -261,7 +374,7 @@ fn lock_state(m: &Mutex<SimState>) -> MutexGuard<'_, SimState> {
 /// Locks the state, failing with EIO if this instance is from before a crash.
 fn live_state(m: &Mutex<SimState>, generation: u64) -> io::Result<MutexGuard<'_, SimState>> {
     let st = lock_state(m);
-    if st.epoch == generation {
+    if st.epoch == generation && !st.frozen {
         Ok(st)
     } else {
         Err(eio())
@@ -284,6 +397,10 @@ impl SimVfs {
                 faults: Vec::new(),
                 rng: SplitMix64(seed),
                 stats: SimStats::default(),
+                op_count: 0,
+                frozen: false,
+                ignore_sync_dir: false,
+                pending_renames: Vec::new(),
             })),
             generation: 0,
         }
@@ -307,6 +424,19 @@ impl SimVfs {
         }
     }
 
+    /// The number of I/O operations (read, write, sync, `sync_dir`, open,
+    /// remove, rename, `set_len`) since creation or the last crash.
+    pub fn op_count(&self) -> u64 {
+        lock_state(&self.state).op_count
+    }
+
+    /// Makes `sync_dir` succeed without doing anything (mutation testing).
+    /// The setting is shared by all instances over this disk and survives
+    /// `crash`.
+    pub fn set_ignore_sync_dir(&self, on: bool) {
+        lock_state(&self.state).ignore_sync_dir = on;
+    }
+
     pub fn stats(&self) -> SimStats {
         lock_state(&self.state).stats.clone()
     }
@@ -324,9 +454,15 @@ impl SimVfs {
     fn gate(&self, op: FaultOp, path: &Path) -> io::Result<Option<FaultEffect>> {
         let effect = {
             let mut st = live_state(&self.state, self.generation)?;
-            st.check_fault(op, path)
+            st.op_count += 1;
+            let effect = st.check_fault(op, path);
+            if matches!(effect, Some(FaultEffect::CrashFreeze)) {
+                st.frozen = true;
+            }
+            effect
         };
         match effect {
+            Some(FaultEffect::CrashFreeze) => Err(eio()),
             Some(FaultEffect::Delay(d)) => {
                 std::thread::sleep(d);
                 Ok(None)
@@ -360,6 +496,10 @@ pub enum FaultOp {
     Remove,
     Rename,
     SetLen,
+    /// `create_dir` / `create_dir_all` (a directory operation: a crash point of its own).
+    CreateDir,
+    /// Matches every operation (the rule's `nth` then counts all of them).
+    Any,
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +532,9 @@ pub enum FaultEffect {
     FsyncFailAndForget,
     BitFlipOnRead,
     Delay(Duration),
+    /// Freezes the disk just before this operation: it and every later
+    /// operation fail with EIO until `crash` is called.
+    CrashFreeze,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -399,13 +542,18 @@ pub enum CrashMode {
     /// All unsynced writes and unsynced directory operations are lost.
     DropUnsynced,
     /// Each unsynced `sector`-sized chunk survives with `keep_probability`
-    /// (torn pages). Directory operations behave as in `DropUnsynced`.
+    /// (torn pages; `sector = 1` is any byte boundary). Unsynced directory
+    /// operations survive with the same probability.
     TornSectors {
         sector: usize,
         keep_probability: f64,
     },
     /// Everything survives (only the process died).
     KeepAll,
+    /// Each unsynced operation (write, length change, create, remove,
+    /// rename) survives independently with `keep_probability`, so reordering
+    /// is reproduced too.
+    RandomSubset { keep_probability: f64 },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -613,7 +761,8 @@ impl Vfs for SimVfs {
                 return Err(io::ErrorKind::IsADirectory.into());
             }
             st.live_files.remove(&f);
-            st.live_files.insert(t, ino);
+            st.live_files.insert(t.clone(), ino);
+            st.pending_renames.push((f, t, ino));
             Ok(())
         } else if st.live_dirs.contains(&f) {
             if st.live_dirs.contains(&t) || st.live_files.contains_key(&t) {
@@ -649,6 +798,7 @@ impl Vfs for SimVfs {
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
         let p = normalize(path)?;
+        self.gate_simple(FaultOp::CreateDir, &p)?;
         let mut st = live_state(&self.state, self.generation)?;
         st.require_parent(&p)?;
         if st.dir_exists(&p) || st.live_files.contains_key(&p) {
@@ -660,6 +810,7 @@ impl Vfs for SimVfs {
 
     fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         let p = normalize(path)?;
+        self.gate_simple(FaultOp::CreateDir, &p)?;
         let mut st = live_state(&self.state, self.generation)?;
         let mut cur = PathBuf::new();
         for c in p.components() {
@@ -708,6 +859,9 @@ impl Vfs for SimVfs {
         st.stats.sync_dirs += 1;
         if !st.dir_exists(&p) {
             return Err(io::ErrorKind::NotFound.into());
+        }
+        if st.ignore_sync_dir {
+            return Ok(());
         }
         st.durable_files.retain(|f, _| parent_of(f) != p);
         st.durable_dirs.retain(|d| parent_of(d) != p);
@@ -1101,6 +1255,39 @@ mod tests {
     }
 
     #[test]
+    fn create_dir_is_an_operation_with_faults_and_crash_points() {
+        let vfs = SimVfs::new(1);
+        let before = vfs.op_count();
+        vfs.create_dir(p("d")).unwrap();
+        vfs.create_dir_all(p("a/b")).unwrap();
+        assert_eq!(vfs.op_count(), before + 2);
+        vfs.set_faults(FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::CreateDir,
+                path_prefix: None,
+                nth: None,
+                probability: None,
+                effect: FaultEffect::Error(io::ErrorKind::Other),
+            }],
+        });
+        assert!(vfs.create_dir(p("e")).is_err());
+        assert!(vfs.create_dir_all(p("x/y")).is_err());
+        assert!(!vfs.exists(p("e")).unwrap());
+        assert!(!vfs.exists(p("x")).unwrap());
+        // `Any` の N 番目で凍結できる（ディレクトリの作成もクラッシュ点）。
+        vfs.set_faults(FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::Any,
+                path_prefix: None,
+                nth: Some(1),
+                probability: None,
+                effect: FaultEffect::CrashFreeze,
+            }],
+        });
+        assert!(vfs.create_dir(p("z")).is_err());
+    }
+
+    #[test]
     fn delay_proceeds_normally() {
         let vfs = SimVfs::new(1);
         let f = create(&vfs, "f", b"1");
@@ -1171,5 +1358,114 @@ mod tests {
         for (i, c) in all.chunks(16).enumerate() {
             assert!(c.iter().all(|&b| usize::from(b) == i));
         }
+    }
+
+    fn freeze_rule(nth: u64) -> FaultPlan {
+        FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::Any,
+                path_prefix: None,
+                nth: Some(nth),
+                probability: None,
+                effect: FaultEffect::CrashFreeze,
+            }],
+        }
+    }
+
+    #[test]
+    fn op_count_and_crash_freeze() {
+        let vfs = SimVfs::new(1);
+        let f = create(&vfs, "f", b"abcd"); // open + write
+        assert_eq!(vfs.op_count(), 2);
+        f.sync_data().unwrap();
+        vfs.sync_dir(p("")).unwrap();
+        assert_eq!(vfs.op_count(), 4);
+        vfs.set_faults(freeze_rule(2));
+        f.write_all_at(b"x", 0).unwrap(); // 1st matching op
+        assert!(f.sync_data().is_err()); // 2nd: frozen before it
+        for _ in 0..2 {
+            assert!(f.write_all_at(b"y", 0).is_err());
+            assert!(vfs.exists(p("f")).is_err());
+            assert!(f.size().is_err());
+        }
+        let after = vfs.crash(CrashMode::DropUnsynced);
+        assert_eq!(after.op_count(), 0);
+        assert_eq!(after.file_contents(p("f")).unwrap(), b"abcd");
+        assert!(after.exists(p("f")).unwrap());
+        assert!(f.write_all_at(b"z", 0).is_err());
+    }
+
+    #[test]
+    fn random_subset_is_deterministic_and_covers_extremes() {
+        let run = |seed: u64, keep: f64| {
+            let vfs = SimVfs::new(seed);
+            vfs.create_dir_all(p("d")).unwrap();
+            let f = create(&vfs, "d/f", b"");
+            f.sync_all().unwrap();
+            vfs.sync_dir(p("d")).unwrap();
+            vfs.sync_dir(p("")).unwrap();
+            for i in 0..8u8 {
+                f.write_all_at(&[i + 1; 4], u64::from(i) * 4).unwrap();
+            }
+            let g = create(&vfs, "d/g", b"new");
+            drop(g);
+            let after = vfs.crash(CrashMode::RandomSubset {
+                keep_probability: keep,
+            });
+            (after.file_contents(p("d/f")), after.file_contents(p("d/g")))
+        };
+        assert_eq!(run(5, 0.5), run(5, 0.5));
+        let (f, g) = run(5, 1.0);
+        assert_eq!(f.unwrap().len(), 32);
+        assert_eq!(g.unwrap(), b"new");
+        let (f, g) = run(5, 0.0);
+        assert_eq!(f.unwrap().len(), 0);
+        assert!(g.is_none());
+        let mut partial = false;
+        for seed in 0..20 {
+            let (f, _) = run(seed, 0.5);
+            let f = f.unwrap();
+            partial |= f.contains(&0) && f.iter().any(|&b| b != 0);
+        }
+        assert!(partial);
+    }
+
+    #[test]
+    fn torn_and_random_apply_to_directory_operations() {
+        let mut kept = 0;
+        let mut lost = 0;
+        for seed in 0..40 {
+            let vfs = SimVfs::new(seed);
+            let f = create(&vfs, "a", b"x");
+            f.sync_all().unwrap();
+            vfs.sync_dir(p("")).unwrap();
+            vfs.rename(p("a"), p("b")).unwrap();
+            let after = vfs.crash(CrashMode::TornSectors {
+                sector: 1,
+                keep_probability: 0.5,
+            });
+            // A rename is atomic: exactly one of the names exists with the data.
+            let (a, b) = (after.file_contents(p("a")), after.file_contents(p("b")));
+            assert!(a.is_some() ^ b.is_some(), "seed {seed}");
+            if b.is_some() { kept += 1 } else { lost += 1 }
+        }
+        assert!(kept > 0 && lost > 0);
+    }
+
+    #[test]
+    fn ignore_sync_dir_loses_directory_entries() {
+        let vfs = SimVfs::new(1);
+        vfs.set_ignore_sync_dir(true);
+        let f = create(&vfs, "f", b"x");
+        f.sync_all().unwrap();
+        vfs.sync_dir(p("")).unwrap();
+        let after = vfs.crash(CrashMode::DropUnsynced);
+        assert!(after.file_contents(p("f")).is_none());
+        after.set_ignore_sync_dir(false);
+        let f = create(&after, "f", b"x");
+        f.sync_all().unwrap();
+        after.sync_dir(p("")).unwrap();
+        let again = after.crash(CrashMode::DropUnsynced);
+        assert!(again.file_contents(p("f")).is_some());
     }
 }

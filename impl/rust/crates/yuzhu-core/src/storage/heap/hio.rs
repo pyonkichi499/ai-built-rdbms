@@ -5,13 +5,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::tuple::TupleHeader;
+use super::wal::{HEAP_INIT_PAGE, HEAP_INSERT};
 use crate::error::{Error, Result};
-use crate::storage::buffer::{BufferPool, CriticalSection, PageWriteGuard};
+use crate::storage::buffer::{BufferPool, CriticalSection, PageWriteGuard, PinnedBuffer};
 use crate::storage::page::{Page, PageError};
 use crate::storage::smgr::{BlockNumber, BufferTag, ForkNumber, RelFileLocator};
 use crate::storage::{MAX_HEAP_TUPLES_PER_PAGE, MAXALIGN};
+use crate::txn::Xid;
 use crate::types::Tid;
 use crate::util::sync;
+use crate::wal::{Lsn, RecordBuilder, RegFlags, RmgrId, Wal};
 
 pub fn tag(rel: RelFileLocator, block: BlockNumber) -> BufferTag {
     BufferTag {
@@ -86,14 +89,16 @@ pub fn place_in_page(
     Ok(tid)
 }
 
-/// Inserts `data` on the hinted page or a new one. No latch is held while
-/// the relation is extended.
-pub fn insert_tuple(
+/// Picks the page for a new tuple of `len` bytes and returns it pinned, without a
+/// latch (`m3.md` §6.7). The hinted (or last) page is used if it has room; otherwise
+/// the relation is extended (no latch is held during that). The caller latches the
+/// page and re-checks [`fits`]; the answer here may be stale by then.
+pub fn find_target(
     pool: &Arc<BufferPool>,
     hints: &InsertHints,
     rel: RelFileLocator,
-    data: &[u8],
-) -> Result<Tid> {
+    len: usize,
+) -> Result<PinnedBuffer> {
     let nblocks = pool.nblocks(rel, ForkNumber::Main)?;
     let candidate = hints
         .get(rel)?
@@ -101,21 +106,68 @@ pub fn insert_tuple(
         .or(nblocks.checked_sub(1));
     if let Some(blk) = candidate {
         let buf = pool.read_buffer(tag(rel, blk))?;
-        let mut guard = buf.write()?;
-        if fits(guard.page(), data.len()) {
-            let cs = CriticalSection::enter(pool);
-            let tid = place_in_page(&mut guard, blk, data).map_err(|e| cs.escalate(e))?;
-            drop(guard);
-            hints.set(rel, blk)?;
-            return Ok(tid);
+        let room = fits(&*buf.read()?, len);
+        if room {
+            return Ok(buf);
         }
     }
-    let buf = pool.extend(rel, ForkNumber::Main)?;
-    let blk = buf.tag().block;
-    let mut guard = buf.write()?;
-    let cs = CriticalSection::enter(pool);
-    let tid = place_in_page(&mut guard, blk, data).map_err(|e| cs.escalate(e))?;
-    drop(guard);
-    hints.set(rel, blk)?;
-    Ok(tid)
+    pool.extend(rel, ForkNumber::Main)
+}
+
+/// Writes the `HEAP_INSERT` record. The caller is in a critical section, holds the
+/// latch and has already called [`place_in_page`] (which returned `tid`).
+fn log_insert(
+    wal: &Wal,
+    guard: &PageWriteGuard<'_>,
+    tag: BufferTag,
+    tid: Tid,
+    init: bool,
+    xid: Xid,
+) -> Result<Lsn> {
+    let info = HEAP_INSERT | if init { HEAP_INIT_PAGE } else { 0 };
+    let mut rec = RecordBuilder::new(RmgrId::Heap, info, xid);
+    let flags = if init {
+        RegFlags::STANDARD | RegFlags::WILL_INIT
+    } else {
+        RegFlags::STANDARD
+    };
+    let b = rec.register_block(tag, guard.page(), flags);
+    let bytes = guard
+        .page()
+        .item(tid.offset)
+        .map_err(|_| Error::internal("freshly added tuple is unreadable"))?;
+    rec.block_data(b, bytes);
+    let mut main = [0u8; 4];
+    main[0..2].copy_from_slice(&tid.offset.to_le_bytes());
+    rec.main_data(&main);
+    Ok(wal.insert(rec)?.end)
+}
+
+/// Inserts `data` on a page with room and logs it (`m3.md` §5.1). No latch is held
+/// while the relation is extended.
+pub fn insert_tuple(
+    pool: &Arc<BufferPool>,
+    wal: &Wal,
+    hints: &InsertHints,
+    rel: RelFileLocator,
+    xid: Xid,
+    data: &[u8],
+) -> Result<Tid> {
+    loop {
+        let buf = find_target(pool, hints, rel, data.len())?;
+        let blk = buf.tag().block;
+        let mut guard = buf.write()?;
+        if !fits(guard.page(), data.len()) {
+            continue;
+        }
+        let init = guard.page().is_new();
+        let cs = CriticalSection::enter(pool);
+        let tid = place_in_page(&mut guard, blk, data).map_err(|e| cs.escalate(e))?;
+        let end = log_insert(wal, &guard, buf.tag(), tid, init, xid).map_err(|e| cs.escalate(e))?;
+        guard.set_lsn(end.0);
+        drop(guard);
+        drop(cs);
+        hints.set(rel, blk)?;
+        return Ok(tid);
+    }
 }

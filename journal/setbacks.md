@@ -16,8 +16,8 @@
 ## 自動照合（報告ハッシュと実状態）
 
 <!-- AUTO:reports BEGIN -->
-生成: 2026-10-04 15:33:18 UTC / 出所: 各 wf_*/journal.jsonl の type==result の result.summary、git、tests/slt/
-対象 result 数: 35（出所: 各 journal.jsonl の type==result 行の合計）
+生成: 2026-10-05 07:32:13 UTC / 出所: 各 wf_*/journal.jsonl の type==result の result.summary、git、tests/slt/
+対象 result 数: 117（出所: 各 journal.jsonl の type==result 行の合計）
 
 ### 報告ハッシュの存在確認（git cat-file -t）
 
@@ -25,6 +25,12 @@
 |---|---|---|---|---|---|
 | 存在 | `610c121` | wf_0cc0a7be-171 | ac0a281336d65966c | A-foundation | commit（HEAD から到達可） |
 | 存在 | `88d1bc0` | wf_0cc0a7be-171 | ac0a281336d65966c | A-foundation | commit（HEAD から到達可） |
+| 存在 | `425ca04` | wf_0cc0a7be-171 | af4ffff0999eb323b | integrate-1 | commit（HEAD から到達可） |
+| 存在 | `7daa421` | wf_0cc0a7be-171 | a410ccbd02f82ca59 | final | commit（HEAD から到達可） |
+| 存在 | `ab02b68` | wf_0cc0a7be-171 | a410ccbd02f82ca59 | final | commit（HEAD から到達可） |
+| 存在 | `11bcaeb` | wf_b10ff45b-956 | a8b4abfb9d633280e | A-foundation | commit（HEAD から到達可） |
+| **報告ハッシュ不在** | `ac44d49a764f` | wf_b10ff45b-956 | ae9764ca0ddee5bb9 | R | fatal: Not a valid object name ac44d49a764f |
+| **報告ハッシュ不在** | `dd4de71f` | wf_b10ff45b-956 | ae9764ca0ddee5bb9 | R | fatal: Not a valid object name dd4de71f |
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a1c788b09d28a0ab3 | journal-verify.sh | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 | 存在 | `88d1bc0` | wf_dc96a8cc-646 | a43c34ddc3633abce | journal-metrics.sh | commit（HEAD から到達可） |
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a2efe58543601eb15 | retrospective.md | commit（HEAD から到達不能。reflog にのみ残る可能性） |
@@ -44,12 +50,19 @@
 | 存在 | `610c121` | wf_dc96a8cc-646 | ac6f0415162fc36a4 | decisions.md | commit（HEAD から到達可） |
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | ac6f0415162fc36a4 | decisions.md | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a195a4eef7f6dfc83 | workflows.md | commit（HEAD から到達不能。reflog にのみ残る可能性） |
+| 存在 | `88d1bc0` | wf_dc96a8cc-646 | a0e11aa341516e958 | review | commit（HEAD から到達可） |
+| **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a0e11aa341516e958 | review | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 | **履歴から外れている** | `b8c7ea3` | wf_fabaf03d-9d6 | aacb3834c4b5c0414 | integrate | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 
-件数: 到達可 15 / 履歴から外れている 7 / オブジェクト不在 0（出所: 上表）
+件数: 到達可 20 / 履歴から外れている 8 / オブジェクト不在 2（出所: 上表）
 
 ### 「未実行」「未存在」を含む報告
 
+- wf_5e84e5ec-172 / a28b7c143d8e3ec75 / K:crash: - yuzhu 側は未実行。M3 のバイナリがまだ無い。tests/yuzhu.sh の crash と after.sh フックは bash -n の構文確認のみ。
+- wf_5e84e5ec-172 / ae4cb023a641ba574 / K:verify: - yuzhu 側は未実行。M3 のバイナリがまだ無い。run.sh、yuzhu.sh、pg.sh は bash -n の構文確認のみ。
+- wf_b10ff45b-956 / a8b4abfb9d633280e / A-foundation: 担当 A の範囲を完了し、コミット 11bcaeb（日本語・署名なし・push なし）。`cd impl/rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` は通過（テスト 597 件成功・失敗 0、層 2 の足場 1 件は `#[ignore]`）。tests/run.sh や PG との slt は未実行。
+- wf_b10ff45b-956 / a4a8082517fe75469 / E: - 単体テストのうち `--lib` の他モジュールは未実行。
+- wf_b10ff45b-956 / a6c1abcff32cf975b / T: - 本物の作業ツリーでは cargo test --test crash_sim を未実行。
 - wf_dc96a8cc-646 / a5661a45b8a3d5da7 / journal-all.sh: tools/journal-all.sh を作成しました（/home/hiroshi/work/private_github/ai-built-rdbms/tools/journal-all.sh、実行権限あり）。timeline、workflows、decisions、metrics、verify の順に tools/journal-<名前>.sh を bash で実行し、--dry-run と --run-tests を各スクリプトへ引き回します。1 つが失敗しても続行し
 - wf_dc96a8cc-646 / a1c788b09d28a0ab3 / journal-verify.sh: 2. 「未実行」「未存在」を含む報告行を、Workflow、agentId、label 付きで並べる。
 - wf_dc96a8cc-646 / a1c788b09d28a0ab3 / journal-verify.sh: - 「未実行」を含む報告は wf_fabaf03d の K-m2-tests の1件。yuzhu 実装に対して未実行とある。ほかに wf_fabaf03d の integrate と wf_dc96a8cc の journal-all.sh を作る担当（label は write:…/journal-all.sh）の2件の行も一致した。後者は、仕様の例示として「未実行」の語が文中に出ているだけの可能性がある（未確認）。
@@ -60,9 +73,9 @@
 - wf_fabaf03d-9d6 / aacb3834c4b5c0414 / integrate: tests/slt/m1 は yuzhu 37/37 通過・失敗0、PG17 でも 37/37 通過。cargo fmt --check / clippy -D warnings / cargo test も全て通過。PROGRESS.md を更新し、ローカルでコミット済み（push なし、AI署名なし）。コミットは b8c7ea3 と、その後の PROGRESS.md 修正 1 件。tests/slt/m2/dml の6ファイルも含めてコミットした。M2 テストは未実行。
 - wf_fabaf03d-9d6 / ad7a8aff97e9b2bf8 / K-m2-tests: yuzhu の実装には触っていません。yuzhu に対しては未実行です。`yuzhu-server` や `yuzhu-initdb` がまだ無く、`tests/yuzhu.sh` は `bash -n` の構文確認と `status` だけ試しました。
 
-該当行数: 9（出所: 上記）
+該当行数: 14（出所: 上記）
 
-### 実ファイルの状態（2026-10-04 15:33:18 UTC 時点）
+### 実ファイルの状態（2026-10-05 07:32:13 UTC 時点）
 
 | 項目 | 値 | 出所 |
 |---|---|---|
@@ -80,8 +93,8 @@
 | sandbox/pg.sh | あり | `test -e` |
 | impl/rust/crates/yuzhu-server | あり | `test -e` |
 | impl/rust/crates/yuzhu-initdb | なし | `test -e` |
-| HEAD | 610c121 | `git rev-parse --short HEAD` |
-| 作業ツリーの変更ファイル数 | 38 | `git status --short` |
+| HEAD | 11bcaeb | `git rev-parse --short HEAD` |
+| 作業ツリーの変更ファイル数 | 75 | `git status --short` |
 
 ※ 上記は事実の並置のみ。報告と実状態の食い違いの判断・原因・対処は手書き欄に書く。
 <!-- AUTO:reports END -->

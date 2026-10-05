@@ -1,0 +1,4 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1r s2r s1w s2w s1c s2c s3check
+setup of session s1 failed: ERROR:  transaction isolation level "repeatable read" is not supported yet

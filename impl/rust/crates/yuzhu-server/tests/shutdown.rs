@@ -11,6 +11,7 @@ use yuzhu_core::bootstrap::{InitdbOptions, initdb};
 use yuzhu_core::storage::DEFAULT_RELSEG_SIZE;
 use yuzhu_core::storage::vfs::LocalVfs;
 use yuzhu_core::testing::TestCluster;
+use yuzhu_core::wal::DEFAULT_WAL_SEGMENT_SIZE;
 use yuzhu_server::config::Config;
 use yuzhu_server::{Outcome, Server, ShutdownHandle, ShutdownMode};
 
@@ -225,6 +226,7 @@ fn restart_on_a_real_directory_keeps_committed_data() {
             superuser: "postgres".into(),
             no_sync: true,
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
+            wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
         },
     )
     .unwrap();
@@ -262,6 +264,7 @@ fn second_server_on_the_same_directory_is_refused() {
             superuser: "postgres".into(),
             no_sync: true,
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
+            wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
         },
     )
     .unwrap();
@@ -280,7 +283,7 @@ fn second_server_on_the_same_directory_is_refused() {
 }
 
 #[test]
-fn unclean_directory_is_refused_unless_ignored() {
+fn unclean_directory_is_recovered_on_the_next_start() {
     let dir = temp_dir("unclean");
     initdb(
         Arc::new(LocalVfs::new(dir.clone())),
@@ -288,6 +291,7 @@ fn unclean_directory_is_refused_unless_ignored() {
             superuser: "postgres".into(),
             no_sync: true,
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
+            wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
         },
     )
     .unwrap();
@@ -302,13 +306,8 @@ fn unclean_directory_is_refused_unless_ignored() {
     assert_eq!(r.join.join().unwrap().unwrap(), Outcome::Immediate);
     // The old cluster object is gone only with the thread; give it a moment.
     std::thread::sleep(Duration::from_millis(100));
-    let err = Server::bind(&cfg).unwrap_err();
-    assert!(err.to_string().contains("not properly shut down"), "{err}");
-    let ignoring = Config {
-        ignore_unclean_shutdown: true,
-        ..cfg
-    };
-    let r = run(Server::bind(&ignoring).unwrap());
+    // M3: the next start runs crash recovery instead of refusing.
+    let r = run(Server::bind(&cfg).unwrap());
     r.handle.request(ShutdownMode::Fast);
     assert_eq!(r.join.join().unwrap().unwrap(), Outcome::Stopped);
     let _ = std::fs::remove_dir_all(dir);

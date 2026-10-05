@@ -4,17 +4,26 @@ use super::Parser;
 use super::expr::is_query_start_kw;
 use crate::error::{Error, Result, sqlstate};
 use crate::sql::ast::{
-    Explain, ParamTarget, ResetStmt, SetArg, SetStmt, SetValue, ShowStmt, Statement,
-    TransactionKind, TransactionMode, TransactionStmt,
+    Explain, ParamTarget, ResetStmt, SetArg, SetStmt, SetTransaction, SetValue, ShowStmt,
+    Statement, TransactionKind, TransactionMode, TransactionStmt,
 };
 use crate::sql::token::{KeywordCategory, TokenKind, keyword_category};
 
 impl Parser<'_> {
+    /// Eats the optional `SAVEPOINT` of `RELEASE` / `ROLLBACK TO`. As in
+    /// PostgreSQL it is also a valid name, so a `SAVEPOINT` that is not
+    /// followed by a word is the name itself.
+    fn eat_savepoint_kw(&mut self) {
+        if self.is_kw("savepoint") && matches!(self.peek_nth(1).kind, TokenKind::Word { .. }) {
+            self.advance();
+        }
+    }
+
     pub(super) fn parse_transaction(&mut self) -> Result<TransactionStmt> {
         let tok = self.advance();
         let start = tok.span.start;
         let kw = tok.keyword().unwrap_or_default().to_string();
-        let kind = match kw.as_str() {
+        let mut kind = match kw.as_str() {
             "begin" => TransactionKind::Begin,
             "start" => {
                 self.expect_kw("transaction")?;
@@ -23,8 +32,24 @@ impl Parser<'_> {
             "commit" => TransactionKind::Commit,
             "end" => TransactionKind::End,
             "rollback" => TransactionKind::Rollback,
+            "savepoint" => TransactionKind::Savepoint(self.parse_col_id()?.value),
+            "release" => {
+                self.eat_savepoint_kw();
+                TransactionKind::Release(self.parse_col_id()?.value)
+            }
             _ => TransactionKind::Abort,
         };
+        if matches!(
+            kind,
+            TransactionKind::Savepoint(_) | TransactionKind::Release(_)
+        ) {
+            return Ok(TransactionStmt {
+                kind,
+                modes: Vec::new(),
+                chain: false,
+                span: self.span_from(start),
+            });
+        }
         if matches!(kw.as_str(), "commit" | "rollback") && self.is_kw("prepared") {
             return Err(self.not_supported(&format!("{} PREPARED", kw.to_ascii_uppercase())));
         }
@@ -32,23 +57,17 @@ impl Parser<'_> {
             self.eat_kw("transaction");
         }
         let mut modes = Vec::new();
+        let mut chain = false;
         match kind {
             TransactionKind::Begin | TransactionKind::StartTransaction => {
                 modes = self.parse_transaction_modes()?;
             }
             _ => {
-                if kind == TransactionKind::Rollback && self.is_kw("to") {
-                    return Err(self.not_supported("ROLLBACK TO SAVEPOINT"));
-                }
-                if self.is_kw("and") {
-                    self.advance();
-                    let no = self.eat_kw("no");
-                    if !no {
-                        if self.is_kw("chain") {
-                            return Err(self.not_supported("AND CHAIN"));
-                        }
-                        return Err(self.unexpected());
-                    }
+                if kind == TransactionKind::Rollback && self.eat_kw("to") {
+                    self.eat_savepoint_kw();
+                    kind = TransactionKind::RollbackTo(self.parse_col_id()?.value);
+                } else if self.eat_kw("and") {
+                    chain = !self.eat_kw("no");
                     self.expect_kw("chain")?;
                 }
             }
@@ -56,6 +75,7 @@ impl Parser<'_> {
         Ok(TransactionStmt {
             kind,
             modes,
+            chain,
             span: self.span_from(start),
         })
     }
@@ -138,6 +158,7 @@ impl Parser<'_> {
             local,
             name: name.to_string(),
             value,
+            transaction: None,
             span: p.span_from(start),
         };
         if self.is_kw("transaction") && !self.next_is_set_assign() {
@@ -146,16 +167,26 @@ impl Parser<'_> {
                 return Err(self.not_supported("SET TRANSACTION SNAPSHOT"));
             }
             self.advance();
-            let (name, value) = self.modes_to_param("")?;
-            return Ok(set(self, &name, value));
+            let (name, value, modes) = self.modes_to_param("")?;
+            let mut stmt = set(self, &name, value);
+            stmt.transaction = Some(SetTransaction {
+                session_characteristics: false,
+                modes,
+            });
+            return Ok(stmt);
         }
         if self.is_kw("session") && self.nth_is_kw(1, "characteristics") {
             self.advance();
             self.advance();
             self.expect_kw("as")?;
             self.expect_kw("transaction")?;
-            let (name, value) = self.modes_to_param("default_")?;
-            return Ok(set(self, &name, value));
+            let (name, value, modes) = self.modes_to_param("default_")?;
+            let mut stmt = set(self, &name, value);
+            stmt.transaction = Some(SetTransaction {
+                session_characteristics: true,
+                modes,
+            });
+            return Ok(stmt);
         }
         if self.is_kw("session") && self.nth_is_kw(1, "authorization") {
             self.advance();
@@ -232,13 +263,11 @@ impl Parser<'_> {
     }
 
     /// Maps `SET [SESSION CHARACTERISTICS AS] TRANSACTION mode` to the
-    /// equivalent parameter assignment (one mode only).
-    fn modes_to_param(&mut self, prefix: &str) -> Result<(String, SetValue)> {
+    /// equivalent parameter assignment (the first mode; all modes are returned too).
+    fn modes_to_param(&mut self, prefix: &str) -> Result<(String, SetValue, Vec<TransactionMode>)> {
         let modes = self.parse_transaction_modes()?;
-        let mode = match modes.as_slice() {
-            [] => return Err(self.unexpected()),
-            [m] => m.clone(),
-            _ => return Err(self.not_supported("SET TRANSACTION with several modes")),
+        let Some(mode) = modes.first().cloned() else {
+            return Err(self.unexpected());
         };
         let (name, arg) = match mode {
             TransactionMode::IsolationLevel(l) => ("transaction_isolation", SetArg::String(l)),
@@ -249,7 +278,11 @@ impl Parser<'_> {
                 ("transaction_deferrable", SetArg::Word("off".into()))
             }
         };
-        Ok((format!("{prefix}{name}"), SetValue::Values(vec![arg])))
+        Ok((
+            format!("{prefix}{name}"),
+            SetValue::Values(vec![arg]),
+            modes,
+        ))
     }
 
     /// `NonReservedWord_or_Sconst`.

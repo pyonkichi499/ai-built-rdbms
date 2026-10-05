@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::Xid;
-use crate::error::{Error, Result, Severity};
+use crate::error::{Error, Result, Severity, sqlstate};
 use crate::storage::vfs::{OpenMode, Vfs};
 use crate::util::sync::lock;
 
@@ -193,6 +193,63 @@ impl Clog {
         page.data[byte] |= (s as u8) << shift;
         page.dirty = true;
         Ok(())
+    }
+
+    /// Makes sure the page is in memory, reading it from disk if needed
+    /// (zeros for a missing file). The first copy inserted wins.
+    fn ensure_loaded(&self, pageno: u64) -> Result<()> {
+        if lock(&self.pages)?.contains_key(&pageno) {
+            return Ok(());
+        }
+        let loaded = self.read_page(pageno)?;
+        lock(&self.pages)?.entry(pageno).or_insert(loaded);
+        Ok(())
+    }
+
+    /// For REDO: like `set_status`, but the page is read from disk if it is
+    /// not in memory, and setting the same value again is allowed.
+    /// `Committed <-> Aborted` contradicts the WAL and is `Severity::Panic`.
+    pub fn set_status_redo(&self, xid: Xid, s: XidStatus) -> Result<()> {
+        if !xid.is_normal() || s == XidStatus::InProgress {
+            return Err(Error::internal(format!(
+                "invalid commit log update during REDO: transaction {} to {s:?}",
+                xid.0
+            ))
+            .with_severity(Severity::Panic));
+        }
+        let pageno = page_of(xid);
+        self.ensure_loaded(pageno)
+            .map_err(|e| e.with_severity(Severity::Panic))?;
+        let (byte, shift) = slot_of(xid);
+        let mut pages = lock(&self.pages)?;
+        let page = pages.get_mut(&pageno).ok_or_else(|| {
+            Error::internal("commit log page vanished during REDO").with_severity(Severity::Panic)
+        })?;
+        let current =
+            decode((page.data[byte] >> shift) & 3).map_err(|e| e.with_severity(Severity::Panic))?;
+        if current == s {
+            return Ok(());
+        }
+        if current != XidStatus::InProgress {
+            return Err(Error::new(
+                sqlstate::DATA_CORRUPTED,
+                format!(
+                    "WAL says transaction {} is {s:?} but the commit log says {current:?}",
+                    xid.0
+                ),
+            )
+            .with_severity(Severity::Panic));
+        }
+        page.data[byte] |= (s as u8) << shift;
+        page.dirty = true;
+        Ok(())
+    }
+
+    /// Loads the page of `xid` (from disk if it exists) so that a later
+    /// `ensure_page_for` cannot replace a page that has content on disk with
+    /// zeros (`m3.md` §6.6.2). Called by recovery for `next_xid`.
+    pub fn load_page_for(&self, xid: Xid) -> Result<()> {
+        self.ensure_loaded(page_of(xid))
     }
 
     /// Writes dirty pages and `sync_data`s them (checkpoint and shutdown).
@@ -402,6 +459,48 @@ mod tests {
         assert_eq!(c.status(Xid(3)).unwrap(), XidStatus::Committed); // bits 6..7 of byte 0
         assert_eq!(c.status(Xid(7)).unwrap(), XidStatus::Aborted);
         assert_eq!(c.status(Xid(9)).unwrap(), XidStatus::InProgress);
+    }
+
+    #[test]
+    fn redo_set_is_idempotent_and_loads_pages() {
+        let v = vfs();
+        {
+            let c = Clog::open(Arc::clone(&v), Xid(3)).unwrap();
+            c.set_status(Xid(3), XidStatus::Committed).unwrap();
+            c.flush().unwrap();
+        }
+        let far = Xid(XIDS_PER_PAGE * 2 + 5);
+        let c = Clog::open(v, far).unwrap();
+        // Page 0 is not in memory: it is read from disk.
+        c.set_status_redo(Xid(3), XidStatus::Committed).unwrap();
+        c.set_status_redo(Xid(3), XidStatus::Committed).unwrap();
+        let e = c.set_status_redo(Xid(3), XidStatus::Aborted).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        c.set_status_redo(Xid(4), XidStatus::Aborted).unwrap();
+        assert_eq!(c.status(Xid(4)).unwrap(), XidStatus::Aborted);
+        assert!(c.set_status_redo(Xid(4), XidStatus::InProgress).is_err());
+        assert!(c.set_status_redo(Xid(1), XidStatus::Committed).is_err());
+        // A page past the end of the log is created as zeros.
+        c.set_status_redo(Xid(XIDS_PER_PAGE * 7), XidStatus::Committed)
+            .unwrap();
+        assert!(c.has_dirty());
+    }
+
+    #[test]
+    fn load_page_for_keeps_disk_content() {
+        let v = vfs();
+        {
+            let c = Clog::open(Arc::clone(&v), Xid(3)).unwrap();
+            c.set_status(Xid(10), XidStatus::Committed).unwrap();
+            c.flush().unwrap();
+        }
+        // Opened for a later page, as after recovery advanced `next_xid`.
+        let c = Clog::open(Arc::clone(&v), Xid(XIDS_PER_PAGE + 1)).unwrap();
+        c.load_page_for(Xid(11)).unwrap();
+        c.ensure_page_for(Xid(11));
+        assert_eq!(c.status(Xid(10)).unwrap(), XidStatus::Committed);
+        c.set_status(Xid(11), XidStatus::Aborted).unwrap();
+        assert_eq!(c.status(Xid(10)).unwrap(), XidStatus::Committed);
     }
 
     #[test]

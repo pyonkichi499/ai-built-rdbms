@@ -8,6 +8,7 @@
 
 setup
 {
+  DROP TABLE IF EXISTS doctors;
   CREATE TABLE doctors (name text, on_call bool);
   INSERT INTO doctors VALUES ('alice', true), ('bob', true);
 }

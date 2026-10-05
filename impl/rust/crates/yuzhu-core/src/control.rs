@@ -7,6 +7,7 @@
 //! `sync_data`; so a torn write of one slot never destroys the other.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,14 +16,16 @@ use crate::storage::vfs::{OpenMode, Vfs, VfsFile};
 use crate::storage::{BLCKSZ, CATALOG_VERSION_NO, DEFAULT_RELSEG_SIZE, PAGE_LAYOUT_VERSION};
 use crate::util::crc32c::crc32c;
 use crate::util::sync::{lock, lock_ignore_poison};
+use crate::wal::{MAX_WAL_SEGMENT_SIZE, MIN_WAL_SEGMENT_SIZE};
 
 /// Path of the control file, relative to the data directory.
 pub const CONTROL_FILE_PATH: &str = "global/yuzhu_control";
-pub const CONTROL_FORMAT_VERSION: u32 = 1;
+pub const CONTROL_FORMAT_VERSION: u32 = 2;
+/// The default WAL segment size (initdb may choose another power of two).
 pub const WAL_SEGMENT_SIZE: u32 = 16 * 1024 * 1024;
 /// `flags` bit 0: `full_page_writes`.
 pub const FLAG_FULL_PAGE_WRITES: u32 = 1;
-/// `flags` bit 1: page checksums (always set in M2).
+/// `flags` bit 1: page checksums (always set).
 pub const FLAG_PAGE_CHECKSUMS: u32 = 2;
 /// First OID handed out to user objects.
 pub const FIRST_NORMAL_OID: u32 = 16384;
@@ -68,7 +71,7 @@ impl ControlData {
             state: DbState::ShutDown,
             page_size: u32::try_from(BLCKSZ).expect("BLCKSZ fits u32"),
             wal_segment_size: WAL_SEGMENT_SIZE,
-            flags: FLAG_PAGE_CHECKSUMS,
+            flags: FLAG_FULL_PAGE_WRITES | FLAG_PAGE_CHECKSUMS,
             time: unix_now(),
             checkpoint_lsn: 0,
             redo_lsn: 0,
@@ -208,6 +211,8 @@ struct ControlInner {
 #[derive(Debug)]
 pub struct ControlFileHandle {
     file: Arc<dyn VfsFile>,
+    /// Mutation switch (`DebugKnobs::single_slot_control_file`): always write slot A.
+    single_slot: AtomicBool,
     inner: Mutex<ControlInner>,
 }
 
@@ -217,6 +222,20 @@ fn invalid_control_file() -> Error {
         .with_detail(format!(
             "Neither slot of \"{CONTROL_FILE_PATH}\" has a valid magic number and checksum."
         ))
+}
+
+fn incompatible_format(found: u32) -> Error {
+    let detail = if found == 1 {
+        "The database cluster was initialized without WAL (format version 1), but the server requires format version 2.".to_string()
+    } else {
+        format!(
+            "The database cluster has control file format version {found}, but the server requires format version {CONTROL_FORMAT_VERSION}."
+        )
+    };
+    Error::internal("database files are incompatible with server")
+        .with_severity(Severity::Fatal)
+        .with_detail(detail)
+        .with_hint("Re-run yuzhu-initdb.")
 }
 
 fn initdb_hint(e: Error) -> Error {
@@ -244,6 +263,7 @@ impl ControlFileHandle {
         vfs.sync_dir(Path::new("")).map_err(|e| ctx(&e))?;
         Ok(ControlFileHandle {
             file,
+            single_slot: AtomicBool::new(false),
             inner: Mutex::new(ControlInner {
                 data: data.clone(),
                 generation: 1,
@@ -279,15 +299,11 @@ impl ControlFileHandle {
             return Err(invalid_control_file());
         };
         if data.format_version != CONTROL_FORMAT_VERSION {
-            return Err(initdb_hint(
-                Error::internal("database files are incompatible with server").with_detail(format!(
-                    "The control file format version is {}, but this server supports {CONTROL_FORMAT_VERSION}.",
-                    data.format_version
-                )),
-            ));
+            return Err(incompatible_format(data.format_version));
         }
         Ok(ControlFileHandle {
             file,
+            single_slot: AtomicBool::new(false),
             inner: Mutex::new(ControlInner {
                 data,
                 generation,
@@ -336,11 +352,13 @@ impl ControlFileHandle {
                 PAGE_LAYOUT_VERSION.to_string(),
             ));
         }
-        if d.wal_segment_size != WAL_SEGMENT_SIZE {
+        if !d.wal_segment_size.is_power_of_two()
+            || !(MIN_WAL_SEGMENT_SIZE..=MAX_WAL_SEGMENT_SIZE).contains(&d.wal_segment_size)
+        {
             return Err(mismatch(
                 "WAL_SEGMENT_SIZE",
                 d.wal_segment_size.to_string(),
-                WAL_SEGMENT_SIZE.to_string(),
+                format!("a power of two in {MIN_WAL_SEGMENT_SIZE}..={MAX_WAL_SEGMENT_SIZE}"),
             ));
         }
         if d.flags & FLAG_PAGE_CHECKSUMS == 0 {
@@ -358,6 +376,12 @@ impl ControlFileHandle {
             ));
         }
         Ok(())
+    }
+
+    /// Mutation testing only: write every update to slot A (slot B stays
+    /// invalid), so a torn write can destroy the only valid copy.
+    pub fn set_single_slot(&self, on: bool) {
+        self.single_slot.store(on, Ordering::Relaxed);
     }
 
     /// A copy of the current contents.
@@ -396,7 +420,11 @@ impl ControlFileHandle {
         f(&mut new);
         validate_update(old, &new, allow_xid_decrease)?;
         let generation = inner.generation + 1;
-        let slot = 1 - inner.last_slot;
+        let slot = if self.single_slot.load(Ordering::Relaxed) {
+            0
+        } else {
+            1 - inner.last_slot
+        };
         let rec = encode_slot(&new, generation);
         let io_err = |e: &std::io::Error| {
             Error::from_io(e, format!("could not write file \"{CONTROL_FILE_PATH}\""))
@@ -654,5 +682,82 @@ mod tests {
     #[test]
     fn system_identifier_differs_over_time() {
         assert_ne!(generate_system_identifier(), 0);
+    }
+
+    #[test]
+    fn format_version_1_is_rejected_with_wal_message() {
+        let (_sim, vfs) = setup();
+        let mut d = data();
+        d.format_version = 1;
+        ControlFileHandle::create(&vfs, &d).unwrap();
+        let e = ControlFileHandle::open(&vfs).unwrap_err();
+        assert_eq!(e.severity, Severity::Fatal);
+        assert_eq!(e.message, "database files are incompatible with server");
+        assert!(
+            e.detail
+                .as_deref()
+                .unwrap()
+                .contains("without WAL (format version 1)")
+        );
+        assert_eq!(e.hint.as_deref(), Some("Re-run yuzhu-initdb."));
+        assert_eq!(CONTROL_FORMAT_VERSION, 2);
+        assert_eq!(data().flags, FLAG_FULL_PAGE_WRITES | FLAG_PAGE_CHECKSUMS);
+    }
+
+    #[test]
+    fn wal_segment_size_is_checked_as_power_of_two_in_range() {
+        for (size, ok) in [
+            (2u32 << 20, true),
+            (64 << 20, true),
+            (1 << 30, true),
+            (1 << 20, false),
+            (3 << 20, false),
+            (0, false),
+        ] {
+            let (_sim, vfs) = setup();
+            let mut d = data();
+            d.wal_segment_size = size;
+            let h = ControlFileHandle::create(&vfs, &d).unwrap();
+            assert_eq!(h.check_compatible(d.builtin_hash).is_ok(), ok, "{size}");
+        }
+    }
+
+    #[test]
+    fn single_slot_mutation_always_writes_slot_a() {
+        let (sim, vfs) = setup();
+        let h = ControlFileHandle::create(&vfs, &data()).unwrap();
+        h.set_single_slot(true);
+        h.update(|c| c.next_xid = 10).unwrap();
+        h.update(|c| c.next_xid = 20).unwrap();
+        let file = sim.file_contents(Path::new(CONTROL_FILE_PATH)).unwrap();
+        assert_eq!(get_u64(&file, 16), 3);
+        assert!(file[4096..].iter().all(|&b| b == 0));
+        // A torn write of the only slot can make the file unusable.
+        let mut broken = 0;
+        for seed in 0..40 {
+            let s = SimVfs::new(seed);
+            let v: Arc<dyn Vfs> = Arc::new(s.clone());
+            let h = ControlFileHandle::create(&v, &data()).unwrap();
+            h.set_single_slot(true);
+            h.update(|c| c.next_xid = 100).unwrap();
+            s.set_faults(FaultPlan {
+                rules: vec![FaultRule {
+                    op: FaultOp::Sync,
+                    path_prefix: None,
+                    nth: Some(1),
+                    probability: None,
+                    effect: FaultEffect::Error(std::io::ErrorKind::Other),
+                }],
+            });
+            assert!(h.update(|c| c.next_xid = 200).is_err());
+            let after: Arc<dyn Vfs> = Arc::new(s.crash(CrashMode::TornSectors {
+                sector: 1,
+                keep_probability: 0.5,
+            }));
+            if ControlFileHandle::open(&after).is_err() {
+                broken += 1;
+            }
+        }
+        assert!(broken > 0);
     }
 }

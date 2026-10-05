@@ -3,16 +3,16 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use yuzhu_core::storage::vfs::LocalVfs;
 use yuzhu_core::{
-    Cluster, ClusterOptions, ColumnDesc, Error, Notice, ResultSink, Session, Severity,
+    Cluster, ClusterOptions, ColumnDesc, DebugKnobs, Error, Notice, ResultSink, Session, Severity,
     StartupParams,
 };
 
@@ -98,7 +98,9 @@ impl Server {
                 shared_buffers: config.shared_buffers,
                 max_connections: u32::try_from(config.max_connections).unwrap_or(u32::MAX),
                 checkpoint_timeout: config.checkpoint_timeout,
-                ignore_unclean_shutdown: config.ignore_unclean_shutdown,
+                max_wal_size: config.max_wal_size,
+                background_checkpointer: true,
+                knobs: DebugKnobs::default(),
             },
         )
         .map_err(|e| io::Error::other(format_core_error(&e)))?;
@@ -462,7 +464,7 @@ fn handle_connection(
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
 
-    let params = match startup(&mut reader, &mut writer, pid) {
+    let params = match startup(&mut reader, &mut writer, shared, pid) {
         Ok(Startup::Ready(p)) => p,
         Ok(Startup::Close) => return Ok(()),
         Err(e) if is_timeout(&e) => {
@@ -492,7 +494,10 @@ fn handle_connection(
         }
     };
 
+    let backend_pid = session.backend_pid();
+    let secret = random_secret(backend_pid);
     registration.set_flag(session.interrupt_flag());
+    registration.set_key(backend_pid, secret);
     let session = slot.insert(session);
 
     write_message(&mut writer, &BackendMessage::AuthenticationOk)?;
@@ -508,8 +513,8 @@ fn handle_connection(
     write_message(
         &mut writer,
         &BackendMessage::BackendKeyData {
-            pid,
-            secret: random_secret(pid),
+            pid: backend_pid,
+            secret,
         },
     )?;
     ready_for_query(&mut writer, session)?;
@@ -536,6 +541,7 @@ fn ready_for_query<W: Write>(w: &mut W, session: &Session) -> io::Result<()> {
 fn startup(
     reader: &mut BufReader<TcpStream>,
     writer: &mut BufWriter<TcpStream>,
+    shared: &Shared,
     pid: i32,
 ) -> io::Result<Startup> {
     loop {
@@ -563,9 +569,13 @@ fn startup(
                 writer.write_all(b"N")?;
                 writer.flush()?;
             }
-            StartupPacket::CancelRequest { pid: target, .. } => {
-                // M1 does not interrupt running queries; just close.
-                tracing::info!(pid, target, "cancel request received (ignored)");
+            StartupPacket::CancelRequest {
+                pid: target,
+                secret,
+            } => {
+                // Like PostgreSQL: no reply, and a wrong key looks the same.
+                let hit = shared.coordinator.cancel(target, secret);
+                tracing::info!(pid, target, hit, "cancel request received");
                 return Ok(Startup::Close);
             }
             StartupPacket::Startup {
@@ -644,11 +654,33 @@ fn message_loop(
     pid: i32,
 ) -> io::Result<()> {
     let interrupt = session.interrupt_flag();
+    let mut applied_timeout = None;
     loop {
         if interrupt.is_terminate_requested() {
             return terminated_by_administrator(writer);
         }
-        let msg = match read_message(reader, shared.max_message_len) {
+        let idle_timeout = session.idle_timeout();
+        let wait_started = Instant::now();
+        match wait_for_input(reader, idle_timeout, &mut applied_timeout) {
+            Ok(Wait::Ready) => {}
+            Ok(Wait::TimedOut) => {
+                let err = session.idle_timeout_error();
+                tracing::info!(pid, sqlstate = err.sqlstate.0, "idle timeout");
+                write_core_error(writer, &err, "FATAL")?;
+                return writer.flush();
+            }
+            Err(e) => {
+                if interrupt.is_terminate_requested() {
+                    return terminated_by_administrator(writer);
+                }
+                return Err(e);
+            }
+        }
+        // The idle timeout also covers the rest of a message whose first
+        // bytes have arrived (PostgreSQL stops the timer only after a full
+        // message), so a stalled client cannot hold the writer lock forever.
+        let read = read_next_message(reader, idle_timeout, wait_started, shared.max_message_len);
+        let msg = match read {
             Ok(Some(m)) => m,
             Ok(None) => {
                 if interrupt.is_terminate_requested() {
@@ -658,6 +690,12 @@ fn message_loop(
                 return Ok(());
             }
             Err(ProtocolError::Io(e)) => {
+                if idle_timeout.is_some() && is_timeout(&e) {
+                    let err = session.idle_timeout_error();
+                    tracing::info!(pid, sqlstate = err.sqlstate.0, "idle timeout");
+                    write_core_error(writer, &err, "FATAL")?;
+                    return writer.flush();
+                }
                 if interrupt.is_terminate_requested() {
                     return terminated_by_administrator(writer);
                 }
@@ -718,6 +756,82 @@ fn message_loop(
 
 /// Discards messages until Sync. Returns `false` if the connection should
 /// be closed (EOF, Terminate, or a fatal protocol error already reported).
+/// Outcome of waiting for the first byte of the next message.
+enum Wait {
+    Ready,
+    TimedOut,
+}
+
+/// Waits until a message starts (or EOF), applying `timeout` only to this
+/// wait; the rest of a message is read without a timeout (`m3.md` 5.10).
+/// `applied` remembers the timeout set on the socket to avoid redundant
+/// system calls.
+fn wait_for_input(
+    reader: &mut BufReader<TcpStream>,
+    timeout: Option<Duration>,
+    applied: &mut Option<Duration>,
+) -> io::Result<Wait> {
+    if reader.buffer().is_empty() {
+        if *applied != timeout {
+            reader.get_ref().set_read_timeout(timeout)?;
+            *applied = timeout;
+        }
+        loop {
+            match reader.fill_buf() {
+                Ok(_) => break,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if timeout.is_some() && is_timeout(&e) => return Ok(Wait::TimedOut),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    if applied.is_some() {
+        reader.get_ref().set_read_timeout(None)?;
+        *applied = None;
+    }
+    Ok(Wait::Ready)
+}
+
+/// Reads from the connection until `deadline`; after that every read fails
+/// with `TimedOut`.
+struct DeadlineReader<'a> {
+    inner: &'a mut BufReader<TcpStream>,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.inner.buffer().is_empty() {
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            self.inner.get_ref().set_read_timeout(Some(remaining))?;
+        }
+        self.inner.read(buf)
+    }
+}
+
+fn read_next_message(
+    reader: &mut BufReader<TcpStream>,
+    idle_timeout: Option<Duration>,
+    wait_started: Instant,
+    max_len: usize,
+) -> Result<Option<FrontendMessage>, ProtocolError> {
+    match idle_timeout {
+        Some(t) => {
+            let mut dr = DeadlineReader {
+                inner: &mut *reader,
+                deadline: wait_started + t,
+            };
+            let r = read_message(&mut dr, max_len);
+            let _ = dr.inner.get_ref().set_read_timeout(None);
+            r
+        }
+        None => read_message(reader, max_len),
+    }
+}
+
 fn discard_until_sync(
     reader: &mut BufReader<TcpStream>,
     writer: &mut BufWriter<TcpStream>,

@@ -428,11 +428,13 @@ pub struct TransactionStmt {
     pub kind: TransactionKind,
     /// Modes given to BEGIN / START TRANSACTION (ignored or rejected in M1).
     pub modes: Vec<TransactionMode>,
+    /// `COMMIT / ROLLBACK ... AND CHAIN` (`AND NO CHAIN` is `false`).
+    pub chain: bool,
     pub span: Span,
 }
 
 /// Which keyword was used; this determines the command tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransactionKind {
     /// `BEGIN [WORK|TRANSACTION]` → tag `BEGIN`.
     Begin,
@@ -446,6 +448,12 @@ pub enum TransactionKind {
     Rollback,
     /// `ABORT [WORK|TRANSACTION]` → tag `ROLLBACK`.
     Abort,
+    /// `SAVEPOINT name` (accepted as syntax; the session rejects it).
+    Savepoint(String),
+    /// `RELEASE [SAVEPOINT] name`.
+    Release(String),
+    /// `ROLLBACK [WORK|TRANSACTION] TO [SAVEPOINT] name`.
+    RollbackTo(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,7 +482,19 @@ pub struct SetStmt {
     /// Lower-cased parameter name; may be dotted (`myapp.flag`).
     pub name: String,
     pub value: SetValue,
+    /// `SET TRANSACTION ...` / `SET SESSION CHARACTERISTICS AS TRANSACTION
+    /// ...`: all the modes. `name` and `value` hold the equivalent
+    /// parameter assignment of the first mode.
+    pub transaction: Option<SetTransaction>,
     pub span: Span,
+}
+
+/// The modes of `SET TRANSACTION` / `SET SESSION CHARACTERISTICS`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetTransaction {
+    /// `SET SESSION CHARACTERISTICS AS TRANSACTION` (sets the defaults).
+    pub session_characteristics: bool,
+    pub modes: Vec<TransactionMode>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

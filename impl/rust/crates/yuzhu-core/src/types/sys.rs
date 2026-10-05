@@ -1,5 +1,6 @@
 //! Text input/output of the system types (`"char"`, `oid`, `regproc`, `tid`,
-//! `xid`, `cid`, `oidvector`, `pg_node_tree`) (`m2.md` §4.2).
+//! `xid`, `cid`, `oidvector`, `pg_node_tree`) (`m2.md` §4.2), and of the M3
+//! types `void` and `int4[]` (`m3.md` §6.10).
 //!
 //! The rules follow PostgreSQL 17 (`charin`/`charout`, `uint32in_subr`,
 //! `tidin`, `oidvectorin`); the behaviour was checked against a real
@@ -21,6 +22,8 @@ pub fn output_text(d: &Datum) -> Option<String> {
         Datum::Char(c) => char_out(*c),
         Datum::Tid(t) => format!("({},{})", t.block, t.offset),
         Datum::OidVector(v) => v.iter().map(u32::to_string).collect::<Vec<_>>().join(" "),
+        Datum::Void => String::new(),
+        Datum::Int4Array(v) => int4_array_out(v),
         _ => return None,
     })
 }
@@ -46,6 +49,8 @@ pub fn input_text(s: &str, ty: SqlType) -> Result<Datum> {
         oid::REGPROC => regproc_in(s).map(Datum::Oid),
         oid::TID => tid_in(s).map(Datum::Tid),
         oid::OIDVECTOR => oidvector_in(s).map(Datum::OidVector),
+        oid::VOID => Ok(Datum::Void),
+        oid::INT4_ARRAY => int4_array_in(s).map(Datum::Int4Array),
         oid::PG_NODE_TREE => Err(Error::new(
             sqlstate::FEATURE_NOT_SUPPORTED,
             "cannot accept a value of type pg_node_tree",
@@ -68,7 +73,157 @@ pub fn handles(type_oid: Oid) -> bool {
             | oid::CID
             | oid::OIDVECTOR
             | oid::PG_NODE_TREE
+            | oid::VOID
+            | oid::INT4_ARRAY
     )
+}
+
+/// `array_out` for `int4[]`: `{1,2,NULL}`.
+fn int4_array_out(v: &[Option<i32>]) -> String {
+    let items: Vec<String> = v
+        .iter()
+        .map(|e| e.map_or_else(|| "NULL".to_owned(), |x| x.to_string()))
+        .collect();
+    format!("{{{}}}", items.join(","))
+}
+
+fn malformed_array(s: &str, detail: &str) -> Error {
+    Error::new(
+        sqlstate::INVALID_TEXT_REPRESENTATION,
+        format!("malformed array literal: \"{s}\""),
+    )
+    .with_detail(detail)
+}
+
+/// Reads one array element starting at `*i`: quoted (`"..."`) or unquoted
+/// (up to `,` or `}`, trailing whitespace dropped). Backslash escapes the
+/// next byte. Returns the bytes and whether it was quoted.
+fn read_array_element(s: &str, i: &mut usize) -> Result<(Vec<u8>, bool)> {
+    let b = s.as_bytes();
+    let end_of_input = || malformed_array(s, "Unexpected end of input.");
+    let unexpected =
+        |c: u8| malformed_array(s, &format!("Unexpected \"{}\" character.", char::from(c)));
+    let mut buf = Vec::new();
+    if b.get(*i) == Some(&b'"') {
+        *i += 1;
+        loop {
+            match b.get(*i) {
+                None => return Err(end_of_input()),
+                Some(b'"') => {
+                    *i += 1;
+                    return Ok((buf, true));
+                }
+                Some(b'\\') => {
+                    *i += 1;
+                    buf.push(*b.get(*i).ok_or_else(end_of_input)?);
+                    *i += 1;
+                }
+                Some(&x) => {
+                    buf.push(x);
+                    *i += 1;
+                }
+            }
+        }
+    }
+    // Length of `buf` up to the last byte that is not trailing whitespace.
+    let mut keep = 0;
+    loop {
+        match b.get(*i) {
+            None => return Err(end_of_input()),
+            Some(b',' | b'}') => break,
+            Some(b'\\') => {
+                *i += 1;
+                buf.push(*b.get(*i).ok_or_else(end_of_input)?);
+                keep = buf.len();
+                *i += 1;
+            }
+            Some(&c @ (b'"' | b'{')) => return Err(unexpected(c)),
+            Some(&x) => {
+                buf.push(x);
+                if !is_space(x) {
+                    keep = buf.len();
+                }
+                *i += 1;
+            }
+        }
+    }
+    buf.truncate(keep);
+    if buf.is_empty() {
+        return Err(unexpected(b[*i]));
+    }
+    Ok((buf, false))
+}
+
+/// `array_in` for one-dimensional `int4[]`. An unquoted `NULL` (any case)
+/// is NULL. Nested braces and explicit dimensions (`[1:2]={...}`) are not
+/// supported (`0A000`).
+fn int4_array_in(s: &str) -> Result<Vec<Option<i32>>> {
+    let b = s.as_bytes();
+    let skip_ws = |mut i: usize| {
+        while i < b.len() && is_space(b[i]) {
+            i += 1;
+        }
+        i
+    };
+    let end_of_input = || malformed_array(s, "Unexpected end of input.");
+
+    let mut i = skip_ws(0);
+    match b.get(i) {
+        Some(b'{') => {}
+        Some(b'[') => {
+            return Err(Error::not_supported(
+                "arrays with explicit dimensions are not supported",
+            ));
+        }
+        _ => {
+            return Err(malformed_array(
+                s,
+                "Array value must start with \"{\" or dimension information.",
+            ));
+        }
+    }
+    i = skip_ws(i + 1);
+    let mut out = Vec::new();
+    if b.get(i) == Some(&b'}') {
+        i += 1;
+    } else {
+        loop {
+            i = skip_ws(i);
+            if b.get(i) == Some(&b'{') {
+                return Err(Error::not_supported(
+                    "multidimensional arrays are not supported",
+                ));
+            }
+            let (bytes, quoted) = read_array_element(s, &mut i)?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| malformed_array(s, "Invalid element encoding."))?;
+            if !quoted && text.eq_ignore_ascii_case("null") {
+                out.push(None);
+            } else {
+                let v = super::io::int_in(&text, oid::INT4)?;
+                out.push(Some(i32::try_from(v).expect("range checked by int_in")));
+            }
+            i = skip_ws(i);
+            match b.get(i) {
+                Some(b',') => i += 1,
+                Some(b'}') => {
+                    i += 1;
+                    break;
+                }
+                Some(&x) => {
+                    return Err(malformed_array(
+                        s,
+                        &format!("Unexpected \"{}\" character.", char::from(x)),
+                    ));
+                }
+                None => return Err(end_of_input()),
+            }
+        }
+    }
+    if skip_ws(i) < b.len() {
+        return Err(malformed_array(s, "Junk after closing right brace."));
+    }
+    Ok(out)
 }
 
 /// `charin`: `\ooo` (three octal digits) is that byte; otherwise the first
@@ -303,6 +458,77 @@ mod tests {
 
     fn oid_in(s: &str) -> Result<Datum> {
         input_text(s, ty(oid::OID))
+    }
+
+    fn arr(s: &str) -> Result<Vec<Option<i32>>> {
+        match input_text(s, ty(oid::INT4_ARRAY))? {
+            Datum::Int4Array(v) => Ok(v),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn int4_array_input() {
+        assert_eq!(arr("{}").unwrap(), vec![]);
+        assert_eq!(arr(" { } ").unwrap(), vec![]);
+        assert_eq!(arr("{1,2,NULL}").unwrap(), vec![Some(1), Some(2), None]);
+        assert_eq!(
+            arr("{ 1 , -2 ,nUll }").unwrap(),
+            vec![Some(1), Some(-2), None]
+        );
+        assert_eq!(arr("{\"1\", \"\\2\"}").unwrap(), vec![Some(1), Some(2)]);
+        assert_eq!(arr("{1} ").unwrap(), vec![Some(1)]);
+        // A quoted NULL is the string "NULL", not an integer.
+        assert_eq!(
+            arr("{\"NULL\"}").unwrap_err().sqlstate,
+            sqlstate::INVALID_TEXT_REPRESENTATION
+        );
+    }
+
+    #[test]
+    fn int4_array_input_errors() {
+        let malformed = |s: &str, detail: &str| {
+            let e = arr(s).unwrap_err();
+            assert_eq!(e.sqlstate, sqlstate::INVALID_TEXT_REPRESENTATION, "{s}");
+            assert_eq!(e.message, format!("malformed array literal: \"{s}\""));
+            assert_eq!(e.detail.as_deref(), Some(detail), "{s}");
+        };
+        malformed("{1,2", "Unexpected end of input.");
+        malformed("{", "Unexpected end of input.");
+        let start = "Array value must start with \"{\" or dimension information.";
+        malformed("abc", start);
+        malformed("", start);
+        malformed("{1,,2}", "Unexpected \",\" character.");
+        malformed("{,}", "Unexpected \",\" character.");
+        malformed("{1,}", "Unexpected \"}\" character.");
+        malformed("{1,2}x", "Junk after closing right brace.");
+        let e = arr("{a}").unwrap_err();
+        assert_eq!(e.message, "invalid input syntax for type integer: \"a\"");
+        let e = arr("{1 2}").unwrap_err();
+        assert_eq!(e.message, "invalid input syntax for type integer: \"1 2\"");
+        let e = arr("{99999999999}").unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::NUMERIC_VALUE_OUT_OF_RANGE);
+        for s in ["{{1},{2}}", "[1:2]={1,2}"] {
+            assert_eq!(
+                arr(s).unwrap_err().sqlstate,
+                sqlstate::FEATURE_NOT_SUPPORTED
+            );
+        }
+    }
+
+    #[test]
+    fn void_and_array_output() {
+        assert_eq!(output_text(&Datum::Void).as_deref(), Some(""));
+        assert_eq!(
+            output_text(&Datum::Int4Array(vec![Some(1), None, Some(-5)])).as_deref(),
+            Some("{1,NULL,-5}")
+        );
+        assert_eq!(
+            output_text(&Datum::Int4Array(vec![])).as_deref(),
+            Some("{}")
+        );
+        // void accepts any input, as void_in does.
+        assert_eq!(input_text("abc", ty(oid::VOID)).unwrap(), Datum::Void);
     }
 
     #[test]

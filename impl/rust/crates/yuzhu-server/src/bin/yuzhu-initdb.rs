@@ -12,6 +12,7 @@ use clap::Parser;
 use yuzhu_core::bootstrap::{InitdbOptions, initdb};
 use yuzhu_core::storage::DEFAULT_RELSEG_SIZE;
 use yuzhu_core::storage::vfs::LocalVfs;
+use yuzhu_core::wal::DEFAULT_WAL_SEGMENT_SIZE;
 
 /// Creates a new yuzhu data directory (UTF8, C locale).
 #[derive(Parser, Debug)]
@@ -26,6 +27,9 @@ struct Args {
     /// Do not fsync; faster, unsafe against OS crashes.
     #[arg(long)]
     no_sync: bool,
+    /// WAL segment size in MB (a power of two from 2 to 1024).
+    #[arg(long, value_name = "MB", default_value_t = DEFAULT_WAL_SEGMENT_SIZE >> 20, value_parser = clap::value_parser!(u32).range(2..=1024))]
+    wal_segment_size: u32,
     /// Blocks per relation segment file (testing only).
     #[arg(long, hide = true, default_value_t = DEFAULT_RELSEG_SIZE)]
     rel_seg_blocks: u32,
@@ -34,11 +38,16 @@ struct Args {
 #[allow(clippy::print_stderr, clippy::print_stdout)]
 fn main() -> ExitCode {
     let args = Args::parse();
+    if !args.wal_segment_size.is_power_of_two() {
+        eprintln!("yuzhu-initdb: --wal-segment-size must be a power of 2 (2 to 1024 MB)");
+        return ExitCode::FAILURE;
+    }
     let vfs = Arc::new(LocalVfs::new(args.data_directory.clone()));
     let opts = InitdbOptions {
         superuser: args.username,
         no_sync: args.no_sync,
         rel_seg_blocks: args.rel_seg_blocks,
+        wal_segment_size: args.wal_segment_size << 20,
     };
     match initdb(vfs, &opts) {
         Ok(()) => {

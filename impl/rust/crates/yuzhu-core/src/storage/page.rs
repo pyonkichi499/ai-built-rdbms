@@ -293,6 +293,17 @@ impl Page {
         (upper - lower).saturating_sub(ITEM_ID_SIZE)
     }
 
+    /// The hole of a standard page, `(pd_lower, pd_upper - pd_lower)`, that a
+    /// WAL full-page image omits (`m3.md` §3.3). `None` when the header is
+    /// not in the standard shape (`SIZE_OF_PAGE_HEADER <= lower < upper <=
+    /// BLCKSZ`), which includes an empty hole.
+    pub fn hole_range(&self) -> Option<(u16, u16)> {
+        let lower = usize::from(self.lower());
+        let upper = usize::from(self.upper());
+        (SIZE_OF_PAGE_HEADER <= lower && lower < upper && upper <= BLCKSZ)
+            .then(|| (lower as u16, (upper - lower) as u16))
+    }
+
     /// Header invariants + the all-zero check (D12) + the checksum.
     pub fn verify(&self, blkno: BlockNumber) -> std::result::Result<(), PageError> {
         let upper = usize::from(self.upper());
@@ -354,6 +365,28 @@ mod tests {
         let sum = page_checksum(&p.0, blk);
         p.set_checksum(sum);
         p
+    }
+
+    #[test]
+    fn hole_range_of_standard_and_malformed_pages() {
+        let mut p = Page::zeroed();
+        assert_eq!(p.hole_range(), None, "an all-zero page has no hole");
+        p.init_heap();
+        assert_eq!(p.hole_range(), Some((24, 8192 - 24)));
+        p.add_item(b"12345678").unwrap();
+        assert_eq!(p.hole_range(), Some((p.lower(), p.upper() - p.lower())));
+        // lower == upper: the hole is empty.
+        let upper = p.upper();
+        p.0[12..14].copy_from_slice(&upper.to_le_bytes());
+        assert_eq!(p.hole_range(), None);
+        // lower below the header.
+        p.0[12..14].copy_from_slice(&4u16.to_le_bytes());
+        assert_eq!(p.hole_range(), None);
+        // upper beyond the page.
+        let mut bad = Page::zeroed();
+        bad.0[12..14].copy_from_slice(&100u16.to_le_bytes());
+        bad.0[14..16].copy_from_slice(&9000u16.to_le_bytes());
+        assert_eq!(bad.hole_range(), None);
     }
 
     #[test]

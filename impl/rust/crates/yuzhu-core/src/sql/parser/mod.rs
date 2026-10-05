@@ -382,9 +382,8 @@ impl<'a> Parser<'a> {
                 "delete" => self.parse_delete().map(Statement::Delete),
                 "create" => self.parse_create(),
                 "drop" => self.parse_drop(),
-                "begin" | "start" | "commit" | "end" | "rollback" | "abort" => {
-                    self.parse_transaction().map(Statement::Transaction)
-                }
+                "begin" | "start" | "commit" | "end" | "rollback" | "abort" | "savepoint"
+                | "release" => self.parse_transaction().map(Statement::Transaction),
                 "set" => self.parse_set().map(Statement::Set),
                 "show" => self.parse_show().map(Statement::Show),
                 "reset" => self.parse_reset().map(Statement::Reset),
@@ -393,11 +392,11 @@ impl<'a> Parser<'a> {
                     let span = self.advance().span;
                     Ok(Statement::Checkpoint(Checkpoint { span }))
                 }
-                "savepoint" | "release" | "prepare" | "alter" | "truncate" | "grant" | "revoke"
-                | "copy" | "execute" | "deallocate" | "discard" | "listen" | "notify"
-                | "unlisten" | "vacuum" | "analyze" | "analyse" | "lock" | "declare" | "fetch"
-                | "move" | "close" | "comment" | "merge" | "call" | "do" | "reindex"
-                | "cluster" | "security" | "refresh" | "import" | "load" | "reassign" => {
+                "prepare" | "alter" | "truncate" | "grant" | "revoke" | "copy" | "execute"
+                | "deallocate" | "discard" | "listen" | "notify" | "unlisten" | "vacuum"
+                | "analyze" | "analyse" | "lock" | "declare" | "fetch" | "move" | "close"
+                | "comment" | "merge" | "call" | "do" | "reindex" | "cluster" | "security"
+                | "refresh" | "import" | "load" | "reassign" => {
                     Err(self.not_supported(&value.to_ascii_uppercase()))
                 }
                 _ => Err(self.unexpected()),

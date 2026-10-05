@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use super::*;
+use crate::debug_knobs::DebugKnobs;
 use crate::error::sqlstate;
 use crate::storage::BLCKSZ;
 use crate::storage::page::Page;
@@ -17,7 +18,14 @@ use crate::storage::vfs::{
 
 fn pool() -> Arc<BufferPool> {
     let smgr = Arc::new(StorageManager::new(Arc::new(SimVfs::new(1)), 131_072));
-    BufferPool::new(16, smgr, Arc::new(NoWal))
+    BufferPool::new(16, smgr, Arc::new(NoWal), DebugKnobs::default())
+}
+
+/// `page_mut` for tests that do not log: stamps the page so that the drop
+/// check (`set_lsn` after `page_mut`) is satisfied.
+fn pm<'a>(g: &'a mut PageWriteGuard<'_>) -> &'a mut Page {
+    g.set_lsn(0);
+    g.page_mut()
 }
 
 fn fault(op: FaultOp, nth: Option<u64>, effect: FaultEffect) -> FaultPlan {
@@ -37,8 +45,8 @@ fn fault(op: FaultOp, nth: Option<u64>, effect: FaultEffect) -> FaultPlan {
 fn add_page(ts: &TestStorage, rel: RelFileLocator, value: u64) -> BlockNumber {
     let buf = ts.pool().extend(rel, ForkNumber::Main).unwrap();
     let mut g = buf.write().unwrap();
-    g.page_mut().init_heap();
-    g.page_mut().add_item(&value.to_le_bytes()).unwrap();
+    pm(&mut g).init_heap();
+    pm(&mut g).add_item(&value.to_le_bytes()).unwrap();
     buf.tag().block
 }
 
@@ -51,7 +59,7 @@ fn value_of(ts: &TestStorage, rel: RelFileLocator, block: BlockNumber) -> u64 {
 fn set_value(ts: &TestStorage, rel: RelFileLocator, block: BlockNumber, v: u64) {
     let buf = ts.pool().read_buffer(test_tag(rel, block)).unwrap();
     let mut g = buf.write().unwrap();
-    g.page_mut()
+    pm(&mut g)
         .item_mut(1)
         .unwrap()
         .copy_from_slice(&v.to_le_bytes());
@@ -163,7 +171,7 @@ fn flush_puts_valid_checksums_on_disk_but_not_on_zero_pages() {
     // the second block dirty without changing it.
     {
         let buf = ts.pool().read_buffer(test_tag(rel, b1)).unwrap();
-        let _ = buf.write().unwrap().page_mut();
+        let _ = pm(&mut buf.write().unwrap());
     }
     let st = ts.pool().flush_all_for_checkpoint().unwrap();
     assert_eq!(st.written, 2);
@@ -433,7 +441,7 @@ impl WalFlush for RacingWal {
             let pool = pool.upgrade().unwrap();
             let buf = pool.read_buffer(tag)?;
             let mut g = buf.write()?;
-            g.page_mut()
+            pm(&mut g)
                 .item_mut(1)
                 .unwrap()
                 .copy_from_slice(&999u64.to_le_bytes());
@@ -451,15 +459,20 @@ fn a_change_made_during_the_write_keeps_the_page_dirty() {
     let vfs = SimVfs::new(1);
     let smgr = Arc::new(StorageManager::new(Arc::new(vfs.clone()), 131_072));
     let wal = Arc::new(RacingWal::default());
-    let pool = BufferPool::new(8, Arc::clone(&smgr), Arc::clone(&wal) as Arc<dyn WalFlush>);
+    let pool = BufferPool::new(
+        8,
+        Arc::clone(&smgr),
+        Arc::clone(&wal) as Arc<dyn WalFlush>,
+        DebugKnobs::default(),
+    );
     let rel = test_rel(1013);
     smgr.create(rel, ForkNumber::Main).unwrap();
     let tag = test_tag(rel, 0);
     {
         let buf = pool.extend(rel, ForkNumber::Main).unwrap();
         let mut g = buf.write().unwrap();
-        g.page_mut().init_heap();
-        g.page_mut().add_item(&1u64.to_le_bytes()).unwrap();
+        pm(&mut g).init_heap();
+        pm(&mut g).add_item(&1u64.to_le_bytes()).unwrap();
     }
     *wal.target.lock().unwrap() = Some((Arc::downgrade(&pool), tag));
     let st = pool.flush_all_for_checkpoint().unwrap();
@@ -508,7 +521,15 @@ fn poisoned_latch_is_a_panic_error_and_blocks_writes() {
     })
     .join();
     assert!(r.is_err());
-    assert_eq!(ts.pool().dirty_frames(), 0, "no dirty mark while panicking");
+    assert_eq!(
+        ts.pool().dirty_frames(),
+        1,
+        "page_mut marked the buffer dirty (D11); the poisoned latch keeps it from being written"
+    );
+    assert!(
+        ts.pool().is_poisoned(),
+        "a panic with a modified page poisons the pool"
+    );
     assert_eq!(
         ts.pool().pinned_frames(),
         0,
@@ -734,10 +755,8 @@ fn concurrent_extends_get_distinct_blocks() {
                     .map(|i| {
                         let buf = ts.pool().extend(rel, ForkNumber::Main).unwrap();
                         let mut g = buf.write().unwrap();
-                        g.page_mut().init_heap();
-                        g.page_mut()
-                            .add_item(&(t * 1000 + i).to_le_bytes())
-                            .unwrap();
+                        pm(&mut g).init_heap();
+                        pm(&mut g).add_item(&(t * 1000 + i).to_le_bytes()).unwrap();
                         (buf.tag().block, t * 1000 + i)
                     })
                     .collect::<Vec<_>>()
@@ -793,7 +812,7 @@ fn many_threads_counting_through_a_tiny_pool() {
                         }
                     };
                     let mut g = buf.write().unwrap();
-                    let item = g.page_mut().item_mut(1).unwrap();
+                    let item = pm(&mut g).item_mut(1).unwrap();
                     let v = u64::from_le_bytes((&*item).try_into().unwrap()) + 1;
                     item.copy_from_slice(&v.to_le_bytes());
                     total.fetch_add(1, Ordering::SeqCst);
@@ -837,7 +856,7 @@ fn checkpointing_while_threads_write_loses_nothing() {
                         continue;
                     };
                     let mut g = buf.write().unwrap();
-                    let item = g.page_mut().item_mut(1).unwrap();
+                    let item = pm(&mut g).item_mut(1).unwrap();
                     let v = u64::from_le_bytes((&*item).try_into().unwrap()) + 1;
                     item.copy_from_slice(&v.to_le_bytes());
                     n += 1;
@@ -881,7 +900,7 @@ fn shared_relation_tags_are_one_buffer() {
     {
         let buf = ts.pool().extend(shared, ForkNumber::Main).unwrap();
         let mut g = buf.write().unwrap();
-        g.page_mut().init_heap();
+        pm(&mut g).init_heap();
     }
     let a = ts.pool().read_buffer(test_tag(shared, 0)).unwrap();
     let b = ts.pool().read_buffer(test_tag(shared, 0)).unwrap();
@@ -929,5 +948,222 @@ fn failed_reads_return_their_frames() {
         .read_buffer(test_tag(test_rel(9999), 0))
         .unwrap_err();
     assert_eq!(e.sqlstate, sqlstate::UNDEFINED_FILE);
+    ts.assert_clean();
+}
+
+// ----- M3: dirty at page_mut, set_lsn check, WAL-before-data, truncate -------------
+
+use crate::storage::testing::TestStorageOptions;
+
+fn ts_with_knobs(knobs: DebugKnobs) -> TestStorage {
+    TestStorage::with_options(TestStorageOptions {
+        knobs,
+        ..TestStorageOptions::default()
+    })
+    .unwrap()
+}
+
+/// Extends a heap page and logs one change to it; returns the block and the
+/// page LSN.
+fn add_logged_page(ts: &TestStorage, rel: RelFileLocator) -> (BlockNumber, u64) {
+    let buf = ts.pool().extend(rel, ForkNumber::Main).unwrap();
+    let mut g = buf.write().unwrap();
+    g.page_mut().init_heap();
+    g.page_mut().add_item(&5u64.to_le_bytes()).unwrap();
+    let end = ts.log_change(&buf, &mut g).unwrap();
+    (buf.tag().block, end.0)
+}
+
+#[test]
+fn page_mut_marks_the_buffer_dirty_immediately() {
+    let ts = TestStorage::new();
+    let rel = test_rel(3000);
+    ts.create_rel(rel).unwrap();
+    let buf = ts.pool().extend(rel, ForkNumber::Main).unwrap();
+    let mut g = buf.write().unwrap();
+    assert_eq!(ts.pool().dirty_frames(), 0);
+    let _ = g.page();
+    assert_eq!(ts.pool().dirty_frames(), 0, "reading is not a change");
+    g.page_mut().init_heap();
+    // The latch is still held and no LSN is set: a checkpoint scan that
+    // runs now must already see the page (D11).
+    assert_eq!(ts.pool().dirty_frames(), 1);
+    g.set_lsn(0);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "without set_lsn")]
+fn dropping_a_modified_guard_without_set_lsn_panics_in_debug_builds() {
+    let ts = TestStorage::new();
+    let rel = test_rel(3001);
+    ts.create_rel(rel).unwrap();
+    let buf = ts.pool().extend(rel, ForkNumber::Main).unwrap();
+    let mut g = buf.write().unwrap();
+    g.page_mut().init_heap();
+}
+
+#[test]
+fn hint_writes_and_unmodified_guards_need_no_lsn() {
+    let ts = TestStorage::new();
+    let rel = test_rel(3002);
+    ts.create_rel(rel).unwrap();
+    add_logged_page(&ts, rel);
+    let buf = ts.pool().read_buffer(test_tag(rel, 0)).unwrap();
+    drop(buf.write().unwrap());
+    let mut g = buf.write().unwrap();
+    let _ = g.page_mut_hint();
+    drop(g);
+    drop(buf);
+    ts.assert_clean();
+}
+
+#[test]
+fn a_page_is_written_only_after_its_wal_is_flushed() {
+    let ts = TestStorage::new();
+    let rel = test_rel(3003);
+    ts.create_rel(rel).unwrap();
+    let (blk, lsn) = add_logged_page(&ts, rel);
+    assert!(
+        ts.wal().flushed_lsn().0 < lsn,
+        "the record is not flushed yet"
+    );
+    ts.pool().flush_all_for_checkpoint().unwrap();
+    assert!(ts.wal().flushed_lsn().0 >= lsn, "WAL-before-data");
+    assert_eq!(disk_page(&ts, rel, blk).lsn(), lsn);
+}
+
+#[test]
+fn eviction_also_flushes_the_wal_first() {
+    let ts = TestStorage::small(2, 131_072);
+    let rel = test_rel(3004);
+    ts.create_rel(rel).unwrap();
+    let mut last = 0;
+    for _ in 0..6 {
+        last = add_logged_page(&ts, rel).1;
+    }
+    assert!(ts.pool().stats().evictions > 0);
+    // Whatever was evicted had its LSN flushed.
+    for b in 0..4 {
+        assert!(ts.wal().flushed_lsn().0 >= disk_page(&ts, rel, b).lsn());
+    }
+    assert!(last > 0);
+}
+
+#[test]
+fn skipping_the_wal_flush_leaves_the_log_behind_the_page() {
+    let ts = TestStorage::with_options(TestStorageOptions {
+        knobs: DebugKnobs {
+            skip_wal_before_data: true,
+            ..DebugKnobs::default()
+        },
+        ..TestStorageOptions::default()
+    })
+    .unwrap();
+    let rel = test_rel(3005);
+    ts.create_rel(rel).unwrap();
+    let (blk, lsn) = add_logged_page(&ts, rel);
+    ts.pool().flush_all_for_checkpoint().unwrap();
+    assert_eq!(disk_page(&ts, rel, blk).lsn(), lsn);
+    assert!(
+        ts.wal().flushed_lsn().0 < lsn,
+        "the mutation really writes the page ahead of its WAL"
+    );
+}
+
+#[test]
+#[should_panic(expected = "WAL-before-data violated")]
+fn the_assertion_catches_a_page_written_ahead_of_its_wal() {
+    let ts = ts_with_knobs(DebugKnobs {
+        skip_wal_before_data: true,
+        assert_wal_before_data: true,
+        ..DebugKnobs::default()
+    });
+    let rel = test_rel(3006);
+    ts.create_rel(rel).unwrap();
+    add_logged_page(&ts, rel);
+    let _ = ts.pool().flush_all_for_checkpoint();
+}
+
+#[test]
+fn a_failed_wal_flush_keeps_the_page_unwritten() {
+    #[derive(Debug)]
+    struct FailingWal;
+    impl WalFlush for FailingWal {
+        fn flush_to(&self, _: u64) -> Result<()> {
+            Err(Error::internal("wal flush failed").with_severity(Severity::Panic))
+        }
+        fn redo_ptr(&self) -> u64 {
+            0
+        }
+    }
+    let vfs = SimVfs::new(1);
+    let smgr = Arc::new(StorageManager::new(Arc::new(vfs.clone()), 131_072));
+    let pool = BufferPool::new(
+        4,
+        Arc::clone(&smgr),
+        Arc::new(FailingWal),
+        DebugKnobs::default(),
+    );
+    let rel = test_rel(3007);
+    smgr.create(rel, ForkNumber::Main).unwrap();
+    {
+        let buf = pool.extend(rel, ForkNumber::Main).unwrap();
+        let mut g = buf.write().unwrap();
+        pm(&mut g).init_heap();
+        g.set_lsn(10);
+    }
+    let writes = vfs.stats().writes;
+    let e = pool.flush_all_for_checkpoint().unwrap_err();
+    assert_eq!(e.severity, Severity::Panic);
+    assert_eq!(vfs.stats().writes, writes, "nothing was written");
+    assert_eq!(pool.dirty_frames(), 1);
+}
+
+#[test]
+fn drop_relation_buffers_from_discards_only_the_tail_of_one_fork() {
+    let ts = TestStorage::new();
+    let (r1, r2) = (test_rel(3010), test_rel(3011));
+    ts.create_rel(r1).unwrap();
+    ts.create_rel(r2).unwrap();
+    for _ in 0..4 {
+        add_page(&ts, r1, 1);
+        add_page(&ts, r2, 2);
+    }
+    ts.pool().flush_all_for_checkpoint().unwrap();
+    for b in 0..4 {
+        set_value(&ts, r1, b, 100 + u64::from(b));
+        set_value(&ts, r2, b, 200 + u64::from(b));
+    }
+    assert_eq!(ts.pool().dirty_frames(), 8);
+    let writes = ts.pool().stats().writes;
+    // A pin on a block of the tail is an error.
+    let pin = ts.pool().read_buffer(test_tag(r1, 3)).unwrap();
+    assert_eq!(
+        ts.pool()
+            .drop_relation_buffers_from(r1, ForkNumber::Main, 2)
+            .unwrap_err()
+            .sqlstate,
+        sqlstate::INTERNAL_ERROR
+    );
+    drop(pin);
+    ts.pool()
+        .drop_relation_buffers_from(r1, ForkNumber::Main, 2)
+        .unwrap();
+    assert_eq!(ts.pool().stats().writes, writes, "nothing is written");
+    assert_eq!(ts.pool().dirty_frames(), 6, "r1 blocks 2 and 3 are gone");
+    assert_eq!(value_of(&ts, r1, 0), 100);
+    assert_eq!(value_of(&ts, r1, 1), 101);
+    assert_eq!(
+        value_of(&ts, r1, 2),
+        1,
+        "re-read from disk: the change is lost"
+    );
+    assert_eq!(value_of(&ts, r2, 3), 203, "other relations are untouched");
+    // A fork other than Main of the same relation is not matched.
+    ts.pool()
+        .drop_relation_buffers_from(r2, ForkNumber::Fsm, 0)
+        .unwrap();
+    assert_eq!(value_of(&ts, r2, 0), 200);
     ts.assert_clean();
 }

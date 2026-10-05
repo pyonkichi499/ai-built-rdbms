@@ -300,6 +300,17 @@ impl Analyzer<'_> {
         args: Vec<BoundExpr>,
         span: Span,
     ) -> Result<BoundExpr> {
+        // regtype is not supported, so `pg_typeof(x)` folds to the type name
+        // as text (its text output equals the regtype output).
+        if name == "pg_typeof" && args.len() == 1 {
+            return Ok(BoundExpr::new(
+                BoundExprKind::Literal(crate::types::Datum::Text(super::coerce::tname(
+                    args[0].ty.oid,
+                ))),
+                SqlType::TEXT,
+                span,
+            ));
+        }
         let inputs: Vec<Oid> = args.iter().map(|a| a.ty.oid).collect();
         let all: Vec<_> = self
             .catalog

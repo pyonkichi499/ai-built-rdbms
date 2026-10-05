@@ -11,11 +11,14 @@ use std::time::Duration;
 
 use clap::Parser;
 use serde::Deserialize;
+use yuzhu_core::engine::DEFAULT_MAX_WAL_SIZE;
 
 /// Size of one buffer frame (a page), the unit of a bare `shared_buffers`.
 const BLOCK_BYTES: u64 = 8192;
 /// PostgreSQL's minimum for `shared_buffers` (128kB).
 const MIN_FRAMES: usize = 16;
+/// Smallest accepted `max_wal_size` (one minimum WAL segment).
+const MIN_MAX_WAL_SIZE: u64 = 2 << 20;
 
 /// Command-line arguments.
 #[derive(Parser, Debug, Default, Clone)]
@@ -42,9 +45,10 @@ pub struct Cli {
     /// Seconds between periodic checkpoints (default 300).
     #[arg(long, value_name = "SECONDS")]
     pub checkpoint_timeout: Option<u64>,
-    /// Start even if the last shutdown was not clean (M2 has no recovery).
-    #[arg(long)]
-    pub ignore_unclean_shutdown: bool,
+    /// Start a checkpoint when this much WAL has accumulated, e.g. `1GB`
+    /// (a bare number counts MB, like PostgreSQL). Default 1GB.
+    #[arg(long, value_name = "SIZE")]
+    pub max_wal_size: Option<String>,
     /// Log level: trace, debug, info, warn, error (default info).
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
@@ -68,7 +72,7 @@ pub struct FileConfig {
     pub max_connections: Option<usize>,
     pub shared_buffers: Option<SizeValue>,
     pub checkpoint_timeout: Option<u64>,
-    pub ignore_unclean_shutdown: Option<bool>,
+    pub max_wal_size: Option<SizeValue>,
     pub log_level: Option<String>,
 }
 
@@ -83,7 +87,8 @@ pub struct Config {
     /// Number of 8kB buffer frames.
     pub shared_buffers: usize,
     pub checkpoint_timeout: Duration,
-    pub ignore_unclean_shutdown: bool,
+    /// Bytes of WAL that trigger a checkpoint.
+    pub max_wal_size: u64,
     pub log_level: tracing::Level,
 }
 
@@ -96,7 +101,7 @@ impl Default for Config {
             max_connections: 100,
             shared_buffers: 16384,
             checkpoint_timeout: Duration::from_secs(300),
-            ignore_unclean_shutdown: false,
+            max_wal_size: DEFAULT_MAX_WAL_SIZE,
             log_level: tracing::Level::INFO,
         }
     }
@@ -156,24 +161,23 @@ fn parse_level(s: &str) -> Result<tracing::Level, ConfigError> {
         .map_err(|_| ConfigError::Invalid(format!("invalid log level \"{s}\"")))
 }
 
-/// Parses a `shared_buffers` value into a number of frames. A bare number
-/// counts 8kB blocks (like PostgreSQL); `kB`, `MB` and `GB` suffixes are
-/// accepted.
-pub fn parse_shared_buffers(value: &SizeValue) -> Result<usize, ConfigError> {
+/// Parses a size into bytes. A bare number counts `bare_unit` bytes; `kB`,
+/// `MB` and `GB` suffixes are accepted.
+fn parse_size_bytes(name: &str, value: &SizeValue, bare_unit: u64) -> Result<u64, ConfigError> {
     let shown = match value {
         SizeValue::Number(n) => n.to_string(),
         SizeValue::Text(s) => s.clone(),
     };
-    let invalid = || ConfigError::Invalid(format!("invalid shared_buffers \"{shown}\""));
+    let invalid = || ConfigError::Invalid(format!("invalid {name} \"{shown}\""));
     let bytes = match value {
-        SizeValue::Number(n) => n.checked_mul(BLOCK_BYTES),
+        SizeValue::Number(n) => n.checked_mul(bare_unit),
         SizeValue::Text(text) => {
             let t = text.trim();
             let digits_end = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
             let (num, unit) = t.split_at(digits_end);
             let n: u64 = num.parse().map_err(|_| invalid())?;
             let mult = match unit.trim() {
-                "" => BLOCK_BYTES,
+                "" => bare_unit,
                 "kB" | "KB" | "kb" => 1 << 10,
                 "MB" | "mb" => 1 << 20,
                 "GB" | "gb" => 1 << 30,
@@ -182,14 +186,34 @@ pub fn parse_shared_buffers(value: &SizeValue) -> Result<usize, ConfigError> {
             n.checked_mul(mult)
         }
     };
-    let frames = bytes.map(|b| b / BLOCK_BYTES).ok_or_else(invalid)?;
-    let frames = usize::try_from(frames).map_err(|_| invalid())?;
+    bytes.ok_or_else(invalid)
+}
+
+/// Parses a `shared_buffers` value into a number of frames. A bare number
+/// counts 8kB blocks (like PostgreSQL); `kB`, `MB` and `GB` suffixes are
+/// accepted.
+pub fn parse_shared_buffers(value: &SizeValue) -> Result<usize, ConfigError> {
+    let bytes = parse_size_bytes("shared_buffers", value, BLOCK_BYTES)?;
+    let frames = usize::try_from(bytes / BLOCK_BYTES)
+        .map_err(|_| ConfigError::Invalid("shared_buffers is too large".into()))?;
     if frames < MIN_FRAMES {
         return Err(ConfigError::Invalid(format!(
             "shared_buffers must be at least 128kB ({MIN_FRAMES} blocks)"
         )));
     }
     Ok(frames)
+}
+
+/// Parses a `max_wal_size` value into bytes. A bare number counts MB (like
+/// PostgreSQL); the minimum is 2MB.
+pub fn parse_max_wal_size(value: &SizeValue) -> Result<u64, ConfigError> {
+    let bytes = parse_size_bytes("max_wal_size", value, 1 << 20)?;
+    if bytes < MIN_MAX_WAL_SIZE {
+        return Err(ConfigError::Invalid(
+            "max_wal_size must be at least 2MB".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 impl Config {
@@ -232,6 +256,13 @@ impl Config {
                 None => d.shared_buffers,
             },
         };
+        let max_wal_size = match cli.max_wal_size.clone().map(SizeValue::Text) {
+            Some(v) => parse_max_wal_size(&v)?,
+            None => match &file.max_wal_size {
+                Some(v) => parse_max_wal_size(v)?,
+                None => d.max_wal_size,
+            },
+        };
         let config = Self {
             data_directory: PathBuf::new(),
             listen: cli.listen.or(file.listen).unwrap_or(d.listen),
@@ -245,8 +276,7 @@ impl Config {
                 .checkpoint_timeout
                 .or(file.checkpoint_timeout)
                 .map_or(d.checkpoint_timeout, Duration::from_secs),
-            ignore_unclean_shutdown: cli.ignore_unclean_shutdown
-                || file.ignore_unclean_shutdown.unwrap_or(false),
+            max_wal_size,
             log_level,
         };
         if config.max_connections == 0 {
@@ -299,7 +329,7 @@ mod tests {
         assert_eq!(c.max_connections, 100);
         assert_eq!(c.shared_buffers, 16384);
         assert_eq!(c.checkpoint_timeout, Duration::from_secs(300));
-        assert!(!c.ignore_unclean_shutdown);
+        assert_eq!(c.max_wal_size, DEFAULT_MAX_WAL_SIZE);
         assert_eq!(c.log_level, tracing::Level::INFO);
     }
 
@@ -320,7 +350,8 @@ mod tests {
                 "1MB",
                 "--checkpoint-timeout",
                 "10",
-                "--ignore-unclean-shutdown",
+                "--max-wal-size",
+                "64MB",
                 "--log-level",
                 "debug",
             ],
@@ -332,7 +363,7 @@ mod tests {
         assert_eq!(c.max_connections, 3);
         assert_eq!(c.shared_buffers, 128);
         assert_eq!(c.checkpoint_timeout, Duration::from_secs(10));
-        assert!(c.ignore_unclean_shutdown);
+        assert_eq!(c.max_wal_size, 64 << 20);
         assert_eq!(c.log_level, tracing::Level::DEBUG);
     }
 
@@ -357,7 +388,7 @@ mod tests {
     fn file_values_and_cli_override() {
         let file = FileConfig::parse(
             "data_directory = \"/d\"\nlisten = \"::1\"\nport = 6000\nmax_connections = 5\n\
-             shared_buffers = \"2MB\"\ncheckpoint_timeout = 60\nignore_unclean_shutdown = true\n\
+             shared_buffers = \"2MB\"\ncheckpoint_timeout = 60\nmax_wal_size = 32\n\
              log_level = \"warn\"\n",
             Path::new("x.toml"),
         )
@@ -368,7 +399,7 @@ mod tests {
         assert_eq!(c.max_connections, 5);
         assert_eq!(c.shared_buffers, 256);
         assert_eq!(c.checkpoint_timeout, Duration::from_secs(60));
-        assert!(c.ignore_unclean_shutdown);
+        assert_eq!(c.max_wal_size, 32 << 20);
         assert_eq!(c.log_level, tracing::Level::WARN);
 
         let c = merge(
@@ -403,6 +434,26 @@ mod tests {
         assert!(text("12XB").is_err());
         assert!(text("").is_err());
         assert!(text("99999999999999999999GB").is_err());
+    }
+
+    #[test]
+    fn max_wal_size_forms() {
+        let text = |s: &str| parse_max_wal_size(&SizeValue::Text(s.into()));
+        assert_eq!(text("1GB").unwrap(), 1 << 30);
+        assert_eq!(text("512").unwrap(), 512 << 20);
+        assert_eq!(text("2048kB").unwrap(), 2 << 20);
+        assert_eq!(parse_max_wal_size(&SizeValue::Number(4)).unwrap(), 4 << 20);
+        assert!(text("1MB").is_err());
+        assert!(text("x").is_err());
+        assert!(text("99999999999999999999GB").is_err());
+    }
+
+    #[test]
+    fn removed_option_is_rejected() {
+        assert!(Cli::try_parse_from(["yuzhu-server", "--ignore-unclean-shutdown"]).is_err());
+        assert!(
+            FileConfig::parse("ignore_unclean_shutdown = true\n", Path::new("x.toml")).is_err()
+        );
     }
 
     #[test]

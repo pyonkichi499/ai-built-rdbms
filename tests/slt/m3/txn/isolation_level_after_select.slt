@@ -1,0 +1,32 @@
+# FROM のない SELECT でも、最初の問い合わせでスナップショットを取るため、
+# その後の SET TRANSACTION ISOLATION LEVEL は 25001 になる（PostgreSQL 17.11 で実測）。
+
+statement ok
+BEGIN
+
+query I
+SELECT 1
+----
+1
+
+statement error (25001)
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+statement ok
+ROLLBACK
+
+# 先に設定すれば成功し、その後の問い合わせも通る。
+
+statement ok
+BEGIN
+
+statement ok
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+query I
+SELECT 1
+----
+1
+
+statement ok
+ROLLBACK

@@ -58,74 +58,115 @@ tools/journal-snapshots.sh
 使い方: スナップショットを書くとき、この内容を貼る素材にする。`tools/journal-snapshots.sh` が上書きする。
 
 <!-- AUTO:status BEGIN -->
-取得: 2026-10-04 15:33:18 UTC / HEAD 610c121 / ブランチ dev
+取得: 2026-10-05 07:32:14 UTC / HEAD 11bcaeb / ブランチ dev
 
-git status --short: 38 件
+git status --short: 76 件
 
 ```text
-     12 impl/rust/crates/yuzhu-core/src/storage
-      7 impl/rust/crates/yuzhu-core/src/executor
-      6 impl/rust/crates/yuzhu-core/src/analyzer
+     15 impl/rust/crates/yuzhu-core/src/storage
+      7 impl/rust/crates/yuzhu-core/src/wal
+      5 impl/rust/crates/yuzhu-core/src/analyzer
+      4 impl/rust/crates/yuzhu-core/src/txn
       4 impl/rust/crates/yuzhu-core/src/sql
-      2 impl/rust/crates/yuzhu-core/src/txn
-      1 tools/
-      1 journal/
-      1 impl/rust/crates/yuzhu-core/testdata/
-      1 impl/rust/crates/yuzhu-core/src/util
-      1 impl/rust/crates/yuzhu-core/src/planner
-      1 impl/rust/crates/yuzhu-core/src/checkpoint.rs
-      1 WORKLOG.md
+      2 impl/rust/crates/yuzhu-server/src/bin
+      2 impl/rust/crates/yuzhu-core/src/types
+      1 tests/slt/m3/txn/isolation_level_after_select.slt
+      1 tests/isolation/specs/write-skew-rr.spec
+      1 tests/isolation/expected/write-skew-rr.yuzhu-m3.out
+      1 tests/isolation/expected/lost-update.yuzhu-m3.out
+      1 spec/design/m5/
+      1 spec/design/m4/
+      1 journal/workflows.md
+      1 journal/timeline.md
 ```
 
 ```text
+ M PROGRESS.md
+ M QUESTIONS.md
+ M WORKLOG.md
+ M impl/rust/crates/yuzhu-core/src/analyzer/coerce.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/ddl.rs
- M impl/rust/crates/yuzhu-core/src/analyzer/dml.rs
- M impl/rust/crates/yuzhu-core/src/analyzer/mod.rs
- M impl/rust/crates/yuzhu-core/src/analyzer/scope.rs
- M impl/rust/crates/yuzhu-core/src/analyzer/select.rs
+ M impl/rust/crates/yuzhu-core/src/analyzer/expr.rs
+ M impl/rust/crates/yuzhu-core/src/analyzer/resolve.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/tests.rs
+ M impl/rust/crates/yuzhu-core/src/bootstrap.rs
+ M impl/rust/crates/yuzhu-core/src/catalog/builtin.rs
  M impl/rust/crates/yuzhu-core/src/checkpoint.rs
+ M impl/rust/crates/yuzhu-core/src/control.rs
+ M impl/rust/crates/yuzhu-core/src/datadir.rs
+ M impl/rust/crates/yuzhu-core/src/engine.rs
  M impl/rust/crates/yuzhu-core/src/executor/eval.rs
- M impl/rust/crates/yuzhu-core/src/executor/nodes/delete.rs
- M impl/rust/crates/yuzhu-core/src/executor/nodes/filter.rs
- M impl/rust/crates/yuzhu-core/src/executor/nodes/insert.rs
- M impl/rust/crates/yuzhu-core/src/executor/nodes/mod.rs
- M impl/rust/crates/yuzhu-core/src/executor/nodes/seq_scan.rs
- M impl/rust/crates/yuzhu-core/src/executor/nodes/update.rs
- M impl/rust/crates/yuzhu-core/src/planner/mod.rs
+ M impl/rust/crates/yuzhu-core/src/recovery.rs
+ M impl/rust/crates/yuzhu-core/src/session.rs
+ M impl/rust/crates/yuzhu-core/src/settings.rs
  M impl/rust/crates/yuzhu-core/src/sql/ast.rs
- M impl/rust/crates/yuzhu-core/src/sql/parser/dml.rs
+ M impl/rust/crates/yuzhu-core/src/sql/parser/misc.rs
  M impl/rust/crates/yuzhu-core/src/sql/parser/mod.rs
  M impl/rust/crates/yuzhu-core/src/sql/parser/tests.rs
+ M impl/rust/crates/yuzhu-core/src/storage/buffer/flush.rs
+ M impl/rust/crates/yuzhu-core/src/storage/buffer/guard.rs
  M impl/rust/crates/yuzhu-core/src/storage/buffer/mod.rs
- M impl/rust/crates/yuzhu-core/src/storage/checksum.rs
+ M impl/rust/crates/yuzhu-core/src/storage/buffer/tests.rs
+ M impl/rust/crates/yuzhu-core/src/storage/buffer/track.rs
  M impl/rust/crates/yuzhu-core/src/storage/heap/hio.rs
- M impl/rust/crates/yuzhu-core/src/storage/heap/scan.rs
  M impl/rust/crates/yuzhu-core/src/storage/heap/tuple.rs
- M impl/rust/crates/yuzhu-core/src/storage/heap/visibility.rs
+ M impl/rust/crates/yuzhu-core/src/storage/heap/wal.rs
  M impl/rust/crates/yuzhu-core/src/storage/heap_store.rs
  M impl/rust/crates/yuzhu-core/src/storage/page.rs
  M impl/rust/crates/yuzhu-core/src/storage/smgr.rs
- M impl/rust/crates/yuzhu-core/src/storage/vfs/local.rs
- M impl/rust/crates/yuzhu-core/src/storage/vfs/mod.rs
+ M impl/rust/crates/yuzhu-core/src/storage/smgr_wal.rs
+ M impl/rust/crates/yuzhu-core/src/storage/stack.rs
+ M impl/rust/crates/yuzhu-core/src/storage/testing.rs
  M impl/rust/crates/yuzhu-core/src/storage/vfs/sim.rs
+ M impl/rust/crates/yuzhu-core/src/testing.rs
  M impl/rust/crates/yuzhu-core/src/txn/clog.rs
  M impl/rust/crates/yuzhu-core/src/txn/manager.rs
+ M impl/rust/crates/yuzhu-core/src/txn/mod.rs
+ M impl/rust/crates/yuzhu-core/src/txn/xact_wal.rs
+ M impl/rust/crates/yuzhu-core/src/types/io.rs
+ M impl/rust/crates/yuzhu-core/src/types/sys.rs
  M impl/rust/crates/yuzhu-core/src/util/crc32c.rs
-?? WORKLOG.md
-?? impl/rust/crates/yuzhu-core/testdata/
-?? journal/
-?? tools/
+ M impl/rust/crates/yuzhu-core/src/wal/dump.rs
+ M impl/rust/crates/yuzhu-core/src/wal/reader.rs
+ M impl/rust/crates/yuzhu-core/src/wal/record.rs
+ M impl/rust/crates/yuzhu-core/src/wal/redo.rs
+ M impl/rust/crates/yuzhu-core/src/wal/segment.rs
+ M impl/rust/crates/yuzhu-core/src/wal/writer.rs
+ M impl/rust/crates/yuzhu-core/src/wal/xlog.rs
+ M impl/rust/crates/yuzhu-core/tests/crash_sim/invariants.rs
+ M impl/rust/crates/yuzhu-core/tests/crash_sim/main.rs
+ M impl/rust/crates/yuzhu-core/tests/crash_sim/model.rs
+ M impl/rust/crates/yuzhu-core/tests/crash_sim/mutation.rs
+ M impl/rust/crates/yuzhu-core/tests/crash_sim/workload.rs
+ M impl/rust/crates/yuzhu-server/src/bin/yuzhu-initdb.rs
+ M impl/rust/crates/yuzhu-server/src/bin/yuzhu-waldump.rs
+ M impl/rust/crates/yuzhu-server/src/config.rs
+ M impl/rust/crates/yuzhu-server/src/connection.rs
+ M impl/rust/crates/yuzhu-server/src/shutdown.rs
+ M impl/rust/crates/yuzhu-server/tests/crash_kill9.rs
+ M impl/rust/crates/yuzhu-server/tests/server.rs
+ M impl/rust/crates/yuzhu-server/tests/shutdown.rs
+ M journal/decisions.md
+ M journal/setbacks.md
+ M journal/timeline.md
+ M journal/workflows.md
+ M tests/isolation/specs/write-skew-rr.spec
+?? impl/rust/crates/yuzhu-server/tests/waldump.rs
+?? spec/design/m4/
+?? spec/design/m5/
+?? tests/isolation/expected/lost-update.yuzhu-m3.out
+?? tests/isolation/expected/write-skew-rr.yuzhu-m3.out
+?? tests/slt/m3/txn/isolation_level_after_select.slt
 ```
 
 git log -n 5（UTC）:
 
 ```text
+11bcaeb 2026-10-05 04:55:24 feat(core): M3 の土台（型・トレイト・スタブ）を追加
+ab02b68 2026-10-04 21:57:08 docs: PROGRESS.md を M2 完了状態に更新し QUESTIONS.md に追記
+7daa421 2026-10-04 21:56:56 feat(core): M2 を完了しレビュー指摘を反映
+425ca04 2026-10-04 21:27:50 feat(core): M2 の実装を統合し slt を通す
 610c121 2026-10-04 15:19:58 feat(core): M2 の基盤（型・トレイト・スタブ）を追加
-88d1bc0 2026-10-04 14:49:27 test: M2 用の slt と再起動テストの仕組みを追加
-bc0cc78 2026-10-04 14:37:34 docs: PROGRESS.md の M2 テスト作成状況を修正
-0771041 2026-10-04 14:37:21 chore: M1 の結合確認と PROGRESS.md の更新
-85a0e4e 2026-10-04 14:14:37 claude-sandbox 用の開発コンテナを追加
 ```
 <!-- AUTO:status END -->
 

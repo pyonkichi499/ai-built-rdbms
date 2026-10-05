@@ -124,6 +124,22 @@ pub fn form_tuple(
     w: &WriteCtx,
     flags: TupleFlags,
 ) -> Result<Vec<u8>> {
+    match form_tuple_with(desc, row, w, flags, false) {
+        Err(e) if e.sqlstate == sqlstate::PROGRAM_LIMIT_EXCEEDED => {
+            form_tuple_with(desc, row, w, flags, true)
+        }
+        r => r,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn form_tuple_with(
+    desc: &TupleDesc,
+    row: &[Datum],
+    w: &WriteCtx,
+    flags: TupleFlags,
+    compress: bool,
+) -> Result<Vec<u8>> {
     let natts = desc.attrs.len();
     if row.len() != natts {
         return Err(Error::internal(format!(
@@ -207,7 +223,7 @@ pub fn form_tuple(
             }
             (Kind::Text, Datum::Text(s)) => {
                 has_var = true;
-                write_varlena(&mut buf, s.as_bytes(), align);
+                write_varlena(&mut buf, s.as_bytes(), align, compress);
             }
             (Kind::OidVector, Datum::OidVector(v)) => {
                 has_var = true;
@@ -215,7 +231,7 @@ pub fn form_tuple(
                 for x in v {
                     data.extend_from_slice(&x.to_le_bytes());
                 }
-                write_varlena(&mut buf, &data, align);
+                write_varlena(&mut buf, &data, align, compress);
             }
             _ => return Err(type_mismatch(attr.type_oid, d)),
         }
@@ -266,7 +282,19 @@ pub fn form_tuple(
     Ok(buf)
 }
 
-fn write_varlena(buf: &mut Vec<u8>, data: &[u8], align: usize) {
+fn write_varlena(buf: &mut Vec<u8>, data: &[u8], align: usize, compress: bool) {
+    if compress
+        && data.len() >= 256
+        && let Some(c) = lz_compress(data)
+    {
+        let n = align_up(buf.len(), align);
+        buf.resize(n, 0);
+        let hdr = (((c.len() + 8) as u32) << 2) | 2;
+        buf.extend_from_slice(&hdr.to_le_bytes());
+        buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&c);
+        return;
+    }
     if data.len() < 127 {
         buf.push((((data.len() + 1) << 1) | 1) as u8);
     } else {
@@ -276,6 +304,93 @@ fn write_varlena(buf: &mut Vec<u8>, data: &[u8], align: usize) {
         buf.extend_from_slice(&hdr.to_le_bytes());
     }
     buf.extend_from_slice(data);
+}
+
+const LZ_MIN_MATCH: usize = 4;
+const LZ_MAX_MATCH: usize = 0x7F + LZ_MIN_MATCH;
+const LZ_MAX_OFFSET: usize = 0xFFFF;
+const LZ_HASH_BITS: u32 = 13;
+
+fn lz_hash(b: &[u8]) -> usize {
+    let v = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    (v.wrapping_mul(2_654_435_761) >> (32 - LZ_HASH_BITS)) as usize
+}
+
+fn lz_flush_literals(out: &mut Vec<u8>, mut lit: &[u8]) {
+    while !lit.is_empty() {
+        let n = lit.len().min(0x80);
+        out.push((n - 1) as u8);
+        out.extend_from_slice(&lit[..n]);
+        lit = &lit[n..];
+    }
+}
+
+/// Inline compression of a varlena payload (a small LZ77: a tag below 0x80
+/// is a literal run of `tag + 1` bytes; a tag from 0x80 is a copy of
+/// `(tag & 0x7F) + 4` bytes from a little-endian u16 offset back).
+/// Returns `None` unless it saves at least a quarter.
+fn lz_compress(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut table = vec![usize::MAX; 1 << LZ_HASH_BITS];
+    let (mut i, mut lit_start) = (0, 0);
+    while i + LZ_MIN_MATCH <= data.len() {
+        let h = lz_hash(&data[i..]);
+        let cand = table[h];
+        table[h] = i;
+        if cand != usize::MAX && i - cand <= LZ_MAX_OFFSET && data[cand..cand + 4] == data[i..i + 4]
+        {
+            let mut len = LZ_MIN_MATCH;
+            while len < LZ_MAX_MATCH && i + len < data.len() && data[cand + len] == data[i + len] {
+                len += 1;
+            }
+            lz_flush_literals(&mut out, &data[lit_start..i]);
+            out.push(0x80 | (len - LZ_MIN_MATCH) as u8);
+            out.extend_from_slice(&((i - cand) as u16).to_le_bytes());
+            i += len;
+            lit_start = i;
+        } else {
+            i += 1;
+        }
+    }
+    lz_flush_literals(&mut out, &data[lit_start..]);
+    (out.len() * 4 <= data.len() * 3).then_some(out)
+}
+
+fn lz_decompress(src: &[u8], raw_len: usize) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(raw_len.min(1 << 24));
+    let mut i = 0;
+    while i < src.len() {
+        let tag = src[i];
+        i += 1;
+        if tag < 0x80 {
+            let n = usize::from(tag) + 1;
+            let lit = src
+                .get(i..i + n)
+                .ok_or_else(|| corrupt("compressed value is truncated"))?;
+            out.extend_from_slice(lit);
+            i += n;
+        } else {
+            let off = src
+                .get(i..i + 2)
+                .map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])))
+                .ok_or_else(|| corrupt("compressed value is truncated"))?;
+            i += 2;
+            if off == 0 || off > out.len() {
+                return Err(corrupt("compressed value has a bad back reference"));
+            }
+            let len = usize::from(tag & 0x7F) + LZ_MIN_MATCH;
+            for _ in 0..len {
+                out.push(out[out.len() - off]);
+            }
+        }
+        if out.len() > raw_len {
+            return Err(corrupt("compressed value is longer than declared"));
+        }
+    }
+    if out.len() != raw_len {
+        return Err(corrupt("compressed value has the wrong length"));
+    }
+    Ok(out)
 }
 
 fn corrupt(msg: impl Into<String>) -> Error {
@@ -313,7 +428,7 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    fn varlena(&mut self, a: usize) -> Result<&'a [u8]> {
+    fn varlena(&mut self, a: usize) -> Result<std::borrow::Cow<'a, [u8]>> {
         if self.off >= self.bytes.len() {
             return Err(corrupt("varlena header past the end of the tuple"));
         }
@@ -333,9 +448,16 @@ impl<'a> Reader<'a> {
                 return Err(corrupt("bad varlena length"));
             }
             self.off += 1;
-            self.take(total - 1)
+            self.take(total - 1).map(std::borrow::Cow::Borrowed)
         } else if b & 3 == 2 {
-            Err(corrupt("compressed values are not supported"))
+            let h = self.take(4)?;
+            let total = (u32::from_le_bytes([h[0], h[1], h[2], h[3]]) >> 2) as usize;
+            if total < 8 {
+                return Err(corrupt("bad varlena length"));
+            }
+            let body = self.take(total - 4)?;
+            let raw = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
+            lz_decompress(&body[4..], raw).map(std::borrow::Cow::Owned)
         } else {
             let h = self.take(4)?;
             let v = u32::from_le_bytes([h[0], h[1], h[2], h[3]]);
@@ -343,7 +465,7 @@ impl<'a> Reader<'a> {
             if total < 4 {
                 return Err(corrupt("bad varlena length"));
             }
-            self.take(total - 4)
+            self.take(total - 4).map(std::borrow::Cow::Borrowed)
         }
     }
 }
@@ -403,7 +525,7 @@ pub fn deform_tuple(desc: &TupleDesc, bytes: &[u8]) -> Result<Row> {
                 let end = b.iter().position(|&c| c == 0).unwrap_or(64);
                 Datum::Text(utf8(&b[..end])?)
             }
-            Kind::Text => Datum::Text(utf8(r.varlena(a)?)?),
+            Kind::Text => Datum::Text(utf8(&r.varlena(a)?)?),
             Kind::OidVector => {
                 let b = r.varlena(a)?;
                 if b.len() % 4 != 0 {
@@ -658,13 +780,8 @@ mod tests {
     #[test]
     fn too_big_row_is_54000() {
         let d = desc(&[oid::TEXT]);
-        let err = form_tuple(
-            &d,
-            &[Datum::Text("z".repeat(9000))],
-            &w(),
-            TupleFlags::default(),
-        )
-        .unwrap_err();
+        let err =
+            form_tuple(&d, &[Datum::Text(noisy(9000))], &w(), TupleFlags::default()).unwrap_err();
         assert_eq!(err.sqlstate, sqlstate::PROGRAM_LIMIT_EXCEEDED);
         assert!(err.message.starts_with("row is too big: size "));
     }
@@ -723,6 +840,27 @@ mod tests {
             deform_tuple(&d, &x).unwrap_err().sqlstate,
             sqlstate::DATA_CORRUPTED
         );
+    }
+
+    fn noisy(n: usize) -> String {
+        let mut x = 12345u32;
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                char::from(b'a' + ((x >> 24) % 26) as u8)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn large_compressible_value_round_trips() {
+        let d = desc(&[oid::INT4, oid::TEXT]);
+        for s in ["abc".repeat(10000), "xyz".repeat(20000)] {
+            let row = vec![Datum::Int4(1), Datum::Text(s)];
+            let t = form_tuple(&d, &row, &w(), TupleFlags::default()).unwrap();
+            assert!(t.len() <= MAX_HEAP_TUPLE_SIZE);
+            assert_eq!(deform_tuple(&d, &t).unwrap(), row);
+        }
     }
 
     #[test]

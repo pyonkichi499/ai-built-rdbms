@@ -94,6 +94,17 @@ impl Analyzer<'_> {
     /// Resolves a type name to a supported `SqlType` (with typmod).
     pub(super) fn resolve_type_name(&self, tn: &TypeName) -> Result<SqlType> {
         if !tn.array_bounds.is_empty() {
+            // Only one-dimensional int4[] exists (text input / output only).
+            if tn.array_bounds.len() == 1 {
+                let mut base = tn.clone();
+                base.array_bounds.clear();
+                if self
+                    .resolve_type_name(&base)
+                    .is_ok_and(|t| t.oid == oid::INT4)
+                {
+                    return Ok(SqlType::of(oid::INT4_ARRAY));
+                }
+            }
             return Err(
                 Error::not_supported("array types are not supported yet").with_span(tn.span)
             );
@@ -263,6 +274,11 @@ impl Analyzer<'_> {
                         ));
                     }
                     let ty = self.resolve_type_name(&cd.type_name)?;
+                    // int4[] has text I/O only: it cannot be stored in a heap tuple.
+                    if ty.oid == oid::INT4_ARRAY {
+                        return Err(Error::not_supported("array types are not supported yet")
+                            .with_span(cd.type_name.span));
+                    }
                     let (mut saw_null, mut saw_not_null) = (false, false);
                     let mut default: Option<&SourceExpr> = None;
                     for c in &cd.constraints {

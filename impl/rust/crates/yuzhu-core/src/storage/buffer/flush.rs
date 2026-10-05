@@ -1,4 +1,4 @@
-//! Writing a frame to disk (`m2.md` §6.3 items 4, 8, 9, 12). Every write of
+//! Writing a frame to disk (`m2.md` §6.3 items 4, 8, 9, 12; WAL-before-data `m3.md` §6.5.3). Every write of
 //! a buffer goes through [`BufferPool::flush_frame`].
 
 use std::cell::RefCell;
@@ -83,13 +83,13 @@ impl BufferPool {
         };
 
         // 2.-5. Copy under the shared latch, then write without any lock.
-        let result = WORK.with(|w| -> Result<bool> {
+        let result = WORK.with(|w| -> Result<Option<u64>> {
             let mut work = w.borrow_mut();
             let lsn = {
                 let latch = if try_latch {
                     match frame.content.try_read() {
                         Ok(g) => g,
-                        Err(TryLockError::WouldBlock) => return Ok(false),
+                        Err(TryLockError::WouldBlock) => return Ok(None),
                         Err(TryLockError::Poisoned(_)) => return Err(self.poisoned_latch()),
                     }
                 } else {
@@ -98,19 +98,23 @@ impl BufferPool {
                 work.copy_from_slice(&latch.0);
                 latch.lsn()
             };
-            self.wal.flush_to(lsn)?;
+            if !self.knobs.skip_wal_before_data {
+                self.wal.flush_to(lsn)?;
+            }
             if work.iter().any(|&b| b != 0) {
                 let sum = page_checksum(&work, tag.block);
                 work[8..10].copy_from_slice(&sum.to_le_bytes());
             }
-            self.smgr.write_block(tag, &work).map(|()| true)
+            self.smgr.write_block(tag, &work).map(|()| Some(lsn))
         });
 
         // 6. Finish.
+        let mut written_lsn = None;
         let mut h = lock(&frame.header)?;
         h.io_in_progress = false;
         let outcome = match result {
-            Ok(true) => {
+            Ok(Some(lsn)) => {
+                written_lsn = Some(lsn);
                 if !h.just_dirtied {
                     h.dirty = false;
                 }
@@ -118,7 +122,7 @@ impl BufferPool {
                 self.stats.writes.fetch_add(1, Ordering::Relaxed);
                 Ok(FlushOutcome::Written)
             }
-            Ok(false) => Ok(FlushOutcome::Skipped),
+            Ok(None) => Ok(FlushOutcome::Skipped),
             Err(e) => {
                 if e.severity != Severity::Panic {
                     h.io_error = true;
@@ -129,6 +133,16 @@ impl BufferPool {
         };
         drop(h);
         frame.io_done.notify_all();
+        if let Some(lsn) = written_lsn {
+            // WAL-before-data (`m3.md` §6.5.3): a violation must not go unnoticed.
+            assert!(
+                !self.knobs.assert_wal_before_data || lsn <= self.wal.flushed_ptr(),
+                "WAL-before-data violated: wrote block {} of {:?} with page LSN {lsn} beyond the flushed WAL {}",
+                tag.block,
+                tag.rel,
+                self.wal.flushed_ptr()
+            );
+        }
         outcome
     }
 

@@ -1041,4 +1041,59 @@ pub(crate) mod tests {
             Some(true)
         );
     }
+
+    #[derive(Debug)]
+    struct PidRuntime;
+
+    impl crate::executor::RuntimeInfo for PidRuntime {
+        fn backend_pid(&self) -> i32 {
+            777
+        }
+        fn is_blocked_by(&self, pid: i32, among: &[i32]) -> bool {
+            pid == 777 && among.contains(&5)
+        }
+        fn check_interrupts(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn runtime_functions_use_the_runtime() {
+        let s = session();
+        let ctx = EvalCtx {
+            runtime: &PidRuntime,
+            ..ectx(&s)
+        };
+        let call = |name: &str, args: Vec<BoundExpr>, ty: SqlType| {
+            let func = crate::catalog::builtin::functions_named(name)[0];
+            let e = mk(BoundExprKind::Function { func, args }, ty);
+            eval_expr(&e, &vec![], &ctx)
+        };
+        assert_eq!(
+            call("pg_backend_pid", vec![], SqlType::INT4).unwrap(),
+            Datum::Int4(777)
+        );
+        let arr = |v| lit(Datum::Int4Array(v), SqlType::of(oid::INT4_ARRAY));
+        let blocked = |pid: BoundExpr, v| {
+            call(
+                "pg_isolation_test_session_is_blocked",
+                vec![pid, arr(v)],
+                SqlType::BOOL,
+            )
+            .unwrap()
+        };
+        assert_eq!(blocked(int(777), vec![Some(5)]), Datum::Bool(true));
+        assert_eq!(blocked(int(777), vec![Some(6)]), Datum::Bool(false));
+        // strict: a NULL pid gives NULL
+        assert_eq!(blocked(null(SqlType::INT4), vec![Some(5)]), Datum::Null);
+        assert_eq!(
+            call(
+                "pg_sleep",
+                vec![lit(Datum::Float8(0.0), SqlType::FLOAT8)],
+                SqlType::of(oid::VOID)
+            )
+            .unwrap(),
+            Datum::Void
+        );
+    }
 }

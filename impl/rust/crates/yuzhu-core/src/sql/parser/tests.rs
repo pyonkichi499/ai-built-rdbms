@@ -1233,9 +1233,50 @@ fn transactions() {
     syntax("BEGIN READ", "", 11);
     syntax("BEGIN ISOLATION LEVEL READ ONLY", "ONLY", 28);
     syntax("START", "", 6);
-    unsupported("COMMIT AND CHAIN");
-    unsupported("SAVEPOINT a");
-    unsupported("ROLLBACK TO SAVEPOINT a");
+    let chain = |sql: &str| match one(sql) {
+        Statement::Transaction(t) => (t.kind, t.chain),
+        other => panic!("not a transaction: {other:?}"),
+    };
+    assert_eq!(chain("COMMIT AND CHAIN"), (TransactionKind::Commit, true));
+    assert_eq!(chain("END WORK AND CHAIN"), (TransactionKind::End, true));
+    assert_eq!(
+        chain("ROLLBACK AND CHAIN"),
+        (TransactionKind::Rollback, true)
+    );
+    assert_eq!(chain("ABORT AND NO CHAIN"), (TransactionKind::Abort, false));
+    assert_eq!(chain("COMMIT"), (TransactionKind::Commit, false));
+    syntax("COMMIT AND", "", 11);
+    syntax("COMMIT AND NO", "", 14);
+    let sp = |sql: &str| match one(sql) {
+        Statement::Transaction(t) => t.kind,
+        other => panic!("not a transaction: {other:?}"),
+    };
+    assert_eq!(sp("SAVEPOINT a"), TransactionKind::Savepoint("a".into()));
+    assert_eq!(
+        sp("SAVEPOINT \"A b\""),
+        TransactionKind::Savepoint("A b".into())
+    );
+    assert_eq!(sp("RELEASE a"), TransactionKind::Release("a".into()));
+    assert_eq!(
+        sp("RELEASE SAVEPOINT a"),
+        TransactionKind::Release("a".into())
+    );
+    assert_eq!(sp("ROLLBACK TO a"), TransactionKind::RollbackTo("a".into()));
+    assert_eq!(
+        sp("ROLLBACK WORK TO SAVEPOINT a"),
+        TransactionKind::RollbackTo("a".into())
+    );
+    syntax("SAVEPOINT", "", 10);
+    assert_eq!(
+        sp("RELEASE SAVEPOINT"),
+        TransactionKind::Release("savepoint".into())
+    );
+    assert_eq!(
+        sp("ROLLBACK TO SAVEPOINT"),
+        TransactionKind::RollbackTo("savepoint".into())
+    );
+    syntax("ROLLBACK TO", "", 12);
+    unsupported("COMMIT PREPARED 'x'");
 }
 
 fn set_of(sql: &str) -> (bool, String, SetValue) {
@@ -1592,4 +1633,33 @@ fn m2_qualified_names_and_e_strings() {
         q("SELECT E'a\\nb\\t\\\\\\x41\\101\\'' "),
         "select 'a\nb\t\\AA''"
     );
+}
+
+#[test]
+fn set_transaction_keeps_all_modes() {
+    let tr = |sql: &str| match one(sql) {
+        Statement::Set(s) => s.transaction.expect("transaction modes"),
+        other => panic!("not SET: {other:?}"),
+    };
+    let t = tr("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY");
+    assert!(!t.session_characteristics);
+    assert_eq!(
+        t.modes,
+        vec![
+            TransactionMode::IsolationLevel("read committed".into()),
+            TransactionMode::ReadOnly
+        ]
+    );
+    let t = tr("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE NOT DEFERRABLE");
+    assert!(t.session_characteristics);
+    assert_eq!(
+        t.modes,
+        vec![TransactionMode::ReadWrite, TransactionMode::NotDeferrable]
+    );
+    // A plain parameter assignment is not a transaction statement.
+    match one("SET transaction_read_only = on") {
+        Statement::Set(s) => assert!(s.transaction.is_none()),
+        other => panic!("not SET: {other:?}"),
+    }
+    syntax("SET TRANSACTION", "", 16);
 }

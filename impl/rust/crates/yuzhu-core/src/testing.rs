@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bootstrap::{InitdbOptions, initdb};
-use crate::engine::{Cluster, ClusterOptions};
-use crate::error::Result;
-use crate::session::{Session, StartupParams};
+use crate::debug_knobs::DebugKnobs;
+use crate::engine::{Cluster, ClusterOptions, DEFAULT_MAX_WAL_SIZE};
+use crate::error::{Error, Result};
+use crate::session::{ColumnDesc, Notice, ResultSink, Session, StartupParams};
 use crate::storage::DEFAULT_RELSEG_SIZE;
 use crate::storage::vfs::{CrashMode, SimVfs, Vfs};
+use crate::wal::{DEFAULT_WAL_SEGMENT_SIZE, MIN_WAL_SEGMENT_SIZE};
 
 /// Settings of a [`TestCluster`].
 #[derive(Debug, Clone)]
@@ -21,6 +23,27 @@ pub struct TestClusterOptions {
     pub nframes: usize,
     pub rel_seg_blocks: u32,
     pub checkpoint_timeout: Duration,
+    /// WAL segment size in bytes (initdb).
+    pub wal_segment_size: u32,
+    /// Mutation-testing switches (`m3.md` §4.10).
+    pub knobs: DebugKnobs,
+}
+
+impl TestClusterOptions {
+    /// Settings of the layer-1 crash tests (`m3.md` §7.5): 16 buffer frames,
+    /// 2 MiB WAL segments, the WAL-before-data assertion on.
+    pub fn crash_sim(seed: u64) -> Self {
+        TestClusterOptions {
+            seed,
+            nframes: 16,
+            wal_segment_size: MIN_WAL_SEGMENT_SIZE,
+            knobs: DebugKnobs {
+                assert_wal_before_data: true,
+                ..DebugKnobs::default()
+            },
+            ..TestClusterOptions::default()
+        }
+    }
 }
 
 impl Default for TestClusterOptions {
@@ -32,6 +55,8 @@ impl Default for TestClusterOptions {
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
             // The checkpointer thread stays idle unless a test asks for it.
             checkpoint_timeout: Duration::from_secs(3600),
+            wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
+            knobs: DebugKnobs::default(),
         }
     }
 }
@@ -46,13 +71,16 @@ pub struct TestCluster {
 }
 
 /// `ClusterOptions` for tests.
-pub fn cluster_options(o: &TestClusterOptions, ignore_unclean_shutdown: bool) -> ClusterOptions {
+pub fn cluster_options(o: &TestClusterOptions) -> ClusterOptions {
     ClusterOptions {
         data_dir: PathBuf::from("/sim/data"),
         shared_buffers: o.nframes,
         max_connections: 16,
         checkpoint_timeout: o.checkpoint_timeout,
-        ignore_unclean_shutdown,
+        max_wal_size: DEFAULT_MAX_WAL_SIZE,
+        // Tests call `Cluster::checkpoint` themselves.
+        background_checkpointer: false,
+        knobs: o.knobs,
     }
 }
 
@@ -71,19 +99,16 @@ impl TestCluster {
                 superuser: options.superuser.clone(),
                 no_sync: false,
                 rel_seg_blocks: options.rel_seg_blocks,
+                wal_segment_size: options.wal_segment_size,
             },
         )?;
-        TestCluster::start_on(vfs, options, false)
+        TestCluster::start_on(vfs, options)
     }
 
     /// Starts a cluster on an existing (initialized) disk.
-    pub fn start_on(
-        vfs: SimVfs,
-        options: TestClusterOptions,
-        ignore_unclean_shutdown: bool,
-    ) -> Result<TestCluster> {
+    pub fn start_on(vfs: SimVfs, options: TestClusterOptions) -> Result<TestCluster> {
         let dyn_vfs: Arc<dyn Vfs> = Arc::new(vfs.clone());
-        let cluster = Cluster::open(dyn_vfs, cluster_options(&options, ignore_unclean_shutdown))?;
+        let cluster = Cluster::open(dyn_vfs, cluster_options(&options))?;
         Ok(TestCluster {
             vfs,
             cluster,
@@ -117,11 +142,11 @@ impl TestCluster {
             options,
         } = self;
         cluster.abandon();
-        TestCluster::start_on(vfs, options, false)
+        TestCluster::start_on(vfs, options)
     }
 
     /// Simulated crash (nothing is written), then start on what survived
-    /// with `ignore_unclean_shutdown`.
+    /// (crash recovery).
     pub fn crash_and_restart(self, mode: CrashMode) -> Result<TestCluster> {
         let TestCluster {
             vfs,
@@ -129,7 +154,7 @@ impl TestCluster {
             options,
         } = self;
         cluster.abandon();
-        TestCluster::start_on(vfs.crash(mode), options, true)
+        TestCluster::start_on(vfs.crash(mode), options)
     }
 
     /// Simulated crash; the caller starts the cluster itself.
@@ -148,6 +173,73 @@ impl Default for TestCluster {
     fn default() -> Self {
         TestCluster::new()
     }
+}
+
+/// Everything one Simple Query message produced (a `ResultSink` that keeps it).
+#[derive(Debug, Default)]
+pub struct QueryOutput {
+    /// Rows of the last result set (text format, `None` = NULL).
+    pub rows: Vec<Vec<Option<String>>>,
+    /// The command tag of every statement that completed.
+    pub tags: Vec<String>,
+    /// Every error reported (a statement stops the message at its first).
+    pub errors: Vec<Error>,
+    pub notices: Vec<Notice>,
+}
+
+impl QueryOutput {
+    /// The rows as strings (NULL as `"NULL"`).
+    pub fn text_rows(&self) -> Vec<Vec<String>> {
+        self.rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|v| v.clone().unwrap_or_else(|| "NULL".into()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
+impl ResultSink for QueryOutput {
+    fn row_description(&mut self, _: &[ColumnDesc]) -> std::io::Result<()> {
+        self.rows.clear();
+        Ok(())
+    }
+    fn data_row(&mut self, values: &[Option<String>]) -> std::io::Result<()> {
+        self.rows.push(values.to_vec());
+        Ok(())
+    }
+    fn command_complete(&mut self, tag: &str) -> std::io::Result<()> {
+        self.tags.push(tag.to_owned());
+        Ok(())
+    }
+    fn empty_query(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn error(&mut self, err: &Error) -> std::io::Result<()> {
+        self.errors.push(err.clone());
+        Ok(())
+    }
+    fn notice(&mut self, notice: &Notice) -> std::io::Result<()> {
+        self.notices.push(notice.clone());
+        Ok(())
+    }
+    fn parameter_status(&mut self, _: &str, _: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Runs one Simple Query message and collects the result.
+pub fn run_sql(session: &mut Session, sql: &str) -> QueryOutput {
+    let mut out = QueryOutput::default();
+    // The sink never fails, so `execute_simple` cannot either.
+    let _ = session.execute_simple(sql, &mut out);
+    out
 }
 
 #[cfg(test)]
@@ -213,7 +305,12 @@ mod persistence_tests {
         let c = &tc.cluster;
         let (db, _) = c.connect("postgres", "postgres").unwrap();
         let t = c.txn_manager();
-        let (xid, guard) = t.begin_write(1, None).unwrap();
+        let irq = crate::InterruptFlag::default();
+        let wait = crate::txn::WaitCtl {
+            lock_timeout: None,
+            interrupts: &irq,
+        };
+        let (xid, guard) = t.begin_write(1, &wait).unwrap();
         let w = WriteCtx { xid, cid: 0 };
         let snap = t.snapshot(Some(xid), 0);
         let oid = db.catalog.get_new_relation_oid(c.oid_allocator()).unwrap();
@@ -250,9 +347,9 @@ mod persistence_tests {
             .insert(&rel, &WriteCtx { xid, cid: 1 }, &[Datum::Int4(42)])
             .unwrap();
         if commit {
-            t.commit(xid).unwrap();
+            t.commit(xid, &[]).unwrap();
         } else {
-            t.abort(xid).unwrap();
+            t.abort(xid, &[]).unwrap();
         }
         drop(guard);
         oid
@@ -299,5 +396,63 @@ mod persistence_tests {
         tc.cluster.checkpoint().unwrap();
         let tc = tc.crash_and_restart(CrashMode::DropUnsynced).unwrap();
         assert_eq!(read_t(&tc, oid), Some(vec![Datum::Int4(42)]));
+    }
+}
+
+#[cfg(test)]
+mod sql_helper_tests {
+    use super::*;
+
+    #[test]
+    fn run_sql_collects_rows_tags_and_errors() {
+        let tc = TestCluster::new();
+        let mut s = tc.session("postgres").unwrap();
+        let out = run_sql(
+            &mut s,
+            "CREATE TABLE t (a int, b text); INSERT INTO t VALUES (1, NULL)",
+        );
+        assert!(out.is_ok());
+        assert_eq!(out.tags, vec!["CREATE TABLE", "INSERT 0 1"]);
+        let out = run_sql(&mut s, "SELECT a, b FROM t");
+        assert_eq!(
+            out.text_rows(),
+            vec![vec!["1".to_string(), "NULL".to_string()]]
+        );
+        assert_eq!(out.rows[0][1], None);
+        let out = run_sql(&mut s, "SELECT * FROM missing");
+        assert!(!out.is_ok());
+        assert_eq!(
+            out.errors[0].sqlstate,
+            crate::error::sqlstate::UNDEFINED_TABLE
+        );
+    }
+
+    #[test]
+    fn crash_sim_options_follow_the_design() {
+        let o = TestClusterOptions::crash_sim(9);
+        assert_eq!(o.seed, 9);
+        assert_eq!(o.nframes, 16);
+        assert_eq!(o.wal_segment_size, 2 << 20);
+        assert!(o.knobs.assert_wal_before_data);
+        assert!(!o.knobs.skip_commit_flush);
+        let c = cluster_options(&o);
+        assert!(!c.background_checkpointer);
+        assert_eq!(c.shared_buffers, 16);
+    }
+
+    #[test]
+    fn crash_and_restart_recovers_committed_rows() {
+        let tc = TestCluster::with_options(TestClusterOptions::crash_sim(3)).unwrap();
+        {
+            let mut s = tc.session("postgres").unwrap();
+            assert!(run_sql(&mut s, "CREATE TABLE t (a int)").is_ok());
+            assert!(run_sql(&mut s, "INSERT INTO t VALUES (5)").is_ok());
+            run_sql(&mut s, "BEGIN");
+            run_sql(&mut s, "INSERT INTO t VALUES (6)");
+        }
+        let tc = tc.crash_and_restart(CrashMode::DropUnsynced).unwrap();
+        let mut s = tc.session("postgres").unwrap();
+        let out = run_sql(&mut s, "SELECT a FROM t");
+        assert_eq!(out.text_rows(), vec![vec!["5".to_string()]]);
     }
 }

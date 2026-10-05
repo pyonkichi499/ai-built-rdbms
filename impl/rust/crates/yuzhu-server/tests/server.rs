@@ -403,6 +403,139 @@ fn cancel_request_closes_connection() {
     c.expect_eof();
 }
 
+/// Handshake that also returns the `BackendKeyData` (pid, secret).
+fn handshake_with_key(addr: SocketAddr) -> (Raw, i32, i32) {
+    let mut c = Raw::connect(addr);
+    c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
+    let msgs = c.read_until_ready();
+    check_startup_response(&msgs);
+    let k = msgs.iter().find(|m| m.tag == b'K').expect("BackendKeyData");
+    let word =
+        |i: usize| i32::from_be_bytes([k.body[i], k.body[i + 1], k.body[i + 2], k.body[i + 3]]);
+    (c, word(0), word(4))
+}
+
+fn send_cancel(addr: SocketAddr, pid: i32, secret: i32) {
+    let mut c = Raw::connect(addr);
+    let mut payload = pid.to_be_bytes().to_vec();
+    payload.extend_from_slice(&secret.to_be_bytes());
+    c.send_startup_code(80_877_102, &payload);
+    c.expect_eof();
+}
+
+#[test]
+fn cancel_request_cancels_the_running_statement() {
+    let addr = start_server(10);
+    let (mut c, pid, secret) = handshake_with_key(addr);
+    c.query("SELECT pg_sleep('30'::float8)");
+    std::thread::sleep(Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    send_cancel(addr, pid, secret);
+    let msgs = c.read_until_ready();
+    let err = msgs.iter().find(|m| m.tag == b'E').expect("ErrorResponse");
+    assert_eq!(err.fields()[&b'C'], "57014");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    // The session is still usable and the next statement is not cancelled.
+    c.query("SELECT 1");
+    let msgs = c.read_until_ready();
+    assert!(msgs.iter().all(|m| m.tag != b'E'), "{msgs:?}");
+}
+
+#[test]
+fn cancel_request_with_a_wrong_key_is_ignored() {
+    let addr = start_server(10);
+    let (mut c, pid, secret) = handshake_with_key(addr);
+    c.query("SELECT pg_sleep('0.6'::float8)");
+    std::thread::sleep(Duration::from_millis(100));
+    send_cancel(addr, pid, secret.wrapping_add(1));
+    send_cancel(addr, pid.wrapping_add(1000), secret);
+    let msgs = c.read_until_ready();
+    assert!(msgs.iter().all(|m| m.tag != b'E'), "{msgs:?}");
+}
+
+#[test]
+fn cancel_while_idle_is_discarded() {
+    let addr = start_server(10);
+    let (mut c, pid, secret) = handshake_with_key(addr);
+    send_cancel(addr, pid, secret);
+    std::thread::sleep(Duration::from_millis(100));
+    c.query("SELECT 1");
+    let msgs = c.read_until_ready();
+    assert!(msgs.iter().all(|m| m.tag != b'E'), "{msgs:?}");
+}
+
+#[test]
+fn backend_key_pid_is_the_session_pid() {
+    let addr = start_server(10);
+    let (mut c, pid, _) = handshake_with_key(addr);
+    c.query("SELECT pg_backend_pid()");
+    let msgs = c.read_until_ready();
+    let row = msgs.iter().find(|m| m.tag == b'D').expect("DataRow");
+    // Int16 field count, Int32 length, then the text value.
+    assert_eq!(String::from_utf8_lossy(&row.body[6..]), pid.to_string());
+}
+
+#[test]
+fn idle_session_timeout_terminates_with_57p05() {
+    let addr = start_server(10);
+    let (mut c, _, _) = handshake_with_key(addr);
+    c.query("SET idle_session_timeout = 200");
+    c.read_until_ready();
+    let fatal = c.read_msg();
+    assert_eq!(fatal.tag, b'E', "{fatal:?}");
+    assert_eq!(fatal.fields()[&b'S'], "FATAL");
+    assert_eq!(fatal.fields()[&b'C'], "57P05");
+    c.expect_eof();
+}
+
+#[test]
+fn idle_in_transaction_timeout_terminates_with_25p03_and_aborts() {
+    let addr = start_server(10);
+    let (mut c, _, _) = handshake_with_key(addr);
+    c.query("SET idle_in_transaction_session_timeout = 200");
+    c.read_until_ready();
+    // Idle outside a transaction is not limited by this setting.
+    std::thread::sleep(Duration::from_millis(400));
+    c.query("BEGIN");
+    let msgs = c.read_until_ready();
+    assert_eq!(msgs.last().unwrap().body, b"T");
+    let fatal = c.read_msg();
+    assert_eq!(fatal.tag, b'E', "{fatal:?}");
+    assert_eq!(fatal.fields()[&b'C'], "25P03");
+    c.expect_eof();
+}
+
+#[test]
+fn idle_in_transaction_timeout_covers_a_partial_message() {
+    let addr = start_server(10);
+    let (mut c, _, _) = handshake_with_key(addr);
+    c.query("SET idle_in_transaction_session_timeout = 300");
+    c.read_until_ready();
+    c.query("BEGIN");
+    c.read_until_ready();
+    // Only the first byte of the next message arrives, then silence.
+    c.send(b"Q");
+    let fatal = c.read_msg();
+    assert_eq!(fatal.tag, b'E', "{fatal:?}");
+    assert_eq!(fatal.fields()[&b'C'], "25P03");
+    c.expect_eof();
+}
+
+#[test]
+fn a_running_statement_is_not_an_idle_timeout() {
+    let addr = start_server(10);
+    let (mut c, _, _) = handshake_with_key(addr);
+    c.query("SET idle_session_timeout = 300");
+    c.read_until_ready();
+    // Activity within the limit keeps the session alive.
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(100));
+        c.query("SELECT 1");
+        let msgs = c.read_until_ready();
+        assert!(msgs.iter().all(|m| m.tag != b'E'), "{msgs:?}");
+    }
+}
+
 #[test]
 fn unsupported_protocol_version_is_rejected() {
     let addr = start_server(10);

@@ -28,6 +28,14 @@ pub const VERSION_STRING: &str = concat!(
 enum Kind {
     /// Shown only; SET gives 55P02.
     ReadOnly,
+    /// Changeable only by a reload (`sighup`): SET gives 55P02 "cannot be
+    /// changed now".
+    Sighup,
+    /// Duration in milliseconds with a minimum of 1 ms.
+    MillisMin1,
+    /// `synchronous_commit`: the listed values plus the Boolean spellings,
+    /// which are normalized to `on` / `off`.
+    SyncCommit,
     /// Any string.
     Str,
     /// Boolean, normalized to `on` / `off`.
@@ -41,6 +49,9 @@ enum Kind {
     Millis,
     /// One of the listed lower-case values.
     Enum(&'static [&'static str]),
+    /// A transaction isolation level. `repeatable read` and `serializable`
+    /// are valid names but not supported yet (`0A000`).
+    Isolation,
     /// A comma-separated list of identifiers (`search_path`).
     IdentList,
     /// `client_encoding`: only UTF8.
@@ -165,7 +176,7 @@ pub static SETTINGS: &[SettingDef] = &[
         "default_transaction_isolation",
         "read committed",
         false,
-        Kind::Enum(&["read committed", "read uncommitted"]),
+        Kind::Isolation,
         "Sets the transaction isolation level of each new transaction.",
     ),
     def(
@@ -319,8 +330,78 @@ pub static SETTINGS: &[SettingDef] = &[
         "transaction_isolation",
         "read committed",
         false,
-        Kind::Enum(&["read committed", "read uncommitted"]),
+        Kind::Isolation,
         "Sets the current transaction's isolation level.",
+    ),
+    def(
+        "transaction_read_only",
+        "off",
+        false,
+        Kind::Bool,
+        "Sets the current transaction's read-only status.",
+    ),
+    def(
+        "transaction_deferrable",
+        "off",
+        false,
+        Kind::Bool,
+        "Whether to defer a read-only serializable transaction until it can be executed with no possible serialization failures.",
+    ),
+    def(
+        "default_transaction_deferrable",
+        "off",
+        false,
+        Kind::Bool,
+        "Sets the default deferrable status of new transactions.",
+    ),
+    def(
+        "idle_session_timeout",
+        "0",
+        false,
+        Kind::Millis,
+        "Sets the maximum allowed idle time between queries, when not in a transaction.",
+    ),
+    def(
+        "deadlock_timeout",
+        "1s",
+        false,
+        Kind::MillisMin1,
+        "Sets the time to wait on a lock before checking for deadlock.",
+    ),
+    def(
+        "synchronous_commit",
+        "on",
+        false,
+        Kind::SyncCommit,
+        "Sets the current transaction's synchronization level.",
+    ),
+    def(
+        "full_page_writes",
+        "on",
+        false,
+        Kind::Sighup,
+        "Writes full pages to WAL when first modified after a checkpoint.",
+    ),
+    def(
+        "wal_segment_size",
+        "16MB",
+        false,
+        Kind::ReadOnly,
+        "Shows the size of write ahead log segments.",
+    ),
+    def(
+        "wal_sync_method",
+        "fdatasync",
+        false,
+        Kind::Sighup,
+        "Selects the method used for forcing WAL updates to disk.",
+    ),
+    def(
+        "max_wal_size",
+        "1GB",
+        false,
+        Kind::Sighup,
+        "Sets the WAL size that triggers a checkpoint.",
     ),
 ];
 
@@ -384,6 +465,10 @@ pub fn parse_bool(s: &str) -> Option<bool> {
 }
 
 fn parse_millis(name: &str, raw: &str) -> Result<i64> {
+    parse_millis_min(name, raw, 0)
+}
+
+fn parse_millis_min(name: &str, raw: &str, min: i64) -> Result<i64> {
     let s = raw.trim();
     let split = s
         .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+'))
@@ -405,10 +490,12 @@ fn parse_millis(name: &str, raw: &str) -> Result<i64> {
     let v = n
         .checked_mul(mult)
         .ok_or_else(|| invalid_value(name, raw))?;
-    if !(0..=i64::from(i32::MAX)).contains(&v) {
+    if !(min..=i64::from(i32::MAX)).contains(&v) {
         return Err(Error::new(
             sqlstate::INVALID_PARAMETER_VALUE,
-            format!("{v} ms is outside the valid range for parameter \"{name}\" (0 .. 2147483647)"),
+            format!(
+                "{v} ms is outside the valid range for parameter \"{name}\" ({min} .. 2147483647)"
+            ),
         ));
     }
     Ok(v)
@@ -454,14 +541,24 @@ fn normalize_datestyle(current: &str, raw: &str) -> Option<String> {
     Some(format!("{style}, {order}"))
 }
 
+/// The error of a parameter that cannot be changed by `SET`.
+fn fixed_error(def: &SettingDef) -> Option<Error> {
+    let suffix = match def.kind {
+        Kind::ReadOnly => "",
+        Kind::Sighup => " now",
+        _ => return None,
+    };
+    Some(Error::new(
+        sqlstate::CANT_CHANGE_RUNTIME_PARAM,
+        format!("parameter \"{}\" cannot be changed{suffix}", def.name),
+    ))
+}
+
 /// Validates `args` for `def` and returns the normalized value.
 fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String> {
     let name = def.name;
-    if matches!(def.kind, Kind::ReadOnly) {
-        return Err(Error::new(
-            sqlstate::CANT_CHANGE_RUNTIME_PARAM,
-            format!("parameter \"{name}\" cannot be changed"),
-        ));
+    if let Some(e) = fixed_error(def) {
+        return Err(e);
     }
     if let Kind::IdentList = def.kind {
         return Ok(args
@@ -484,7 +581,7 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
         }
     };
     match def.kind {
-        Kind::ReadOnly | Kind::IdentList => unreachable!("handled above"),
+        Kind::ReadOnly | Kind::Sighup | Kind::IdentList => unreachable!("handled above"),
         Kind::Str => Ok(raw.to_owned()),
         Kind::Bool => match parse_bool(raw) {
             Some(true) => Ok("on".into()),
@@ -517,6 +614,19 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
             Ok(v.to_string())
         }
         Kind::Millis => parse_millis(name, raw).map(format_millis),
+        Kind::MillisMin1 => parse_millis_min(name, raw, 1).map(format_millis),
+        Kind::SyncCommit => {
+            const VALUES: &[&str] = &["local", "remote_write", "remote_apply", "on", "off"];
+            let v = raw.to_ascii_lowercase();
+            match v.as_str() {
+                "true" | "yes" | "1" => Ok("on".into()),
+                "false" | "no" | "0" => Ok("off".into()),
+                _ if VALUES.contains(&v.as_str()) => Ok(v),
+                _ => Err(invalid_value(name, raw)
+                    .with_hint(format!("Available values: {}.", VALUES.join(", ")))),
+            }
+        }
+        Kind::Isolation => Isolation::parse(name, raw).map(|i| i.as_str().to_owned()),
         Kind::Enum(values) => {
             let v = raw.trim().to_ascii_lowercase();
             if values.contains(&v.as_str()) {
@@ -538,6 +648,51 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
             normalize_datestyle(current, raw).ok_or_else(|| invalid_value(name, raw))
         }
     }
+}
+
+/// The isolation levels that can run. `REPEATABLE READ` and `SERIALIZABLE`
+/// are rejected with `0A000` until M5; `READ UNCOMMITTED` behaves as
+/// `READ COMMITTED` but is shown by name (as in PostgreSQL).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Isolation {
+    #[default]
+    ReadCommitted,
+    ReadUncommitted,
+}
+
+impl Isolation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Isolation::ReadCommitted => "read committed",
+            Isolation::ReadUncommitted => "read uncommitted",
+        }
+    }
+
+    /// Parses a level name as `SET transaction_isolation` does
+    /// (case-insensitive). Unknown names are `22023`; the names of the
+    /// levels that are not supported yet are `0A000`.
+    pub fn parse(name: &str, raw: &str) -> Result<Isolation> {
+        // An enum value matches exactly (case-insensitive): two spaces are
+        // not one. The parser joins the words of `ISOLATION LEVEL` itself.
+        match raw.to_ascii_lowercase().as_str() {
+            "read committed" => Ok(Isolation::ReadCommitted),
+            "read uncommitted" => Ok(Isolation::ReadUncommitted),
+            level @ ("repeatable read" | "serializable") => Err(Error::not_supported(format!(
+                "transaction isolation level \"{level}\" is not supported yet"
+            ))),
+            _ => Err(invalid_value(name, raw).with_hint(
+                "Available values: serializable, repeatable read, read committed, read uncommitted.",
+            )),
+        }
+    }
+}
+
+/// The characteristics of a transaction (`m3.md` §6.11.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TxnCharacteristics {
+    pub isolation: Isolation,
+    pub read_only: bool,
+    pub deferrable: bool,
 }
 
 /// Storage key: lower-cased name.
@@ -621,11 +776,8 @@ impl Settings {
         let value = match lookup(name) {
             Some(d) => match args {
                 None => {
-                    if matches!(d.kind, Kind::ReadOnly) {
-                        return Err(Error::new(
-                            sqlstate::CANT_CHANGE_RUNTIME_PARAM,
-                            format!("parameter \"{}\" cannot be changed", d.name),
-                        ));
+                    if let Some(e) = fixed_error(d) {
+                        return Err(e);
                     }
                     self.reset_values.get(&k).cloned().unwrap_or_default()
                 }
@@ -656,7 +808,7 @@ impl Settings {
     /// `RESET ALL`: every changeable parameter goes back to its reset value.
     pub fn reset_all(&mut self) {
         for d in SETTINGS {
-            if matches!(d.kind, Kind::ReadOnly) {
+            if matches!(d.kind, Kind::ReadOnly | Kind::Sighup) {
                 continue;
             }
             let k = key(d.name);
@@ -727,13 +879,55 @@ impl Settings {
         self.get("extra_float_digits").parse().unwrap_or(1)
     }
 
-    /// `lock_timeout`; `None` waits forever (value 0).
-    pub fn lock_timeout(&self) -> Option<std::time::Duration> {
-        let ms = parse_millis("lock_timeout", self.get("lock_timeout")).unwrap_or(0);
+    /// The value of a millisecond-valued parameter; `None` for 0.
+    fn duration_setting(&self, name: &str) -> Option<std::time::Duration> {
+        let ms = parse_millis(name, self.get(name)).unwrap_or(0);
         u64::try_from(ms)
             .ok()
             .filter(|ms| *ms > 0)
             .map(std::time::Duration::from_millis)
+    }
+
+    /// `lock_timeout`; `None` waits forever (value 0).
+    pub fn lock_timeout(&self) -> Option<std::time::Duration> {
+        self.duration_setting("lock_timeout")
+    }
+
+    /// `statement_timeout`; `None` means no limit (value 0).
+    pub fn statement_timeout(&self) -> Option<std::time::Duration> {
+        self.duration_setting("statement_timeout")
+    }
+
+    /// `idle_in_transaction_session_timeout`; `None` means no limit.
+    pub fn idle_in_transaction_session_timeout(&self) -> Option<std::time::Duration> {
+        self.duration_setting("idle_in_transaction_session_timeout")
+    }
+
+    /// `idle_session_timeout`; `None` means no limit.
+    pub fn idle_session_timeout(&self) -> Option<std::time::Duration> {
+        self.duration_setting("idle_session_timeout")
+    }
+
+    /// The `default_transaction_*` parameters: what a new transaction
+    /// starts with.
+    pub fn default_characteristics(&self) -> TxnCharacteristics {
+        TxnCharacteristics {
+            isolation: Isolation::parse(
+                "default_transaction_isolation",
+                self.get("default_transaction_isolation"),
+            )
+            .unwrap_or_default(),
+            read_only: parse_bool(self.get("default_transaction_read_only")) == Some(true),
+            deferrable: parse_bool(self.get("default_transaction_deferrable")) == Some(true),
+        }
+    }
+
+    /// Validates `args` for the parameter `name` and returns the normalized
+    /// value without storing it (used for `transaction_*`, which the
+    /// session keeps itself).
+    pub fn validate(&self, name: &str, args: &[String]) -> Result<String> {
+        let d = lookup(name).ok_or_else(|| unrecognized(name))?;
+        normalize(d, self.get(name), args)
     }
 
     /// Whether a message of `level` (`notice`, `warning`, ...) passes
@@ -805,6 +999,59 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| (*x).to_owned()).collect()
+    }
+
+    #[test]
+    fn m3_parameters_follow_postgresql() {
+        let mut st = Settings::new("alice", &[]);
+        let e = st
+            .set("deadlock_timeout", Some(&s(&["0"])), false)
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INVALID_PARAMETER_VALUE);
+        st.set("deadlock_timeout", Some(&s(&["1ms"])), false)
+            .unwrap();
+        st.set("synchronous_commit", Some(&s(&["true"])), false)
+            .unwrap();
+        assert_eq!(st.get("synchronous_commit"), "on");
+        st.set("synchronous_commit", Some(&s(&["no"])), false)
+            .unwrap();
+        assert_eq!(st.get("synchronous_commit"), "off");
+        let e = st
+            .set("synchronous_commit", Some(&s(&["x"])), false)
+            .unwrap_err();
+        assert_eq!(
+            e.hint.as_deref(),
+            Some("Available values: local, remote_write, remote_apply, on, off.")
+        );
+        for n in ["full_page_writes", "wal_sync_method", "max_wal_size"] {
+            let e = st.set(n, Some(&s(&["on"])), false).unwrap_err();
+            assert_eq!(e.sqlstate, sqlstate::CANT_CHANGE_RUNTIME_PARAM);
+            assert_eq!(
+                e.message,
+                format!("parameter \"{n}\" cannot be changed now")
+            );
+        }
+        let e = st
+            .set("wal_segment_size", Some(&s(&["1"])), false)
+            .unwrap_err();
+        assert_eq!(
+            e.message,
+            "parameter \"wal_segment_size\" cannot be changed"
+        );
+        let e = st
+            .set(
+                "default_transaction_isolation",
+                Some(&s(&["read  committed"])),
+                false,
+            )
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INVALID_PARAMETER_VALUE);
+        st.set(
+            "default_transaction_isolation",
+            Some(&s(&["READ COMMITTED"])),
+            false,
+        )
+        .unwrap();
     }
 
     #[test]

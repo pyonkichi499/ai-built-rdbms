@@ -980,3 +980,25 @@ fn catalog_tables_are_read_only() {
         "42501"
     );
 }
+
+#[test]
+fn int4_array_and_pg_typeof_and_pg_sleep_literal() {
+    let c = catalog();
+    assert_eq!(types(&c, "SELECT '{1,2}'::int4[]"), vec![oid::INT4_ARRAY]);
+    assert_eq!(err(&c, "SELECT '{1}'::text[]"), "0A000");
+    // `||` takes text only with anynonarray, so arrays never match.
+    for q in [
+        "SELECT '{1,2}'::int4[] || '{3}'",
+        "SELECT '{1,2}'::int4[] || 'abc'::text",
+        "SELECT 'abc'::text || '{1,2}'::int4[]",
+    ] {
+        assert_eq!(err(&c, q), "42883", "{q}");
+    }
+    assert_eq!(err(&c, "CREATE TABLE a (c int4[])"), "0A000");
+    assert_eq!(types(&c, "SELECT pg_typeof(1)"), vec![oid::TEXT]);
+    assert!(matches!(
+        first(&c, "SELECT pg_typeof(1)").kind,
+        BoundExprKind::Literal(Datum::Text(ref s)) if s == "integer"
+    ));
+    assert_eq!(types(&c, "SELECT pg_sleep(0.01)"), vec![oid::VOID]);
+}

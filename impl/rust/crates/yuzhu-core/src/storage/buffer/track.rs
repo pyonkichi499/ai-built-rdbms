@@ -24,7 +24,10 @@ pub(super) enum LatchMode {
 struct LatchRec {
     pool: usize,
     frame: FrameId,
+    // Read only by the debug_assertions checks.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     tag: BufferTag,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     mode: LatchMode,
 }
 

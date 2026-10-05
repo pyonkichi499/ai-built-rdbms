@@ -1,8 +1,7 @@
 //! XLOG rmgr: チェックポイントレコードなどのエンコードと REDO
 //! （`m3.md` §3.6、§4.4、§6.4.4）。
 //!
-//! `CheckpointRecord` のエンコード・デコードは A が置いた単純な実装。REDO は
-//! 担当 W2 が実装する。
+//! `CheckpointRecord` のエンコード・デコードは A が置いた単純な実装。REDO は W2 が実装した。
 
 #![allow(
     dead_code,
@@ -11,7 +10,9 @@
     clippy::needless_pass_by_value
 )]
 
-use super::{DecodedRecord, Lsn, RecordBuilder, RedoCtx, RmgrId};
+use std::sync::atomic::Ordering;
+
+use super::{DecodedRecord, Lsn, RecordBuilder, RedoBuffer, RedoCtx, RmgrId, read_buffer_for_redo};
 use crate::error::{Error, Result, Severity, sqlstate};
 use crate::txn::Xid;
 use crate::types::Oid;
@@ -115,10 +116,42 @@ impl CheckpointRecord {
     }
 }
 
-/// XLOG rmgr の REDO（§6.4.4）。担当 W2 が実装する。
+/// XLOG rmgr の REDO（§6.4.4）。
 pub fn redo(ctx: &RedoCtx, rec: &DecodedRecord) -> Result<()> {
-    let _ = (ctx, rec);
-    Err(Error::internal("xlog::redo: 担当 W2 が実装"))
+    if rec.rmgr != RmgrId::Xlog {
+        return Err(Error::internal("xlog::redo called with a non-XLOG record"));
+    }
+    match rec.info {
+        XLOG_CHECKPOINT_SHUTDOWN | XLOG_CHECKPOINT_ONLINE => {
+            let cp = CheckpointRecord::decode(rec)?;
+            ctx.next_oid.fetch_max(cp.next_oid, Ordering::AcqRel);
+            Ok(())
+        }
+        XLOG_CHECKPOINT_REDO | XLOG_NOOP | XLOG_SWITCH => Ok(()),
+        XLOG_FPI => {
+            for blk in &rec.blocks {
+                match read_buffer_for_redo(ctx, rec, blk.id)? {
+                    RedoBuffer::Restored => {}
+                    other => {
+                        return Err(Error::new(
+                            sqlstate::DATA_CORRUPTED,
+                            format!(
+                                "XLOG_FPI record at {} block #{} was not restored ({other:?})",
+                                rec.start, blk.id
+                            ),
+                        )
+                        .with_severity(Severity::Panic));
+                    }
+                }
+            }
+            Ok(())
+        }
+        info => Err(Error::new(
+            sqlstate::DATA_CORRUPTED,
+            format!("unknown XLOG record info 0x{info:02X} at {}", rec.start),
+        )
+        .with_severity(Severity::Panic)),
+    }
 }
 
 #[cfg(test)]

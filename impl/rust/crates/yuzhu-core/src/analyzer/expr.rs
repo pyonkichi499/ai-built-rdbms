@@ -484,9 +484,30 @@ impl Analyzer<'_> {
                     )
                     .with_span(*span));
                 }
+                // numeric is not supported yet; pg_sleep takes float8, so a
+                // decimal literal argument is bound as float8 directly.
                 let args = args
                     .iter()
-                    .map(|a| self.transform_expr(a, cx))
+                    .map(|a| match a {
+                        Expr::Literal {
+                            value: Literal::Decimal(s),
+                            span,
+                        } if fname == "pg_sleep" => {
+                            let v: f64 = s.parse().map_err(|_| {
+                                Error::new(
+                                    sqlstate::INVALID_TEXT_REPRESENTATION,
+                                    "invalid float8 literal",
+                                )
+                                .with_span(*span)
+                            })?;
+                            Ok(BoundExpr::new(
+                                BoundExprKind::Literal(Datum::Float8(v)),
+                                SqlType::FLOAT8,
+                                *span,
+                            ))
+                        }
+                        _ => self.transform_expr(a, cx),
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 self.make_func_call(fname, args, *span)
             }

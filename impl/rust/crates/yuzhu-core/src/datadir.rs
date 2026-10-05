@@ -195,6 +195,57 @@ impl OidAllocator {
     }
 }
 
+/// Makes everything in the data directory durable before crash recovery
+/// (`m3.md` §5.5, §6.9): `fsync`s every file under `global/`, `base/<oid>/`,
+/// `pg_xact/` and `pg_wal/` and then each directory and the data directory
+/// itself. `yuzhu.pid` and `pg_wal/xlogtemp.*` are skipped. A directory that
+/// does not exist is skipped. Any failure is `Severity::Panic`.
+pub fn sync_data_directory(vfs: &dyn Vfs) -> Result<()> {
+    let fail = |e: &std::io::Error, what: &str, path: &Path| {
+        io_error(e, what, path).with_severity(Severity::Panic)
+    };
+    let list = |dir: &Path| -> Result<Option<Vec<PathBuf>>> {
+        match vfs.read_dir(dir) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(fail(&e, "read directory", dir)),
+        }
+    };
+    let sync_files = |dir: &Path| -> Result<bool> {
+        let Some(entries) = list(dir)? else {
+            return Ok(false);
+        };
+        for entry in entries {
+            let skip = entry
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("xlogtemp."));
+            if skip {
+                continue;
+            }
+            vfs.open(&entry, OpenMode::ReadOnly)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| fail(&e, "fsync file", &entry))?;
+        }
+        vfs.sync_dir(dir)
+            .map_err(|e| fail(&e, "fsync directory", dir))?;
+        Ok(true)
+    };
+    sync_files(Path::new("global"))?;
+    sync_files(Path::new("pg_xact"))?;
+    sync_files(Path::new("pg_wal"))?;
+    let base = Path::new("base");
+    if let Some(dbs) = list(base)? {
+        for db in dbs {
+            sync_files(&db)?;
+        }
+        vfs.sync_dir(base)
+            .map_err(|e| fail(&e, "fsync directory", base))?;
+    }
+    vfs.sync_dir(Path::new(""))
+        .map_err(|e| fail(&e, "fsync directory", Path::new(".")))
+}
+
 /// Copies `base/<src>/` to `base/<dst>/` (all entries are treated as
 /// regular files). `base/<dst>` must not exist. With `sync`, every file and
 /// the directories are fsynced. On failure the partial copy is removed.
@@ -502,5 +553,67 @@ mod tests {
         // A missing source is reported too.
         assert!(copy_database_dir(&*vfs, 99, 7, true).is_err());
         assert!(!vfs.exists(Path::new("base/7")).unwrap());
+    }
+
+    #[test]
+    fn sync_data_directory_makes_files_durable() {
+        let (s, vfs) = sim();
+        for d in ["global", "base", "base/5", "pg_xact", "pg_wal"] {
+            vfs.create_dir_all(Path::new(d)).unwrap();
+        }
+        let put = |p: &str| {
+            let f = vfs.open(Path::new(p), OpenMode::CreateNew).unwrap();
+            f.write_all_at(b"data", 0).unwrap();
+        };
+        for p in [
+            "global/a",
+            "base/5/16384",
+            "pg_xact/0000",
+            "pg_wal/0000000000000001",
+            "pg_wal/xlogtemp.2",
+        ] {
+            put(p);
+        }
+        let _pid = PidFile::acquire(&*vfs, "/d", 1).unwrap();
+        sync_data_directory(&*vfs).unwrap();
+        let after = s.crash(CrashMode::DropUnsynced);
+        for p in [
+            "global/a",
+            "base/5/16384",
+            "pg_xact/0000",
+            "pg_wal/0000000000000001",
+        ] {
+            assert_eq!(after.file_contents(Path::new(p)).unwrap(), b"data", "{p}");
+        }
+        // The temp file is not fsynced: its entry may exist, its data does not.
+        let temp = after.file_contents(Path::new("pg_wal/xlogtemp.2"));
+        assert!(temp.unwrap_or_default().is_empty());
+        let pid = after.file_contents(Path::new(PID_FILE));
+        assert!(pid.unwrap_or_default().is_empty());
+    }
+
+    #[test]
+    fn sync_data_directory_failure_is_panic_and_missing_dirs_are_skipped() {
+        let (s, vfs) = sim();
+        sync_data_directory(&*vfs).unwrap();
+        vfs.create_dir_all(Path::new("pg_wal")).unwrap();
+        let f = vfs
+            .open(Path::new("pg_wal/0000000000000001"), OpenMode::CreateNew)
+            .unwrap();
+        f.write_all_at(b"x", 0).unwrap();
+        s.set_faults(FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::Sync,
+                path_prefix: None,
+                nth: Some(1),
+                probability: None,
+                effect: FaultEffect::Error(std::io::ErrorKind::Other),
+            }],
+        });
+        let e = sync_data_directory(&*vfs).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        s.set_faults(FaultPlan::default());
+        s.set_ignore_sync_dir(false);
+        sync_data_directory(&*vfs).unwrap();
     }
 }

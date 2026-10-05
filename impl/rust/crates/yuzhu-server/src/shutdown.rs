@@ -36,6 +36,8 @@ impl ShutdownMode {
 struct Entry {
     stream: TcpStream,
     flag: Option<Arc<InterruptFlag>>,
+    /// `(backend pid, cancel secret)` shown to the client in `BackendKeyData`.
+    key: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Default)]
@@ -76,7 +78,14 @@ impl Coordinator {
         if r.closed {
             return None;
         }
-        r.conns.insert(pid, Entry { stream, flag: None });
+        r.conns.insert(
+            pid,
+            Entry {
+                stream,
+                flag: None,
+                key: None,
+            },
+        );
         Some(Registration {
             coordinator: Arc::clone(self),
             pid,
@@ -100,6 +109,21 @@ impl Coordinator {
                 f.request_terminate();
             }
             let _ = e.stream.shutdown(SocketShutdown::Read);
+        }
+    }
+
+    /// Handles a `CancelRequest`: if a session with this backend pid and
+    /// secret exists, asks it to cancel its current statement. Returns
+    /// whether a session matched (the client is never told).
+    pub fn cancel(&self, pid: i32, secret: i32) -> bool {
+        let r = self.registry();
+        let hit = r.conns.values().find(|e| e.key == Some((pid, secret)));
+        match hit.and_then(|e| e.flag.as_ref()) {
+            Some(f) => {
+                f.request_cancel();
+                true
+            }
+            None => false,
         }
     }
 
@@ -131,6 +155,16 @@ impl Registration {
         }
         if let Some(e) = r.conns.get_mut(&self.pid) {
             e.flag = Some(flag);
+        }
+    }
+}
+
+impl Registration {
+    /// Records the key sent in `BackendKeyData` so that a `CancelRequest`
+    /// can find this session.
+    pub fn set_key(&self, backend_pid: i32, secret: i32) {
+        if let Some(e) = self.coordinator.registry().conns.get_mut(&self.pid) {
+            e.key = Some((backend_pid, secret));
         }
     }
 }
@@ -212,6 +246,24 @@ mod tests {
         assert!(flag.is_terminate_requested());
         let mut buf = [0u8; 1];
         assert_eq!(reader.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn cancel_needs_matching_pid_and_secret() {
+        let c = Arc::new(Coordinator::default());
+        let (_client, server) = pair();
+        let reg = c.register(1, server).unwrap();
+        let flag = Arc::new(InterruptFlag::default());
+        reg.set_flag(Arc::clone(&flag));
+        assert!(!c.cancel(42, 7), "key not registered yet");
+        reg.set_key(42, 7);
+        assert!(!c.cancel(42, 8), "wrong secret");
+        assert!(!c.cancel(41, 7), "wrong pid");
+        assert!(flag.check().is_ok());
+        assert!(c.cancel(42, 7));
+        assert_eq!(flag.check().unwrap_err().sqlstate.0, "57014");
+        drop(reg);
+        assert!(!c.cancel(42, 7), "gone after the connection ended");
     }
 
     #[test]
