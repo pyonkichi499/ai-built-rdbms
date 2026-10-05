@@ -167,6 +167,10 @@ pub struct Session {
     /// Characteristics of the current transaction (`m3.md` §6.11.1); the
     /// defaults come from `default_transaction_*` when the transaction starts.
     chars: TxnCharacteristics,
+    /// Characteristics the current block started with (defaults, or those
+    /// restored by AND CHAIN). A failed block's abort reverts SET TRANSACTION
+    /// changes to these, and AND CHAIN carries them over.
+    start_chars: TxnCharacteristics,
     /// A statement that references a table has run in this transaction
     /// (PostgreSQL's `FirstSnapshotSet`; `SELECT 1` does not count).
     txn_snapshot_taken: bool,
@@ -214,8 +218,14 @@ impl Session {
             reported,
             interrupt: Arc::new(InterruptFlag::default()),
             chars: TxnCharacteristics::default(),
+            start_chars: TxnCharacteristics::default(),
             txn_snapshot_taken: false,
         }
+    }
+
+    /// Whether `client_encoding` is currently LATIN1 (otherwise UTF8).
+    pub fn client_encoding_is_latin1(&self) -> bool {
+        self.settings.get("client_encoding") == "LATIN1"
     }
 
     /// `ParameterStatus` messages to send right after authentication.
@@ -432,6 +442,7 @@ impl Session {
         self.txn = Transaction::new();
         self.settings.begin();
         self.chars = self.settings.default_characteristics();
+        self.start_chars = self.chars;
         self.txn_snapshot_taken = false;
         self.state = state;
     }
@@ -649,7 +660,24 @@ impl Session {
             BoundStatement::Checkpoint => Err(Error::internal(
                 "CHECKPOINT must be handled before the storage barrier",
             )),
-            bound => {
+            mut bound => {
+                let info = self.session_info();
+                let runtime = SessionRuntime {
+                    pid: self.backend_pid(),
+                    mgr: Some(Arc::clone(cluster.txn_manager())),
+                    interrupts: Arc::clone(&self.interrupt),
+                    xid: self.txn.xid.map(|x| x.0),
+                    settings: std::cell::RefCell::new(self.settings.clone()),
+                    chars: self.chars,
+                };
+                planner::check_constant_exprs(
+                    &mut bound,
+                    &executor::EvalCtx {
+                        session: &info,
+                        catalog: &catalog,
+                        runtime: &runtime,
+                    },
+                )?;
                 let plan = planner::plan(&bound)?;
                 // PostgreSQL rejects at executor start: after analysis and planning.
                 if let Some(tag) = read_only_write {
@@ -675,13 +703,7 @@ impl Session {
                 let opts = io::OutputOpts {
                     extra_float_digits: self.settings.extra_float_digits(),
                 };
-                let info = self.session_info();
                 let interrupts = Arc::clone(&self.interrupt);
-                let runtime = SessionRuntime {
-                    pid: self.backend_pid(),
-                    mgr: Some(Arc::clone(cluster.txn_manager())),
-                    interrupts: Arc::clone(&self.interrupt),
-                };
                 let mut exec = executor::build(&plan);
                 let mut ctx = ExecCtx {
                     catalog: &catalog,
@@ -699,6 +721,8 @@ impl Session {
                     }
                 }
                 let n = exec.rows_affected();
+                // Keep what `set_config` changed.
+                self.settings = runtime.settings.into_inner();
                 Ok(match bound {
                     BoundStatement::Select(_) => format!("SELECT {}", out.rows.len()),
                     BoundStatement::Insert(_) => format!("INSERT 0 {n}"),
@@ -826,14 +850,15 @@ impl Session {
                 // The modes apply even to a block that was already open. A
                 // failing mode leaves the state unchanged (the block has not
                 // started yet).
-                self.apply_modes(&t.modes)?;
                 if was_block {
                     out.notices.push(Notice::new(
                         Severity::Warning,
                         sqlstate::ACTIVE_SQL_TRANSACTION,
                         "there is already a transaction in progress",
                     ));
-                } else {
+                }
+                self.apply_modes(&t.modes)?;
+                if !was_block {
                     // Statements earlier in this Query message become part
                     // of the block, as in PostgreSQL.
                     self.state = TxState::Block;
@@ -880,15 +905,18 @@ impl Session {
 
     /// COMMIT / END / ROLLBACK / ABORT, with or without AND CHAIN
     /// (`m3.md` §6.11.2). A failed block ends with the tag `ROLLBACK`; the
-    /// chained block then starts from the defaults, because the abort has
-    /// already restored the settings (PostgreSQL 17 does not carry READ ONLY
-    /// over from a failed block).
+    /// chained block inherits the characteristics the failed block started
+    /// with: the abort reverts SET TRANSACTION changes made inside it, but not
+    /// what AND CHAIN restored (PostgreSQL 17).
     fn end_transaction(&mut self, commit: bool, chain: bool, out: &mut Output) -> Result<String> {
         let tag = if commit { "COMMIT" } else { "ROLLBACK" };
         if self.state == TxState::Failed {
+            let saved = self.start_chars;
             self.rollback_transaction();
             if chain {
                 self.begin_transaction(TxState::Block);
+                self.chars = saved;
+                self.start_chars = saved;
             }
             return Ok("ROLLBACK".into());
         }
@@ -907,6 +935,7 @@ impl Session {
         if chain {
             self.begin_transaction(TxState::Block);
             self.chars = saved;
+            self.start_chars = saved;
         }
         Ok(tag.into())
     }
@@ -1024,6 +1053,16 @@ impl Session {
 
     fn exec_set(&mut self, s: &SetStmt, out: &mut Output) -> Result<String> {
         let in_block = self.in_block_for_set();
+        if s.constraints {
+            if !in_block {
+                out.notices.push(Notice::new(
+                    Severity::Warning,
+                    sqlstate::NO_ACTIVE_SQL_TRANSACTION,
+                    "SET CONSTRAINTS can only be used in transaction blocks",
+                ));
+            }
+            return Ok("SET CONSTRAINTS".into());
+        }
         if let Some(t) = &s.transaction {
             if t.session_characteristics {
                 return self.set_session_characteristics(t);
@@ -1051,6 +1090,18 @@ impl Session {
                     sqlstate::UNDEFINED_OBJECT,
                     format!("unrecognized configuration parameter \"{}\"", s.name),
                 ));
+            }
+            self.settings.declare_custom(&s.name);
+            if let SetValue::Values(args) = &s.value
+                && crate::settings::lookup(&s.name).is_some()
+            {
+                let texts: Vec<String> = args
+                    .iter()
+                    .map(|a| match a {
+                        SetArg::Word(w) | SetArg::String(w) | SetArg::Number(w) => w.clone(),
+                    })
+                    .collect();
+                self.settings.validate(&s.name, &texts)?;
             }
             return Ok("SET".into());
         }
@@ -1226,6 +1277,11 @@ struct SessionRuntime {
     pid: i32,
     mgr: Option<Arc<TxnManager>>,
     interrupts: Arc<InterruptFlag>,
+    xid: Option<u64>,
+    /// A copy of the session's parameters; `set_config` changes it and the
+    /// session takes it back when the statement succeeds.
+    settings: std::cell::RefCell<Settings>,
+    chars: TxnCharacteristics,
 }
 
 impl RuntimeInfo for SessionRuntime {
@@ -1249,6 +1305,39 @@ impl RuntimeInfo for SessionRuntime {
 
     fn check_interrupts(&self) -> Result<()> {
         self.interrupts.check()
+    }
+
+    fn current_xid(&self) -> Option<u64> {
+        self.xid
+    }
+
+    fn get_setting(&self, name: &str) -> Result<Option<String>> {
+        match name.to_ascii_lowercase().as_str() {
+            "transaction_isolation" => return Ok(Some(self.chars.isolation.as_str().to_owned())),
+            "transaction_read_only" => return Ok(Some(on_off(self.chars.read_only).to_owned())),
+            "transaction_deferrable" => return Ok(Some(on_off(self.chars.deferrable).to_owned())),
+            _ => {}
+        }
+        match self.settings.borrow().show(name) {
+            Ok((_, v)) => Ok(Some(v)),
+            Err(e) if e.sqlstate == sqlstate::UNDEFINED_OBJECT => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn set_setting(&self, name: &str, value: Option<&str>, local: bool) -> Result<String> {
+        if is_characteristic(name) {
+            return Err(Error::new(
+                sqlstate::FEATURE_NOT_SUPPORTED,
+                format!("set_config of \"{name}\" is not supported; use SET TRANSACTION"),
+            ));
+        }
+        let mut settings = self.settings.borrow_mut();
+        let args = value.map(|v| [v.to_owned()]);
+        // is_local lasts until the end of the (implicit) transaction, which
+        // `Settings::commit` / `rollback` take care of.
+        settings.set(name, args.as_ref().map(<[String; 1]>::as_slice), local)?;
+        Ok(settings.get(name).to_owned())
     }
 }
 
@@ -1416,6 +1505,7 @@ mod tests {
             name: name.into(),
             value: SetValue::Values(vec![SetArg::String(v.into())]),
             transaction: None,
+            constraints: false,
             span: Span::default(),
         })
     }
@@ -2247,8 +2337,15 @@ mod tests {
             let ev = sql(&mut s, q);
             assert_eq!(tags(&ev), vec!["ROLLBACK"], "{q}");
             assert_eq!(s.transaction_status(), TransactionStatus::InBlock);
-            // PostgreSQL 17: READ ONLY is not carried over.
+            // PostgreSQL 17: READ ONLY set by BEGIN is reverted by the abort.
             assert_eq!(val(&mut s, "show transaction_read_only"), "off", "{q}");
+            sql(&mut s, "rollback");
+            // ... but what AND CHAIN restored survives the next failure.
+            sql(&mut s, "begin read only");
+            sql(&mut s, "commit and chain");
+            sql(&mut s, "select 1 / 0");
+            sql(&mut s, q);
+            assert_eq!(val(&mut s, "show transaction_read_only"), "on", "{q}");
             sql(&mut s, "rollback");
         }
     }

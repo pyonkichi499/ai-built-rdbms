@@ -4,7 +4,8 @@
 //! `recompute_limits`). NULL means "no limit" / "no offset"; negative
 //! values raise 2201X / 2201W.
 
-use crate::analyzer::BoundExpr;
+use crate::analyzer::{BoundExpr, BoundExprKind};
+use crate::catalog::FnKind;
 use crate::error::{Error, Result, sqlstate};
 use crate::executor::{BoxedExecutor, ExecCtx, Executor, eval};
 use crate::types::{Datum, Row};
@@ -15,6 +16,9 @@ pub struct LimitExec {
     offset: Option<BoundExpr>,
     /// `(remaining to skip, remaining to emit)` once evaluated.
     state: Option<(u64, Option<u64>)>,
+    /// 下位ノードの定数部分式。PostgreSQL はプランナの定数畳み込みでエラーを出すので、
+    /// LIMIT / OFFSET の検査より先に評価する。
+    folds: Vec<BoundExpr>,
 }
 
 impl std::fmt::Debug for LimitExec {
@@ -34,7 +38,15 @@ impl LimitExec {
             limit,
             offset,
             state: None,
+            folds: Vec::new(),
         }
+    }
+
+    /// 定数畳み込みで評価する式を渡す（`collect_constants` の結果）。
+    #[must_use]
+    pub fn with_folds(mut self, folds: Vec<BoundExpr>) -> Self {
+        self.folds = folds;
+        self
     }
 }
 
@@ -54,6 +66,9 @@ fn eval_count(expr: Option<&BoundExpr>, ctx: &ExecCtx<'_>) -> Result<Option<i64>
 impl Executor for LimitExec {
     fn next(&mut self, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
         if self.state.is_none() {
+            for e in std::mem::take(&mut self.folds) {
+                eval(&e, &Row::new(), ctx)?;
+            }
             let offset = eval_count(self.offset.as_ref(), ctx)?;
             if offset.is_some_and(|v| v < 0) {
                 return Err(Error::new(
@@ -90,6 +105,71 @@ impl Executor for LimitExec {
             *r -= 1;
         }
         Ok(row)
+    }
+}
+
+fn is_constant(e: &BoundExpr) -> bool {
+    match &e.kind {
+        BoundExprKind::Literal(_) => true,
+        BoundExprKind::ColumnRef { .. } | BoundExprKind::SessionValue(_) => false,
+        BoundExprKind::Function { func, args } => {
+            matches!(func.kind, FnKind::Pure(_)) && args.iter().all(is_constant)
+        }
+        _ => children(e).iter().all(|x| is_constant(x)),
+    }
+}
+
+/// 式の直下の子。
+fn children(e: &BoundExpr) -> Vec<&BoundExpr> {
+    match &e.kind {
+        BoundExprKind::Literal(_)
+        | BoundExprKind::ColumnRef { .. }
+        | BoundExprKind::SessionValue(_) => vec![],
+        BoundExprKind::Operator { args, .. } | BoundExprKind::Function { args, .. } => {
+            args.iter().collect()
+        }
+        BoundExprKind::Cast { expr, .. }
+        | BoundExprKind::CoerceTypmod { expr, .. }
+        | BoundExprKind::BoolTest { expr, .. } => vec![expr],
+        BoundExprKind::Not(x) | BoundExprKind::IsNull(x) | BoundExprKind::IsNotNull(x) => {
+            vec![x]
+        }
+        BoundExprKind::And(v)
+        | BoundExprKind::Or(v)
+        | BoundExprKind::Coalesce(v)
+        | BoundExprKind::MinMax { args: v, .. } => v.iter().collect(),
+        BoundExprKind::NullIf { left, right, .. }
+        | BoundExprKind::DistinctFrom { left, right, .. } => vec![left, right],
+        BoundExprKind::Case { arms, else_result } => arms
+            .iter()
+            .flat_map(|(c, r)| [c, r])
+            .chain(else_result.as_deref())
+            .collect(),
+        BoundExprKind::Like {
+            expr,
+            pattern,
+            escape,
+            ..
+        } => [&**expr, &**pattern]
+            .into_iter()
+            .chain(escape.as_deref())
+            .collect(),
+        BoundExprKind::InList { expr, list, .. } => {
+            std::iter::once(&**expr).chain(list.iter()).collect()
+        }
+    }
+}
+
+/// 定数だけでできた最大の部分式（リテラルそのものは除く）を集める。
+pub fn collect_constants(e: &BoundExpr, out: &mut Vec<BoundExpr>) {
+    if is_constant(e) {
+        if !matches!(e.kind, BoundExprKind::Literal(_)) {
+            out.push(e.clone());
+        }
+    } else {
+        for x in children(e) {
+            collect_constants(x, out);
+        }
     }
 }
 

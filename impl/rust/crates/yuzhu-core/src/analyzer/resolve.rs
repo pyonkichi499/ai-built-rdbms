@@ -292,6 +292,31 @@ impl Analyzer<'_> {
         ))
     }
 
+    /// `concat` / `concat_ws` (`VARIADIC "any"`): every argument but bool is converted to text.
+    fn make_concat_call(&self, name: &str, args: Vec<BoundExpr>, span: Span) -> Result<BoundExpr> {
+        let func = self
+            .catalog
+            .functions_named(name)
+            .first()
+            .copied()
+            .ok_or_else(|| Error::internal(format!("built-in {name} is missing")))?;
+        let args = args
+            .into_iter()
+            .map(|a| {
+                if a.ty.oid == oid::BOOL || a.ty.oid == oid::TEXT {
+                    Ok(a)
+                } else {
+                    self.coerce_explicit(a, SqlType::TEXT, span)
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(BoundExpr::new(
+            BoundExprKind::Function { func, args },
+            SqlType::of(func.result),
+            span,
+        ))
+    }
+
     /// Function call resolution (`func_get_detail`), including the
     /// function-style cast `typename(x)`.
     pub(super) fn make_func_call(
@@ -310,6 +335,9 @@ impl Analyzer<'_> {
                 SqlType::TEXT,
                 span,
             ));
+        }
+        if (name == "concat" || name == "concat_ws") && !args.is_empty() {
+            return self.make_concat_call(name, args, span);
         }
         let inputs: Vec<Oid> = args.iter().map(|a| a.ty.oid).collect();
         let all: Vec<_> = self
@@ -347,6 +375,13 @@ impl Analyzer<'_> {
             let cand_args: Vec<Vec<Oid>> = all.iter().map(|f| f.args.to_vec()).collect();
             let matched = self.func_match_argtypes(&inputs, &cand_args);
             match matched.len() {
+                    0 if all.is_empty() && is_unsupported_pg_function(name) => {
+                        return Err(Error::new(
+                            sqlstate::FEATURE_NOT_SUPPORTED,
+                            format!("function {name}() is not supported"),
+                        )
+                        .with_span(span));
+                    }
                     0 => {
                         return Err(Error::new(
                             sqlstate::UNDEFINED_FUNCTION,
@@ -395,4 +430,20 @@ impl Analyzer<'_> {
             span,
         ))
     }
+}
+
+/// PostgreSQL functions that exist but need types yuzhu does not have yet
+/// (timestamps) or XID assignment in read-only transactions. They fail with
+/// 0A000 rather than 42883.
+fn is_unsupported_pg_function(name: &str) -> bool {
+    matches!(
+        name,
+        "now"
+            | "statement_timestamp"
+            | "transaction_timestamp"
+            | "clock_timestamp"
+            | "timeofday"
+            | "txid_current"
+            | "pg_current_xact_id"
+    )
 }

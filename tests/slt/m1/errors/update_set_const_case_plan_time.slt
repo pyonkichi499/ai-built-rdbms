@@ -1,0 +1,24 @@
+# UPDATE の SET 式は CASE WHEN FALSE が畳み込まれ、代入キャストも計画時に評価される。
+# 対象行が 0 件でも範囲外なら 22003。
+
+statement ok
+CREATE TABLE usc_t (c3 integer NOT NULL, s smallint)
+
+statement error (22003)
+UPDATE usc_t SET c3 = (CASE WHEN FALSE THEN c3 ELSE (-3149733186) END)
+
+statement error (22003)
+UPDATE usc_t SET c3 = (CASE WHEN FALSE THEN c3 ELSE (-3149733186) END) WHERE FALSE
+
+statement error (22003)
+UPDATE usc_t SET s = (-2147483648)
+
+statement error (22003)
+UPDATE usc_t SET s = (CASE WHEN NULL THEN s ELSE (-2147483648) END) WHERE NULL
+
+# 行ごとに決まる条件は畳み込まれないので、0 行なら成功する
+statement ok
+UPDATE usc_t SET c3 = (CASE WHEN c3 > 0 THEN 1 ELSE (-3149733186) END)
+
+statement ok
+DROP TABLE usc_t

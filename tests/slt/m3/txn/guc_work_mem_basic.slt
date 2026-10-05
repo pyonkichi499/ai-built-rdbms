@@ -1,0 +1,22 @@
+# work_mem など一般的な GUC の SET/SHOW/RESET
+
+query T
+SHOW work_mem;
+----
+4MB
+
+statement ok
+SET work_mem = '8MB';
+
+query T
+SHOW work_mem;
+----
+8MB
+
+statement ok
+RESET work_mem;
+
+query T
+SHOW work_mem;
+----
+4MB

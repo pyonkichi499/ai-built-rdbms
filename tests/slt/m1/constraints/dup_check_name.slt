@@ -1,0 +1,10 @@
+# CREATE TABLE 内で CHECK 制約名が重複したら 42710
+
+statement error (42710)
+CREATE TABLE con_dupchk_t (a integer CHECK (a > 0), b integer, CONSTRAINT x CHECK (b > 0), CONSTRAINT x CHECK (b < 9))
+
+statement ok
+CREATE TABLE con_dupchk_t (a integer CHECK (a > 0), b integer, CONSTRAINT x CHECK (b > 0))
+
+statement ok
+DROP TABLE con_dupchk_t

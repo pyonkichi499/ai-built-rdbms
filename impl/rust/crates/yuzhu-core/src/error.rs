@@ -191,6 +191,16 @@ pub struct Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl From<yuzhu_numeric::NumericError> for Error {
+    fn from(e: yuzhu_numeric::NumericError) -> Self {
+        let err = Error::new(SqlState(e.sqlstate()), e.message());
+        match e.detail() {
+            Some(d) => err.with_detail(d),
+            None => err,
+        }
+    }
+}
+
 impl Error {
     pub fn new(sqlstate: SqlState, message: impl Into<String>) -> Self {
         Error {

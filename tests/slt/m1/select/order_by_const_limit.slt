@@ -1,0 +1,21 @@
+# ORDER BY の鍵がすべて定数ならソートを省き、LIMIT/OFFSET で早期終了する（後ろの行のエラーを踏まない）
+
+statement ok
+CREATE TABLE sel_oc_r (c1 int)
+
+statement ok
+INSERT INTO sel_oc_r VALUES (1), (2), (2147483647), (5)
+
+query R
+SELECT 5.2 FROM sel_oc_r WHERE c1*2 <> 7 ORDER BY 1 LIMIT 1 OFFSET 1
+----
+5.2
+
+query I
+SELECT CASE WHEN TRUE THEN 4 ELSE 39 END FROM sel_oc_r WHERE c1*2 <> 7 ORDER BY 1 LIMIT 2
+----
+4
+4
+
+statement ok
+DROP TABLE sel_oc_r

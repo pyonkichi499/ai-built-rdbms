@@ -1,0 +1,13 @@
+[package]
+name = "difffuzz"
+version = "0.1.0"
+edition = "2021"
+description = "PostgreSQL と yuzhu に同じ SQL を流して結果を比べる差分ファザー（std のみ、psql を子プロセスで呼ぶ）"
+publish = false
+
+[dependencies]
+
+[workspace]
+
+[profile.release]
+debug = false

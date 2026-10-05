@@ -16,8 +16,8 @@
 ## 自動照合（報告ハッシュと実状態）
 
 <!-- AUTO:reports BEGIN -->
-生成: 2026-10-05 07:32:13 UTC / 出所: 各 wf_*/journal.jsonl の type==result の result.summary、git、tests/slt/
-対象 result 数: 117（出所: 各 journal.jsonl の type==result 行の合計）
+生成: 2026-10-05 13:29:40 UTC / 出所: 各 wf_*/journal.jsonl の type==result の result.summary、git、tests/slt/
+対象 result 数: 208（出所: 各 journal.jsonl の type==result 行の合計）
 
 ### 報告ハッシュの存在確認（git cat-file -t）
 
@@ -31,6 +31,9 @@
 | 存在 | `11bcaeb` | wf_b10ff45b-956 | a8b4abfb9d633280e | A-foundation | commit（HEAD から到達可） |
 | **報告ハッシュ不在** | `ac44d49a764f` | wf_b10ff45b-956 | ae9764ca0ddee5bb9 | R | fatal: Not a valid object name ac44d49a764f |
 | **報告ハッシュ不在** | `dd4de71f` | wf_b10ff45b-956 | ae9764ca0ddee5bb9 | R | fatal: Not a valid object name dd4de71f |
+| 存在 | `828ae16` | wf_b10ff45b-956 | a38d95b3b100aaafa | finish | commit（HEAD から到達可） |
+| 存在 | `56fc5a0` | wf_b836e612-b0c | a82f0992afa15d0cb | K-verify | commit（HEAD から到達可） |
+| 存在 | `c9c1214` | wf_b836e612-b0c | a82f0992afa15d0cb | K-verify | commit（HEAD から到達可） |
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a1c788b09d28a0ab3 | journal-verify.sh | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 | 存在 | `88d1bc0` | wf_dc96a8cc-646 | a43c34ddc3633abce | journal-metrics.sh | commit（HEAD から到達可） |
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a2efe58543601eb15 | retrospective.md | commit（HEAD から到達不能。reflog にのみ残る可能性） |
@@ -54,10 +57,14 @@
 | **履歴から外れている** | `b8c7ea3` | wf_dc96a8cc-646 | a0e11aa341516e958 | review | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 | **履歴から外れている** | `b8c7ea3` | wf_fabaf03d-9d6 | aacb3834c4b5c0414 | integrate | commit（HEAD から到達不能。reflog にのみ残る可能性） |
 
-件数: 到達可 20 / 履歴から外れている 8 / オブジェクト不在 2（出所: 上表）
+件数: 到達可 23 / 履歴から外れている 8 / オブジェクト不在 2（出所: 上表）
 
 ### 「未実行」「未存在」を含む報告
 
+- wf_383fcbbf-1a5 / aa07beb16c1409cfa / fix:query:r2:3: fmt/clippy/全体 cargo test は最後まで通せていない。clippy が別担当の編集中の crates/yuzhu-numeric/src/func.rs（untracked）で失敗する。単文字変数名が 6 個あるという lint で、私の変更とは無関係。したがって yuzhu-core 以外の cargo test は未実行。そのファイルが直れば再実行できる。
+- wf_383fcbbf-1a5 / af3d59794af1a23b1 / fix:txn:r2:4: PG17 の SHOW timezone は Etc/UTC（pg_settings の source は configuration file）。これは initdb がホストのシステムタイムゾーンを検出して postgresql.conf に書いた値で、環境依存。yuzhu の既定 UTC は不具合ではないため、直さず、.slt も追加していない（PG 上で安定して通らないため）。SET TIME ZONE 後の挙動は既存の m1/session/set_show.slt
+- wf_383fcbbf-1a5 / a23d825308e82dc33 / fix:txn:r3:5: 修正せず、環境依存の差として報告のみ。PG 17.11 で再確認した結果、server_version_num=170011（Debian pgdg ビルド）、TimeZone=Etc/UTC。yuzhu は 170000（settings.rs:304）と UTC（settings.rs:333）の固定値。PG 側の値はマイナーバージョンと initdb が検出したホスト TZ に依存し、UTC と Etc/UTC は同じゾーン。.slt で揃えるなら比較時に正規化するか比
+- wf_383fcbbf-1a5 / ab6629483a211411d / fix:txn:r3:2: DateStyle の衝突検出を実装した。PG 17 で 'ISO, SQL' が 22023 と DETAIL 'Conflicting "datestyle" specifications.' になることを再確認済み。修正は impl/rust/crates/yuzhu-core/src/settings.rs の normalize_datestyle。出力形式（ISO/SQL/Postgres/German）を複数指定した場合と、フィールド順（MDY/DMY/YMD）
 - wf_5e84e5ec-172 / a28b7c143d8e3ec75 / K:crash: - yuzhu 側は未実行。M3 のバイナリがまだ無い。tests/yuzhu.sh の crash と after.sh フックは bash -n の構文確認のみ。
 - wf_5e84e5ec-172 / ae4cb023a641ba574 / K:verify: - yuzhu 側は未実行。M3 のバイナリがまだ無い。run.sh、yuzhu.sh、pg.sh は bash -n の構文確認のみ。
 - wf_b10ff45b-956 / a8b4abfb9d633280e / A-foundation: 担当 A の範囲を完了し、コミット 11bcaeb（日本語・署名なし・push なし）。`cd impl/rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` は通過（テスト 597 件成功・失敗 0、層 2 の足場 1 件は `#[ignore]`）。tests/run.sh や PG との slt は未実行。
@@ -73,13 +80,13 @@
 - wf_fabaf03d-9d6 / aacb3834c4b5c0414 / integrate: tests/slt/m1 は yuzhu 37/37 通過・失敗0、PG17 でも 37/37 通過。cargo fmt --check / clippy -D warnings / cargo test も全て通過。PROGRESS.md を更新し、ローカルでコミット済み（push なし、AI署名なし）。コミットは b8c7ea3 と、その後の PROGRESS.md 修正 1 件。tests/slt/m2/dml の6ファイルも含めてコミットした。M2 テストは未実行。
 - wf_fabaf03d-9d6 / ad7a8aff97e9b2bf8 / K-m2-tests: yuzhu の実装には触っていません。yuzhu に対しては未実行です。`yuzhu-server` や `yuzhu-initdb` がまだ無く、`tests/yuzhu.sh` は `bash -n` の構文確認と `status` だけ試しました。
 
-該当行数: 14（出所: 上記）
+該当行数: 18（出所: 上記）
 
-### 実ファイルの状態（2026-10-05 07:32:13 UTC 時点）
+### 実ファイルの状態（2026-10-05 13:29:40 UTC 時点）
 
 | 項目 | 値 | 出所 |
 |---|---|---|
-| tests/slt/m1 のファイル数 | 37 | `find tests/slt/m1 -type f` |
+| tests/slt/m1 のファイル数 | 79 | `find tests/slt/m1 -type f` |
 | tests/slt/m2 のファイル数 | 24 | `find tests/slt/m2 -type f` |
 | tests/slt/m2/catalog | 10 | `find tests/slt/m2/catalog/ -type f` |
 | tests/slt/m2/ddl | 2 | `find tests/slt/m2/ddl/ -type f` |
@@ -93,8 +100,8 @@
 | sandbox/pg.sh | あり | `test -e` |
 | impl/rust/crates/yuzhu-server | あり | `test -e` |
 | impl/rust/crates/yuzhu-initdb | なし | `test -e` |
-| HEAD | 11bcaeb | `git rev-parse --short HEAD` |
-| 作業ツリーの変更ファイル数 | 75 | `git status --short` |
+| HEAD | c9c1214 | `git rev-parse --short HEAD` |
+| 作業ツリーの変更ファイル数 | 64 | `git status --short` |
 
 ※ 上記は事実の並置のみ。報告と実状態の食い違いの判断・原因・対処は手書き欄に書く。
 <!-- AUTO:reports END -->

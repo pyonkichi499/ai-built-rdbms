@@ -13,6 +13,8 @@ pub enum Datum {
     Int8(i64),
     Float4(f32),
     Float8(f64),
+    /// `numeric`.
+    Numeric(yuzhu_numeric::Numeric),
     /// Shared by text, varchar, unknown, name and `pg_node_tree`.
     Text(String),
     /// `oid` and `regproc`.
@@ -80,6 +82,7 @@ impl Datum {
             Datum::Bool(_) => 0,
             Datum::Int2(_) | Datum::Int4(_) | Datum::Int8(_) => 1,
             Datum::Float4(_) | Datum::Float8(_) => 2,
+            Datum::Numeric(_) => 13,
             Datum::Text(_) => 3,
             Datum::Oid(_) => 5,
             Datum::Char(_) => 6,
@@ -127,6 +130,7 @@ pub fn cmp_datum(a: &Datum, b: &Datum) -> Ordering {
         (Text(x), Text(y)) => x.as_bytes().cmp(y.as_bytes()),
         (Float4(x), Float4(y)) => cmp_f64(f64::from(*x), f64::from(*y)),
         (Float8(x), Float8(y)) => cmp_f64(*x, *y),
+        (Datum::Numeric(x), Datum::Numeric(y)) => x.cmp(y),
         _ => {
             if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
                 return x.cmp(&y);

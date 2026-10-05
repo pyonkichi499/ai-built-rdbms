@@ -1,0 +1,36 @@
+# 時間 GUC の小数値は最小単位 (ms) へ換算される
+
+statement ok
+SET statement_timeout = '1.5s'
+
+query T
+SHOW statement_timeout
+----
+1500ms
+
+statement ok
+SET statement_timeout = '1.5min'
+
+query T
+SHOW statement_timeout
+----
+90s
+
+statement ok
+SET statement_timeout = '0.4ms'
+
+query T
+SHOW statement_timeout
+----
+0
+
+statement ok
+SET statement_timeout = '1500us'
+
+query T
+SHOW statement_timeout
+----
+2ms
+
+statement ok
+SET statement_timeout = 0

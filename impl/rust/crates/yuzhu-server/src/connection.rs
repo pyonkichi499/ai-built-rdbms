@@ -17,7 +17,9 @@ use yuzhu_core::{
 };
 
 use crate::config::Config;
-use crate::protocol::codec::{ProtocolError, read_message, read_startup_packet, write_message};
+use crate::protocol::codec::{
+    ProtocolError, read_message, read_startup_packet, set_client_latin1, write_message,
+};
 use crate::protocol::messages::{
     BackendMessage, DEFAULT_MAX_MESSAGE_LEN, ErrorFields, FieldDescription, FrontendMessage,
     StartupPacket,
@@ -659,6 +661,7 @@ fn message_loop(
         if interrupt.is_terminate_requested() {
             return terminated_by_administrator(writer);
         }
+        set_client_latin1(session.client_encoding_is_latin1());
         let idle_timeout = session.idle_timeout();
         let wait_started = Instant::now();
         match wait_for_input(reader, idle_timeout, &mut applied_timeout) {

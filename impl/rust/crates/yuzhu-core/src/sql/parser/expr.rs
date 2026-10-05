@@ -529,6 +529,17 @@ impl Parser<'_> {
                         span: self.span_from(start),
                     });
                 }
+                "greatest" | "least" => {
+                    self.advance();
+                    self.expect(&TokenKind::LParen)?;
+                    let args = self.parse_expr_list()?;
+                    self.expect(&TokenKind::RParen)?;
+                    return Ok(Expr::MinMax {
+                        greatest: kw == "greatest",
+                        args,
+                        span: self.span_from(start),
+                    });
+                }
                 "coalesce" => {
                     self.advance();
                     self.expect(&TokenKind::LParen)?;
@@ -556,8 +567,7 @@ impl Parser<'_> {
                 "position" => return self.parse_position(),
                 "trim" => return self.parse_trim(),
                 "extract" => return self.parse_extract(),
-                "greatest" | "least" | "row" | "overlay" | "treat" | "normalize" | "grouping"
-                | "merge_action" => {
+                "row" | "overlay" | "treat" | "normalize" | "grouping" | "merge_action" => {
                     return Err(self.not_supported(&kw.to_ascii_uppercase()));
                 }
                 _ if (kw.starts_with("xml") || kw.starts_with("json"))

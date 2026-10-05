@@ -1,0 +1,38 @@
+# DEFAULT 式の型・長さのエラーは文の計画時に評価される（0 行でも、別列の値より先に報告される）
+
+statement ok
+CREATE TABLE dflt_pt_t (c0 int, c1 varchar(8) DEFAULT 'toolongvalue', c2 smallint, c3 varchar(8) DEFAULT 'toolongvalue2')
+
+statement error (22001)
+UPDATE dflt_pt_t SET c1 = DEFAULT WHERE FALSE
+
+statement error (22001)
+UPDATE dflt_pt_t SET c3 = DEFAULT, c1 = 'x' WHERE FALSE
+
+statement error (22001)
+INSERT INTO dflt_pt_t (c0) SELECT c0 FROM dflt_pt_t WHERE FALSE
+
+# 列順に評価されるので、省略列 c1 の DEFAULT が c2 の範囲外エラーより先
+statement error (22001)
+INSERT INTO dflt_pt_t (c2) VALUES (70000)
+
+# c1 を指定すると c2 の範囲外エラー（22003）が先
+statement error (22003)
+INSERT INTO dflt_pt_t (c0, c1, c2) VALUES (1, 'a', 70000)
+
+# 複数行 VALUES は省略列の DEFAULT が先
+statement error (22001)
+INSERT INTO dflt_pt_t (c0, c1, c2) VALUES (1, 'a', 1), (2, 'b', 70000)
+
+statement error (22001)
+INSERT INTO dflt_pt_t DEFAULT VALUES
+
+statement error (22001)
+INSERT INTO dflt_pt_t (c0) VALUES (DEFAULT)
+
+query I
+SELECT c0 FROM dflt_pt_t
+----
+
+statement ok
+DROP TABLE dflt_pt_t

@@ -113,6 +113,22 @@ pub enum BoundExprKind {
         right: Box<BoundExpr>,
         eq_op: &'static BuiltinOperator,
     },
+    /// `x IS [NOT] DISTINCT FROM y`: a NULL-safe comparison with `eq_op`
+    /// (never returns NULL). `negated` = `IS NOT DISTINCT FROM`.
+    DistinctFrom {
+        left: Box<BoundExpr>,
+        right: Box<BoundExpr>,
+        eq_op: &'static BuiltinOperator,
+        negated: bool,
+    },
+    /// `GREATEST` / `LEAST`: NULL arguments are ignored (NULL only when all
+    /// are NULL). `cmp` is the `>` (greatest) or `<` (least) operator of the
+    /// common type.
+    MinMax {
+        greatest: bool,
+        args: Vec<BoundExpr>,
+        cmp: &'static BuiltinOperator,
+    },
     /// `expr [NOT] LIKE pattern` (C collation; ILIKE folds case).
     /// `escape` defaults to backslash.
     Like {

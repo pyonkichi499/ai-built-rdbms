@@ -1,0 +1,28 @@
+# client_encoding は LATIN1 も受け付ける（別名も可）。未対応の名前は 22023。
+
+statement ok
+SET client_encoding = 'LATIN1'
+
+query T
+SHOW client_encoding
+----
+LATIN1
+
+statement ok
+SET client_encoding = 'iso-8859-1'
+
+query T
+SELECT current_setting('client_encoding')
+----
+LATIN1
+
+statement error (22023)
+SET client_encoding = 'nonexistent_enc'
+
+statement ok
+SET client_encoding = 'UTF8'
+
+query T
+SHOW client_encoding
+----
+UTF8

@@ -1,0 +1,22 @@
+# WHERE の最上位 AND に定数 NULL/false があると、PG は全体を false に畳み、他の項を評価しない
+
+statement ok
+CREATE TABLE wcnf_t(c2 int);
+
+statement ok
+INSERT INTO wcnf_t VALUES (63),(-179696352),(25);
+
+query I
+SELECT c2 FROM wcnf_t WHERE c2 > NULL AND c2*-54 = 2;
+----
+
+query I
+SELECT c2 FROM wcnf_t WHERE c2*-54 = 2 AND NULL;
+----
+
+query I
+SELECT c2 FROM wcnf_t WHERE NOT (GREATEST(1,c2) IN (NULL, 48-84, c2*(-54)));
+----
+
+statement ok
+DROP TABLE wcnf_t;

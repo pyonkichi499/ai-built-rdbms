@@ -99,7 +99,7 @@ fn literals_and_unknowns() {
     assert_eq!(err(&c, "SELECT NULL + NULL"), "42725");
     assert_eq!(op_oid(&first(&c, "SELECT 'a' = 'a'")), 98);
     assert_eq!(op_oid(&first(&c, "SELECT 'a' || 'b'")), 654);
-    assert_eq!(err(&c, "SELECT 1.5"), "0A000");
+    assert_eq!(first(&c, "SELECT 1.5").ty, SqlType::NUMERIC);
 }
 
 #[test]
@@ -117,6 +117,8 @@ fn operator_resolution() {
     assert_eq!(err(&c, "SELECT 'a'::text + 1"), "42883");
     assert_eq!(err(&c, "SELECT - 'a'::text"), "42883");
     assert_eq!(err(&c, "SELECT '1'::float8 % '2'::float8"), "42883");
+    assert_eq!(err(&c, "SELECT now()"), "0A000");
+    assert_eq!(err(&c, "SELECT txid_current()"), "0A000");
     assert_eq!(op_oid(&first(&c, "SELECT -a FROM t")), 558);
     assert_eq!(op_oid(&first(&c, "SELECT 2 ^ 3")), 965);
     assert_eq!(op_oid(&first(&c, "SELECT +c FROM t")), 1920);
@@ -207,7 +209,8 @@ fn casts() {
     assert_eq!(err(&c, "SELECT 1::int2::bool"), "42846");
     assert_eq!(err(&c, "SELECT true::int8"), "42846");
     assert_eq!(err(&c, "SELECT 1::nosuchtype"), "42704");
-    assert_eq!(err(&c, "SELECT 1::numeric"), "0A000");
+    assert_eq!(first(&c, "SELECT 1::numeric").ty, SqlType::NUMERIC);
+    assert_eq!(err(&c, "SELECT 1::numeric(0)"), "22023");
     let e = first(&c, "SELECT 12345::varchar(2)");
     assert_eq!(e.ty, SqlType::varchar(2));
     let BoundExprKind::CoerceTypmod { expr, explicit } = e.kind else {
@@ -319,7 +322,7 @@ fn in_and_between() {
     let BoundExprKind::InList { eq_op, list, .. } = &e.kind else {
         panic!("{e:?}")
     };
-    assert_eq!(eq_op.oid, 410);
+    assert_eq!(eq_op.oid, 15);
     assert_eq!(list[1].ty, SqlType::INT8);
     assert!(matches!(
         first(&c, "SELECT 2 IN ('1', '2')").kind,
@@ -689,7 +692,7 @@ fn create_table_validation() {
     }
     assert_eq!(err(&c, "CREATE TABLE x (a int, a text)"), "42701");
     assert_eq!(err(&c, "CREATE TABLE x (a nosuchtype)"), "42704");
-    assert_eq!(err(&c, "CREATE TABLE x (a numeric)"), "0A000");
+    assert_eq!(err(&c, "CREATE TABLE x (a numeric(1001))"), "22023");
     assert_eq!(err(&c, "CREATE TABLE x (a varchar(0))"), "22023");
     assert_eq!(err(&c, "CREATE TABLE x (a int(3))"), "42601");
     assert_eq!(err(&c, "CREATE TABLE x (a int DEFAULT 'abc')"), "22P02");

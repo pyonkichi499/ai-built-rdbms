@@ -478,6 +478,7 @@ impl Analyzer<'_> {
             return Ok(None);
         };
         let b = self.transform_expr(e, &ExprCtx::new(scope, kind))?;
+        let b = self.coerce_to_specific_type(b, SqlType::INT8, kind.name())?;
         if contains_column_ref(&b) {
             return Err(Error::new(
                 sqlstate::INVALID_COLUMN_REFERENCE,
@@ -485,7 +486,6 @@ impl Analyzer<'_> {
             )
             .with_span(b.span));
         }
-        self.coerce_to_specific_type(b, SqlType::INT8, kind.name())
-            .map(Some)
+        Ok(Some(b))
     }
 }

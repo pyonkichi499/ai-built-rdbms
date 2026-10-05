@@ -16,6 +16,10 @@ pub mod sqlstate {
     pub const INVALID_PARAMETER_VALUE: &str = "22023";
     /// `invalid_binary_representation`
     pub const INVALID_BINARY_REPRESENTATION: &str = "22P03";
+    /// `invalid_argument_for_logarithm`
+    pub const INVALID_ARGUMENT_FOR_LOG: &str = "2201E";
+    /// `invalid_argument_for_power_function`
+    pub const INVALID_ARGUMENT_FOR_POWER_FUNCTION: &str = "2201F";
     /// `protocol_violation`
     pub const PROTOCOL_VIOLATION: &str = "08P01";
 }

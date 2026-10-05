@@ -11,6 +11,35 @@ use super::messages::{
     FrontendMessage, GSSENC_REQUEST_CODE, MAX_STARTUP_PACKET_LEN, SSL_REQUEST_CODE, StartupPacket,
 };
 
+thread_local! {
+    /// `client_encoding` of this connection's thread: `true` for LATIN1.
+    /// Each connection runs on its own thread.
+    static CLIENT_LATIN1: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets the client encoding used by [`read_message`] and [`encode`] on this
+/// thread (`true` = LATIN1, `false` = UTF8).
+pub fn set_client_latin1(latin1: bool) {
+    CLIENT_LATIN1.with(|c| c.set(latin1));
+}
+
+fn client_latin1() -> bool {
+    CLIENT_LATIN1.with(std::cell::Cell::get)
+}
+
+/// Appends `s` in the client encoding. Characters LATIN1 cannot represent
+/// become `?`.
+fn put_text(buf: &mut Vec<u8>, s: &str) {
+    if client_latin1() {
+        buf.extend(
+            s.chars()
+                .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')),
+        );
+    } else {
+        buf.extend_from_slice(s.as_bytes());
+    }
+}
+
 /// Error while reading a frontend message.
 #[derive(Debug)]
 pub enum ProtocolError {
@@ -206,9 +235,11 @@ pub fn read_message<R: Read>(
             if s.contains(&0) {
                 return Err(ProtocolError::Malformed("invalid string in message".into()));
             }
-            FrontendMessage::Query(
-                String::from_utf8(s.to_vec()).map_err(|_| ProtocolError::InvalidUtf8)?,
-            )
+            FrontendMessage::Query(if client_latin1() {
+                s.iter().map(|&b| char::from(b)).collect()
+            } else {
+                String::from_utf8(s.to_vec()).map_err(|_| ProtocolError::InvalidUtf8)?
+            })
         }
         b'X' => FrontendMessage::Terminate,
         b'S' => FrontendMessage::Sync,
@@ -242,7 +273,9 @@ fn put_u32(buf: &mut Vec<u8>, v: u32) {
 /// Writes a CString. Interior NUL bytes would corrupt the framing, so they
 /// are dropped.
 fn put_cstr(buf: &mut Vec<u8>, s: &str) {
-    buf.extend(s.bytes().filter(|&b| b != 0));
+    let mut tmp = Vec::with_capacity(s.len());
+    put_text(&mut tmp, s);
+    buf.extend(tmp.into_iter().filter(|&b| b != 0));
     buf.push(0);
 }
 
@@ -290,8 +323,11 @@ fn put_data_row(buf: &mut Vec<u8>, values: &[Option<String>]) -> io::Result<()> 
         match v {
             None => put_i32(buf, -1),
             Some(s) => {
-                put_i32(buf, i32::try_from(s.len()).map_err(|_| too_long())?);
-                buf.extend_from_slice(s.as_bytes());
+                let start = buf.len();
+                put_i32(buf, 0);
+                put_text(buf, s);
+                let n = i32::try_from(buf.len() - start - 4).map_err(|_| too_long())?;
+                buf[start..start + 4].copy_from_slice(&n.to_be_bytes());
             }
         }
     }
@@ -843,6 +879,20 @@ mod tests {
             enc(&BackendMessage::CommandComplete("a\0b")),
             [b'C', 0, 0, 0, 7, b'a', b'b', 0]
         );
+    }
+
+    #[test]
+    fn latin1_client_encoding_transcodes_text() {
+        set_client_latin1(true);
+        let rows = [Some("é€".to_string())];
+        let bytes = encode(&BackendMessage::DataRow(&rows)).unwrap();
+        assert_eq!(&bytes[bytes.len() - 2..], [0xE9, b'?']);
+        assert_eq!(&bytes[7..11], [0, 0, 0, 2]);
+        let mut q = vec![b'Q', 0, 0, 0, 7, 0xE9, b'x', b'y', 0];
+        q[4] = 8;
+        let msg = read_message(&mut Cursor::new(q), DEFAULT_MAX_MESSAGE_LEN).unwrap();
+        set_client_latin1(false);
+        assert_eq!(msg, Some(FrontendMessage::Query("éxy".into())));
     }
 
     #[test]

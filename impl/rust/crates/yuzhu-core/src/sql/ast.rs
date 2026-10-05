@@ -486,6 +486,8 @@ pub struct SetStmt {
     /// ...`: all the modes. `name` and `value` hold the equivalent
     /// parameter assignment of the first mode.
     pub transaction: Option<SetTransaction>,
+    /// `SET CONSTRAINTS ALL DEFERRED | IMMEDIATE` (a no-op for now).
+    pub constraints: bool,
     pub span: Span,
 }
 
@@ -622,7 +624,7 @@ pub struct WhenClause {
 
 /// Expressions. `COALESCE` and `NULLIF` are dedicated nodes because they
 /// are keywords in PostgreSQL's grammar (not ordinary function calls);
-/// `GREATEST`/`LEAST` would be likewise but are not in M1.
+/// `GREATEST`/`LEAST` are `MinMax` nodes for the same reason.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal {
@@ -751,6 +753,12 @@ pub enum Expr {
         case_insensitive: bool,
         span: Span,
     },
+    /// `GREATEST(a, ...)` / `LEAST(a, ...)`.
+    MinMax {
+        greatest: bool,
+        args: Vec<Expr>,
+        span: Span,
+    },
     /// `COALESCE(a, b, ...)`.
     Coalesce {
         args: Vec<Expr>,
@@ -797,6 +805,7 @@ impl Expr {
             | Expr::Subquery { span, .. }
             | Expr::Like { span, .. }
             | Expr::Coalesce { span, .. }
+            | Expr::MinMax { span, .. }
             | Expr::NullIf { span, .. }
             | Expr::SessionValue { span, .. }
             | Expr::Default { span } => *span,

@@ -179,6 +179,25 @@ ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port
 ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 5432 --blocking-detection timeout tests/isolation/specs  # yuzhu
 ```
 
+### 差分ファジング（`tests/tools/difffuzz`）
+
+本物の PostgreSQL 17 と yuzhu に同じ SQL を同じ順序で流し、行・コマンドタグ・SQLSTATE・エラーメッセージを突き合わせる。
+領域は `expr` `types` `query` `dml` `txn`（`--domain all` は case 番号で順に切り替える）。外部クレートなしで、`psql` を子プロセスで呼ぶ。
+乱数は自前なので、`(seed, case)` が決まれば SQL は常に同じ。
+
+```sh
+sandbox/pg.sh start                                  # PG: 127.0.0.1:55432（起動済みなら再利用）
+YUZHU_STATE=/tmp/fz YUZHU_PORT=55433 tests/yuzhu.sh start   # 自分専用のデータディレクトリとポートで yuzhu を起動
+cd tests/tools/difffuzz && cargo build --release
+target/release/difffuzz --domain expr --seed 1 --cases 5000 --out /tmp/difffuzz.jsonl
+target/release/difffuzz --domain expr --seed 1 --case 13 -v   # 差分の 1 ケースを再現
+```
+
+- 終了コード: 0 = 差分なし、1 = 差分あり、2 = 実行エラー。差分は JSON Lines（SQL、両者の出力、seed、case、シナリオ全体）。
+- 差分が出たら最小の SQL に縮め、yuzhu を直し、`tests/slt/` に回帰テストを足す（PG でも通ること）。
+- yuzhu 側が未対応（`0A000`）の文は `--skip-unsupported` で数えるだけにできる。メッセージの差は `--no-message` で無視できる。
+- 詳細なオプションは `tests/tools/difffuzz/README.md`。
+
 ### CI
 
 `.github/workflows/ci.yml` のジョブ:

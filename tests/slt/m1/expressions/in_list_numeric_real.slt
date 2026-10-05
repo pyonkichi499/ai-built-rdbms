@@ -1,0 +1,21 @@
+# IN リストの共通型は右辺だけで決まり、左辺は演算子解決で変換される（numeric = real は float8 同士）
+
+query B
+SELECT 1e300 IN (-1, 1.5::real)
+----
+f
+
+query B
+SELECT 1e300 IN (1.5::real, 2.5::real)
+----
+f
+
+query B
+SELECT 1.5 IN (-1, 1.5::real)
+----
+t
+
+query B
+SELECT 1e300 NOT IN (-1, 1.5::real)
+----
+t

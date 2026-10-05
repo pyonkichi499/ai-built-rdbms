@@ -9,6 +9,7 @@
 //! `Distinct` keeps the first occurrence of each row.
 
 pub mod plan;
+mod simplify;
 
 pub use plan::*;
 
@@ -16,10 +17,13 @@ use crate::analyzer::{
     BoundDelete, BoundExpr, BoundExprKind, BoundFrom, BoundInsert, BoundSelect, BoundStatement,
     BoundUpdate,
 };
+use crate::catalog::FnKind;
 use crate::catalog::{SystemColumn, TableDef};
 use crate::error::{Error, Result};
+use crate::executor::EvalCtx;
+use crate::executor::eval::eval_expr;
 use crate::storage::RelHandle;
-use crate::types::{SqlType, oid};
+use crate::types::{Datum, SqlType, oid};
 
 /// Plans a SELECT, INSERT, UPDATE or DELETE. DDL statements are not planned.
 pub fn plan(stmt: &BoundStatement) -> Result<PhysicalPlan> {
@@ -36,12 +40,301 @@ pub fn plan(stmt: &BoundStatement) -> Result<PhysicalPlan> {
     }
 }
 
+/// Plan-time constant folding as far as it is observable: PostgreSQL's
+/// `eval_const_expressions` evaluates every column-free subexpression while
+/// planning, so a constant error (`2147483647 + 1`) is raised even when no
+/// row would ever be evaluated (empty table, `LIMIT 0`, false WHERE).
+/// Evaluates each maximal constant subtree (lazy CASE / COALESCE / AND / OR as
+/// at run time) and discards the value; the first error is returned.
+/// Subtrees with session values or context / runtime functions are not
+/// constant (stable / volatile in PostgreSQL) and are skipped.
+pub fn check_constant_exprs(stmt: &mut BoundStatement, ctx: &EvalCtx<'_>) -> Result<()> {
+    let f = ConstFolder { ctx };
+    match stmt {
+        BoundStatement::Select(s) => f.select(s),
+        BoundStatement::Insert(i) => f.insert(i),
+        BoundStatement::Update(u) => {
+            // The target list is in column order: SET expressions and
+            // DEFAULTs are folded in that order, then WHERE.
+            let mut order: Vec<usize> = (0..u.assignments.len()).collect();
+            order.sort_by_key(|&k| u.assignments[k].0);
+            for k in order {
+                match &mut u.assignments[k].1 {
+                    UpdateSource::Expr(e) | UpdateSource::Default(Some(e)) => {
+                        f.expr(e)?;
+                    }
+                    UpdateSource::Default(None) => {}
+                }
+            }
+            u.filter.iter_mut().try_for_each(|e| f.expr(e).map(drop))
+        }
+        BoundStatement::Delete(d) => d.filter.iter_mut().try_for_each(|e| f.expr(e).map(drop)),
+        _ => Ok(()),
+    }
+}
+
+struct ConstFolder<'a, 'b> {
+    ctx: &'a EvalCtx<'b>,
+}
+
+impl ConstFolder<'_, '_> {
+    /// INSERT: PostgreSQL's target list is in column order, holding the
+    /// DEFAULT of every omitted column; a single-row VALUES (or a plain
+    /// SELECT pulled up) contributes its expressions at their columns.
+    /// Other sources are simplified after the defaults.
+    fn insert(&self, i: &mut BoundInsert) -> Result<()> {
+        let inline = i.coercions.is_none()
+            && !matches!(&i.source.from, BoundFrom::Values { rows, .. } if rows.len() != 1);
+        for col in 0..i.column_map.len() {
+            match i.column_map[col] {
+                None => {
+                    if let Some(d) = &mut i.defaults[col] {
+                        self.expr(d)?;
+                    }
+                }
+                Some(k) if inline => match &mut i.source.from {
+                    BoundFrom::Values { rows, .. } => {
+                        self.expr(&mut rows[0][k])?;
+                    }
+                    _ => {
+                        if let Some(t) = i.source.targets.get_mut(k) {
+                            self.expr(t)?;
+                        }
+                    }
+                },
+                Some(_) => {}
+            }
+        }
+        self.select(&mut i.source)?;
+        i.coercions
+            .iter_mut()
+            .flatten()
+            .try_for_each(|e| self.expr(e).map(drop))
+    }
+
+    fn select(&self, s: &mut BoundSelect) -> Result<()> {
+        if let BoundFrom::Values { rows, .. } = &mut s.from {
+            for e in rows.iter_mut().flatten() {
+                self.expr(e)?;
+            }
+        }
+        for e in s
+            .filter
+            .iter_mut()
+            .chain(&mut s.targets)
+            .chain(&mut s.limit)
+            .chain(&mut s.offset)
+        {
+            self.expr(e)?;
+        }
+        Ok(())
+    }
+
+    /// Returns whether `e` is a constant (and has been evaluated if so);
+    /// otherwise folds its constant children.
+    fn expr(&self, e: &mut BoundExpr) -> Result<bool> {
+        self.reduce_case(e)?;
+        if !is_foldable(e) {
+            self.children(e)?;
+            // Folding the children may have made `e` itself constant
+            // (`CASE WHEN false THEN col ELSE 1 END` became `1`).
+            if !is_foldable(e) {
+                return Ok(false);
+            }
+        }
+        if !matches!(e.kind, BoundExprKind::Literal(_)) {
+            let v = eval_expr(e, &Vec::new(), self.ctx)?;
+            e.kind = BoundExprKind::Literal(v);
+        }
+        Ok(true)
+    }
+
+    /// Drops CASE arms whose condition is a constant false / NULL and ends
+    /// the CASE at a constant true condition, as PostgreSQL's
+    /// `eval_const_expressions` does; a CASE left without arms becomes its
+    /// result.
+    fn reduce_case(&self, e: &mut BoundExpr) -> Result<()> {
+        let BoundExprKind::Case { arms, else_result } = &mut e.kind else {
+            return Ok(());
+        };
+        let mut kept = Vec::new();
+        let mut default = else_result.take();
+        for (mut c, r) in std::mem::take(arms) {
+            match self.const_value(&mut c)? {
+                Some(Datum::Bool(true)) => {
+                    default = Some(Box::new(r));
+                    break;
+                }
+                Some(_) => {}
+                None => kept.push((c, r)),
+            }
+        }
+        if kept.is_empty() {
+            let (ty, span) = (e.ty, e.span);
+            *e = match default {
+                Some(d) => *d,
+                None => BoundExpr::new(BoundExprKind::Literal(Datum::Null), ty, span),
+            };
+        } else {
+            e.kind = BoundExprKind::Case {
+                arms: kept,
+                else_result: default,
+            };
+        }
+        Ok(())
+    }
+
+    /// Like `expr`, but returns the value of a constant expression.
+    fn const_value(&self, e: &mut BoundExpr) -> Result<Option<Datum>> {
+        if !is_foldable(e) {
+            self.children(e)?;
+            // Folding the children may have made `e` constant
+            // (`COALESCE(-7::int8, col)` decides at its first operand).
+            if !is_foldable(e) {
+                return Ok(None);
+            }
+        }
+        if let BoundExprKind::Literal(d) = &e.kind {
+            return Ok(Some(d.clone()));
+        }
+        let v = eval_expr(e, &Vec::new(), self.ctx)?;
+        e.kind = BoundExprKind::Literal(v.clone());
+        Ok(Some(v))
+    }
+
+    /// Operands of COALESCE / AND / OR up to the first constant for which
+    /// `decides` holds; the rest are dropped unevaluated.
+    fn lazy_args(&self, args: &mut [BoundExpr], decides: impl Fn(&Datum) -> bool) -> Result<()> {
+        for a in args.iter_mut() {
+            if let Some(d) = self.const_value(a)?
+                && decides(&d)
+            {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn children(&self, e: &mut BoundExpr) -> Result<()> {
+        use BoundExprKind as K;
+        let each = |xs: &mut [BoundExpr]| xs.iter_mut().try_for_each(|x| self.expr(x).map(drop));
+        match &mut e.kind {
+            K::Literal(_) | K::ColumnRef { .. } | K::SessionValue(_) => Ok(()),
+            K::Operator { args, .. } | K::Function { args, .. } | K::MinMax { args, .. } => {
+                each(args)
+            }
+            // PostgreSQL stops simplifying at the first operand that decides
+            // the result and drops the rest unevaluated.
+            K::And(args) => self.lazy_args(args, |d| matches!(d, Datum::Bool(false))),
+            K::Or(args) => self.lazy_args(args, |d| matches!(d, Datum::Bool(true))),
+            K::Coalesce(args) => self.lazy_args(args, |d| !d.is_null()),
+            K::Cast { expr, .. }
+            | K::CoerceTypmod { expr, .. }
+            | K::Not(expr)
+            | K::IsNull(expr)
+            | K::IsNotNull(expr)
+            | K::BoolTest { expr, .. } => self.expr(expr).map(drop),
+            K::Case { arms, else_result } => {
+                // A constant condition drops its arm (false / NULL) or ends
+                // the CASE (true) without simplifying the dead results.
+                for (c, r) in arms {
+                    match self.const_value(c)? {
+                        Some(Datum::Bool(true)) => return self.expr(r).map(drop),
+                        Some(_) => {}
+                        None => {
+                            self.expr(r)?;
+                        }
+                    }
+                }
+                else_result
+                    .iter_mut()
+                    .try_for_each(|x| self.expr(x).map(drop))
+            }
+            K::NullIf { left, right, .. } | K::DistinctFrom { left, right, .. } => {
+                self.expr(left)?;
+                self.expr(right).map(drop)
+            }
+            K::Like {
+                expr,
+                pattern,
+                escape,
+                ..
+            } => {
+                self.expr(expr)?;
+                self.expr(pattern)?;
+                escape.iter_mut().try_for_each(|x| self.expr(x).map(drop))
+            }
+            K::InList { expr, list, .. } => {
+                self.expr(expr)?;
+                each(list)
+            }
+        }
+    }
+}
+
+/// Lazy operands (COALESCE / AND / OR): constant if every operand up to the
+/// first literal that decides the result is constant, as PostgreSQL drops the
+/// rest (`COALESCE(46, col)` is `46`).
+fn short_circuit_foldable(args: &[BoundExpr], decides: impl Fn(&Datum) -> bool) -> bool {
+    for a in args {
+        if let BoundExprKind::Literal(d) = &a.kind
+            && decides(d)
+        {
+            return true;
+        }
+        if !is_foldable(a) {
+            return false;
+        }
+    }
+    true
+}
+
+/// No column reference, session value or non-pure function anywhere inside.
+fn is_foldable(e: &BoundExpr) -> bool {
+    use BoundExprKind as K;
+    let all = |xs: &[BoundExpr]| xs.iter().all(is_foldable);
+    match &e.kind {
+        K::Literal(_) => true,
+        K::ColumnRef { .. } | K::SessionValue(_) => false,
+        K::Operator { args, .. } | K::MinMax { args, .. } => all(args),
+        K::Function { func, args } => matches!(func.kind, FnKind::Pure(_)) && all(args),
+
+        K::Coalesce(args) => short_circuit_foldable(args, |d| !d.is_null()),
+        K::And(args) => short_circuit_foldable(args, |d| matches!(d, Datum::Bool(false))),
+        K::Or(args) => short_circuit_foldable(args, |d| matches!(d, Datum::Bool(true))),
+        K::Cast { expr, .. }
+        | K::CoerceTypmod { expr, .. }
+        | K::Not(expr)
+        | K::IsNull(expr)
+        | K::IsNotNull(expr)
+        | K::BoolTest { expr, .. } => is_foldable(expr),
+        K::Case { arms, else_result } => {
+            arms.iter().all(|(c, r)| is_foldable(c) && is_foldable(r))
+                && else_result.as_deref().is_none_or(is_foldable)
+        }
+        K::NullIf { left, right, .. } | K::DistinctFrom { left, right, .. } => {
+            is_foldable(left) && is_foldable(right)
+        }
+        K::Like {
+            expr,
+            pattern,
+            escape,
+            ..
+        } => is_foldable(expr) && is_foldable(pattern) && escape.as_deref().is_none_or(is_foldable),
+        K::InList { expr, list, .. } => is_foldable(expr) && all(list),
+    }
+}
+
 fn column_ref(index: usize, src: &BoundExpr) -> BoundExpr {
     BoundExpr::new(BoundExprKind::ColumnRef { index }, src.ty, src.span)
 }
 
 /// Plans a SELECT (or bare VALUES).
 pub fn plan_select(s: &BoundSelect) -> PhysicalPlan {
+    let mut simplified = s.clone();
+    simplified.filter = simplify::simplify_opt(s.filter.as_ref());
+    simplified.targets.iter_mut().for_each(simplify::simplify);
+    let s = &simplified;
     let visible = s.columns.len().min(s.targets.len());
     let has_resjunk = s.targets.len() > visible;
 
@@ -83,16 +376,19 @@ pub fn plan_select(s: &BoundSelect) -> PhysicalPlan {
         }
     };
 
-    if !s.order_by.is_empty() {
-        let keys = s
-            .order_by
-            .iter()
-            .map(|k| SortKey {
-                expr: column_ref(k.target, &s.targets[k.target]),
-                descending: k.descending,
-                nulls_first: k.nulls_first,
-            })
-            .collect();
+    // PostgreSQL drops constant sort keys; with none left there is no Sort,
+    // so LIMIT can stop the input early.
+    let keys: Vec<SortKey> = s
+        .order_by
+        .iter()
+        .filter(|k| !matches!(s.targets[k.target].kind, BoundExprKind::Literal(_)))
+        .map(|k| SortKey {
+            expr: column_ref(k.target, &s.targets[k.target]),
+            descending: k.descending,
+            nulls_first: k.nulls_first,
+        })
+        .collect();
+    if !keys.is_empty() {
         node = PhysicalPlan::Sort {
             input: Box::new(node),
             keys,
@@ -150,9 +446,16 @@ fn is_identity(targets: &[BoundExpr], from: &BoundFrom) -> bool {
 pub fn plan_insert(i: &BoundInsert) -> PhysicalPlan {
     let mut checks = i.checks.clone();
     checks.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+    let mut input = plan_select(&i.source);
+    if let Some(exprs) = &i.coercions {
+        input = PhysicalPlan::Project {
+            input: Box::new(input),
+            exprs: exprs.clone(),
+        };
+    }
     PhysicalPlan::Insert {
         rel: RelHandle::from_table(&i.table),
-        input: Box::new(plan_select(&i.source)),
+        input: Box::new(input),
         column_map: i.column_map.clone(),
         defaults: i.defaults.clone(),
         checks,
@@ -213,7 +516,7 @@ pub fn plan_update(u: &BoundUpdate) -> PhysicalPlan {
         rel: RelHandle::from_table(&u.table),
         input: Box::new(plan_dml_input(
             &u.table,
-            u.filter.as_ref(),
+            simplify::simplify_opt(u.filter.as_ref()).as_ref(),
             &u.system_columns,
         )),
         assignments: u.assignments.clone(),
@@ -229,7 +532,7 @@ pub fn plan_delete(d: &BoundDelete) -> PhysicalPlan {
         rel: RelHandle::from_table(&d.table),
         input: Box::new(plan_dml_input(
             &d.table,
-            d.filter.as_ref(),
+            simplify::simplify_opt(d.filter.as_ref()).as_ref(),
             &d.system_columns,
         )),
     }

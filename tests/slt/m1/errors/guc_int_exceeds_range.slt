@@ -1,0 +1,17 @@
+# int GUC: int32 に収まらない値は invalid value (Value exceeds integer range)、
+# 収まるが範囲外のときだけ outside the valid range
+
+statement error invalid value for parameter "lock_timeout": "2147483648"
+SET lock_timeout = 2147483648
+
+statement error invalid value for parameter "lock_timeout": "3000000s"
+SET lock_timeout = '3000000s'
+
+statement error -5 ms is outside the valid range for parameter "lock_timeout"
+SET lock_timeout = -5
+
+statement error invalid value for parameter "extra_float_digits": "99999999999"
+SET extra_float_digits = 99999999999
+
+statement error 100 is outside the valid range for parameter "extra_float_digits"
+SET extra_float_digits = 100

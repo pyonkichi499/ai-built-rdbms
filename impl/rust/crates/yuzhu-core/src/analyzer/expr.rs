@@ -117,7 +117,8 @@ pub(super) fn visit(e: &BoundExpr, f: &mut dyn FnMut(&BoundExpr)) {
         | BoundExprKind::Function { args, .. }
         | BoundExprKind::And(args)
         | BoundExprKind::Or(args)
-        | BoundExprKind::Coalesce(args) => {
+        | BoundExprKind::Coalesce(args)
+        | BoundExprKind::MinMax { args, .. } => {
             for a in args {
                 visit(a, f);
             }
@@ -137,7 +138,8 @@ pub(super) fn visit(e: &BoundExpr, f: &mut dyn FnMut(&BoundExpr)) {
                 visit(e, f);
             }
         }
-        BoundExprKind::NullIf { left, right, .. } => {
+        BoundExprKind::NullIf { left, right, .. }
+        | BoundExprKind::DistinctFrom { left, right, .. } => {
             visit(left, f);
             visit(right, f);
         }
@@ -312,8 +314,20 @@ fn figure_colname_internal(e: &Expr) -> (Option<String>, u8) {
             value: Literal::Bool(_),
             ..
         } => (Some("bool".to_owned()), 1),
-        Expr::Case { .. } => (Some("case".to_owned()), 1),
+        Expr::Case { else_result, .. } => {
+            if let Some(d) = else_result {
+                let (n, strength) = figure_colname_internal(d);
+                if strength > 1 {
+                    return (n, strength);
+                }
+            }
+            (Some("case".to_owned()), 1)
+        }
         Expr::Coalesce { .. } => (Some("coalesce".to_owned()), 2),
+        Expr::MinMax { greatest, .. } => (
+            Some(if *greatest { "greatest" } else { "least" }.to_owned()),
+            2,
+        ),
         Expr::NullIf { .. } => (Some("nullif".to_owned()), 2),
         Expr::Exists { .. } => (Some("exists".to_owned()), 2),
         Expr::SessionValue { kind, .. } => {
@@ -328,6 +342,37 @@ fn figure_colname_internal(e: &Expr) -> (Option<String>, u8) {
 }
 
 impl Analyzer<'_> {
+    /// Resolves a comparison operator for two operands and returns it with
+    /// the operands coerced to its argument types.
+    fn resolve_cmp_op(
+        &self,
+        name: &str,
+        l: BoundExpr,
+        r: BoundExpr,
+        span: Span,
+    ) -> Result<(
+        &'static crate::catalog::BuiltinOperator,
+        BoundExpr,
+        BoundExpr,
+    )> {
+        let resolved = self.make_op(name, Some(l), r, span)?;
+        let BoundExprKind::Operator { op, args } = resolved.kind else {
+            return Err(Error::internal("comparison did not resolve to an operator"));
+        };
+        if op.result != oid::BOOL {
+            return Err(Error::new(
+                sqlstate::DATATYPE_MISMATCH,
+                format!("operator {name} must return type boolean"),
+            )
+            .with_span(span));
+        }
+        let mut it = args.into_iter();
+        let (Some(l), Some(r)) = (it.next(), it.next()) else {
+            return Err(Error::internal("comparison operator without two arguments"));
+        };
+        Ok((op, l, r))
+    }
+
     #[allow(clippy::too_many_lines)]
     pub(super) fn transform_expr(&self, e: &Expr, cx: &ExprCtx<'_>) -> Result<BoundExpr> {
         match e {
@@ -432,8 +477,55 @@ impl Analyzer<'_> {
                     *span,
                 ))
             }
-            Expr::IsDistinctFrom { span, .. } => {
-                Err(Error::not_supported("IS DISTINCT FROM is not supported yet").with_span(*span))
+            Expr::IsDistinctFrom {
+                left,
+                right,
+                negated,
+                span,
+            } => {
+                let l = self.transform_expr(left, cx)?;
+                let r = self.transform_expr(right, cx)?;
+                let (eq_op, l, r) = self.resolve_cmp_op("=", l, r, *span)?;
+                Ok(bool_expr(
+                    BoundExprKind::DistinctFrom {
+                        left: Box::new(l),
+                        right: Box::new(r),
+                        eq_op,
+                        negated: *negated,
+                    },
+                    *span,
+                ))
+            }
+            Expr::MinMax {
+                greatest,
+                args,
+                span,
+            } => {
+                let name = if *greatest { "GREATEST" } else { "LEAST" };
+                let args = args
+                    .iter()
+                    .map(|a| self.transform_expr(a, cx))
+                    .collect::<Result<Vec<_>>>()?;
+                let (args, ty) = self.coerce_all_to_common(args, name)?;
+                let first = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| Error::internal("GREATEST/LEAST without arguments"))?;
+                let (cmp, _, _) = self.resolve_cmp_op(
+                    if *greatest { ">" } else { "<" },
+                    first.clone(),
+                    first,
+                    *span,
+                )?;
+                Ok(BoundExpr::new(
+                    BoundExprKind::MinMax {
+                        greatest: *greatest,
+                        args,
+                        cmp,
+                    },
+                    ty,
+                    *span,
+                ))
             }
             Expr::Cast {
                 expr,
@@ -556,6 +648,12 @@ impl Analyzer<'_> {
             Expr::InSubquery { span, .. }
             | Expr::Exists { span, .. }
             | Expr::Subquery { span, .. } => {
+                if cx.kind == ExprKind::ColumnDefault {
+                    return Err(
+                        Error::not_supported("cannot use subquery in DEFAULT expression")
+                            .with_span(*span),
+                    );
+                }
                 Err(Error::not_supported("subqueries are not supported yet").with_span(*span))
             }
             Expr::Like {
@@ -763,7 +861,7 @@ impl Analyzer<'_> {
                 .select_common_type(&all, None)?
                 .filter(|c| self.verify_common_type(*c, &all));
             if let Some(common) = common {
-                let eq = self.oper("=", Some(common), common, span)?;
+                let eq = self.oper("=", Some(x.ty.oid), common, span)?;
                 if eq.result != oid::BOOL {
                     return Err(Error::new(
                         sqlstate::DATATYPE_MISMATCH,
@@ -771,8 +869,7 @@ impl Analyzer<'_> {
                     )
                     .with_span(span));
                 }
-                let lhs = self.coerce_to_common_type(x.clone(), common, "IN")?;
-                let lhs = self.coerce_to_common_type(lhs, eq.left.unwrap_or(common), "IN")?;
+                // PostgreSQL converts the list elements first, the left side last.
                 let items = nonvars
                     .into_iter()
                     .map(|e| {
@@ -780,6 +877,7 @@ impl Analyzer<'_> {
                         self.coerce_to_common_type(e, eq.right, "IN")
                     })
                     .collect::<Result<Vec<_>>>()?;
+                let lhs = self.coerce_to_common_type(x.clone(), eq.left.unwrap_or(common), "IN")?;
                 parts.push(bool_expr(
                     BoundExprKind::InList {
                         expr: Box::new(lhs),
@@ -828,6 +926,11 @@ fn collect_bool_operands<'e>(e: &'e Expr, is_and: bool, out: &mut Vec<&'e Expr>)
     }
 }
 
+fn numeric_literal(s: &str, span: Span) -> Result<(Datum, SqlType)> {
+    let n = yuzhu_numeric::Numeric::parse(s).map_err(|e| Error::from(e).with_span(span))?;
+    Ok((Datum::Numeric(n), SqlType::NUMERIC))
+}
+
 fn transform_literal(value: &Literal, span: Span) -> Result<BoundExpr> {
     let (datum, ty) = match value {
         Literal::Integer(s) => match parse_int_literal(s) {
@@ -835,19 +938,9 @@ fn transform_literal(value: &Literal, span: Span) -> Result<BoundExpr> {
                 Ok(v4) => (Datum::Int4(v4), SqlType::INT4),
                 Err(_) => (Datum::Int8(v), SqlType::INT8),
             },
-            None => {
-                return Err(Error::not_supported(
-                    "type numeric is not supported yet (integer literal out of bigint range)",
-                )
-                .with_span(span));
-            }
+            None => numeric_literal(s, span)?,
         },
-        Literal::Decimal(_) => {
-            return Err(Error::not_supported(
-                "type numeric is not supported yet (write the value as '1.5'::float8)",
-            )
-            .with_span(span));
-        }
+        Literal::Decimal(s) => numeric_literal(s, span)?,
         Literal::String(s) => (Datum::Text(s.clone()), SqlType::UNKNOWN),
         Literal::Bool(b) => (Datum::Bool(*b), SqlType::BOOL),
         Literal::Null => (Datum::Null, SqlType::UNKNOWN),

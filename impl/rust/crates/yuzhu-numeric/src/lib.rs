@@ -8,12 +8,13 @@
 //! integer and floating-point types. Errors carry the SQLSTATE and message
 //! text PostgreSQL would report.
 //!
-//! Not yet implemented: `sqrt`, `power`, `exp`, `ln`, `log`.
+//! Not yet implemented: `power`, `exp`.
 
 #![forbid(unsafe_code)]
 
 mod convert;
 mod error;
+mod func;
 mod io;
 mod var;
 

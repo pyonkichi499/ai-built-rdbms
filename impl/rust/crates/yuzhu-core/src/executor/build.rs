@@ -2,10 +2,12 @@
 //! in M2; owned by 担当 H2).
 
 use super::BoxedExecutor;
+use super::nodes::collect_constants;
 use super::nodes::{
     DeleteExec, DistinctExec, FilterExec, InsertExec, LimitExec, ProjectExec, ResultExec,
     SeqScanExec, SortExec, UpdateExec, ValuesExec,
 };
+use crate::analyzer::BoundExpr;
 use crate::planner::PhysicalPlan;
 
 /// Builds an executor tree for `plan`.
@@ -30,7 +32,11 @@ pub fn build(plan: &PhysicalPlan) -> BoxedExecutor {
             input,
             limit,
             offset,
-        } => Box::new(LimitExec::new(build(input), limit.clone(), offset.clone())),
+        } => {
+            let mut folds = Vec::new();
+            collect_folds(input, &mut folds);
+            Box::new(LimitExec::new(build(input), limit.clone(), offset.clone()).with_folds(folds))
+        }
         PhysicalPlan::Insert {
             rel,
             input,
@@ -64,5 +70,30 @@ pub fn build(plan: &PhysicalPlan) -> BoxedExecutor {
             not_null.clone(),
         )),
         PhysicalPlan::Delete { rel, input } => Box::new(DeleteExec::new(rel.clone(), build(input))),
+    }
+}
+
+/// LIMIT の下にある Project / Filter / Result の定数部分式を集める。
+fn collect_folds(plan: &PhysicalPlan, out: &mut Vec<BoundExpr>) {
+    match plan {
+        PhysicalPlan::Result { exprs } => {
+            for e in exprs {
+                collect_constants(e, out);
+            }
+        }
+        PhysicalPlan::Project { input, exprs } => {
+            for e in exprs {
+                collect_constants(e, out);
+            }
+            collect_folds(input, out);
+        }
+        PhysicalPlan::Filter { input, predicate } => {
+            collect_constants(predicate, out);
+            collect_folds(input, out);
+        }
+        PhysicalPlan::Sort { input, .. } | PhysicalPlan::Distinct { input } => {
+            collect_folds(input, out);
+        }
+        _ => {}
     }
 }

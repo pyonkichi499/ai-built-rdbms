@@ -35,6 +35,22 @@ pub trait RuntimeInfo: std::fmt::Debug {
     fn is_blocked_by(&self, pid: i32, among: &[i32]) -> bool;
     /// `InterruptFlag::check` に委ねる（`pg_sleep` が 10ms ごとに呼ぶ）。
     fn check_interrupts(&self) -> Result<()>;
+    /// 現在のトランザクションに割り当て済みの XID（未割り当てなら `None`）。
+    /// `txid_current_if_assigned` が使う。
+    fn current_xid(&self) -> Option<u64> {
+        None
+    }
+    /// `current_setting` の値。未知のパラメータは `None`。
+    fn get_setting(&self, _name: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// `set_config`。`value = None` は既定値に戻す。設定後の値を返す。
+    fn set_setting(&self, _name: &str, _value: Option<&str>, _local: bool) -> Result<String> {
+        Err(crate::error::Error::new(
+            crate::error::sqlstate::FEATURE_NOT_SUPPORTED,
+            "set_config is not supported here",
+        ))
+    }
 }
 
 /// 何も持たない `RuntimeInfo`（pid 0、ブロックされない、中断なし）。

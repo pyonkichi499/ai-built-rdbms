@@ -1,0 +1,29 @@
+# set_config(..., is_local=true) をトランザクションブロック外で呼ぶと、暗黙トランザクション（1文）の終了で元に戻る
+
+query T
+SELECT set_config('application_name', 'setcfgloc_a', true)
+----
+setcfgloc_a
+
+query T
+SHOW application_name
+----
+(empty)
+
+query T
+SELECT set_config('application_name', 'setcfgloc_s', false)
+----
+setcfgloc_s
+
+query T
+SELECT set_config('application_name', 'setcfgloc_b', true)
+----
+setcfgloc_b
+
+query T
+SHOW application_name
+----
+setcfgloc_s
+
+statement ok
+SELECT set_config('application_name', NULL, false)

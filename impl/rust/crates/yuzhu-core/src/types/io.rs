@@ -50,6 +50,7 @@ pub fn output_text_with(d: &Datum, ty: SqlType, opts: &OutputOpts) -> Option<Str
         Datum::Int8(v) => v.to_string(),
         Datum::Float4(v) => float4_out_with(*v, efd),
         Datum::Float8(v) => float8_out_with(*v, efd),
+        Datum::Numeric(n) => n.to_string(),
         Datum::Text(s) => s.clone(),
         Datum::Oid(_)
         | Datum::Char(_)
@@ -205,6 +206,7 @@ pub fn input_text(s: &str, ty: SqlType) -> Result<Datum> {
         oid::INT8 => int_in(s, oid::INT8).map(Datum::Int8),
         oid::FLOAT4 => float4_in(s).map(Datum::Float4),
         oid::FLOAT8 => float8_in(s).map(Datum::Float8),
+        oid::NUMERIC => Ok(Datum::Numeric(yuzhu_numeric::Numeric::parse(s)?)),
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => Ok(Datum::Text(s.to_owned())),
         oid::NAME => Ok(Datum::Text(truncate_identifier(s).to_owned())),
         t if super::sys::handles(t) => super::sys::input_text(s, ty),
@@ -368,9 +370,14 @@ fn has_nonzero_mantissa(num: &str) -> bool {
 
 /// `float8in`. Accepts NaN / Infinity / inf (any case, optional sign) and
 /// surrounding whitespace. Overflow and underflow to zero raise 22003.
-/// (Hexadecimal floats accepted by C `strtod` are not supported.)
+/// Hexadecimal floats accepted by C `strtod` (`0x1.8p3`) are supported.
 pub fn float8_in(s: &str) -> Result<f64> {
     let num = s.trim_matches(is_pg_space);
+    if let Some(r) = parse_hex_float(num) {
+        let (v, nonzero) = r.ok_or_else(|| invalid_syntax(oid::FLOAT8, s))?;
+        check_float_range(v.is_infinite(), v == 0.0 && nonzero, num, oid::FLOAT8)?;
+        return Ok(v);
+    }
     let v: f64 = num.parse().map_err(|_| invalid_syntax(oid::FLOAT8, s))?;
     check_float_range(v.is_infinite(), v == 0.0, num, oid::FLOAT8)?;
     Ok(v)
@@ -379,9 +386,102 @@ pub fn float8_in(s: &str) -> Result<f64> {
 /// `float4in`; see `float8_in`.
 pub fn float4_in(s: &str) -> Result<f32> {
     let num = s.trim_matches(is_pg_space);
+    if let Some(r) = parse_hex_float(num) {
+        let (v, nonzero) = r.ok_or_else(|| invalid_syntax(oid::FLOAT4, s))?;
+        #[allow(clippy::cast_possible_truncation)]
+        let v = v as f32;
+        check_float_range(v.is_infinite(), v == 0.0 && nonzero, num, oid::FLOAT4)?;
+        return Ok(v);
+    }
     let v: f32 = num.parse().map_err(|_| invalid_syntax(oid::FLOAT4, s))?;
     check_float_range(v.is_infinite(), v == 0.0, num, oid::FLOAT4)?;
     Ok(v)
+}
+
+/// Parses a C99 hexadecimal float (`[+-]0x<hex>[.<hex>][p[+-]<dec>]`).
+/// `None` = no `0x` prefix (not a hex literal); `Some(None)` = malformed;
+/// otherwise `(value, mantissa_is_nonzero)`.
+#[allow(clippy::option_option)]
+fn parse_hex_float(num: &str) -> Option<Option<(f64, bool)>> {
+    let (neg, rest) = match num.as_bytes().first() {
+        Some(b'-') => (true, &num[1..]),
+        Some(b'+') => (false, &num[1..]),
+        _ => (false, num),
+    };
+    let body = rest
+        .strip_prefix("0x")
+        .or_else(|| rest.strip_prefix("0X"))?;
+    Some(parse_hex_body(body).map(|(v, nz)| (if neg { -v } else { v }, nz)))
+}
+
+fn parse_hex_body(body: &str) -> Option<(f64, bool)> {
+    let b = body.as_bytes();
+    let mut i = 0;
+    let mut mant: u64 = 0;
+    let mut exp: i64 = 0;
+    let mut digits = 0usize;
+    let mut nonzero = false;
+    let mut seen_dot = false;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'.' && !seen_dot {
+            seen_dot = true;
+        } else if let Some(d) = char::from(c).to_digit(16) {
+            digits += 1;
+            nonzero |= d != 0;
+            if mant >> 60 == 0 {
+                mant = (mant << 4) | u64::from(d);
+                if seen_dot {
+                    exp -= 4;
+                }
+            } else if !seen_dot {
+                // Beyond u64 precision: drop the digit, scale up instead.
+                exp += 4;
+            }
+        } else {
+            break;
+        }
+        i += 1;
+    }
+    if digits == 0 {
+        return None;
+    }
+    if i < b.len() && (b[i] == b'p' || b[i] == b'P') {
+        i += 1;
+        let eneg = match b.get(i) {
+            Some(b'-') => {
+                i += 1;
+                true
+            }
+            Some(b'+') => {
+                i += 1;
+                false
+            }
+            _ => false,
+        };
+        let start = i;
+        let mut e: i64 = 0;
+        while i < b.len() && b[i].is_ascii_digit() {
+            e = (e * 10 + i64::from(b[i] - b'0')).min(100_000);
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+        exp += if eneg { -e } else { e };
+    }
+    if i != b.len() {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mut v = mant as f64;
+    let mut e = exp.clamp(-5000, 5000);
+    while e != 0 && v != 0.0 && v.is_finite() {
+        let step = e.clamp(-1000, 1000);
+        v *= 2f64.powi(i32::try_from(step).ok()?);
+        e -= step;
+    }
+    Some((v, nonzero))
 }
 
 fn check_float_range(is_inf: bool, is_zero: bool, num: &str, type_oid: Oid) -> Result<()> {

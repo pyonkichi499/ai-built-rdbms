@@ -1,0 +1,10 @@
+# DEFAULT 式の中のサブクエリは専用のメッセージで 0A000 になる
+
+statement error cannot use subquery in DEFAULT expression
+CREATE TABLE dsq_t (a integer DEFAULT (SELECT 1))
+
+statement error cannot use subquery in DEFAULT expression
+CREATE TABLE dsq_t (a integer DEFAULT (1 + (SELECT 1)))
+
+statement error cannot use subquery in DEFAULT expression
+CREATE TABLE dsq_t (a integer DEFAULT (CASE WHEN EXISTS (SELECT 1) THEN 1 ELSE 2 END))

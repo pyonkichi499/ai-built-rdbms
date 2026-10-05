@@ -92,6 +92,7 @@ struct PendingCheck<'a> {
 
 impl Analyzer<'_> {
     /// Resolves a type name to a supported `SqlType` (with typmod).
+    #[allow(clippy::too_many_lines)]
     pub(super) fn resolve_type_name(&self, tn: &TypeName) -> Result<SqlType> {
         if !tn.array_bounds.is_empty() {
             // Only one-dimensional int4[] exists (text input / output only).
@@ -149,6 +150,28 @@ impl Analyzer<'_> {
         };
         if tn.modifiers.is_empty() {
             return Ok(SqlType::of(t.oid));
+        }
+        if t.oid == oid::NUMERIC {
+            let mut mods = Vec::with_capacity(tn.modifiers.len());
+            for m in &tn.modifiers {
+                let Expr::Literal {
+                    value: Literal::Integer(s),
+                    ..
+                } = m
+                else {
+                    return Err(Error::syntax_at(
+                        tn.span,
+                        "type modifiers must be simple constants or identifiers",
+                    ));
+                };
+                let v = super::expr::parse_int_literal(s)
+                    .and_then(|v| i32::try_from(v).ok())
+                    .unwrap_or(i32::MAX);
+                mods.push(v);
+            }
+            let typmod =
+                yuzhu_numeric::make_typmod(&mods).map_err(|e| Error::from(e).with_span(tn.span))?;
+            return Ok(SqlType::new(oid::NUMERIC, typmod));
         }
         if t.oid != oid::VARCHAR {
             return Err(Error::syntax_at(
@@ -214,7 +237,29 @@ impl Analyzer<'_> {
             .with_span(ct.name.span));
         }
         let schema = match ct.name.schema() {
-            None => "public".to_owned(),
+            None => match self
+                .catalog
+                .search_path()
+                .iter()
+                .find(|s| matches!(s.as_str(), "public" | "pg_catalog"))
+                .map(String::as_str)
+            {
+                Some("public") => "public".to_owned(),
+                Some(_) => {
+                    return Err(Error::new(
+                        sqlstate::INSUFFICIENT_PRIVILEGE,
+                        format!("permission denied to create \"pg_catalog.{name}\""),
+                    )
+                    .with_detail("System catalog modifications are currently disallowed."));
+                }
+                None => {
+                    return Err(Error::new(
+                        sqlstate::INVALID_SCHEMA_NAME,
+                        "no schema has been selected to create in",
+                    )
+                    .with_span(ct.name.span));
+                }
+            },
             Some(s) if s.value == "public" => "public".to_owned(),
             Some(s) if s.value == "pg_catalog" => {
                 return Err(Error::new(
@@ -232,22 +277,17 @@ impl Analyzer<'_> {
                 .with_span(s.span));
             }
         };
-        if self.catalog.table(Some(&schema), &name)?.is_some() {
-            if ct.if_not_exists {
-                // The session reports `NOTICE: relation "x" already exists,
-                // skipping`; the definition is not analyzed (as in PG).
-                return Ok(BoundCreateTable {
-                    schema,
-                    name,
-                    if_not_exists: true,
-                    columns: vec![],
-                    checks: vec![],
-                });
-            }
-            return Err(Error::new(
-                sqlstate::DUPLICATE_TABLE,
-                format!("relation \"{name}\" already exists"),
-            ));
+        let exists = self.catalog.table(Some(&schema), &name)?.is_some();
+        if exists && ct.if_not_exists {
+            // The session reports `NOTICE: relation "x" already exists,
+            // skipping`; the definition is not analyzed (as in PG).
+            return Ok(BoundCreateTable {
+                schema,
+                name,
+                if_not_exists: true,
+                columns: vec![],
+                checks: vec![],
+            });
         }
 
         // Pass 1: columns and constraints.
@@ -374,6 +414,15 @@ impl Analyzer<'_> {
             }
         }
 
+        // PG reports an existing relation only after the column definitions
+        // have been transformed (type modifiers, NULL/NOT NULL conflicts).
+        if exists {
+            return Err(Error::new(
+                sqlstate::DUPLICATE_TABLE,
+                format!("relation \"{name}\" already exists"),
+            ));
+        }
+
         // Pass 2: DEFAULT expressions (type-checked now, stored as text).
         for (col, def) in columns.iter_mut().zip(default_exprs) {
             if let Some(src) = def {
@@ -407,10 +456,7 @@ impl Analyzer<'_> {
                 if used.contains(&n.value) {
                     return Err(Error::new(
                         sqlstate::DUPLICATE_OBJECT,
-                        format!(
-                            "constraint \"{}\" for relation \"{name}\" already exists",
-                            n.value
-                        ),
+                        format!("check constraint \"{}\" already exists", n.value),
                     )
                     .with_span(n.span));
                 }

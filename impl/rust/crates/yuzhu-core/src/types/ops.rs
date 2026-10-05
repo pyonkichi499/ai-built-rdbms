@@ -854,6 +854,138 @@ pub fn array_unsupported(_args: &[Datum]) -> Result<Datum> {
     Err(Error::not_supported("arrays are not supported yet"))
 }
 
+// ---------------------------------------------------------------------------
+// numeric
+// ---------------------------------------------------------------------------
+
+use yuzhu_numeric::Numeric;
+
+fn numeric_arg(args: &[Datum], i: usize) -> Result<&Numeric> {
+    match args.get(i) {
+        Some(Datum::Numeric(n)) => Ok(n),
+        _ => Err(bad_arg("numeric function")),
+    }
+}
+
+fn numeric_binary(
+    args: &[Datum],
+    f: fn(&Numeric, &Numeric) -> std::result::Result<Numeric, yuzhu_numeric::NumericError>,
+) -> Result<Datum> {
+    Ok(Datum::Numeric(f(
+        numeric_arg(args, 0)?,
+        numeric_arg(args, 1)?,
+    )?))
+}
+
+pub fn numeric_add(args: &[Datum]) -> Result<Datum> {
+    numeric_binary(args, Numeric::checked_add)
+}
+pub fn numeric_sub(args: &[Datum]) -> Result<Datum> {
+    numeric_binary(args, Numeric::checked_sub)
+}
+pub fn numeric_mul(args: &[Datum]) -> Result<Datum> {
+    numeric_binary(args, Numeric::checked_mul)
+}
+pub fn numeric_div(args: &[Datum]) -> Result<Datum> {
+    numeric_binary(args, Numeric::checked_div)
+}
+pub fn numeric_mod(args: &[Datum]) -> Result<Datum> {
+    numeric_binary(args, Numeric::checked_rem)
+}
+pub fn numeric_uminus(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.negate()))
+}
+/// `numeric ^ numeric` is not implemented yet.
+pub fn numeric_power(_args: &[Datum]) -> Result<Datum> {
+    Err(Error::not_supported(
+        "operator ^ for type numeric is not supported yet (cast an operand to float8)",
+    ))
+}
+/// `sqrt(numeric)`.
+pub fn numeric_sqrt(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.sqrt()?))
+}
+/// `ln(numeric)`.
+pub fn numeric_ln(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.ln()?))
+}
+/// `log10(numeric)` / `log(numeric)`.
+pub fn numeric_log10(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(
+        Numeric::from(10_i64).log(numeric_arg(args, 0)?)?,
+    ))
+}
+/// `log(numeric, numeric)`.
+pub fn numeric_log(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(
+        numeric_arg(args, 0)?.log(numeric_arg(args, 1)?)?,
+    ))
+}
+/// `sign(numeric)`.
+pub fn numeric_sign(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.sign()))
+}
+pub fn numeric_abs(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.abs()))
+}
+
+/// `round(numeric, int4)`.
+pub fn numeric_round(args: &[Datum]) -> Result<Datum> {
+    let scale = i32::try_from(int_arg(args, 1)?).unwrap_or(i32::MAX);
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.round(scale)?))
+}
+/// `round(numeric)`.
+pub fn numeric_round0(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.round(0)?))
+}
+/// `trunc(numeric, int4)`.
+pub fn numeric_trunc(args: &[Datum]) -> Result<Datum> {
+    let scale = i32::try_from(int_arg(args, 1)?).unwrap_or(i32::MAX);
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.trunc(scale)?))
+}
+/// `trunc(numeric)`.
+pub fn numeric_trunc0(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.trunc(0)?))
+}
+/// `ceil(numeric)` / `ceiling(numeric)`.
+pub fn numeric_ceil(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.ceil()?))
+}
+/// `floor(numeric)`.
+pub fn numeric_floor(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.floor()?))
+}
+
+/// `int2` / `int4` / `int8` to numeric.
+pub fn int_to_numeric(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(Numeric::from(int_arg(args, 0)?)))
+}
+
+/// `float4` / `float8` to numeric.
+pub fn float_to_numeric(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(match args.first() {
+        Some(Datum::Float4(v)) => Numeric::from_f32(*v),
+        Some(Datum::Float8(v)) => Numeric::from_f64(*v),
+        _ => return Err(bad_arg("float function")),
+    }))
+}
+
+pub fn numeric_to_int2(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Int2(numeric_arg(args, 0)?.to_i16()?))
+}
+pub fn numeric_to_int4(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Int4(numeric_arg(args, 0)?.to_i32()?))
+}
+pub fn numeric_to_int8(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Int8(numeric_arg(args, 0)?.to_i64()?))
+}
+pub fn numeric_to_float4(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Float4(numeric_arg(args, 0)?.to_f32()?))
+}
+pub fn numeric_to_float8(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Float8(numeric_arg(args, 0)?.to_f64()?))
+}
+
 /// Placeholder body for catalog entries of types yuzhu does not implement
 /// yet (numeric, date, interval). They exist so that operator resolution
 /// sees the same candidates as PostgreSQL; the analyzer rejects values of

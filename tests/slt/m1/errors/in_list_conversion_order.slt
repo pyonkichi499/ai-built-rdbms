@@ -1,0 +1,10 @@
+# IN リストの型未確定リテラルは、要素側の変換エラーが左辺より先に報告される（PG 互換）
+
+statement error invalid input syntax for type numeric: "B"
+SELECT 'a' IN ('B', 0.10)
+
+statement error invalid input syntax for type numeric: "B"
+SELECT 'a' NOT IN ('B', NULL), 'a' IN ('B', 0.10)
+
+statement error invalid input syntax for type smallint: ""
+SELECT 'abc' IN ('', 1::int2)

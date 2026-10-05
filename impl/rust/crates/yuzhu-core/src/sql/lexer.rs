@@ -590,9 +590,18 @@ impl Lexer<'_> {
         p
     }
 
+    /// PostgreSQL reports the whole `number + identifier characters` run.
+    fn junk_err(&self, start: usize, from: usize) -> (usize, Error) {
+        let mut end = from;
+        while self.peek_at(end).is_some_and(is_ident_cont) {
+            end += 1;
+        }
+        self.near(start, end, "trailing junk after numeric literal")
+    }
+
     fn junk_check(&self, start: usize, end: usize) -> LexResult<()> {
         if self.peek_at(end).is_some_and(is_ident_start) {
-            return Err(self.near(start, end + 1, "trailing junk after numeric literal"));
+            return Err(self.junk_err(start, end));
         }
         Ok(())
     }
@@ -613,6 +622,9 @@ impl Lexer<'_> {
             }
             let end = self.digits(p, base);
             if end == p {
+                if self.peek_at(p).is_some_and(is_ident_cont) {
+                    return Err(self.junk_err(start, p));
+                }
                 return Err(self.near(start, p, what));
             }
             self.junk_check(start, end)?;
@@ -634,7 +646,7 @@ impl Lexer<'_> {
             }
             let end = self.digits(q, 10);
             if end == q {
-                return Err(self.near(start, q, "trailing junk after numeric literal"));
+                return Err(self.junk_err(start, q));
             }
             is_decimal = true;
             p = end;
@@ -840,8 +852,19 @@ mod tests {
         let e = lex_err("SELECT 123abc");
         assert_eq!(
             e.message,
-            "trailing junk after numeric literal at or near \"123a\""
+            "trailing junk after numeric literal at or near \"123abc\""
         );
+        for (sql, near) in [
+            ("SELECT 0b2", "0b2"),
+            ("SELECT 0o8", "0o8"),
+            ("SELECT 1__0", "1__0"),
+            ("SELECT 0xg", "0xg"),
+        ] {
+            assert_eq!(
+                lex_err(sql).message,
+                format!("trailing junk after numeric literal at or near \"{near}\"")
+            );
+        }
         assert_eq!(e.position, Some(8));
         assert_eq!(
             lex_err("SELECT 1.5e").message,

@@ -58,115 +58,104 @@ tools/journal-snapshots.sh
 使い方: スナップショットを書くとき、この内容を貼る素材にする。`tools/journal-snapshots.sh` が上書きする。
 
 <!-- AUTO:status BEGIN -->
-取得: 2026-10-05 07:32:14 UTC / HEAD 11bcaeb / ブランチ dev
+取得: 2026-10-05 13:29:41 UTC / HEAD c9c1214 / ブランチ dev
 
-git status --short: 76 件
+git status --short: 65 件
 
 ```text
-     15 impl/rust/crates/yuzhu-core/src/storage
-      7 impl/rust/crates/yuzhu-core/src/wal
-      5 impl/rust/crates/yuzhu-core/src/analyzer
-      4 impl/rust/crates/yuzhu-core/src/txn
-      4 impl/rust/crates/yuzhu-core/src/sql
-      2 impl/rust/crates/yuzhu-server/src/bin
-      2 impl/rust/crates/yuzhu-core/src/types
-      1 tests/slt/m3/txn/isolation_level_after_select.slt
-      1 tests/isolation/specs/write-skew-rr.spec
-      1 tests/isolation/expected/write-skew-rr.yuzhu-m3.out
-      1 tests/isolation/expected/lost-update.yuzhu-m3.out
-      1 spec/design/m5/
-      1 spec/design/m4/
-      1 journal/workflows.md
-      1 journal/timeline.md
+      7 impl/rust/crates/yuzhu-core/src/analyzer
+      6 impl/rust/crates/yuzhu-core/src/types
+      6 impl/rust/crates/yuzhu-core/src/executor
+      5 impl/rust/crates/yuzhu-core/src/sql
+      2 impl/rust/crates/yuzhu-core/src/planner
+      2 impl/rust/crates/yuzhu-core/src/catalog
+      1 tools/worklog.sh
+      1 tests/tools/difffuzz/
+      1 tests/slt/m3/txn/guc_work_mem_basic.slt
+      1 tests/slt/m3/session/txn_set_local_custom_guc.slt
+      1 tests/slt/m3/session/statement_timeout_fraction.slt
+      1 tests/slt/m3/session/set_config_local_implicit.slt
+      1 tests/slt/m3/session/guc_error_messages.slt
+      1 tests/slt/m1/session/set_role_none.slt
+      1 tests/slt/m1/session/client_encoding_latin1.slt
 ```
 
 ```text
- M PROGRESS.md
- M QUESTIONS.md
- M WORKLOG.md
+ M impl/rust/Cargo.lock
+ M impl/rust/crates/yuzhu-core/Cargo.toml
+ M impl/rust/crates/yuzhu-core/src/analyzer/bound.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/coerce.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/ddl.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/expr.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/resolve.rs
+ M impl/rust/crates/yuzhu-core/src/analyzer/select.rs
  M impl/rust/crates/yuzhu-core/src/analyzer/tests.rs
- M impl/rust/crates/yuzhu-core/src/bootstrap.rs
  M impl/rust/crates/yuzhu-core/src/catalog/builtin.rs
- M impl/rust/crates/yuzhu-core/src/checkpoint.rs
- M impl/rust/crates/yuzhu-core/src/control.rs
- M impl/rust/crates/yuzhu-core/src/datadir.rs
- M impl/rust/crates/yuzhu-core/src/engine.rs
+ M impl/rust/crates/yuzhu-core/src/catalog/rows.rs
+ M impl/rust/crates/yuzhu-core/src/error.rs
+ M impl/rust/crates/yuzhu-core/src/executor/build.rs
  M impl/rust/crates/yuzhu-core/src/executor/eval.rs
- M impl/rust/crates/yuzhu-core/src/recovery.rs
+ M impl/rust/crates/yuzhu-core/src/executor/mod.rs
+ M impl/rust/crates/yuzhu-core/src/executor/nodes/distinct.rs
+ M impl/rust/crates/yuzhu-core/src/executor/nodes/limit.rs
+ M impl/rust/crates/yuzhu-core/src/executor/nodes/mod.rs
+ M impl/rust/crates/yuzhu-core/src/planner/mod.rs
  M impl/rust/crates/yuzhu-core/src/session.rs
  M impl/rust/crates/yuzhu-core/src/settings.rs
  M impl/rust/crates/yuzhu-core/src/sql/ast.rs
+ M impl/rust/crates/yuzhu-core/src/sql/lexer.rs
+ M impl/rust/crates/yuzhu-core/src/sql/parser/expr.rs
  M impl/rust/crates/yuzhu-core/src/sql/parser/misc.rs
- M impl/rust/crates/yuzhu-core/src/sql/parser/mod.rs
  M impl/rust/crates/yuzhu-core/src/sql/parser/tests.rs
- M impl/rust/crates/yuzhu-core/src/storage/buffer/flush.rs
- M impl/rust/crates/yuzhu-core/src/storage/buffer/guard.rs
- M impl/rust/crates/yuzhu-core/src/storage/buffer/mod.rs
- M impl/rust/crates/yuzhu-core/src/storage/buffer/tests.rs
- M impl/rust/crates/yuzhu-core/src/storage/buffer/track.rs
- M impl/rust/crates/yuzhu-core/src/storage/heap/hio.rs
  M impl/rust/crates/yuzhu-core/src/storage/heap/tuple.rs
- M impl/rust/crates/yuzhu-core/src/storage/heap/wal.rs
- M impl/rust/crates/yuzhu-core/src/storage/heap_store.rs
- M impl/rust/crates/yuzhu-core/src/storage/page.rs
- M impl/rust/crates/yuzhu-core/src/storage/smgr.rs
- M impl/rust/crates/yuzhu-core/src/storage/smgr_wal.rs
- M impl/rust/crates/yuzhu-core/src/storage/stack.rs
- M impl/rust/crates/yuzhu-core/src/storage/testing.rs
- M impl/rust/crates/yuzhu-core/src/storage/vfs/sim.rs
- M impl/rust/crates/yuzhu-core/src/testing.rs
- M impl/rust/crates/yuzhu-core/src/txn/clog.rs
- M impl/rust/crates/yuzhu-core/src/txn/manager.rs
- M impl/rust/crates/yuzhu-core/src/txn/mod.rs
- M impl/rust/crates/yuzhu-core/src/txn/xact_wal.rs
+ M impl/rust/crates/yuzhu-core/src/types/datum.rs
  M impl/rust/crates/yuzhu-core/src/types/io.rs
- M impl/rust/crates/yuzhu-core/src/types/sys.rs
- M impl/rust/crates/yuzhu-core/src/util/crc32c.rs
- M impl/rust/crates/yuzhu-core/src/wal/dump.rs
- M impl/rust/crates/yuzhu-core/src/wal/reader.rs
- M impl/rust/crates/yuzhu-core/src/wal/record.rs
- M impl/rust/crates/yuzhu-core/src/wal/redo.rs
- M impl/rust/crates/yuzhu-core/src/wal/segment.rs
- M impl/rust/crates/yuzhu-core/src/wal/writer.rs
- M impl/rust/crates/yuzhu-core/src/wal/xlog.rs
- M impl/rust/crates/yuzhu-core/tests/crash_sim/invariants.rs
- M impl/rust/crates/yuzhu-core/tests/crash_sim/main.rs
- M impl/rust/crates/yuzhu-core/tests/crash_sim/model.rs
- M impl/rust/crates/yuzhu-core/tests/crash_sim/mutation.rs
- M impl/rust/crates/yuzhu-core/tests/crash_sim/workload.rs
- M impl/rust/crates/yuzhu-server/src/bin/yuzhu-initdb.rs
- M impl/rust/crates/yuzhu-server/src/bin/yuzhu-waldump.rs
- M impl/rust/crates/yuzhu-server/src/config.rs
+ M impl/rust/crates/yuzhu-core/src/types/mod.rs
+ M impl/rust/crates/yuzhu-core/src/types/ops.rs
+ M impl/rust/crates/yuzhu-numeric/src/error.rs
+ M impl/rust/crates/yuzhu-numeric/src/lib.rs
  M impl/rust/crates/yuzhu-server/src/connection.rs
- M impl/rust/crates/yuzhu-server/src/shutdown.rs
- M impl/rust/crates/yuzhu-server/tests/crash_kill9.rs
- M impl/rust/crates/yuzhu-server/tests/server.rs
- M impl/rust/crates/yuzhu-server/tests/shutdown.rs
+ M impl/rust/crates/yuzhu-server/src/protocol/codec.rs
  M journal/decisions.md
  M journal/setbacks.md
  M journal/timeline.md
  M journal/workflows.md
- M tests/isolation/specs/write-skew-rr.spec
-?? impl/rust/crates/yuzhu-server/tests/waldump.rs
-?? spec/design/m4/
-?? spec/design/m5/
-?? tests/isolation/expected/lost-update.yuzhu-m3.out
-?? tests/isolation/expected/write-skew-rr.yuzhu-m3.out
-?? tests/slt/m3/txn/isolation_level_after_select.slt
+ M tests/README.md
+ M tests/slt/m3/session/guc_error_messages.slt
+ M tools/worklog.sh
+?? impl/rust/crates/yuzhu-core/src/planner/simplify.rs
+?? impl/rust/crates/yuzhu-core/src/types/funcs.rs
+?? impl/rust/crates/yuzhu-core/src/types/regex.rs
+?? impl/rust/crates/yuzhu-numeric/src/func.rs
+?? tests/slt/m1/constraints/dup_check_name.slt
+?? tests/slt/m1/errors/create_table_check_before_exists.slt
+?? tests/slt/m1/errors/default_subquery_message.slt
+?? tests/slt/m1/errors/guc_int_decimal_exponent.slt
+?? tests/slt/m1/errors/guc_int_exceeds_range.slt
+?? tests/slt/m1/errors/in_list_conversion_order.slt
+?? tests/slt/m1/errors/update_set_const_case_plan_time.slt
+?? tests/slt/m1/expressions/in_list_numeric_real.slt
+?? tests/slt/m1/expressions/nested_coalesce_fold.slt
+?? tests/slt/m1/insert/default_plan_time_errors.slt
+?? tests/slt/m1/select/order_by_const_limit.slt
+?? tests/slt/m1/select/where_const_null_fold.slt
+?? tests/slt/m1/session/client_encoding_latin1.slt
+?? tests/slt/m1/session/set_role_none.slt
+?? tests/slt/m3/session/set_config_local_implicit.slt
+?? tests/slt/m3/session/statement_timeout_fraction.slt
+?? tests/slt/m3/session/txn_set_local_custom_guc.slt
+?? tests/slt/m3/txn/guc_work_mem_basic.slt
+?? tests/tools/difffuzz/
 ```
 
 git log -n 5（UTC）:
 
 ```text
+c9c1214 2026-10-05 09:11:37 test(m1,m3): 差分テストで見つけた挙動の回帰テストを追加し、PostgreSQL で通るよう修正
+56fc5a0 2026-10-05 09:11:37 test(m4): M4 の slt・再起動・クラッシュ・isolation テストと検証ツールを追加
+23fdc8b 2026-10-05 08:04:17 docs: M4・M5 の基本設計書を追加
+828ae16 2026-10-05 07:32:25 feat(core): M3 を完了（WAL・チェックポイント・クラッシュリカバリ・トランザクション意味論）
 11bcaeb 2026-10-05 04:55:24 feat(core): M3 の土台（型・トレイト・スタブ）を追加
-ab02b68 2026-10-04 21:57:08 docs: PROGRESS.md を M2 完了状態に更新し QUESTIONS.md に追記
-7daa421 2026-10-04 21:56:56 feat(core): M2 を完了しレビュー指摘を反映
-425ca04 2026-10-04 21:27:50 feat(core): M2 の実装を統合し slt を通す
-610c121 2026-10-04 15:19:58 feat(core): M2 の基盤（型・トレイト・スタブ）を追加
 ```
 <!-- AUTO:status END -->
 

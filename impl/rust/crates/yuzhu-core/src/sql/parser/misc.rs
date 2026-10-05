@@ -154,7 +154,25 @@ impl Parser<'_> {
         {
             self.advance();
         }
+        if self.is_kw("constraints") && !self.next_is_set_assign() {
+            self.advance();
+            if !self.eat_kw("all") {
+                return Err(self.not_supported("SET CONSTRAINTS with constraint names"));
+            }
+            if !self.eat_kw("deferred") && !self.eat_kw("immediate") {
+                return Err(self.unexpected());
+            }
+            return Ok(SetStmt {
+                local,
+                name: "constraints".into(),
+                value: SetValue::Default,
+                transaction: None,
+                constraints: true,
+                span: self.span_from(start),
+            });
+        }
         let set = |p: &Self, name: &str, value: SetValue| SetStmt {
+            constraints: false,
             local,
             name: name.to_string(),
             value,

@@ -47,7 +47,7 @@
 ### 改訂・前倒しの注記行（自動抽出）
 
 <!-- AUTO:supersede BEGIN -->
-_生成: 2026-10-05 07:32:11 UTC。出所: `grep -n '改訂\|前倒し'` を spec/ と QUESTIONS.md に対して実行。判断が後から変わった箇所の候補で、真の改訂かどうかは手書き欄で判断する。_
+_生成: 2026-10-05 13:29:34 UTC。出所: `grep -n '改訂\|前倒し'` を spec/ と QUESTIONS.md に対して実行。判断が後から変わった箇所の候補で、真の改訂かどうかは手書き欄で判断する。_
 
 | 場所 | 該当行（先頭 100 字） |
 |---|---|
@@ -79,10 +79,17 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `grep -n '改訂\|前倒し'` を spe
 | `spec/design/m3.md:22` | M2 は M3 の調査の推奨を大きく前倒しした。M3 の作業はそれを前提にする。 |
 | `spec/design/m3.md:40` | \| D1 \| M3 の範囲 \| 要件の M3（MVCC・clog・単一ライター・WAL）をそのまま作る／M2 の前倒しを前提に WAL とリカバリに絞る \| **後者** \| MVCC・clog・単一… |
 | `spec/design/m3.md:1755` | - **M3-Q1 M3 の範囲**: M2 で MVCC・コミットログ・単一ライターを前倒ししたので、M3 は WAL・チェックポイント・クラッシュリカバリ・クラッシュ試験と、残りのトランザクション… |
-| `spec/design/m4/00-contracts.md:81` | \| D-18 \| インデックス選択はヒューリスティクス（一意で全列等値 > 等値の列数 > 先頭列の範囲）。`IN (...)`・`OR`・Index Only Scan・Bitmap Scan は … |
-| `spec/design/m4/02-pipeline-refactor.md:1145` | **段階が解放する担当**（00 §17 の「P0 のマージ後に並列」を段階ごとに前倒しする）: |
+| `spec/design/m4/00-contracts.md:112` | \| D-18 \| インデックス選択はヒューリスティクス（一意で全列等値 > 等値の列数 > 先頭列の範囲）。`IN (...)`・`OR`・Index Only Scan・Bitmap Scan は … |
+| `spec/design/m4/01-scope-decisions.md:22` | 3. **周辺ツール**: psql 17 の `\dt` `\dn` `\di` `\ds` `\l` と `\d シーケンス`、pgbench の `-i` と組み込みスクリプト（tpcb-lik… |
+| `spec/design/m4/01-scope-decisions.md:34` | \| **前倒し** \| numeric の基本部分（Q-011。D-3）、`char(n)`・`timestamp` 系・COPY FROM STDIN（Q-012。D-4〜D-6）、`regclas… |
+| `spec/design/m4/01-scope-decisions.md:46` | \| Q-011（numeric の前倒し） \| D-3。`yuzhu-numeric` を統合（章 09）。`sum(int8)` / `avg(整数)` の結果型が PostgreSQL と一致する… |
+| `spec/design/m4/01-scope-decisions.md:47` | \| Q-012（COPY・char(n)・timestamp の前倒し） \| D-4〜D-6 と D-25（章 09、10）。pgbench の初期化と tpcb-like が動く \| |
+| `spec/design/m4/01-scope-decisions.md:70` | \| D-3 \| numeric \| M5 に回す／最小限を前倒し／`yuzhu-numeric` を統合 \| **既存の `yuzhu-numeric` クレートを統合**（`Datum::Numer… |
+| `spec/design/m4/01-scope-decisions.md:85` | \| D-18 \| インデックス選択 \| コスト比較／ヒューリスティクス \| **ヒューリスティクス**（一意で全列等値 > 等値の列数 > 先頭列の範囲）。`IN (...)`・`OR`・Index … |
+| `spec/design/m4/02-pipeline-refactor.md:1146` | **段階が解放する担当**（00 §17 の「P0 のマージ後に並列」を段階ごとに前倒しする）: |
 | `spec/design/m4/02-pipeline-refactor.md:1400` | - **段階ごとの解放**（§5.1）により、00 §17 の「P0 のマージ後に N1〜N3・L1・L2・X1〜X3・E1 を並列に」を前倒しできる。P0 の開始を 0 日目とすると、X1〜X3 は… |
 | `spec/design/m4/02-pipeline-refactor.md:1484` | \| 12 \| §17 P0 の行 \| 「P0 が全員の足場を置く」を、段階ごと（P0-b: 依存のない ★、P0-c: executor、P0-d: analyzer、P0-e: planner）に置… |
+| `spec/design/m4/README.md:3` | M4 のゴールは**インデックスと問い合わせ**です。PostgreSQL の nbtree に準拠した B+Tree、PRIMARY KEY / UNIQUE / SERIAL（シーケンス）、JOI… |
 | `spec/research/m5-types-fk.md:51` | \| **numeric の前倒し** \| 小数リテラル（`1.5`）が numeric 型であること、`avg(int)` や `sum(int8)` の結果が numeric であることから、**M… |
 | `spec/research/m5-types-fk.md:67` | ### 1.1 M1〜M4 の現状と、前倒しが必要なもの |
 | `spec/research/m5-types-fk.md:693` | \| numeric-core（I/O、typmod、四則、比較、キャスト、sum/avg） \| M \| **M4 の前半に前倒し** \| |
@@ -111,7 +118,7 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `grep -n '改訂\|前倒し'` を spe
 | `QUESTIONS.md:26` | - **Q-012 COPY・char(n)・timestamp の前倒し**: 性能目標の測定に使う pgbench の初期化に、COPY FROM STDIN、char(n)、timestamp … |
 | `QUESTIONS.md:40` | - **M2-Q7 server_version**: カタログを PostgreSQL 17 にそろえるので、名乗る版を 17.0 に上げます（Q-004 の改訂）。 |
 
-合計 59 行。
+合計 66 行。
 <!-- AUTO:supersede END -->
 
 ### 契約からの逸脱ログ（M1）
@@ -127,7 +134,7 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `grep -n '改訂\|前倒し'` を spe
 QUESTIONS.md に載っているのは M2-Q のうち一部のみ（全 21 件のうち 10 件）。残りは `spec/design/m2.md` 第 9 節にしか無い。
 
 <!-- AUTO:qindex BEGIN -->
-_生成: 2026-10-05 07:32:11 UTC。出所: QUESTIONS.md（行番号は現在のファイル）、初出コミットは `git log -S` の最古の結果（日時は UTC）。_
+_生成: 2026-10-05 13:29:34 UTC。出所: QUESTIONS.md（行番号は現在のファイル）、初出コミットは `git log -S` の最古の結果（日時は UTC）。_
 
 | Q | 見出し | ★ | 行 | 初出コミット (UTC) |
 |---|---|---|---|---|
@@ -165,7 +172,7 @@ _生成: 2026-10-05 07:32:11 UTC。出所: QUESTIONS.md（行番号は現在の�
 ## 3. 設計書の D 表
 
 <!-- AUTO:dtable BEGIN -->
-_生成: 2026-10-05 07:32:11 UTC。出所: `grep -n '^| D[0-9][0-9]* ' spec/design/*.md`。列は 行番号 / ID / 題 / 採用（4 列目。列が無い表は 不明）。_
+_生成: 2026-10-05 13:29:34 UTC。出所: `grep -n '^| D[0-9][0-9]* ' spec/design/*.md`。列は 行番号 / ID / 題 / 採用（4 列目。列が無い表は 不明）。_
 
 - `spec/design/m1-changes.md`: D 表なし（0 行）
 
@@ -277,7 +284,7 @@ m2.md 第 0 節は、4 本の調査（と M3 の調査）の推奨が食い違�
 自動抽出の行（ファイル:行）と、手書きの解消予定を併記する。転記はしない。
 
 <!-- AUTO:pgdiff BEGIN -->
-_生成: 2026-10-05 07:32:11 UTC。出所: `grep -n 'PG との差\|PostgreSQL と違'` を spec/ と QUESTIONS.md に対して実行。転記はせず、該当位置だけを示す。_
+_生成: 2026-10-05 13:29:34 UTC。出所: `grep -n 'PG との差\|PostgreSQL と違'` を spec/ と QUESTIONS.md に対して実行。転記はせず、該当位置だけを示す。_
 
 | 場所 | 該当行（先頭 100 字） |
 |---|---|
@@ -290,20 +297,22 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `grep -n 'PG との差\|PostgreSQL �
 | `spec/design/m5/02-row-lock-rr.md:1431` | \| M5-RW-Q4 \| 「最初のスナップショットを取った」は、`SELECT 1` を含むほぼすべての文で立てる（RW-D11）。M3 §5.2 e・§6.11.1 の「FROM のない SELEC… |
 | `spec/design/m5/01-lock-txn.md:41` | \| LK-D15 \| CREATE の名前の衝突 \| PostgreSQL: カタログの一意インデックスで待ち、後発は `23505`（`pg_type_typname_nsp_index`。実機 E… |
 | `spec/design/m5/10-tests-plan.md:1179` | \| KD-20 \| 差 \| **汎用プランを作らない**（Bind ごとに計画をやり直す。解析結果は `AnalysisKey`（世代・search_path・DateStyle・TimeZone）が… |
-| `spec/design/m4/07-catalog-ddl.md:1861` | - **[07-Q12] `relhasindex` を `DROP INDEX` で下ろさない**（D07-9）。M4 の `VACUUM` は何もしないので、下ろされる機会がない。**変えたい場合… |
+| `spec/design/m4/99-questions.md:229` | - **M4-Q153 [R-16] `context` が backend / superuser-backend の 6 つの GUC は SET できない**: 仮決め: `ignore_sys… |
+| `spec/design/m4/01-scope-decisions.md:176` | - **同時 DDL との読み手の競合**: M3 の D16（ストレージバリア）のまま。TRUNCATE は PostgreSQL と違い読み手を待たせない（07 §5.6）。 |
+| `spec/design/m4/07-catalog-ddl.md:1873` | - **[07-Q12] `relhasindex` を `DROP INDEX` で下ろさない**（D07-9）。M4 の `VACUUM` は何もしないので、下ろされる機会がない。**変えたい場合… |
 | `spec/design/m4/05-executor.md:55` | \| D5-12 \| `avg(float)` \| 入力順に `f64` で足し、`n` で割る（`float8_accum` の `Sx` と同じ）。結果は float8。`Sxx`（分散用）は持たな… |
 | `spec/design/m4/08-sequence-serial.md:92` | \| `ALTER SEQUENCE` の後の `log_cnt` \| PostgreSQL は `START` だけを変えたとき `log_cnt` を保ったまま新しいファイルに WAL を書く（`P… |
-| `spec/design/m4/08-sequence-serial.md:1357` |   - 仮決め: `SeqRun.wal_lsn` は呼び出し後のページの LSN。D8-7 の順序も PostgreSQL と違う。どちらも観測できる SQL の挙動は変えず、クラッシュ後の重複だけ… |
+| `spec/design/m4/08-sequence-serial.md:1356` |   - 仮決め: `SeqRun.wal_lsn` は呼び出し後のページの LSN。D8-7 の順序も PostgreSQL と違う。どちらも観測できる SQL の挙動は変えず、クラッシュ後の重複だけ… |
 | `spec/design/m4/11-tests-plan.md:278` | 各章が「PostgreSQL と違う」と明記したもの。ID は固定する（ファイルのコメントが参照する）。 |
-| `spec/design/m4/10-explain-copy-compat.md:2079` | \| `explain/deparse_plan.slt` \| §4.9 の `Plan` の表: `EXPLAIN (COSTS OFF) SELECT * FROM t WHERE <式>` の `… |
-| `spec/design/m4/10-explain-copy-compat.md:2325` | - **[10-Q9] 混合幅の整数演算子の有無で、式の表示が変わる**。仮決め: 章 09 が `int2`/`int4`/`int8` の混合幅の比較・算術演算子を持つ前提で、`bi > 5` は… |
+| `spec/design/m4/10-explain-copy-compat.md:2146` | \| `explain/deparse_plan.slt` \| §4.9 の `Plan` の表: `EXPLAIN (COSTS OFF) SELECT * FROM t WHERE <式>` の `… |
+| `spec/design/m4/10-explain-copy-compat.md:2397` | - **[10-Q9] 混合幅の整数演算子の有無で、式の表示が変わる**。仮決め: 章 09 が `int2`/`int4`/`int8` の混合幅の比較・算術演算子を持つ前提で、`bi > 5` は… |
 | `spec/research/m2-page-heap.md:458` | 2. データチェックサムは常に有効（PostgreSQL と違い無効化できない）。アルゴリズムは PostgreSQL と同じ FNV-1a 派生。 |
 | `spec/research/m5-types-fk.md:720` | - **C-8 FK のトリガー**: PG は FK を内部トリガーで実装しますが、yuzhu はトリガーを作らず実行器に組み込みます。`pg_trigger` に行が出ない点が PG との差分にな… |
 | `spec/research/pg-compat-tools.md:176` | **要点**: 6 と 8 は中身が空でも**解析を通る**必要がある。PostgreSQL は、テーブルが空でも式の型検査をするので、yuzhu でも配列型の列と演算子が解析できないと失敗する。抜け… |
 | `spec/research/m4-query.md:737` | - **M4Q-2 numeric の前倒し**: `sum(bigint)` と `avg(整数)` の結果型が numeric のため、numeric の最小核（演算・入出力・キャスト・小数リテラ… |
 | `spec/research/m3-tx-semantics.md:54` | 9. **SET はトランザクショナル**（ROLLBACK や暗黙トランザクションの失敗で元に戻る）。SET LOCAL はトランザクション終了で戻る。**ParameterStatus は Rea… |
 
-合計 21 行。
+合計 23 行。
 <!-- AUTO:pgdiff END -->
 
 | 差分 | 症状 | 出所 | 解消予定 M |
@@ -321,7 +330,7 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `grep -n 'PG との差\|PostgreSQL �
 ## 7. 追加依存と規約の整合
 
 <!-- AUTO:deps BEGIN -->
-_生成: 2026-10-05 07:32:11 UTC。出所: `git log -p -- '*Cargo.toml' '*Cargo.lock'`（コミット済み）と `git diff HEAD`（未コミット）。追加行（+）のみ。内部クレート yuzhu-* と package メタデータは除く。_
+_生成: 2026-10-05 13:29:34 UTC。出所: `git log -p -- '*Cargo.toml' '*Cargo.lock'`（コミット済み）と `git diff HEAD`（未コミット）。追加行（+）のみ。内部クレート yuzhu-* と package メタデータは除く。_
 
 | 状態 | コミット | ファイル | 追加された行 |
 |---|---|---|---|
@@ -350,6 +359,7 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `git log -p -- '*Cargo.toml' '*Cargo.
 | コミット済み | 610c121 | impl/rust/crates/yuzhu-server/Cargo.toml | `signal-hook.workspace = true` |
 | コミット済み | 5e42f81 | Cargo.lock | 272 件の新規パッケージ: anstream,anstyle,anstyle-parse,anstyle-query,anstyle-wincon,async-trait,base64,bitflags,block-buffer,bumpalo,byteorder,bytes,cfg-if,chacha20,clap,clap_builder,clap_derive,clap_lex,cmov,colorchoice,const-oid,cpufeatures,crypto-common,ctutils,digest,equivalent,fallible-iterator,futures-channel,futures… |
 | コミット済み | 610c121 | Cargo.lock | 27 件の新規パッケージ: autocfg,bit-set,bit-vec,errno,fastrand,fnv,getrandom,linux-raw-sys,num-traits,ppv-lite86,proptest,quick-error,r-efi,rand,rand_chacha,rand_core,rand_xorshift,regex-syntax,rustix,rusty-fork,signal-hook,signal-hook-registry,tempfile,unarray,wait-timeout,zerocopy,zerocopy-derive |
+| コミット済み | 56fc5a0 | Cargo.lock | 1 件の新規パッケージ: slttools |
 
 注: 依存の承認状況（CLAUDE.md「依存追加は慎重に」との関係、M2-Q6 など）は手書き欄で扱う。Cargo.lock の行は推移的依存を含む。
 <!-- AUTO:deps END -->
@@ -365,7 +375,7 @@ _生成: 2026-10-05 07:32:11 UTC。出所: `git log -p -- '*Cargo.toml' '*Cargo.
 ## 8. 「未検証」の追跡
 
 <!-- AUTO:unverified BEGIN -->
-_生成: 2026-10-05 07:32:11 UTC。出所: `grep -c 未検証`（行数ベース）。前回値は本ブロック内のコメント行に保存している。_
+_生成: 2026-10-05 13:29:34 UTC。出所: `grep -c 未検証`（行数ベース）。前回値は本ブロック内のコメント行に保存している。_
 
 | ファイル | 現在 | 前回 | 差分 |
 |---|---|---|---|

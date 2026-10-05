@@ -54,10 +54,12 @@ enum Kind {
     Isolation,
     /// A comma-separated list of identifiers (`search_path`).
     IdentList,
-    /// `client_encoding`: only UTF8.
+    /// `client_encoding`: UTF8 or LATIN1.
     Encoding,
     /// `DateStyle`.
     DateStyle,
+    /// `TimeZone`: a zone name known to the tz database, or an offset.
+    TimeZone,
 }
 
 /// A registry entry.
@@ -285,6 +287,13 @@ pub static SETTINGS: &[SettingDef] = &[
         "Shows the server (database) character set encoding.",
     ),
     def(
+        "role",
+        "none",
+        false,
+        Kind::ReadOnly,
+        "Sets the current role.",
+    ),
+    def(
         "server_version",
         "17.0",
         true,
@@ -313,6 +322,34 @@ pub static SETTINGS: &[SettingDef] = &[
         "Causes '...' strings to treat backslashes literally.",
     ),
     def(
+        "work_mem",
+        "4MB",
+        false,
+        Kind::Str,
+        "Sets the maximum memory to be used for query workspaces.",
+    ),
+    def(
+        "maintenance_work_mem",
+        "64MB",
+        false,
+        Kind::Str,
+        "Sets the maximum memory to be used for maintenance operations.",
+    ),
+    def(
+        "enable_seqscan",
+        "on",
+        false,
+        Kind::Bool,
+        "Enables the planner's use of sequential-scan plans.",
+    ),
+    def(
+        "enable_indexscan",
+        "on",
+        false,
+        Kind::Bool,
+        "Enables the planner's use of index-scan plans.",
+    ),
+    def(
         "statement_timeout",
         "0",
         false,
@@ -323,7 +360,7 @@ pub static SETTINGS: &[SettingDef] = &[
         "TimeZone",
         "UTC",
         true,
-        Kind::Str,
+        Kind::TimeZone,
         "Sets the time zone for displaying and interpreting time stamps.",
     ),
     def(
@@ -421,6 +458,48 @@ fn unrecognized(name: &str) -> Error {
     )
 }
 
+fn exceeds_int_range(name: &str, value: &str) -> Error {
+    invalid_value(name, value).with_hint("Value exceeds integer range.")
+}
+
+fn fits_i32(v: i64) -> bool {
+    i32::try_from(v).is_ok()
+}
+
+/// 整数として解釈する。i32 に収まらない（i64 溢れ含む）値は PG と同じく
+/// "Value exceeds integer range." 付きの invalid value にする。
+fn parse_int32_like(name: &str, num: &str, raw: &str) -> Result<i64> {
+    match num.parse::<i64>() {
+        Ok(n) if fits_i32(n) => Ok(n),
+        Ok(_) => Err(exceeds_int_range(name, raw)),
+        Err(_)
+            if !num.is_empty()
+                && num
+                    .trim_start_matches(['-', '+'])
+                    .bytes()
+                    .all(|b| b.is_ascii_digit()) =>
+        {
+            Err(exceeds_int_range(name, raw))
+        }
+        Err(_) if num.contains(['.', 'e', 'E']) => {
+            // PostgreSQL の parse_int は小数・指数表記を許し、偶数丸めで整数にする。
+            let f: f64 = num.parse().map_err(|_| invalid_value(name, raw))?;
+            let r = f.round_ties_even();
+            if !r.is_finite() || r.abs() > f64::from(i32::MAX) + 1.0 {
+                return Err(exceeds_int_range(name, raw));
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let n = r as i64;
+            if fits_i32(n) {
+                Ok(n)
+            } else {
+                Err(exceeds_int_range(name, raw))
+            }
+        }
+        Err(_) => Err(invalid_value(name, raw)),
+    }
+}
+
 fn invalid_value(name: &str, value: &str) -> Error {
     Error::new(
         sqlstate::INVALID_PARAMETER_VALUE,
@@ -471,12 +550,12 @@ fn parse_millis(name: &str, raw: &str) -> Result<i64> {
 fn parse_millis_min(name: &str, raw: &str, min: i64) -> Result<i64> {
     let s = raw.trim();
     let split = s
-        .find(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+'))
+        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '-' | '+' | '.' | 'e' | 'E')))
         .unwrap_or(s.len());
     let (num, unit) = s.split_at(split);
-    let n: i64 = num.parse().map_err(|_| invalid_value(name, raw))?;
     let mult = match unit.trim() {
         "" | "ms" => 1,
+        "us" => 0,
         "s" => 1000,
         "min" => 60_000,
         "h" => 3_600_000,
@@ -487,14 +566,32 @@ fn parse_millis_min(name: &str, raw: &str, min: i64) -> Result<i64> {
             ));
         }
     };
-    let v = n
-        .checked_mul(mult)
-        .ok_or_else(|| invalid_value(name, raw))?;
+    let v = if num.contains(['.', 'e', 'E']) || mult == 0 {
+        // PostgreSQL は小数値・us を最小単位 (ms) へ換算し、偶数丸めで整数にする。
+        let n: f64 = num.parse().map_err(|_| invalid_value(name, raw))?;
+        let factor = if mult == 0 {
+            0.001
+        } else {
+            f64::from(i32::try_from(mult).unwrap_or(i32::MAX))
+        };
+        let scaled = (n * factor).round_ties_even();
+        if !scaled.is_finite() || scaled.abs() > f64::from(i32::MAX) {
+            return Err(exceeds_int_range(name, raw));
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let scaled = scaled as i64;
+        scaled
+    } else {
+        let n = parse_int32_like(name, num, raw)?;
+        n.checked_mul(mult)
+            .filter(|v| fits_i32(*v))
+            .ok_or_else(|| exceeds_int_range(name, raw))?
+    };
     if !(min..=i64::from(i32::MAX)).contains(&v) {
         return Err(Error::new(
             sqlstate::INVALID_PARAMETER_VALUE,
             format!(
-                "{v} ms is outside the valid range for parameter \"{name}\" ({min} .. 2147483647)"
+                "{v} ms is outside the valid range for parameter \"{name}\" ({min} ms .. 2147483647 ms)"
             ),
         ));
     }
@@ -518,27 +615,67 @@ fn format_millis(v: i64) -> String {
     format!("{v}ms")
 }
 
-fn normalize_datestyle(current: &str, raw: &str) -> Option<String> {
+/// Why a `DateStyle` value was rejected.
+#[derive(Clone, Copy)]
+enum DateStyleError {
+    Invalid,
+    /// Two different output styles or two different field orders.
+    Conflict,
+}
+
+fn datestyle_error(name: &str, raw: &str, e: DateStyleError) -> Error {
+    let err = invalid_value(name, raw);
+    match e {
+        DateStyleError::Invalid => err,
+        DateStyleError::Conflict => err.with_detail("Conflicting \"datestyle\" specifications."),
+    }
+}
+
+fn normalize_datestyle(current: &str, raw: &str) -> std::result::Result<String, DateStyleError> {
     let mut parts = current.split(',').map(str::trim);
     let mut style = parts.next().unwrap_or("ISO").to_owned();
     let mut order = parts.next().unwrap_or("MDY").to_owned();
+    let mut german = false;
+    let mut have_style = false;
+    let mut have_order = false;
     for tok in raw.split(',').map(|t| t.trim().to_ascii_lowercase()) {
-        match tok.as_str() {
-            "iso" => style = "ISO".into(),
-            "postgres" => style = "Postgres".into(),
-            "sql" => style = "SQL".into(),
-            "german" => style = "German".into(),
-            "mdy" | "us" | "noneuropean" | "non-european" => order = "MDY".into(),
-            "dmy" | "european" | "euro" => order = "DMY".into(),
-            "ymd" => order = "YMD".into(),
+        let new_style = match tok.as_str() {
+            "iso" => Some("ISO"),
+            "postgres" => Some("Postgres"),
+            "sql" => Some("SQL"),
+            "german" => Some("German"),
+            _ => None,
+        };
+        if let Some(ns) = new_style {
+            if have_style && style != ns {
+                return Err(DateStyleError::Conflict);
+            }
+            have_style = true;
+            style = ns.into();
+            german = ns == "German";
+            continue;
+        }
+        let new_order = match tok.as_str() {
+            "mdy" | "us" | "noneuropean" | "non-european" => "MDY",
+            "dmy" | "european" | "euro" => "DMY",
+            "ymd" => "YMD",
             "default" => {
                 style = "ISO".into();
                 order = "MDY".into();
+                continue;
             }
-            _ => return None,
+            _ => return Err(DateStyleError::Invalid),
+        };
+        if have_order && order != new_order {
+            return Err(DateStyleError::Conflict);
         }
+        have_order = true;
+        order = new_order.into();
     }
-    Some(format!("{style}, {order}"))
+    if german && !have_order {
+        order = "DMY".into();
+    }
+    Ok(format!("{style}, {order}"))
 }
 
 /// The error of a parameter that cannot be changed by `SET`.
@@ -570,8 +707,9 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
     let raw = match args {
         [one] => one.as_str(),
         _ if matches!(def.kind, Kind::DateStyle) => {
+            let joined = args.join(", ");
             return normalize_datestyle(current, &args.join(","))
-                .ok_or_else(|| invalid_value(name, &args.join(", ")));
+                .map_err(|e| datestyle_error(name, &joined, e));
         }
         _ => {
             return Err(Error::new(
@@ -602,7 +740,7 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
             )),
         },
         Kind::Int { min, max } => {
-            let v: i64 = raw.trim().parse().map_err(|_| invalid_value(name, raw))?;
+            let v = parse_int32_like(name, raw.trim(), raw)?;
             if v < min || v > max {
                 return Err(Error::new(
                     sqlstate::INVALID_PARAMETER_VALUE,
@@ -632,7 +770,8 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
             if values.contains(&v.as_str()) {
                 Ok(v)
             } else {
-                Err(invalid_value(name, raw)
+                // PostgreSQL reports enum parameters by their lower-case name.
+                Err(invalid_value(&name.to_ascii_lowercase(), raw)
                     .with_hint(format!("Available values: {}.", values.join(", "))))
             }
         }
@@ -640,14 +779,80 @@ fn normalize(def: &SettingDef, current: &str, args: &[String]) -> Result<String>
             let v = raw.trim().to_ascii_lowercase();
             if matches!(v.as_str(), "utf8" | "utf-8" | "unicode") {
                 Ok("UTF8".into())
+            } else if matches!(
+                v.as_str(),
+                "latin1" | "iso88591" | "iso_8859_1" | "iso-8859-1" | "iso8859-1" | "l1"
+            ) {
+                Ok("LATIN1".into())
             } else {
                 Err(invalid_value(name, raw))
             }
         }
         Kind::DateStyle => {
-            normalize_datestyle(current, raw).ok_or_else(|| invalid_value(name, raw))
+            normalize_datestyle(current, raw).map_err(|e| datestyle_error(name, raw, e))
         }
+        Kind::TimeZone => normalize_timezone(raw).ok_or_else(|| invalid_value(name, raw)),
     }
+}
+
+/// Where the tz database lives. When it is absent, every well-formed name is
+/// accepted since there is nothing to check against.
+const ZONEINFO_DIR: &str = "/usr/share/zoneinfo";
+
+/// Validates a `TimeZone` value: an IANA zone name (exact case), `UTC` in any
+/// case, a numeric offset (`5`, `-03`, `+05:30`) or a POSIX-style string
+/// (`PST8PDT`, `UTC+3`).
+fn normalize_timezone(raw: &str) -> Option<String> {
+    if raw.eq_ignore_ascii_case("utc") {
+        return Some("UTC".into());
+    }
+    if raw.is_empty() || raw.starts_with("right/") {
+        return None;
+    }
+    (is_numeric_offset(raw) || is_posix_zone(raw) || zone_exists(raw)).then(|| raw.to_owned())
+}
+
+fn zone_exists(name: &str) -> bool {
+    let dir = std::path::Path::new(ZONEINFO_DIR);
+    if name.starts_with('/')
+        || name
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == "..")
+    {
+        return false;
+    }
+    if !dir.is_dir() {
+        return name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b));
+    }
+    dir.join(name).is_file()
+}
+
+/// `[+-]hh[:mm[:ss]]`.
+fn is_numeric_offset(s: &str) -> bool {
+    let rest = s.strip_prefix(['+', '-']).unwrap_or(s);
+    let parts: Vec<&str> = rest.split(':').collect();
+    parts.len() <= 3
+        && parts
+            .iter()
+            .all(|p| (1..=2).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `std offset [dst]`: a name of three or more letters followed by an offset
+/// and optionally a DST name (`PST8PDT`, `UTC+3`).
+fn is_posix_zone(s: &str) -> bool {
+    let name_len = s.bytes().take_while(u8::is_ascii_alphabetic).count();
+    if name_len < 3 {
+        return false;
+    }
+    let rest = &s[name_len..];
+    let offset_len = rest
+        .bytes()
+        .position(|b| b.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    let (offset, dst) = rest.split_at(offset_len);
+    is_numeric_offset(offset) && dst.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
 /// The isolation levels that can run. `REPEATABLE READ` and `SERIALIZABLE`
@@ -774,6 +979,26 @@ impl Settings {
     pub fn set(&mut self, name: &str, args: Option<&[String]>, local: bool) -> Result<()> {
         let k = key(name);
         let value = match lookup(name) {
+            Some(d) if d.name == "session_authorization" => {
+                let user = self.reset_values.get(&k).cloned().unwrap_or_default();
+                match args {
+                    None => user,
+                    Some([a]) if *a == user => user,
+                    Some(_) => {
+                        return Err(Error::not_supported(
+                            "switching the session user is not supported",
+                        ));
+                    }
+                }
+            }
+            Some(d) if d.name == "role" => match args {
+                None => "none".into(),
+                Some([a]) if a.eq_ignore_ascii_case("none") => "none".into(),
+                Some([a]) if Some(a) == self.reset_values.get("session_authorization") => a.clone(),
+                Some(_) => {
+                    return Err(Error::not_supported("switching the role is not supported"));
+                }
+            },
             Some(d) => match args {
                 None => {
                     if let Some(e) = fixed_error(d) {
@@ -798,6 +1023,17 @@ impl Settings {
         }
         self.current.insert(k, value);
         Ok(())
+    }
+
+    /// Declares a custom parameter with an empty value if it is unknown
+    /// (`SET LOCAL` outside a block still leaves the placeholder, as in
+    /// PostgreSQL).
+    pub fn declare_custom(&mut self, name: &str) {
+        if lookup(name).is_none() && is_custom(name) {
+            let k = key(name);
+            self.session.entry(k.clone()).or_default();
+            self.current.entry(k).or_default();
+        }
     }
 
     /// `RESET name`.
@@ -844,7 +1080,18 @@ impl Settings {
     /// Transaction rolled back: restore the values at transaction start.
     pub fn rollback(&mut self) {
         if let Some(start) = self.txn_start.take() {
+            // A custom parameter created in the transaction stays defined
+            // (empty) after the rollback, as in PostgreSQL.
+            let created: Vec<String> = self
+                .session
+                .keys()
+                .filter(|k| is_custom(k) && !start.contains_key(*k))
+                .cloned()
+                .collect();
             self.session = start;
+            for k in created {
+                self.session.insert(k, String::new());
+            }
         }
         self.current = self.session.clone();
     }
@@ -1111,8 +1358,11 @@ mod tests {
         assert_eq!(st.get("DateStyle"), "ISO, MDY");
         st.set("client_encoding", Some(&s(&["utf-8"])), false)
             .unwrap();
+        st.set("client_encoding", Some(&s(&["latin1"])), false)
+            .unwrap();
+        assert_eq!(st.get("client_encoding"), "LATIN1");
         assert!(
-            st.set("client_encoding", Some(&s(&["latin1"])), false)
+            st.set("client_encoding", Some(&s(&["sjis"])), false)
                 .is_err()
         );
         assert!(

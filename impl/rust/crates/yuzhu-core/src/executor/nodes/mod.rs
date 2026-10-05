@@ -16,7 +16,7 @@ pub use delete::DeleteExec;
 pub use distinct::DistinctExec;
 pub use filter::FilterExec;
 pub use insert::InsertExec;
-pub use limit::LimitExec;
+pub use limit::{LimitExec, collect_constants};
 pub use project::ProjectExec;
 pub use result::ResultExec;
 pub use seq_scan::SeqScanExec;

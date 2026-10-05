@@ -69,6 +69,7 @@ enum Kind {
     Name,
     Text,
     OidVector,
+    Numeric,
     /// Types that exist only for always-NULL columns.
     NullOnly,
 }
@@ -89,6 +90,7 @@ fn kind_of(type_oid: u32) -> Result<Kind> {
         oid::NAME => Kind::Name,
         oid::TEXT | oid::VARCHAR | oid::PG_NODE_TREE | oid::UNKNOWN => Kind::Text,
         oid::OIDVECTOR => Kind::OidVector,
+        oid::NUMERIC => Kind::Numeric,
         oid::ACLITEM
         | oid::TIMESTAMPTZ
         | oid::ANYARRAY
@@ -224,6 +226,10 @@ fn form_tuple_with(
             (Kind::Text, Datum::Text(s)) => {
                 has_var = true;
                 write_varlena(&mut buf, s.as_bytes(), align, compress);
+            }
+            (Kind::Numeric, Datum::Numeric(n)) => {
+                has_var = true;
+                write_varlena(&mut buf, &n.to_binary(), align, compress);
             }
             (Kind::OidVector, Datum::OidVector(v)) => {
                 has_var = true;
@@ -526,6 +532,10 @@ pub fn deform_tuple(desc: &TupleDesc, bytes: &[u8]) -> Result<Row> {
                 Datum::Text(utf8(&b[..end])?)
             }
             Kind::Text => Datum::Text(utf8(&r.varlena(a)?)?),
+            Kind::Numeric => Datum::Numeric(
+                yuzhu_numeric::Numeric::from_binary(&r.varlena(a)?, -1)
+                    .map_err(|e| corrupt(e.to_string()))?,
+            ),
             Kind::OidVector => {
                 let b = r.varlena(a)?;
                 if b.len() % 4 != 0 {

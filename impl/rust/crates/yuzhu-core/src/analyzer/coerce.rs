@@ -392,7 +392,10 @@ fn make_cast(expr: BoundExpr, method: CastMethod, target: Oid) -> BoundExpr {
 /// target has a typmod different from the expression's (varchar only in
 /// M1).
 pub(super) fn coerce_typmod(expr: BoundExpr, target: SqlType, explicit: bool) -> BoundExpr {
-    if target.typmod < 0 || target.typmod == expr.ty.typmod || target.oid != oid::VARCHAR {
+    if target.typmod < 0
+        || target.typmod == expr.ty.typmod
+        || !matches!(target.oid, oid::VARCHAR | oid::NUMERIC)
+    {
         return expr;
     }
     let span = expr.span;

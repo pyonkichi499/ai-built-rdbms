@@ -1,0 +1,15 @@
+# 入れ子の COALESCE は、内側が定数に畳み込まれてから外側を判定する（後続の定数オーバーフロー式は評価されない）
+
+statement ok
+CREATE TABLE ncf_r(c2 bigint)
+
+statement ok
+INSERT INTO ncf_r VALUES (1)
+
+query I
+SELECT coalesce(coalesce(-7, c2), abs(2147483647+32767)) FROM ncf_r
+----
+-7
+
+statement ok
+DROP TABLE ncf_r

@@ -640,6 +640,10 @@ fn put_datum(out: &mut Vec<u8>, d: &Datum) {
             }
         }
         Datum::Void => out.push(15),
+        Datum::Numeric(n) => {
+            out.push(16);
+            put_bytes(out, &n.to_binary());
+        }
     }
 }
 
@@ -691,6 +695,7 @@ pub fn datum_matches_type(d: &Datum, type_oid: Oid) -> bool {
         Datum::Int8(_) => type_oid == oid::INT8,
         Datum::Float4(_) => type_oid == oid::FLOAT4,
         Datum::Float8(_) => type_oid == oid::FLOAT8,
+        Datum::Numeric(_) => type_oid == oid::NUMERIC,
         Datum::Text(_) => matches!(
             type_oid,
             oid::TEXT | oid::VARCHAR | oid::NAME | oid::PG_NODE_TREE

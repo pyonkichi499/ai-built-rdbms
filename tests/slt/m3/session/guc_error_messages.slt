@@ -12,3 +12,21 @@ SET IntervalStyle = 'z'
 
 statement error invalid value for parameter "bytea_output": "z"
 SET BYTEA_OUTPUT = 'z'
+
+# DateStyle: 出力形式・フィールド順が衝突する指定は拒否（22023）
+statement error Conflicting "datestyle" specifications
+SET DateStyle = 'ISO, SQL'
+
+statement error invalid value for parameter "DateStyle": "MDY, DMY"
+SET DateStyle = 'MDY, DMY'
+
+statement ok
+SET DateStyle = 'ISO, ISO, DMY'
+
+query T
+SHOW DateStyle
+----
+ISO, DMY
+
+statement ok
+RESET DateStyle

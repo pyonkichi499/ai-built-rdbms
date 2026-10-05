@@ -29,14 +29,14 @@ yuzhu（PostgreSQL ワイヤプロトコル互換 RDBMS を AI エージェン�
 <!-- AUTO:index BEGIN -->
 | ファイル | 種別 | 最終更新 |
 |---|---|---|
-| `journal/README.md` | 手書き中心 | 2026-10-04 15:33 UTC |
-| `journal/timeline.md` | 自動 + 手書き | 2026-10-05 07:32 UTC |
-| `journal/decisions.md` | 自動 + 手書き | 2026-10-05 07:32 UTC |
-| `journal/workflows.md` | 自動 + 手書き | 2026-10-05 07:32 UTC |
-| `journal/setbacks.md` | 自動 + 手書き | 2026-10-05 07:32 UTC |
+| `journal/README.md` | 手書き中心 | 2026-10-05 07:32 UTC |
+| `journal/timeline.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
+| `journal/decisions.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
+| `journal/workflows.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
+| `journal/setbacks.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
 | `journal/metrics.md` | 自動 + 手書き | 2026-10-04 15:33 UTC |
 | `journal/retrospective.md` | 手書き中心 | 2026-10-04 15:20 UTC |
-| `journal/snapshots.md` | 手書き中心 | 2026-10-05 07:32 UTC |
+| `journal/snapshots.md` | 手書き中心 | 2026-10-05 13:29 UTC |
 <!-- AUTO:index END -->
 
 ## 3. 更新手順

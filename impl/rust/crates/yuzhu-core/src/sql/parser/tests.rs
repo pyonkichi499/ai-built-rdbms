@@ -222,6 +222,13 @@ fn sexp(e: &Expr) -> String {
             s
         }
         Expr::Coalesce { args, .. } => format!("(coalesce {})", list(args)),
+        Expr::MinMax { greatest, args, .. } => {
+            format!(
+                "({} {})",
+                if *greatest { "greatest" } else { "least" },
+                list(args)
+            )
+        }
         Expr::NullIf { left, right, .. } => format!("(nullif {} {})", sexp(left), sexp(right)),
         Expr::SessionValue { kind, .. } => format!("<{}>", kind.column_name()),
         Expr::Default { .. } => "DEFAULT".into(),
@@ -739,7 +746,7 @@ fn not_supported_expressions() {
     unsupported("SELECT (1, 2)");
     unsupported("SELECT a[1] FROM t");
     unsupported("SELECT ARRAY[1]");
-    unsupported("SELECT greatest(1, 2)");
+    unsupported("SELECT row(1, 2)");
     unsupported("SELECT a COLLATE \"C\" FROM t");
     unsupported("SELECT count(*) OVER () FROM t");
     unsupported("SELECT f(x => 1)");

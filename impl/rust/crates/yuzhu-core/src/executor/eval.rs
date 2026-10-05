@@ -151,7 +151,14 @@ impl Evaluator<'_> {
                 self.eval_case(arms, else_result.as_deref())
             }
             BoundExprKind::Coalesce(args) => self.eval_coalesce(args),
+            BoundExprKind::MinMax { args, cmp, .. } => self.eval_min_max(args, cmp),
             BoundExprKind::NullIf { left, right, eq_op } => self.eval_nullif(left, right, eq_op),
+            BoundExprKind::DistinctFrom {
+                left,
+                right,
+                eq_op,
+                negated,
+            } => self.eval_distinct_from(left, right, eq_op, *negated),
             BoundExprKind::Like {
                 expr: inner,
                 pattern,
@@ -217,6 +224,37 @@ impl Evaluator<'_> {
         } else {
             Ok(l)
         }
+    }
+
+    fn eval_distinct_from(
+        &self,
+        left: &BoundExpr,
+        right: &BoundExpr,
+        eq_op: &BuiltinOperator,
+        negated: bool,
+    ) -> Result<Datum> {
+        let l = self.eval(left)?;
+        let r = self.eval(right)?;
+        let distinct = match (l.is_null(), r.is_null()) {
+            (true, true) => false,
+            (true, false) | (false, true) => true,
+            (false, false) => call_eq(eq_op, &l, &r)? != Some(true),
+        };
+        Ok(Datum::Bool(distinct != negated))
+    }
+
+    fn eval_min_max(&self, args: &[BoundExpr], cmp: &BuiltinOperator) -> Result<Datum> {
+        let mut best = Datum::Null;
+        for a in args {
+            let v = self.eval(a)?;
+            if v.is_null() {
+                continue;
+            }
+            if best.is_null() || call_eq(cmp, &v, &best)? == Some(true) {
+                best = v;
+            }
+        }
+        Ok(best)
     }
 
     fn eval_like(
@@ -379,6 +417,7 @@ pub fn apply_cast(d: Datum, from: SqlType, to: SqlType, method: CastMethod) -> R
 pub fn coerce_typmod(d: Datum, ty: SqlType, explicit: bool) -> Result<Datum> {
     match d {
         Datum::Text(s) => Ok(Datum::Text(ops::varchar_coerce(s, ty.typmod, explicit)?)),
+        Datum::Numeric(n) => Ok(Datum::Numeric(n.apply_typmod(ty.typmod)?)),
         other => Ok(other),
     }
 }

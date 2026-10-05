@@ -1,0 +1,9 @@
+# ブロック外の SET LOCAL でも、カスタム GUC は空文字列のプレースホルダとして残る
+
+statement ok
+SET LOCAL txnlc_a.b = '1'
+
+query T
+SHOW txnlc_a.b
+----
+(empty)

@@ -1,0 +1,33 @@
+# 整数/時間 GUC は小数・指数表記を受理し、偶数丸めで整数にする
+
+statement ok
+SET extra_float_digits = 2.5
+
+query T
+SHOW extra_float_digits
+----
+2
+
+statement ok
+SET extra_float_digits = 1e0
+
+query T
+SHOW extra_float_digits
+----
+1
+
+statement ok
+SET statement_timeout = 1e3
+
+query T
+SHOW statement_timeout
+----
+1s
+
+statement ok
+SET statement_timeout = '1.5e3ms'
+
+query T
+SHOW statement_timeout
+----
+1500ms

@@ -1,0 +1,17 @@
+# SET ROLE NONE / RESET ROLE
+
+query T
+SHOW role
+----
+none
+
+statement ok
+SET ROLE NONE
+
+query T
+SHOW role
+----
+none
+
+statement ok
+RESET ROLE

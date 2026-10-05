@@ -31,6 +31,7 @@ enum KeyDatum {
     Bool(bool),
     Int(i64),
     Float(u64),
+    Numeric(yuzhu_numeric::Numeric),
     Text(String),
     /// oid, xid, cid, "char", tid and oidvector: a tag and the words.
     Words(u8, Vec<u64>),
@@ -54,6 +55,7 @@ fn key_of(d: &Datum) -> KeyDatum {
         }
         Datum::Float4(v) => float(f64::from(*v)),
         Datum::Float8(v) => float(*v),
+        Datum::Numeric(n) => KeyDatum::Numeric(n.clone()),
         Datum::Text(s) => KeyDatum::Text(s.clone()),
         Datum::Oid(v) => KeyDatum::Words(0, vec![u64::from(*v)]),
         Datum::Xid(v) => KeyDatum::Words(1, vec![u64::from(*v)]),

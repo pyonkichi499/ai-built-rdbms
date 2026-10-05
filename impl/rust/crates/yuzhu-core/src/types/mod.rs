@@ -3,8 +3,10 @@
 
 pub mod datum;
 mod float_fmt;
+pub mod funcs;
 pub mod io;
 pub mod ops;
+pub mod regex;
 pub mod sys;
 
 pub use datum::{Datum, Row, cmp_datum};
@@ -47,6 +49,7 @@ pub mod oid {
     pub const FLOAT4: Oid = 700;
     pub const FLOAT8: Oid = 701;
     pub const UNKNOWN: Oid = 705;
+    pub const NUMERIC: Oid = 1700;
     pub const VARCHAR: Oid = 1043;
     /// OIDs of user-created objects start here.
     pub const FIRST_NORMAL_OBJECT_ID: Oid = 16384;
@@ -80,6 +83,7 @@ impl SqlType {
     pub const INT8: SqlType = SqlType::of(oid::INT8);
     pub const FLOAT4: SqlType = SqlType::of(oid::FLOAT4);
     pub const FLOAT8: SqlType = SqlType::of(oid::FLOAT8);
+    pub const NUMERIC: SqlType = SqlType::of(oid::NUMERIC);
     pub const TEXT: SqlType = SqlType::of(oid::TEXT);
     pub const VARCHAR: SqlType = SqlType::of(oid::VARCHAR);
     pub const UNKNOWN: SqlType = SqlType::of(oid::UNKNOWN);
@@ -142,6 +146,9 @@ pub fn type_display_name(oid: Oid) -> String {
 pub fn format_type(ty: SqlType) -> String {
     match ty.varchar_len() {
         Some(n) => format!("character varying({n})"),
+        None if ty.oid == oid::NUMERIC => {
+            crate::catalog::builtin::format_type_name(ty.oid, Some(ty.typmod))
+        }
         None => type_display_name(ty.oid),
     }
 }
