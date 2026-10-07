@@ -1,1 +1,3 @@
 doc-valid-idents = ["PostgreSQL", "SQLSTATE", ".."]
+# M4: Error gained an 8-byte pointer to its diagnostic fields (m4/00-contracts.md 14.4); 128 bytes.
+large-error-threshold = 136

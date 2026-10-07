@@ -74,6 +74,24 @@ pub(super) fn pin_removed(pool: usize, frame: FrameId) {
 /// and on taking a latch on a block that is not greater than a latch this
 /// thread already holds in the same relation fork.
 pub(super) fn latch_acquired(pool: usize, frame: FrameId, tag: BufferTag, mode: LatchMode) {
+    latch_acquired_inner(pool, frame, tag, mode, true);
+}
+
+/// Like [`latch_acquired`] for B+Tree pages: the double-latch check stays, the
+/// ascending-block-order check is skipped (`06-btree.md` §4.3).
+pub(super) fn latch_acquired_tree(pool: usize, frame: FrameId, tag: BufferTag, mode: LatchMode) {
+    latch_acquired_inner(pool, frame, tag, mode, false);
+}
+
+fn latch_acquired_inner(
+    pool: usize,
+    frame: FrameId,
+    tag: BufferTag,
+    mode: LatchMode,
+    ordered: bool,
+) {
+    #[cfg(not(debug_assertions))]
+    let _ = ordered;
     #[cfg(debug_assertions)]
     {
         let violation = with(|s| {
@@ -87,7 +105,11 @@ pub(super) fn latch_acquired(pool: usize, frame: FrameId, tag: BufferTag, mode: 
                         h.mode
                     ));
                 }
-                if h.tag.rel == tag.rel && h.tag.fork == tag.fork && tag.block < h.tag.block {
+                if ordered
+                    && h.tag.rel == tag.rel
+                    && h.tag.fork == tag.fork
+                    && tag.block < h.tag.block
+                {
                     return Some(format!(
                         "latch order violation: holding block {} of the relation, requested block {}",
                         h.tag.block, tag.block
@@ -241,6 +263,23 @@ mod tests {
     fn double_latch_panics() {
         latch_acquired(9, FrameId(1), tag(1, 1), LatchMode::Read);
         latch_acquired(9, FrameId(1), tag(1, 1), LatchMode::Read);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "double latch")]
+    fn tree_latch_still_detects_double_latch() {
+        latch_acquired_tree(6, FrameId(1), tag(1, 1), LatchMode::Read);
+        latch_acquired_tree(6, FrameId(1), tag(1, 1), LatchMode::Write);
+    }
+
+    #[test]
+    fn tree_latch_allows_descending_blocks() {
+        latch_acquired_tree(5, FrameId(1), tag(1, 9), LatchMode::Write);
+        latch_acquired_tree(5, FrameId(2), tag(1, 3), LatchMode::Write);
+        latch_released(5, FrameId(2));
+        latch_released(5, FrameId(1));
+        assert_eq!(latches_held(), 0);
     }
 
     #[test]

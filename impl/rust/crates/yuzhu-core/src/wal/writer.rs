@@ -949,6 +949,23 @@ mod tests {
     }
 
     #[test]
+    fn redo_lsn_is_nonzero_right_after_open_at_and_finish_recovery() {
+        let (vfs, wal) = setup();
+        let a = wal.insert(noop(10)).unwrap();
+        wal.flush(a.end).unwrap();
+        drop(wal);
+        // 起動直後（WAL を書く前）から、既に書かれたどの LSN 以上の値を返す。
+        let w = Wal::open_at(Arc::clone(&vfs) as Arc<dyn Vfs>, cfg(), a.end, a.start).unwrap();
+        assert_eq!(w.redo_lsn(), a.end);
+        assert!(w.redo_lsn().0 >= a.end.0);
+        drop(w);
+        let rec = Wal::open_for_recovery(Arc::clone(&vfs) as Arc<dyn Vfs>, cfg());
+        rec.finish_recovery(a.end, a.start).unwrap();
+        assert_eq!(rec.redo_lsn(), a.end);
+        assert_eq!(rec.bytes_since_redo(), 0);
+    }
+
+    #[test]
     fn crash_at_every_io_during_inserts_leaves_a_valid_prefix() {
         // 各 I/O の直前でクラッシュしても、読めるレコード列は flush 済みの接頭辞を含み、prev の鎖は切れない。
         let mut total_ops = 0;

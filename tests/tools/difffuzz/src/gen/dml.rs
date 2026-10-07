@@ -1,12 +1,27 @@
 //! dml 領域: DDL（CREATE/DROP TABLE、制約）と INSERT / UPDATE / DELETE、エラー時の文の原子性、読み戻し。
 
-
 use super::values::literal;
-use super::{error_stmt, insert_row_sql, select_all, Cls, Col, Ctx, Table, Ty};
+use super::{error_stmt, select_all, Cls, Col, Ctx, Table, Ty};
 use crate::rng::Rng;
 
-const TYS: [Ty; 16] =
-    [Ty::Int4, Ty::Int4, Ty::Int8, Ty::Int2, Ty::Text, Ty::Bool, Ty::Varchar(8), Ty::Float8, Ty::Text, Ty::Int4, Ty::Numeric, Ty::NumU, Ty::Num51, Ty::Float4, Ty::Varchar(3), Ty::Numeric];
+const TYS: [Ty; 16] = [
+    Ty::Int4,
+    Ty::Int4,
+    Ty::Int8,
+    Ty::Int2,
+    Ty::Text,
+    Ty::Bool,
+    Ty::Varchar(8),
+    Ty::Float8,
+    Ty::Text,
+    Ty::Int4,
+    Ty::Numeric,
+    Ty::NumU,
+    Ty::Num51,
+    Ty::Float4,
+    Ty::Varchar(3),
+    Ty::Numeric,
+];
 
 fn default_expr(rng: &mut Rng, ty: Ty) -> String {
     let k = rng.below(4);
@@ -15,7 +30,7 @@ fn default_expr(rng: &mut Rng, ty: Ty) -> String {
         (Ty::Int2 | Ty::Int4 | Ty::Int8, 1) => "-5".into(),
         (Ty::Text | Ty::Varchar(_), 0) => "('a' || 'b')".into(),
         (Ty::Text | Ty::Varchar(_), 1) => "upper('x')".into(),
-        
+
         (Ty::Bool, 0) => "(1 = 1)".into(),
         (Ty::Numeric | Ty::NumU | Ty::Num51, 0) => "(1.5 + 2)".into(),
         (Ty::Numeric | Ty::NumU | Ty::Num51, 1) => "(10 / 4)".into(),
@@ -33,7 +48,13 @@ fn make_table_dml(ctx: &mut Ctx, n: usize) -> usize {
     let mut defs = Vec::new();
     for i in 0..n {
         let ty = *ctx.rng.pick(&TYS);
-        let mut c = Col { name: format!("c{i}"), ty, not_null: false, default: None, check: None };
+        let mut c = Col {
+            name: format!("c{i}"),
+            ty,
+            not_null: false,
+            default: None,
+            check: None,
+        };
         let mut d = format!("c{i} {}", ty.sql());
         if ctx.rng.chance(35) {
             let e = default_expr(&mut ctx.rng, ty);
@@ -42,17 +63,33 @@ fn make_table_dml(ctx: &mut Ctx, n: usize) -> usize {
         }
         if ctx.rng.chance(25) {
             c.not_null = true;
-            d.push_str(if ctx.rng.chance(20) { " CONSTRAINT nn_c NOT NULL" } else { " NOT NULL" });
+            d.push_str(if ctx.rng.chance(20) {
+                " CONSTRAINT nn_c NOT NULL"
+            } else {
+                " NOT NULL"
+            });
         }
         if ctx.rng.chance(25) {
             let opts: Vec<String> = match ty {
                 Ty::Int2 | Ty::Int4 | Ty::Int8 => {
-                    vec![format!("c{i} >= 0"), format!("c{i} % 2 = 0"), format!("c{i} BETWEEN 1 AND 50")]
+                    vec![
+                        format!("c{i} >= 0"),
+                        format!("c{i} % 2 = 0"),
+                        format!("c{i} BETWEEN 1 AND 50"),
+                    ]
                 }
                 Ty::Text | Ty::Varchar(_) => {
-                    vec![format!("length(c{i}) < 6"), format!("c{i} <> ''"), format!("c{i} LIKE 'a%'")]
+                    vec![
+                        format!("length(c{i}) < 6"),
+                        format!("c{i} <> ''"),
+                        format!("c{i} LIKE 'a%'"),
+                    ]
                 }
-                Ty::Numeric | Ty::NumU | Ty::Num51 => vec![format!("c{i} > 0"), format!("c{i} <> 1.5"), format!("c{i} < 100")],
+                Ty::Numeric | Ty::NumU | Ty::Num51 => vec![
+                    format!("c{i} > 0"),
+                    format!("c{i} <> 1.5"),
+                    format!("c{i} < 100"),
+                ],
                 Ty::Float8 | Ty::Float4 => vec![format!("c{i} < 50")],
                 Ty::Bool => vec![format!("c{i}")],
             };
@@ -68,10 +105,21 @@ fn make_table_dml(ctx: &mut Ctx, n: usize) -> usize {
         cols.push(c);
     }
     if n >= 2 && ctx.rng.chance(20) {
-        let k = ctx.rng.pick(&["c0 IS NOT NULL OR c1 IS NOT NULL", "c0 = c0 OR c1 IS NULL"]).to_string();
-        defs.push(if ctx.rng.chance(50) { format!("CHECK ({k})") } else { format!("CONSTRAINT tbl_chk CHECK ({k})") });
+        let k = ctx
+            .rng
+            .pick(&["c0 IS NOT NULL OR c1 IS NOT NULL", "c0 = c0 OR c1 IS NULL"])
+            .to_string();
+        defs.push(if ctx.rng.chance(50) {
+            format!("CHECK ({k})")
+        } else {
+            format!("CONSTRAINT tbl_chk CHECK ({k})")
+        });
     }
-    let ine = if ctx.rng.chance(10) { "IF NOT EXISTS " } else { "" };
+    let ine = if ctx.rng.chance(10) {
+        "IF NOT EXISTS "
+    } else {
+        ""
+    };
     ctx.push(format!("CREATE TABLE {ine}{name} ({});", defs.join(", ")));
     ctx.tables.push(Table { name, cols });
     ctx.tables.len() - 1
@@ -108,7 +156,7 @@ fn insert_value(ctx: &mut Ctx, c: &Col) -> String {
                 format!("({a} * {b})")
             }
             Ty::Text | Ty::Varchar(_) => "('a' || 'bc')".into(),
-            
+
             _ => lit(&mut ctx.rng, c.ty, false),
         },
     }
@@ -126,7 +174,10 @@ fn opt_where(ctx: &mut Ctx, scope: &[(String, Cls)], none_pct: u64) -> String {
 pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
     let t = ctx.tables[ti].clone();
     let scope = t.scope();
-    match ctx.rng.weighted(&[4, 2, 3, 2, 2, 2, 3, 3, 2, 2, 2, 1, 4, 3, 3, 1, 1]) {
+    match ctx
+        .rng
+        .weighted(&[4, 2, 3, 2, 2, 2, 3, 3, 2, 2, 2, 1, 4, 3, 3, 1, 1])
+    {
         0 => {
             let n = ctx.rng.range(1, 3) as usize;
             let s = insert_rows(ctx, ti, n, 10);
@@ -136,7 +187,11 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
             // 列リスト指定 + DEFAULT
             let c = ctx.rng.pick(&t.cols).clone();
             let bad = ctx.rng.chance(10);
-            let v = if ctx.rng.chance(30) { "DEFAULT".to_string() } else { lit(&mut ctx.rng, c.ty, bad) };
+            let v = if ctx.rng.chance(30) {
+                "DEFAULT".to_string()
+            } else {
+                lit(&mut ctx.rng, c.ty, bad)
+            };
             ctx.push(format!("INSERT INTO {} ({}) VALUES ({v});", t.name, c.name));
         }
         2 => {
@@ -152,7 +207,7 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
         }
         4 => {
             let w = dexpr(&mut ctx.rng, &scope, Cls::Bool, 1);
-            let c = ctx.rng.pick(&t.cols).clone();
+            let _c = ctx.rng.pick(&t.cols).clone();
             ctx.push(format!("DELETE FROM {} WHERE {w};", t.name));
         }
         5 => {
@@ -174,8 +229,13 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
             }
             let sets: Vec<String> = sets.iter().map(|(n, v)| format!("{n} = {v}")).collect();
             let w = opt_where(ctx, &scope, 20);
-            let ret = if ctx.rng.chance(25) { "" } else { "" };
-            ctx.push(format!("UPDATE {} SET {}{w}{ret};", t.name, sets.join(", ")));
+            let _ = ctx.rng.chance(25);
+            let ret = "";
+            ctx.push(format!(
+                "UPDATE {} SET {}{w}{ret};",
+                t.name,
+                sets.join(", ")
+            ));
         }
         7 => {
             // 複数行 INSERT（式・DEFAULT・NULL 混在）。一部の行だけ不正で文全体が失敗する場合もある
@@ -186,8 +246,13 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
                     format!("({})", vs.join(", "))
                 })
                 .collect();
-            let ret = if ctx.rng.chance(20) { "" } else { "" };
-            ctx.push(format!("INSERT INTO {} VALUES {}{ret};", t.name, rows.join(", ")));
+            let _ = ctx.rng.chance(20);
+            let ret = "";
+            ctx.push(format!(
+                "INSERT INTO {} VALUES {}{ret};",
+                t.name,
+                rows.join(", ")
+            ));
         }
         8 => {
             // INSERT ... SELECT（自テーブル・別テーブル）
@@ -203,7 +268,10 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
                 cols.join(", "),
                 srcs.join(", "),
                 o.name,
-                (1..=n).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+                (1..=n)
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         9 => {
@@ -216,7 +284,12 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
             cs.truncate(k);
             let vs: Vec<String> = cs.iter().map(|c| insert_value(ctx, c)).collect();
             let names: Vec<String> = cs.iter().map(|c| c.name.clone()).collect();
-            ctx.push(format!("INSERT INTO {} ({}) VALUES ({});", t.name, names.join(", "), vs.join(", ")));
+            ctx.push(format!(
+                "INSERT INTO {} ({}) VALUES ({});",
+                t.name,
+                names.join(", "),
+                vs.join(", ")
+            ));
         }
         10 => {
             let w = opt_where(ctx, &scope, 30);
@@ -227,7 +300,10 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
             let c = ctx.rng.pick(&t.cols).clone();
             let s = match ctx.rng.below(7) {
                 0 => format!("INSERT INTO {} DEFAULT VALUES;", t.name),
-                1 => format!("INSERT INTO {} ({}, {}) VALUES (1, 2);", t.name, c.name, c.name),
+                1 => format!(
+                    "INSERT INTO {} ({}, {}) VALUES (1, 2);",
+                    t.name, c.name, c.name
+                ),
                 2 => format!("INSERT INTO {} VALUES (1);", t.name),
                 3 => format!("UPDATE {} SET {} = 1, {} = 2;", t.name, c.name, c.name),
                 4 => format!("INSERT INTO {} ({}) VALUES (1, 2);", t.name, c.name),
@@ -239,13 +315,21 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
         12 => {
             // RETURNING 付き INSERT / UPDATE / DELETE
             let c = ctx.rng.pick(&t.cols).clone();
-            let ret = if ctx.rng.chance(50) { "*".to_string() } else { c.name.clone() };
+            let ret = if ctx.rng.chance(50) {
+                "*".to_string()
+            } else {
+                c.name.clone()
+            };
             let ob = format!(" ORDER BY {}", 1);
             let _ = ob;
             match ctx.rng.below(3) {
                 0 => {
                     let vs: Vec<String> = t.cols.iter().map(|c| insert_value(ctx, c)).collect();
-                    ctx.push(format!("INSERT INTO {} VALUES ({}) RETURNING {ret};", t.name, vs.join(", ")));
+                    ctx.push(format!(
+                        "INSERT INTO {} VALUES ({}) RETURNING {ret};",
+                        t.name,
+                        vs.join(", ")
+                    ));
                 }
                 1 => {
                     let v = set_value(ctx, &c, &scope);
@@ -254,7 +338,10 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
                 }
                 _ => {
                     let w = opt_where(ctx, &scope, 30);
-                    ctx.push(format!("WITH d AS (DELETE FROM {}{w} RETURNING {ret}) SELECT * FROM d ORDER BY 1;", t.name));
+                    ctx.push(format!(
+                        "WITH d AS (DELETE FROM {}{w} RETURNING {ret}) SELECT * FROM d ORDER BY 1;",
+                        t.name
+                    ));
                 }
             }
         }
@@ -269,7 +356,11 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
                     "UPDATE {} AS a SET {} = {} FROM {} AS b WHERE a.{} IS NOT DISTINCT FROM b.{};",
                     t.name,
                     c.name,
-                    if oc.ty == c.ty { format!("b.{}", oc.name) } else { "DEFAULT".into() },
+                    if oc.ty == c.ty {
+                        format!("b.{}", oc.name)
+                    } else {
+                        "DEFAULT".into()
+                    },
                     o.name,
                     t.cols[0].name,
                     o.cols[0].name
@@ -284,7 +375,25 @@ pub fn dml_stmt(ctx: &mut Ctx, ti: usize) {
         14 => {
             // 型変換つき INSERT（式 → 列型へ代入キャスト）
             let c = ctx.rng.pick(&t.cols).clone();
-            let e = ctx.rng.pick(&["1.5", "2.5", "(-0.5)", "(10 / 3)", "1e3", "2147483648", "32768", "'12'", "'x'", "(1 = 1)", "('ab' || 'cd')", "1.0::float8", "0.5::numeric", "70000"]).to_string();
+            let e = ctx
+                .rng
+                .pick(&[
+                    "1.5",
+                    "2.5",
+                    "(-0.5)",
+                    "(10 / 3)",
+                    "1e3",
+                    "2147483648",
+                    "32768",
+                    "'12'",
+                    "'x'",
+                    "(1 = 1)",
+                    "('ab' || 'cd')",
+                    "1.0::float8",
+                    "0.5::numeric",
+                    "70000",
+                ])
+                .to_string();
             ctx.push(format!("INSERT INTO {} ({}) VALUES ({e});", t.name, c.name));
         }
         15 => {
@@ -389,7 +498,11 @@ pub fn scenario(ctx: &mut Ctx) {
     }
     for i in 0..ctx.tables.len() {
         let n = ctx.tables[i].name.clone();
-        let all: Vec<String> = "ghijklmnopqrs".replace(' ', "").chars().map(|c| format!("{n}_{c}")).collect();
+        let all: Vec<String> = "ghijklmnopqrs"
+            .replace(' ', "")
+            .chars()
+            .map(|c| format!("{n}_{c}"))
+            .collect();
         ctx.push(format!("DROP TABLE IF EXISTS {};", all.join(", ")));
     }
 }
@@ -424,8 +537,16 @@ fn insert_rows(ctx: &mut Ctx, ti: usize, nrows: usize, invalid_pct: u64) -> Stri
 }
 
 fn col_of(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls) -> Option<String> {
-    let c: Vec<&String> = scope.iter().filter(|(_, k)| *k == cls).map(|(n, _)| n).collect();
-    if c.is_empty() { None } else { Some((*rng.pick(&c)).clone()) }
+    let c: Vec<&String> = scope
+        .iter()
+        .filter(|(_, k)| *k == cls)
+        .map(|(n, _)| n)
+        .collect();
+    if c.is_empty() {
+        None
+    } else {
+        Some((*rng.pick(&c)).clone())
+    }
 }
 
 /// M1〜M3 の範囲で対応している関数・演算子だけを使う式（numeric / GREATEST / IS DISTINCT FROM などは使わない）。
@@ -441,7 +562,13 @@ fn dexpr(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls, d: u32) -> String {
                     }
                 }
                 let v = super::values::int_lit(rng);
-                return if v < 0 { format!("({v})") } else if rng.chance(5) { "NULL".into() } else { v.to_string() };
+                return if v < 0 {
+                    format!("({v})")
+                } else if rng.chance(5) {
+                    "NULL".into()
+                } else {
+                    v.to_string()
+                };
             }
             let e = |rng: &mut Rng| dexpr(rng, scope, Cls::Int, d - 1);
             let nz = rng.range(1, 9);
@@ -453,10 +580,19 @@ fn dexpr(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls, d: u32) -> String {
                 4 => format!("({} % {nz})", e(rng)),
                 5 => format!("abs({})", e(rng)),
                 6 => format!("length({})", dexpr(rng, scope, Cls::Text, d - 1)),
-                7 => format!("CASE WHEN {} THEN {} ELSE {} END", dexpr(rng, scope, Cls::Bool, d - 1), e(rng), e(rng)),
+                7 => format!(
+                    "CASE WHEN {} THEN {} ELSE {} END",
+                    dexpr(rng, scope, Cls::Bool, d - 1),
+                    e(rng),
+                    e(rng)
+                ),
                 8 => format!("COALESCE({}, {})", e(rng), e(rng)),
                 9 => format!("NULLIF({}, {})", e(rng), e(rng)),
-                _ => format!("({})::{}", e(rng), rng.pick(&["integer", "bigint", "smallint"])),
+                _ => format!(
+                    "({})::{}",
+                    e(rng),
+                    rng.pick(&["integer", "bigint", "smallint"])
+                ),
             }
         }
         Cls::Text => {
@@ -466,7 +602,11 @@ fn dexpr(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls, d: u32) -> String {
                         return c;
                     }
                 }
-                return if rng.chance(5) { "NULL".into() } else { super::values::text_lit(rng) };
+                return if rng.chance(5) {
+                    "NULL".into()
+                } else {
+                    super::values::text_lit(rng)
+                };
             }
             let e = |rng: &mut Rng| dexpr(rng, scope, Cls::Text, d - 1);
             match rng.below(7) {
@@ -474,7 +614,12 @@ fn dexpr(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls, d: u32) -> String {
                 2 => format!("upper({})", e(rng)),
                 3 => format!("lower({})", e(rng)),
                 4 => format!("({})::text", dexpr(rng, scope, Cls::Int, d - 1)),
-                5 => format!("CASE WHEN {} THEN {} ELSE {} END", dexpr(rng, scope, Cls::Bool, d - 1), e(rng), e(rng)),
+                5 => format!(
+                    "CASE WHEN {} THEN {} ELSE {} END",
+                    dexpr(rng, scope, Cls::Bool, d - 1),
+                    e(rng),
+                    e(rng)
+                ),
                 _ => format!("COALESCE({}, {})", e(rng), e(rng)),
             }
         }
@@ -501,7 +646,11 @@ fn dexpr(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls, d: u32) -> String {
                 6 => format!("({} IS NOT NULL)", t(rng)),
                 7 => format!("({} IN ({}, {}, {}))", i(rng), i(rng), i(rng), i(rng)),
                 8 => format!("({} BETWEEN {} AND {})", i(rng), i(rng), i(rng)),
-                9 => format!("({} LIKE '{}')", t(rng), rng.pick(&["a%", "%b%", "_bc", "%", "H%o", "100"])),
+                9 => format!(
+                    "({} LIKE '{}')",
+                    t(rng),
+                    rng.pick(&["a%", "%b%", "_bc", "%", "H%o", "100"])
+                ),
                 _ => format!("({} IS TRUE)", b(rng)),
             }
         }
@@ -511,9 +660,22 @@ fn dexpr(rng: &mut Rng, scope: &[(String, Cls)], cls: Cls, d: u32) -> String {
 /// 不正値（bad）のうち、未対応の numeric に落ちるものを除いたリテラル。
 fn bad_lit(rng: &mut Rng, ty: Ty) -> String {
     match ty {
-        Ty::Int2 | Ty::Int4 | Ty::Int8 => rng.pick(&["'abc'", "'1.5'", "2147483648", "true", "''", "'99999999999999999999'", "' 7 '", "'0x10'"]).to_string(),
+        Ty::Int2 | Ty::Int4 | Ty::Int8 => rng
+            .pick(&[
+                "'abc'",
+                "'1.5'",
+                "2147483648",
+                "true",
+                "''",
+                "'99999999999999999999'",
+                "' 7 '",
+                "'0x10'",
+            ])
+            .to_string(),
         Ty::Bool => rng.pick(&["'maybe'", "2", "'abc'", "'tru'"]).to_string(),
-        Ty::Float8 | Ty::Float4 => rng.pick(&["'abc'", "'1.2.3'", "true", "'1e39'", "'1e400'", "''"]).to_string(),
+        Ty::Float8 | Ty::Float4 => rng
+            .pick(&["'abc'", "'1.2.3'", "true", "'1e39'", "'1e400'", "''"])
+            .to_string(),
         _ => literal(rng, ty, true),
     }
 }

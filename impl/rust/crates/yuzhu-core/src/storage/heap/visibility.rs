@@ -3,7 +3,7 @@
 
 use super::tuple::TupleHeader;
 use crate::error::Result;
-use crate::storage::TmResult;
+use crate::storage::{DirtyResult, TmResult, TupleState};
 use crate::txn::clog::{Clog, XidStatus};
 use crate::txn::{Snapshot, Xid};
 use crate::types::Tid;
@@ -95,6 +95,60 @@ pub fn satisfies_update(
             }
         }
     }
+}
+
+/// Who an XID is from the caller's point of view (`m4/06` §4.4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum XidKind {
+    Own,
+    Committed,
+    /// Aborted, or still `IN_PROGRESS` in the clog (a crash leftover; M4 has
+    /// a single writer, so no other transaction can be running).
+    Aborted,
+}
+
+fn xid_kind(clog: &Clog, x: Xid, own: Option<Xid>) -> Result<XidKind> {
+    if x == Xid::BOOTSTRAP || x == Xid::FROZEN {
+        return Ok(XidKind::Committed);
+    }
+    if Some(x) == own {
+        return Ok(XidKind::Own);
+    }
+    Ok(match clog.status(x)? {
+        XidStatus::Committed => XidKind::Committed,
+        XidStatus::Aborted | XidStatus::InProgress => XidKind::Aborted,
+    })
+}
+
+/// `TableStore::tuple_state`. `xmax` is `Xid::INVALID` when there is no
+/// deleter. Command IDs are not consulted.
+pub fn classify(clog: &Clog, xmin: Xid, xmax: Xid, own: Option<Xid>) -> Result<TupleState> {
+    if xid_kind(clog, xmin, own)? == XidKind::Aborted {
+        return Ok(TupleState::InsertAborted);
+    }
+    if xmax == Xid::INVALID {
+        return Ok(TupleState::Live);
+    }
+    Ok(match xid_kind(clog, xmax, own)? {
+        XidKind::Aborted => TupleState::Live,
+        XidKind::Own => TupleState::DeletedBySelf,
+        XidKind::Committed => TupleState::DeadCommitted,
+    })
+}
+
+/// `HeapTupleSatisfiesDirty` subset for `TableStore::fetch_dirty`. Never
+/// returns `WaitFor` in M4. Command IDs are not consulted.
+pub fn satisfies_dirty(clog: &Clog, t: &TupleHeader, own: Option<Xid>) -> Result<DirtyResult> {
+    if xid_kind(clog, t.xmin, own)? == XidKind::Aborted {
+        return Ok(DirtyResult::Invisible);
+    }
+    if t.xmax_invalid() || t.xmax == Xid::INVALID {
+        return Ok(DirtyResult::Visible);
+    }
+    Ok(match xid_kind(clog, t.xmax, own)? {
+        XidKind::Aborted => DirtyResult::Visible,
+        XidKind::Own | XidKind::Committed => DirtyResult::Invisible,
+    })
 }
 
 fn deleted_or_updated(t: &TupleHeader, self_tid: Tid) -> TmResult {
@@ -204,6 +258,69 @@ mod tests {
         assert!(visible(&c, &tup(9, 9, 0, 2), &s).unwrap()); // deleted by this command
         assert!(!visible(&c, &tup(5, 9, 0, 0), &s).unwrap());
         assert!(visible(&c, &tup(5, 9, 0, 3), &s).unwrap());
+    }
+
+    #[test]
+    fn classify_all_combinations() {
+        let c = clog();
+        let own = Some(Xid(9));
+        let x = Xid;
+        // xmin: 5 committed, 9 own, 1 bootstrap, 6 aborted, 10 leftover
+        for (xmin, live) in [(5, true), (9, true), (1, true), (6, false), (10, false)] {
+            let st = classify(&c, x(xmin), Xid::INVALID, own).unwrap();
+            let want = if live {
+                TupleState::Live
+            } else {
+                TupleState::InsertAborted
+            };
+            assert_eq!(st, want);
+            if !live {
+                assert_eq!(
+                    classify(&c, x(xmin), x(8), own).unwrap(),
+                    TupleState::InsertAborted
+                );
+            }
+        }
+        for xmin in [5, 9] {
+            let st = |xmax| classify(&c, x(xmin), x(xmax), own).unwrap();
+            assert_eq!(st(9), TupleState::DeletedBySelf);
+            assert_eq!(st(8), TupleState::DeadCommitted);
+            assert_eq!(st(6), TupleState::Live);
+            assert_eq!(st(10), TupleState::Live);
+        }
+        assert_eq!(
+            classify(&c, x(5), x(8), None).unwrap(),
+            TupleState::DeadCommitted
+        );
+        assert_eq!(
+            classify(&c, x(9), Xid::INVALID, None).unwrap(),
+            TupleState::InsertAborted
+        );
+        assert!(classify(&c, Xid::INVALID, Xid::INVALID, own).is_err());
+    }
+
+    #[test]
+    fn dirty_all_combinations() {
+        let c = clog();
+        let own = Some(Xid(9));
+        for (xmin, live) in [(5, true), (9, true), (6, false), (10, false)] {
+            let r = satisfies_dirty(&c, &tup(xmin, 0, 0, 0), own).unwrap();
+            let want = if live {
+                DirtyResult::Visible
+            } else {
+                DirtyResult::Invisible
+            };
+            assert_eq!(r, want);
+            for (xmax, vis) in [(9, false), (8, false), (6, true), (10, true)] {
+                let r = satisfies_dirty(&c, &tup(xmin, xmax, 0, 0), own).unwrap();
+                let want = if live && vis {
+                    DirtyResult::Visible
+                } else {
+                    DirtyResult::Invisible
+                };
+                assert_eq!(r, want, "xmin {xmin} xmax {xmax}");
+            }
+        }
     }
 
     #[test]

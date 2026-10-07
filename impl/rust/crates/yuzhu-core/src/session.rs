@@ -13,20 +13,26 @@
 //! ストレージバリア（共有）の下でスナップショット → analyze → plan → 実行し、
 //! 文が成功したら CCI する。コミット / アボートは §5.3。
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::analyzer::{self, BoundCreateTable, BoundDropTable, BoundSelect, BoundStatement};
+use crate::analyzer::bound::{BoundExplain, BoundStatement};
+use crate::analyzer::{self, OutputColumn};
 use crate::catalog::CatalogReader;
+use crate::catalog::names::CatalogNames;
 use crate::catalog::reader::StatementCatalog;
-use crate::catalog::store::NewTable;
+use crate::copy::{self, CopyIn};
 use crate::engine::{Cluster, DatabaseHandle};
 use crate::error::{Error, Result, Severity, SqlState, sqlstate};
-use crate::executor::eval::row_to_text;
+use crate::executor::instrument::Instrumentation;
+use crate::executor::seq::{SeqRuntime, SeqSession};
 use crate::executor::{self, ExecCtx, RuntimeInfo, SessionInfo};
 use crate::interrupt::InterruptFlag;
-use crate::planner;
+use crate::planner::physical::PhysicalQuery;
+use crate::planner::{self, PlannerSettings};
 use crate::settings::{Isolation, Settings, TxnCharacteristics};
 use crate::sql::{
     self,
@@ -36,9 +42,10 @@ use crate::sql::{
     },
 };
 use crate::storage::buffer;
-use crate::storage::smgr::{DEFAULTTABLESPACE_OID, RelFileLocator, RelFileNumber};
-use crate::txn::{Transaction, TxnManager, WaitCtl, WriterGuard, Xid};
-use crate::types::{Datum, Oid, SqlType, io, oid};
+use crate::storage::smgr::RelFileLocator;
+use crate::storage::{SequenceStore, WriteCtx};
+use crate::txn::{Snapshot, Transaction, TxnManager, WaitCtl, WriterGuard, Xid};
+use crate::types::{Datum, Oid, SqlType, TypeEnv, io, oid};
 
 /// Values from the `StartupMessage`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -93,7 +100,7 @@ pub struct Notice {
 }
 
 impl Notice {
-    fn new(severity: Severity, sqlstate: SqlState, message: impl Into<String>) -> Self {
+    pub(crate) fn new(severity: Severity, sqlstate: SqlState, message: impl Into<String>) -> Self {
         Notice {
             severity,
             sqlstate,
@@ -101,6 +108,20 @@ impl Notice {
             detail: None,
             hint: None,
         }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 }
 
@@ -116,6 +137,15 @@ pub trait ResultSink {
     fn error(&mut self, err: &Error) -> std::io::Result<()>;
     fn notice(&mut self, notice: &Notice) -> std::io::Result<()>;
     fn parameter_status(&mut self, name: &str, value: &str) -> std::io::Result<()>;
+    /// `CopyInResponse`（`G`）。`format` は全体の形式（0 = text）、`column_formats` は列ごとの形式
+    /// （`i16`。`m4/11` の C-29）。COPY FROM STDIN を扱えないシンクは既定のまま（エラーを返す）。
+    fn copy_in_response(&mut self, format: u8, column_formats: &[i16]) -> std::io::Result<()> {
+        let _ = (format, column_formats);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this sink does not support COPY FROM STDIN",
+        ))
+    }
 }
 
 /// Internal transaction state. `Implicit` is the transaction of a Query
@@ -135,6 +165,31 @@ struct Output {
     notices: Vec<Notice>,
     columns: Option<Vec<ColumnDesc>>,
     rows: Vec<Vec<Option<String>>>,
+}
+
+/// `exec_statement` の結果。`Tag` はコマンドタグ、`CopyIn` は `COPY FROM STDIN` の開始
+/// （`CopyInResponse` を送って `CopyData` を待つ。`m4/10` §5.3）。
+enum ExecOutcome {
+    Tag(String),
+    CopyIn(Box<CopyIn>),
+}
+
+/// 同じ `Query` メッセージの、まだ実行していない文（COPY の `CopyDone` の後に再開する）。
+#[derive(Debug)]
+struct PendingQuery {
+    /// 元の SQL（エラー位置の解決に使う）。
+    sql: String,
+    /// 同じ `Query` メッセージの文すべて。
+    stmts: Vec<Statement>,
+    /// `CopyDone` の後に実行する次の文の添字。
+    next: usize,
+}
+
+/// 進行中の COPY FROM STDIN。
+#[derive(Debug)]
+struct CopyState {
+    copy: CopyIn,
+    pending: PendingQuery,
 }
 
 const IN_FAILED_MSG: &str =
@@ -163,6 +218,8 @@ pub struct Session {
     /// Whether the current Query message has more than one statement
     /// (PostgreSQL's implicit transaction *block*, where SET LOCAL works).
     multi_statement: bool,
+    /// Start of the statement being run (`statement_timestamp()`); 0 before the first one.
+    stmt_started_at: i64,
     interrupt: Arc<InterruptFlag>,
     /// Characteristics of the current transaction (`m3.md` §6.11.1); the
     /// defaults come from `default_transaction_*` when the transaction starts.
@@ -174,6 +231,10 @@ pub struct Session {
     /// A statement that references a table has run in this transaction
     /// (PostgreSQL's `FirstSnapshotSet`; `SELECT 1` does not count).
     txn_snapshot_taken: bool,
+    /// シーケンスの状態（`currval` / `lastval` と先取りした値。`m4/08` §4.4）。
+    seq_state: RefCell<SeqSession>,
+    /// 進行中の COPY FROM STDIN（`m4/10` §5.3）。
+    copy: Option<Box<CopyState>>,
 }
 
 impl Session {
@@ -211,6 +272,7 @@ impl Session {
             closing: false,
             id,
             multi_statement: false,
+            stmt_started_at: 0,
             params,
             state: TxState::Idle,
             txn: Transaction::new(),
@@ -220,6 +282,8 @@ impl Session {
             chars: TxnCharacteristics::default(),
             start_chars: TxnCharacteristics::default(),
             txn_snapshot_taken: false,
+            seq_state: RefCell::new(SeqSession::new()),
+            copy: None,
         }
     }
 
@@ -248,6 +312,8 @@ impl Session {
     /// Must be called when the connection closes (also after a panic):
     /// aborts the open transaction.
     pub fn terminate(&mut self) {
+        self.copy = None;
+        self.interrupt.set_statement_deadline(None);
         if self.state != TxState::Idle {
             self.rollback_transaction();
         }
@@ -269,6 +335,10 @@ impl Session {
     /// server must end it (`m3.md` §5.10): `idle_in_transaction_session_timeout`
     /// in a block, `idle_session_timeout` otherwise. `None` means no limit.
     pub fn idle_timeout(&self) -> Option<Duration> {
+        // COPY の途中は「アイドル」ではない（`m4/10` §5.3）。
+        if self.copy.is_some() {
+            return None;
+        }
         match self.state {
             TxState::Block | TxState::Failed => self.settings.idle_in_transaction_session_timeout(),
             TxState::Idle => self.settings.idle_session_timeout(),
@@ -316,10 +386,14 @@ impl Session {
         // A cancel that arrived while idle is dropped (`m3.md` §5.2 step 0).
         self.interrupt.clear_cancel();
         let r = self.run_statements(sql, parsed, sink);
-        if r.is_err() && self.state == TxState::Implicit {
-            // The client is gone part-way through the message: the implicit
-            // transaction must not survive.
-            self.rollback_transaction();
+        if r.is_err() {
+            // The client is gone part-way through the message: neither a COPY
+            // nor the implicit transaction may survive.
+            self.copy = None;
+            self.interrupt.set_statement_deadline(None);
+            if self.state == TxState::Implicit {
+                self.rollback_transaction();
+            }
         }
         r
     }
@@ -338,11 +412,34 @@ impl Session {
             return sink.empty_query();
         }
         self.multi_statement = stmts.len() > 1;
-        for stmt in &stmts {
+        self.run_from(
+            PendingQuery {
+                sql: sql.to_owned(),
+                stmts,
+                next: 0,
+            },
+            sink,
+        )
+    }
+
+    /// Runs `pending.stmts[pending.next..]`. A `COPY ... FROM STDIN` sends the
+    /// `CopyInResponse`, stores the rest of the message in `self.copy` and
+    /// returns without `CommandComplete`, the implicit commit or
+    /// `ReadyForQuery` (`copy_done` resumes from here; `m4/10` §5.3).
+    fn run_from(
+        &mut self,
+        pending: PendingQuery,
+        sink: &mut dyn ResultSink,
+    ) -> std::io::Result<()> {
+        let PendingQuery { sql, stmts, next } = pending;
+        let mut i = next;
+        while i < stmts.len() {
+            let stmt = &stmts[i];
             if self.state == TxState::Failed && !allowed_when_failed(stmt) {
                 let e = Error::new(sqlstate::IN_FAILED_SQL_TRANSACTION, IN_FAILED_MSG);
-                return self.report_error(e, sql, sink);
+                return self.report_error(e, &sql, sink);
             }
+            self.stmt_started_at = pg_now_micros();
             if self.state == TxState::Idle {
                 self.begin_transaction(TxState::Implicit);
             }
@@ -354,19 +451,115 @@ impl Session {
                     .and_then(|d| Instant::now().checked_add(d)),
             );
             let result = self.exec_statement(stmt, &mut out);
-            self.interrupt.set_statement_deadline(None);
+            if let Ok(ExecOutcome::CopyIn(_)) = &result {
+                // The deadline stays: it covers the whole COPY.
+            } else {
+                self.interrupt.set_statement_deadline(None);
+            }
             self.send_output(&out, sink)?;
             match result {
-                Ok(tag) => sink.command_complete(&tag)?,
-                Err(e) => return self.report_error(e, sql, sink),
+                Ok(ExecOutcome::Tag(tag)) => sink.command_complete(&tag)?,
+                Ok(ExecOutcome::CopyIn(copy)) => {
+                    let formats = vec![0i16; copy.ncols()];
+                    sink.copy_in_response(0, &formats)?;
+                    // PostgreSQL checks FREEZE after it sent the `G`.
+                    if let Err(e) = copy.check_freeze(&self.txn) {
+                        self.interrupt.set_statement_deadline(None);
+                        return self.report_error(e, &sql, sink);
+                    }
+                    self.copy = Some(Box::new(CopyState {
+                        copy: *copy,
+                        pending: PendingQuery {
+                            sql,
+                            stmts,
+                            next: i + 1,
+                        },
+                    }));
+                    return Ok(());
+                }
+                Err(e) => return self.report_error(e, &sql, sink),
             }
+            i += 1;
         }
         if self.state == TxState::Implicit
             && let Err(e) = self.commit_transaction()
         {
-            return self.report_error(e, sql, sink);
+            return self.report_error(e, &sql, sink);
         }
         self.flush_parameter_status(sink)
+    }
+
+    // ----- COPY FROM STDIN (`m4/10` §5.3) ---------------------------------------
+
+    /// Whether the server must read `CopyData` / `CopyDone` / `CopyFail` next
+    /// (after `execute_simple` or `copy_done`).
+    pub fn is_copying_in(&self) -> bool {
+        self.copy.is_some()
+    }
+
+    /// One `CopyData`: processes and inserts the rows it completes. On an
+    /// error the session reports it and leaves the COPY (the server sends
+    /// `ReadyForQuery`). Ignored when no COPY is running.
+    pub fn copy_data(&mut self, chunk: &[u8], sink: &mut dyn ResultSink) -> std::io::Result<()> {
+        let Some(mut st) = self.copy.take() else {
+            return Ok(());
+        };
+        match self.copy_message(|ctx, w| st.copy.push_data(chunk, ctx, w)) {
+            Ok(()) => {
+                self.copy = Some(st);
+                Ok(())
+            }
+            Err(e) => {
+                self.interrupt.set_statement_deadline(None);
+                self.report_error(e, &st.pending.sql, sink)
+            }
+        }
+    }
+
+    /// `CopyDone`: finishes the last row, sends `COPY n` and runs the rest of
+    /// the message.
+    pub fn copy_done(&mut self, sink: &mut dyn ResultSink) -> std::io::Result<()> {
+        let Some(mut st) = self.copy.take() else {
+            return Ok(());
+        };
+        let rows = self
+            .copy_message(|ctx, w| st.copy.finish(ctx, w))
+            .and_then(|n| self.txn.command_counter_increment().map(|()| n));
+        self.interrupt.set_statement_deadline(None);
+        match rows {
+            Ok(n) => {
+                sink.command_complete(&format!("COPY {n}"))?;
+                self.run_from(st.pending, sink)
+            }
+            Err(e) => self.report_error(e, &st.pending.sql, sink),
+        }
+    }
+
+    /// `CopyFail`: `57014`.
+    pub fn copy_fail(&mut self, message: &str, sink: &mut dyn ResultSink) -> std::io::Result<()> {
+        let Some(st) = self.copy.take() else {
+            return Ok(());
+        };
+        self.interrupt.set_statement_deadline(None);
+        let e = st.copy.fail(message);
+        self.report_error(e, &st.pending.sql, sink)
+    }
+
+    /// Called by the server whenever its read for the next message times out
+    /// (100 ms): reports a cancel, a stop request or the `statement_timeout`
+    /// that happened while the client sent nothing.
+    pub fn copy_poll(&mut self, sink: &mut dyn ResultSink) -> std::io::Result<()> {
+        if self.copy.is_none() {
+            return Ok(());
+        }
+        let Err(e) = self.interrupt.check() else {
+            return Ok(());
+        };
+        let Some(st) = self.copy.take() else {
+            return Ok(());
+        };
+        self.interrupt.set_statement_deadline(None);
+        self.report_error(e, &st.pending.sql, sink)
     }
 
     /// Aborts the current transaction (implicit → idle, block → failed) and
@@ -440,6 +633,11 @@ impl Session {
 
     fn begin_transaction(&mut self, state: TxState) {
         self.txn = Transaction::new();
+        self.txn.started_at = if self.stmt_started_at == 0 {
+            pg_now_micros()
+        } else {
+            self.stmt_started_at
+        };
         self.settings.begin();
         self.chars = self.settings.default_characteristics();
         self.start_chars = self.chars;
@@ -453,8 +651,18 @@ impl Session {
         let mut txn = std::mem::replace(&mut self.txn, Transaction::new());
         self.settings.commit();
         self.state = TxState::Idle;
-        let (Some(cluster), Some(xid)) = (self.cluster.as_ref(), txn.xid) else {
+        let Some(cluster) = self.cluster.as_ref() else {
             return Ok(());
+        };
+        let Some(xid) = txn.xid else {
+            // No XID: nothing was written to the heap. A `nextval` may have
+            // logged `SEQ_LOG` records, which must be durable before the
+            // client sees the value (`m4/08` §5.3).
+            if txn.wal_flush_upto == crate::wal::Lsn::default() {
+                return Ok(());
+            }
+            Self::check_not_poisoned(cluster)?;
+            return cluster.txn_manager().finish_without_xid(txn.wal_flush_upto);
         };
         if let Err(e) = Self::check_not_poisoned(cluster) {
             txn.writer = None;
@@ -533,11 +741,12 @@ impl Session {
 
     // ----- statements --------------------------------------------------------
 
-    /// Executes one statement and returns its command tag.
-    fn exec_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<String> {
-        match stmt {
-            Statement::Transaction(t) => self.exec_transaction(t, out),
-            Statement::Set(s) => self.exec_set(s, out),
+    /// Executes one statement and returns its outcome (the command tag, or the
+    /// start of a COPY).
+    fn exec_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<ExecOutcome> {
+        let tag = match stmt {
+            Statement::Transaction(t) => self.exec_transaction(t, out)?,
+            Statement::Set(s) => self.exec_set(s, out)?,
             Statement::Reset(r) => {
                 match &r.target {
                     ParamTarget::All => self.settings.reset_all(),
@@ -546,17 +755,18 @@ impl Session {
                     }
                     ParamTarget::Name(n) => self.settings.reset(n)?,
                 }
-                Ok("RESET".into())
+                "RESET".into()
             }
-            Statement::Show(s) => self.exec_show(s, out),
+            Statement::Show(s) => self.exec_show(s, out)?,
             Statement::Checkpoint(_) => {
                 // No storage barrier may be held (`checkpoint::run` takes it).
                 let cluster = self.cluster()?;
                 cluster.checkpoint()?;
-                Ok("CHECKPOINT".into())
+                "CHECKPOINT".into()
             }
-            _ => self.exec_data_statement(stmt, out),
-        }
+            _ => return self.exec_data_statement(stmt, out),
+        };
+        Ok(ExecOutcome::Tag(tag))
     }
 
     fn cluster(&self) -> Result<Arc<Cluster>> {
@@ -576,9 +786,9 @@ impl Session {
         Ok(())
     }
 
-    /// SELECT / VALUES / INSERT / UPDATE / DELETE / CREATE TABLE / DROP TABLE
-    /// (`m2.md` §5.2).
-    fn exec_data_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<String> {
+    /// SELECT / VALUES / INSERT / UPDATE / DELETE / DDL / COPY / EXPLAIN
+    /// (`m2.md` §5.2, `m4/02` §4.1).
+    fn exec_data_statement(&mut self, stmt: &Statement, out: &mut Output) -> Result<ExecOutcome> {
         let cluster = self.cluster()?;
         let Some(db) = self.db.clone() else {
             return Err(Error::internal("session has a cluster but no database"));
@@ -588,12 +798,19 @@ impl Session {
         // writer's commit lands between the snapshot and our first write.
         let write_tag = write_statement_tag(stmt);
         // A read-only transaction is rejected before the writer lock is
-        // taken. PostgreSQL checks utility statements (CREATE / DROP TABLE)
-        // up front, but INSERT / UPDATE / DELETE only at executor start, i.e.
-        // after analysis (`run_under_barrier`).
+        // taken. PostgreSQL checks utility statements (CREATE / DROP TABLE,
+        // COPY, ...) up front, but INSERT / UPDATE / DELETE (also under
+        // EXPLAIN ANALYZE) only at executor start, i.e. after analysis and
+        // planning (`run_bound`).
         let read_only_write = write_tag.filter(|_| self.chars.read_only);
         if let Some(tag) = read_only_write
-            && matches!(stmt, Statement::CreateTable(_) | Statement::DropTable(_))
+            && !matches!(
+                stmt,
+                Statement::Insert(_)
+                    | Statement::Update(_)
+                    | Statement::Delete(_)
+                    | Statement::Explain(_)
+            )
         {
             return Err(read_only_error(tag));
         }
@@ -616,13 +833,19 @@ impl Session {
         let result = self.run_under_barrier(stmt, &cluster, &db, read_only_write, out);
         buffer::track::barrier_released();
         drop(barrier);
+        // The values this statement handed out are covered by the `SEQ_LOG`
+        // records it wrote, success or not (`m4/08` §5.3).
+        let lsn = self.seq_state.borrow_mut().end_statement();
+        self.txn.note_wal(lsn);
         Self::flush_deferred_unlinks(&cluster);
         // 8.
         buffer::assert_no_pins();
-        let tag = result?;
-        // 9.
-        self.txn.command_counter_increment()?;
-        Ok(tag)
+        let outcome = result?;
+        // 9. A COPY is one command: `copy_done` increments the counter.
+        if matches!(outcome, ExecOutcome::Tag(_)) {
+            self.txn.command_counter_increment()?;
+        }
+        Ok(outcome)
     }
 
     /// Steps 3 to 6 of `m2.md` §5.2.
@@ -633,7 +856,22 @@ impl Session {
         db: &Arc<DatabaseHandle>,
         read_only_write: Option<&'static str>,
         out: &mut Output,
-    ) -> Result<String> {
+    ) -> Result<ExecOutcome> {
+        let span = stmt.span();
+        self.with_stmt_env(cluster, db, |txn, env| {
+            Self::run_bound(txn, env, stmt, span, read_only_write, out)
+        })
+    }
+
+    /// Builds the per-statement environment (snapshot, catalog, `TypeEnv`,
+    /// planner settings, the `RuntimeInfo`) and calls `f` with it and the
+    /// transaction. What `set_config` changed in `f` is kept when it succeeds.
+    fn with_stmt_env<R>(
+        &mut self,
+        cluster: &Cluster,
+        db: &Arc<DatabaseHandle>,
+        f: impl FnOnce(&mut Transaction, &StmtEnv<'_>) -> Result<R>,
+    ) -> Result<R> {
         // 3. The generation is read before the snapshot.
         let generation = db.cache.generation();
         // 4.
@@ -650,191 +888,188 @@ impl Session {
             bypass_cache: self.txn.catalog_dirty,
             search_path: &search_path,
         };
-        // 6.
-        let bound = analyzer::analyze(stmt, &catalog)?;
+        let info = self.session_info();
+        let interrupts = Arc::clone(&self.interrupt);
+        let zones = cluster.zones();
+        let datetime = self.settings.datetime_settings(zones);
+        let names = CatalogNames(&catalog);
+        let type_env = self
+            .settings
+            .type_env(&datetime, zones, self.txn.started_at, Some(&names));
+        let planner_settings = self.settings.planner_settings();
+        let runtime = SessionRuntime {
+            pid: self.backend_pid(),
+            mgr: Some(Arc::clone(cluster.txn_manager())),
+            interrupts: Arc::clone(&interrupts),
+            xid: self.txn.xid.map(|x| x.0),
+            stmt_started_at: self.stmt_started_at,
+            base: &self.settings,
+            changed: RefCell::new(None),
+            chars: self.chars,
+            seq: &self.seq_state,
+            seq_store: &**cluster.sequences(),
+            catalog: &catalog,
+        };
+        let env = StmtEnv {
+            cluster,
+            db,
+            catalog: &catalog,
+            snapshot: &snap,
+            info: &info,
+            runtime: &runtime,
+            type_env: &type_env,
+            interrupts: &interrupts,
+            planner: &planner_settings,
+            role_oid: self.role_oid,
+            in_transaction_block: self.in_block_for_set(),
+        };
+        let r = f(&mut self.txn, &env)?;
+        let changed = runtime.changed.into_inner();
+        if let Some(s) = changed {
+            // Keep what `set_config` changed.
+            self.settings = s;
+        }
+        Ok(r)
+    }
+
+    /// Step 6 of `m2.md` §5.2: analyze, then execute by the kind of statement
+    /// (`m4/02` §4.1).
+    fn run_bound(
+        txn: &mut Transaction,
+        env: &StmtEnv<'_>,
+        stmt: &Statement,
+        span: crate::error::Span,
+        read_only_write: Option<&'static str>,
+        out: &mut Output,
+    ) -> Result<ExecOutcome> {
+        let bound = match stmt {
+            Statement::Copy(c) => BoundStatement::Copy(copy::analyze_copy(env.catalog, c)?),
+            other => analyzer::analyze(other, env.catalog)?,
+        };
         match bound {
-            BoundStatement::CreateTable(c) => {
-                self.exec_create_table(&c, cluster, db, &snap, &catalog, out)
-            }
-            BoundStatement::DropTable(d) => self.exec_drop_table(&d, db, &snap, out),
             BoundStatement::Checkpoint => Err(Error::internal(
                 "CHECKPOINT must be handled before the storage barrier",
             )),
-            mut bound => {
-                let info = self.session_info();
-                let runtime = SessionRuntime {
-                    pid: self.backend_pid(),
-                    mgr: Some(Arc::clone(cluster.txn_manager())),
-                    interrupts: Arc::clone(&self.interrupt),
-                    xid: self.txn.xid.map(|x| x.0),
-                    settings: std::cell::RefCell::new(self.settings.clone()),
-                    chars: self.chars,
+            BoundStatement::Ddl(ddl) => {
+                let mut ctx = crate::ddl::DdlCtx {
+                    cluster: env.cluster,
+                    db: env.db,
+                    snapshot: env.snapshot,
+                    catalog: env.catalog,
+                    txn,
+                    role_oid: env.role_oid,
+                    notices: &mut out.notices,
+                    type_env: env.type_env,
+                    in_transaction_block: env.in_transaction_block,
+                    interrupts: env.interrupts,
                 };
-                planner::check_constant_exprs(
-                    &mut bound,
-                    &executor::EvalCtx {
-                        session: &info,
-                        catalog: &catalog,
-                        runtime: &runtime,
-                    },
-                )?;
-                let plan = planner::plan(&bound)?;
+                crate::ddl::execute(&mut ctx, ddl).map(ExecOutcome::Tag)
+            }
+            BoundStatement::Copy(c) => {
+                // The storage barrier is released by the caller: nothing is
+                // held while the server waits for `CopyData`.
+                copy::begin(&c).map(|c| ExecOutcome::CopyIn(Box::new(c)))
+            }
+            BoundStatement::Explain(e) => {
+                Self::exec_explain(txn, env, *e, span, read_only_write, out).map(ExecOutcome::Tag)
+            }
+            mut bound => {
+                env.fold_constants(&mut bound)?;
+                let query = env.plan(&bound, false, false)?;
                 // PostgreSQL rejects at executor start: after analysis and planning.
                 if let Some(tag) = read_only_write {
                     return Err(read_only_error(tag));
                 }
-                let (columns, types) = match &bound {
-                    BoundStatement::Select(sel) => (Some(column_descs(sel, &catalog)), {
-                        sel.columns
-                            .iter()
-                            .map(|c| {
-                                if c.ty.oid == oid::UNKNOWN {
-                                    SqlType::TEXT
-                                } else {
-                                    c.ty
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                    _ => (None, Vec::new()),
-                };
-                out.columns = columns;
-                let ncols = types.len();
-                let opts = io::OutputOpts {
-                    extra_float_digits: self.settings.extra_float_digits(),
-                };
-                let interrupts = Arc::clone(&self.interrupt);
-                let mut exec = executor::build(&plan);
-                let mut ctx = ExecCtx {
-                    catalog: &catalog,
-                    storage: &**cluster.storage(),
-                    txn: &mut self.txn,
-                    snapshot: &snap,
-                    session: &info,
-                    interrupts: &interrupts,
-                    runtime: &runtime,
-                };
-                while let Some(row) = exec.next(&mut ctx)? {
-                    if out.columns.is_some() {
-                        let visible: Vec<Datum> = row.iter().take(ncols).cloned().collect();
-                        out.rows.push(row_to_text(&visible, &types, &opts));
-                    }
-                }
-                let n = exec.rows_affected();
-                // Keep what `set_config` changed.
-                self.settings = runtime.settings.into_inner();
-                Ok(match bound {
+                let returns_rows = bound.returns_rows();
+                out.columns = returns_rows.then(|| column_descs(&query.output, env.catalog));
+                let run = env.run(txn, &query, returns_rows, None)?;
+                out.rows = run.rows;
+                let n = run.affected;
+                Ok(ExecOutcome::Tag(match bound {
                     BoundStatement::Select(_) => format!("SELECT {}", out.rows.len()),
                     BoundStatement::Insert(_) => format!("INSERT 0 {n}"),
                     BoundStatement::Update(_) => format!("UPDATE {n}"),
                     BoundStatement::Delete(_) => format!("DELETE {n}"),
                     _ => unreachable!("handled above"),
-                })
+                }))
             }
         }
     }
 
-    /// CREATE TABLE (`m2.md` §5.4).
-    fn exec_create_table(
-        &mut self,
-        c: &BoundCreateTable,
-        cluster: &Cluster,
-        db: &Arc<DatabaseHandle>,
-        snap: &crate::txn::Snapshot,
-        catalog: &dyn CatalogReader,
+    /// `EXPLAIN [ANALYZE]` (`m4/10` §3.10).
+    fn exec_explain(
+        txn: &mut Transaction,
+        env: &StmtEnv<'_>,
+        e: BoundExplain,
+        span: crate::error::Span,
+        read_only_write: Option<&'static str>,
         out: &mut Output,
     ) -> Result<String> {
-        if catalog.table(Some(&c.schema), &c.name)?.is_some() {
-            if c.if_not_exists {
-                out.notices.push(already_exists_notice(&c.name));
-                return Ok("CREATE TABLE".into());
+        let BoundExplain { options, mut inner } = e;
+        // 1. Planning is timed for `Planning Time`.
+        let planning_start = Instant::now();
+        env.fold_constants(&mut inner)?;
+        let query = env.plan(&inner, true, options.verbose)?;
+        let planning = planning_start.elapsed();
+        // 2. Without ANALYZE nothing runs and nothing is written (the writer
+        // lock was not even taken: `write_statement_tag`).
+        let analyzed = if options.analyze {
+            // PostgreSQL rejects a write in a read-only transaction at
+            // executor start.
+            if let Some(tag) = read_only_write {
+                return Err(read_only_error(tag));
             }
-            return Err(Error::new(
-                sqlstate::DUPLICATE_TABLE,
-                format!("relation \"{}\" already exists", c.name),
-            ));
-        }
-        let Some(namespace) = db.catalog.namespace_oid(snap, &c.schema)? else {
-            return Err(Error::new(
-                sqlstate::INVALID_SCHEMA_NAME,
-                format!("schema \"{}\" does not exist", c.schema),
-            ));
+            // 3. Run it for real; the rows are thrown away.
+            let ids = planner::physical::assign_exec_ids(&query);
+            let instr = Rc::new(Instrumentation::with_timing(ids.total, options.timing));
+            let start = Instant::now();
+            env.run(txn, &query, false, Some(&instr))?;
+            let elapsed = start.elapsed();
+            instr.finish();
+            Some((instr, elapsed))
+        } else {
+            None
         };
-        let alloc = cluster.oid_allocator();
-        let oid = db.catalog.get_new_relation_oid(alloc)?;
-        let locator = RelFileLocator {
-            spc_oid: DEFAULTTABLESPACE_OID,
-            db_oid: db.oid,
-            rel_number: RelFileNumber(oid),
-        };
-        let (attrdef_oids, constraint_oids) = db
-            .catalog
-            .allocate_child_oids(alloc, &c.columns, &c.checks)?;
-        Self::check_rel_limit(self.txn.pending_creates.len())?;
-        // The file is created first and remembered, so an abort removes it.
-        let w = self.txn.write_ctx()?;
-        cluster.storage().create_storage(&w, locator)?;
-        self.txn.pending_creates.push(locator);
-        db.catalog.create_table(
-            &w,
-            snap,
-            &NewTable {
-                oid,
-                namespace,
-                name: c.name.clone(),
-                owner: self.role_oid,
-                columns: c.columns.clone(),
-                checks: c.checks.clone(),
-                attrdef_oids,
-                constraint_oids,
-            },
-        )?;
-        self.txn.catalog_dirty = true;
-        Ok("CREATE TABLE".into())
+        // 4. Render.
+        let lines = render_explain(options, &query, analyzed.as_ref(), planning, span)?;
+        out.columns = Some(vec![text_column("QUERY PLAN")]);
+        out.rows = lines.into_iter().map(|l| vec![Some(l)]).collect();
+        Ok("EXPLAIN".into())
     }
 
-    /// One COMMIT / ABORT record must hold every relation of the transaction.
-    fn check_rel_limit(pending: usize) -> Result<()> {
-        if pending >= crate::txn::xact_wal::MAX_RELS_PER_RECORD {
-            return Err(Error::new(
-                sqlstate::PROGRAM_LIMIT_EXCEEDED,
-                "too many relations created or dropped in one transaction",
-            ));
-        }
-        Ok(())
-    }
-
-    /// DROP TABLE (`m2.md` §5.4). The files go at commit.
-    fn exec_drop_table(
+    /// One `CopyData` / `CopyDone` for the running COPY: takes the shared
+    /// storage barrier, the snapshot and the catalog for the message only
+    /// (the writer lock is already held) and calls `f` with an `ExecCtx`
+    /// whose plan is empty (`m4/10` §5.3).
+    fn copy_message<R>(
         &mut self,
-        d: &BoundDropTable,
-        db: &Arc<DatabaseHandle>,
-        snap: &crate::txn::Snapshot,
-        out: &mut Output,
-    ) -> Result<String> {
-        for name in &d.missing {
-            out.notices.push(Notice::new(
-                Severity::Notice,
-                sqlstate::SUCCESSFUL_COMPLETION,
-                format!("table \"{name}\" does not exist, skipping"),
-            ));
+        f: impl FnOnce(&mut ExecCtx<'_>, &WriteCtx) -> Result<R>,
+    ) -> Result<R> {
+        let cluster = self.cluster()?;
+        let Some(db) = self.db.clone() else {
+            return Err(Error::internal("session has a cluster but no database"));
+        };
+        Self::check_not_poisoned(&cluster)?;
+        let mgr = Arc::clone(cluster.txn_manager());
+        let barrier = mgr.statement_barrier()?;
+        if let Err(e) = Self::check_not_poisoned(&cluster) {
+            drop(barrier);
+            return Err(e);
         }
-        for def in &d.tables {
-            if def.is_system_catalog() {
-                return Err(Error::new(
-                    sqlstate::INSUFFICIENT_PRIVILEGE,
-                    format!("permission denied: \"{}\" is a system catalog", def.name),
-                ));
-            }
-        }
-        for def in &d.tables {
-            Self::check_rel_limit(self.txn.pending_unlinks.len())?;
-            let w = self.txn.write_ctx()?;
-            db.catalog.drop_table(&w, snap, def)?;
-            self.txn.pending_unlinks.push(def.locator);
-            self.txn.catalog_dirty = true;
-        }
-        Ok("DROP TABLE".into())
+        buffer::track::barrier_acquired();
+        let result = self.with_stmt_env(&cluster, &db, |txn, env| {
+            let w = txn.write_ctx()?;
+            let empty = PhysicalQuery::empty();
+            let mut ctx = ExecCtx::new(env.exec_env(None), txn, &empty);
+            f(&mut ctx, &w)
+        });
+        buffer::track::barrier_released();
+        drop(barrier);
+        let lsn = self.seq_state.borrow_mut().end_statement();
+        self.txn.note_wal(lsn);
+        Self::flush_deferred_unlinks(&cluster);
+        buffer::assert_no_pins();
+        result
     }
 
     fn exec_transaction(&mut self, t: &TransactionStmt, out: &mut Output) -> Result<String> {
@@ -1085,7 +1320,7 @@ impl Session {
                 "SET LOCAL can only be used in transaction blocks",
             ));
             // Still validate the name, as PostgreSQL does.
-            if crate::settings::lookup(&s.name).is_none() && !s.name.contains('.') {
+            if !crate::settings::is_known(&s.name) && !s.name.contains('.') {
                 return Err(Error::new(
                     sqlstate::UNDEFINED_OBJECT,
                     format!("unrecognized configuration parameter \"{}\"", s.name),
@@ -1093,7 +1328,7 @@ impl Session {
             }
             self.settings.declare_custom(&s.name);
             if let SetValue::Values(args) = &s.value
-                && crate::settings::lookup(&s.name).is_some()
+                && crate::settings::is_known(&s.name)
             {
                 let texts: Vec<String> = args
                     .iter()
@@ -1227,7 +1462,8 @@ fn is_characteristic(name: &str) -> bool {
 }
 
 /// The command tag used in `25006` for a statement that writes, judged on
-/// the raw parse tree (`m3.md` §5.2 d).
+/// the raw parse tree (`m3.md` §5.2 d, `m4/07` §5.0). `VACUUM` / `ANALYZE`
+/// are not writing statements; `EXPLAIN ANALYZE` of a DML statement is.
 fn write_statement_tag(stmt: &Statement) -> Option<&'static str> {
     match stmt {
         Statement::Insert(_) => Some("INSERT"),
@@ -1235,8 +1471,190 @@ fn write_statement_tag(stmt: &Statement) -> Option<&'static str> {
         Statement::Delete(_) => Some("DELETE"),
         Statement::CreateTable(_) => Some("CREATE TABLE"),
         Statement::DropTable(_) => Some("DROP TABLE"),
+        Statement::CreateIndex(_) => Some("CREATE INDEX"),
+        Statement::DropIndex(_) => Some("DROP INDEX"),
+        Statement::AlterTable(_) => Some("ALTER TABLE"),
+        Statement::Truncate(_) => Some("TRUNCATE TABLE"),
+        Statement::CreateSequence(_) => Some("CREATE SEQUENCE"),
+        Statement::AlterSequence(_) => Some("ALTER SEQUENCE"),
+        Statement::DropSequence(_) => Some("DROP SEQUENCE"),
+        Statement::Copy(c) if c.direction == crate::sql::ast::CopyDirection::From => {
+            Some("COPY FROM")
+        }
+        Statement::Explain(e) if explain_analyzes(e) => match &*e.statement {
+            Statement::Insert(_) => Some("INSERT"),
+            Statement::Update(_) => Some("UPDATE"),
+            Statement::Delete(_) => Some("DELETE"),
+            _ => None,
+        },
         _ => None,
     }
+}
+
+/// Whether the raw `EXPLAIN` options turn `ANALYZE` on (values are checked by the analyzer).
+fn explain_analyzes(e: &crate::sql::ast::Explain) -> bool {
+    use crate::sql::ast::ExplainValue;
+    e.options.iter().any(|o| {
+        o.name.eq_ignore_ascii_case("analyze")
+            && match &o.value {
+                None => true,
+                Some(ExplainValue::Word(w)) => crate::settings::parse_bool(w) == Some(true),
+                Some(ExplainValue::Integer(n)) => *n == 1,
+                Some(ExplainValue::Other(_)) => false,
+            }
+    })
+}
+
+/// Microseconds since 2000-01-01 (PostgreSQL's epoch), for `Transaction.started_at`.
+fn pg_now_micros() -> i64 {
+    const UNIX_TO_PG_SECS: i64 = 946_684_800;
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_micros()).ok())
+        .map_or(0, |us| us - UNIX_TO_PG_SECS * 1_000_000)
+}
+
+/// Everything a statement needs besides the transaction (`m4/02` §4.1).
+struct StmtEnv<'a> {
+    cluster: &'a Cluster,
+    db: &'a Arc<DatabaseHandle>,
+    catalog: &'a dyn CatalogReader,
+    snapshot: &'a Snapshot,
+    info: &'a SessionInfo,
+    runtime: &'a SessionRuntime<'a>,
+    type_env: &'a TypeEnv<'a>,
+    interrupts: &'a InterruptFlag,
+    planner: &'a PlannerSettings,
+    role_oid: Oid,
+    in_transaction_block: bool,
+}
+
+/// Rows (as text) and the affected-row count of one run.
+struct RunResult {
+    rows: Vec<Vec<Option<String>>>,
+    affected: u64,
+}
+
+impl StmtEnv<'_> {
+    fn fold_constants(&self, bound: &mut BoundStatement) -> Result<()> {
+        planner::check_constant_exprs(
+            bound,
+            &executor::EvalCtx {
+                session: self.info,
+                catalog: self.catalog,
+                runtime: self.runtime,
+                type_env: self.type_env,
+            },
+        )
+    }
+
+    fn plan(
+        &self,
+        bound: &BoundStatement,
+        want_explain: bool,
+        explain_verbose: bool,
+    ) -> Result<PhysicalQuery> {
+        let env = planner::PlanEnv {
+            catalog: self.catalog,
+            storage: &**self.cluster.storage(),
+            settings: self.planner,
+            type_env: self.type_env,
+            want_explain,
+            explain_verbose,
+        };
+        planner::plan(bound, &env)
+    }
+
+    fn exec_env<'e>(&'e self, instr: Option<&'e Rc<Instrumentation>>) -> executor::ExecEnv<'e> {
+        executor::ExecEnv {
+            catalog: self.catalog,
+            storage: &**self.cluster.storage(),
+            indexes: &**self.cluster.indexes(),
+            snapshot: self.snapshot,
+            session: self.info,
+            runtime: self.runtime,
+            interrupts: self.interrupts,
+            type_env: self.type_env,
+            mem_limit: self.planner.query_mem_limit,
+            instr,
+        }
+    }
+
+    /// Runs `query` to the end. Rows are converted to text only when `returns_rows`.
+    fn run(
+        &self,
+        txn: &mut Transaction,
+        query: &PhysicalQuery,
+        returns_rows: bool,
+        instr: Option<&Rc<Instrumentation>>,
+    ) -> Result<RunResult> {
+        // A leftover `unknown` is reported (and rendered) as text (PostgreSQL ≥ 10).
+        let types: Vec<SqlType> = query
+            .output
+            .iter()
+            .map(|c| {
+                if c.ty.oid == oid::UNKNOWN {
+                    SqlType::TEXT
+                } else {
+                    c.ty
+                }
+            })
+            .collect();
+        let mut exec = build_executor(query, instr);
+        let mut ctx = ExecCtx::new(self.exec_env(instr), txn, query);
+        let mut rows = Vec::new();
+        while let Some(row) = exec.next(&mut ctx)? {
+            if returns_rows {
+                rows.push(row_text(&row, &types, self.type_env)?);
+            }
+        }
+        Ok(RunResult {
+            rows,
+            affected: exec.rows_affected(),
+        })
+    }
+}
+
+/// Builds the executor tree; EXPLAIN ANALYZE wraps every node with its counters.
+fn build_executor(
+    query: &PhysicalQuery,
+    instr: Option<&Rc<Instrumentation>>,
+) -> executor::BoxedExecutor {
+    match instr {
+        Some(i) => executor::instrument::build_instrumented(query, i),
+        None => executor::build_query(query),
+    }
+}
+
+/// Renders the `QUERY PLAN` lines (`Planning Time` / `Execution Time` included).
+fn render_explain(
+    options: analyzer::bound::ExplainOptions,
+    query: &PhysicalQuery,
+    analyzed: Option<&(Rc<Instrumentation>, Duration)>,
+    planning: Duration,
+    span: crate::error::Span,
+) -> Result<Vec<String>> {
+    let times = crate::explain::Timings {
+        planning,
+        execution: analyzed.as_ref().map(|(_, d)| *d),
+    };
+    crate::explain::run(
+        &options,
+        query,
+        analyzed.as_ref().map(|(i, _)| &**i),
+        &times,
+        span,
+    )
+}
+
+/// The visible columns of a row as text, following `DateStyle`, `TimeZone` and `extra_float_digits`.
+fn row_text(row: &[Datum], types: &[SqlType], env: &TypeEnv<'_>) -> Result<Vec<Option<String>>> {
+    row.iter()
+        .take(types.len())
+        .zip(types)
+        .map(|(d, ty)| io::try_output_text_env(d, *ty, env))
+        .collect()
 }
 
 // ----- TxnManager calls ----------------------------------------------------
@@ -1272,19 +1690,43 @@ fn mgr_is_blocked_by(mgr: &TxnManager, session_id: u64, among: &[u64]) -> bool {
 }
 
 /// The `RuntimeInfo` a statement's `EvalCtx` gets (`m3.md` §6.11.6).
-#[derive(Debug)]
-struct SessionRuntime {
+struct SessionRuntime<'a> {
     pid: i32,
     mgr: Option<Arc<TxnManager>>,
     interrupts: Arc<InterruptFlag>,
+    stmt_started_at: i64,
     xid: Option<u64>,
-    /// A copy of the session's parameters; `set_config` changes it and the
-    /// session takes it back when the statement succeeds.
-    settings: std::cell::RefCell<Settings>,
+    /// The session's parameters. `set_config` copies them into `changed` and
+    /// the session takes that back when the statement succeeds.
+    base: &'a Settings,
+    changed: RefCell<Option<Settings>>,
     chars: TxnCharacteristics,
+    seq: &'a RefCell<SeqSession>,
+    seq_store: &'a dyn SequenceStore,
+    catalog: &'a dyn CatalogReader,
 }
 
-impl RuntimeInfo for SessionRuntime {
+impl std::fmt::Debug for SessionRuntime<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionRuntime")
+            .field("pid", &self.pid)
+            .field("xid", &self.xid)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionRuntime<'_> {
+    fn seq_runtime(&self) -> SeqRuntime<'_> {
+        SeqRuntime {
+            state: self.seq,
+            store: self.seq_store,
+            catalog: self.catalog,
+            read_only: self.chars.read_only,
+        }
+    }
+}
+
+impl RuntimeInfo for SessionRuntime<'_> {
     fn backend_pid(&self) -> i32 {
         self.pid
     }
@@ -1311,6 +1753,10 @@ impl RuntimeInfo for SessionRuntime {
         self.xid
     }
 
+    fn statement_timestamp(&self) -> Option<i64> {
+        (self.stmt_started_at != 0).then_some(self.stmt_started_at)
+    }
+
     fn get_setting(&self, name: &str) -> Result<Option<String>> {
         match name.to_ascii_lowercase().as_str() {
             "transaction_isolation" => return Ok(Some(self.chars.isolation.as_str().to_owned())),
@@ -1318,7 +1764,9 @@ impl RuntimeInfo for SessionRuntime {
             "transaction_deferrable" => return Ok(Some(on_off(self.chars.deferrable).to_owned())),
             _ => {}
         }
-        match self.settings.borrow().show(name) {
+        let changed = self.changed.borrow();
+        let settings = changed.as_ref().unwrap_or(self.base);
+        match settings.show(name) {
             Ok((_, v)) => Ok(Some(v)),
             Err(e) if e.sqlstate == sqlstate::UNDEFINED_OBJECT => Ok(None),
             Err(e) => Err(e),
@@ -1332,12 +1780,29 @@ impl RuntimeInfo for SessionRuntime {
                 format!("set_config of \"{name}\" is not supported; use SET TRANSACTION"),
             ));
         }
-        let mut settings = self.settings.borrow_mut();
+        let mut changed = self.changed.borrow_mut();
+        let settings = changed.get_or_insert_with(|| self.base.clone());
         let args = value.map(|v| [v.to_owned()]);
         // is_local lasts until the end of the (implicit) transaction, which
         // `Settings::commit` / `rollback` take care of.
         settings.set(name, args.as_ref().map(<[String; 1]>::as_slice), local)?;
         Ok(settings.get(name).to_owned())
+    }
+
+    fn nextval(&self, seq: Oid) -> Result<i64> {
+        self.seq_runtime().nextval(seq)
+    }
+
+    fn currval(&self, seq: Oid) -> Result<i64> {
+        self.seq_runtime().currval(seq)
+    }
+
+    fn lastval(&self) -> Result<i64> {
+        self.seq_runtime().lastval()
+    }
+
+    fn setval(&self, seq: Oid, value: i64, is_called: bool) -> Result<i64> {
+        self.seq_runtime().setval(seq, value, is_called)
     }
 }
 
@@ -1353,14 +1818,6 @@ fn warn(msg: &str) {
     eprintln!("WARNING:  {msg}");
 }
 
-fn already_exists_notice(name: &str) -> Notice {
-    Notice::new(
-        Severity::Notice,
-        sqlstate::DUPLICATE_TABLE,
-        format!("relation \"{name}\" already exists, skipping"),
-    )
-}
-
 fn text_column(name: impl Into<String>) -> ColumnDesc {
     ColumnDesc {
         name: name.into(),
@@ -1373,8 +1830,8 @@ fn text_column(name: impl Into<String>) -> ColumnDesc {
 }
 
 /// `RowDescription` fields for a SELECT's visible columns.
-fn column_descs(sel: &BoundSelect, catalog: &dyn CatalogReader) -> Vec<ColumnDesc> {
-    sel.columns
+fn column_descs(columns: &[OutputColumn], catalog: &dyn CatalogReader) -> Vec<ColumnDesc> {
+    columns
         .iter()
         .map(|c| {
             // A leftover `unknown` is reported as text (PostgreSQL ≥ 10).
@@ -1427,7 +1884,6 @@ fn startup_settings(params: &StartupParams) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzer::{BoundFrom, OutputColumn};
     use crate::catalog::fake::FakeCatalog;
     use crate::error::Span;
     use crate::sql::ast::{ResetStmt, TransactionStmt};
@@ -1450,6 +1906,7 @@ mod tests {
         Error(&'static str, Option<u32>),
         Notice(Severity, &'static str),
         Param(String, String),
+        CopyIn(u8, Vec<i16>),
     }
 
     #[derive(Default)]
@@ -1483,6 +1940,10 @@ mod tests {
         }
         fn parameter_status(&mut self, name: &str, value: &str) -> std::io::Result<()> {
             self.0.push(Ev::Param(name.into(), value.into()));
+            Ok(())
+        }
+        fn copy_in_response(&mut self, format: u8, formats: &[i16]) -> std::io::Result<()> {
+            self.0.push(Ev::CopyIn(format, formats.to_vec()));
             Ok(())
         }
     }
@@ -1869,37 +2330,28 @@ mod tests {
 
     #[test]
     fn column_descriptions() {
-        let sel = BoundSelect {
-            from: BoundFrom::None,
-            filter: None,
-            targets: vec![],
-            columns: vec![
-                OutputColumn {
-                    name: "a".into(),
-                    ty: SqlType::INT4,
-                    table_oid: 16384,
-                    attnum: 1,
-                },
-                OutputColumn {
-                    name: "v".into(),
-                    ty: SqlType::varchar(3),
-                    table_oid: 0,
-                    attnum: 0,
-                },
-                OutputColumn {
-                    name: "?column?".into(),
-                    ty: SqlType::UNKNOWN,
-                    table_oid: 0,
-                    attnum: 0,
-                },
-            ],
-            distinct: false,
-            order_by: vec![],
-            limit: None,
-            offset: None,
-        };
+        let columns = vec![
+            OutputColumn {
+                name: "a".into(),
+                ty: SqlType::INT4,
+                table_oid: 16384,
+                attnum: 1,
+            },
+            OutputColumn {
+                name: "v".into(),
+                ty: SqlType::varchar(3),
+                table_oid: 0,
+                attnum: 0,
+            },
+            OutputColumn {
+                name: "?column?".into(),
+                ty: SqlType::UNKNOWN,
+                table_oid: 0,
+                attnum: 0,
+            },
+        ];
         let cat = FakeCatalog::new("postgres");
-        let d = column_descs(&sel, &cat);
+        let d = column_descs(&columns, &cat);
         assert_eq!(
             (
                 d[0].table_oid,
@@ -2700,14 +3152,6 @@ mod tests {
     }
 
     #[test]
-    fn relation_limit_per_record_is_enforced() {
-        use crate::txn::xact_wal::MAX_RELS_PER_RECORD;
-        assert!(Session::check_rel_limit(MAX_RELS_PER_RECORD - 1).is_ok());
-        let e = Session::check_rel_limit(MAX_RELS_PER_RECORD).unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::PROGRAM_LIMIT_EXCEEDED);
-    }
-
-    #[test]
     fn m3_settings_are_registered() {
         let mut s = session();
         assert_eq!(val(&mut s, "show deadlock_timeout"), "1s");
@@ -2720,10 +3164,14 @@ mod tests {
             errors(&sql(&mut s, "set full_page_writes = off")),
             vec!["55P02"]
         );
+        // `transaction_timeout` is accepted and stored only (D10-8).
+        assert!(errors(&sql(&mut s, "set transaction_timeout = 1")).is_empty());
+        assert_eq!(val(&mut s, "show transaction_timeout"), "1ms");
         assert_eq!(
-            errors(&sql(&mut s, "set transaction_timeout = 1")),
-            vec!["42704"]
+            errors(&sql(&mut s, "set max_connections = 1")),
+            vec!["55P02"]
         );
+        assert_eq!(val(&mut s, "show work_mem"), "4MB");
         assert_eq!(val(&mut s, "show default_transaction_deferrable"), "off");
     }
 
@@ -2733,5 +3181,215 @@ mod tests {
         let other = tc.session("postgres").unwrap();
         assert!(s.backend_pid() > 0);
         assert_ne!(s.backend_pid(), other.backend_pid());
+    }
+    // ----- COPY FROM STDIN (`m4/10` §5.3) ------------------------------------
+
+    fn copy_sql(s: &mut Session, q: &str) -> Vec<Ev> {
+        sql(s, q)
+    }
+
+    fn feed(s: &mut Session, f: impl FnOnce(&mut Session, &mut Sink)) -> Vec<Ev> {
+        let mut sink = Sink::default();
+        f(s, &mut sink);
+        sink.0
+    }
+
+    #[test]
+    fn copy_from_stdin_state_machine() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table cp (a int, b text)");
+        let ev = copy_sql(&mut s, "copy cp from stdin");
+        assert_eq!(ev, vec![Ev::CopyIn(0, vec![0, 0])]);
+        assert!(s.is_copying_in());
+        assert_eq!(s.idle_timeout(), None);
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+        // A row split across CopyData messages.
+        let ev = feed(&mut s, |s, k| {
+            s.copy_data(b"1\ta", k).unwrap();
+            s.copy_data(b"\n2\t", k).unwrap();
+            s.copy_data(b"b\n", k).unwrap();
+            s.copy_data(b"", k).unwrap();
+        });
+        assert!(ev.is_empty(), "{ev:?}");
+        assert!(s.is_copying_in());
+        let ev = feed(&mut s, |s, k| s.copy_done(k).unwrap());
+        assert_eq!(ev, vec![Ev::Complete("COPY 2".into())]);
+        assert!(!s.is_copying_in());
+        assert_eq!(count(&mut s, "cp"), 2);
+        // Stray messages in the idle state are ignored.
+        let ev = feed(&mut s, |s, k| {
+            s.copy_data(b"x", k).unwrap();
+            s.copy_done(k).unwrap();
+            s.copy_fail("x", k).unwrap();
+            s.copy_poll(k).unwrap();
+        });
+        assert!(ev.is_empty());
+    }
+
+    #[test]
+    fn copy_resumes_the_rest_of_the_message() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table cp (a int)");
+        let ev = copy_sql(&mut s, "copy cp from stdin; select 'after'; select 2");
+        assert_eq!(ev, vec![Ev::CopyIn(0, vec![0])]);
+        let ev = feed(&mut s, |s, k| {
+            s.copy_data(b"7\n", k).unwrap();
+            s.copy_done(k).unwrap();
+        });
+        assert_eq!(
+            ev,
+            vec![
+                Ev::Complete("COPY 1".into()),
+                Ev::RowDesc(vec!["?column?".into()]),
+                Ev::Row(vec![Some("after".into())]),
+                Ev::Complete("SELECT 1".into()),
+                Ev::RowDesc(vec!["?column?".into()]),
+                Ev::Row(vec![Some("2".into())]),
+                Ev::Complete("SELECT 1".into()),
+            ]
+        );
+        assert_eq!(count(&mut s, "cp"), 1);
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+    }
+
+    #[test]
+    fn copy_fail_and_data_errors_abort_the_command() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table cp (a int not null)");
+        copy_sql(&mut s, "copy cp from stdin");
+        let ev = feed(&mut s, |s, k| {
+            s.copy_data(b"1\n", k).unwrap();
+            s.copy_fail("boom", k).unwrap();
+        });
+        assert_eq!(errors(&ev), vec!["57014"]);
+        assert!(!s.is_copying_in());
+        assert_eq!(count(&mut s, "cp"), 0);
+        // A bad row: one error, then everything else is ignored.
+        copy_sql(&mut s, "copy cp from stdin");
+        let ev = feed(&mut s, |s, k| {
+            s.copy_data(b"1\nabc\n", k).unwrap();
+            s.copy_data(b"2\n", k).unwrap();
+            s.copy_done(k).unwrap();
+        });
+        assert_eq!(errors(&ev), vec!["22P02"]);
+        assert!(!s.is_copying_in());
+        assert_eq!(count(&mut s, "cp"), 0);
+        // The failure inside a block leaves it failed.
+        sql(&mut s, "begin");
+        copy_sql(&mut s, "copy cp from stdin");
+        let ev = feed(&mut s, |s, k| s.copy_data(b"\\N\n", k).unwrap());
+        assert_eq!(errors(&ev), vec!["23502"]);
+        assert_eq!(s.transaction_status(), TransactionStatus::Failed);
+        sql(&mut s, "rollback");
+        // A COPY inside a block commits with it.
+        sql(&mut s, "begin");
+        copy_sql(&mut s, "copy cp from stdin");
+        assert_eq!(s.transaction_status(), TransactionStatus::InBlock);
+        feed(&mut s, |s, k| {
+            s.copy_data(b"5\n", k).unwrap();
+            s.copy_done(k).unwrap();
+        });
+        assert_eq!(count(&mut s, "cp"), 1);
+        sql(&mut s, "rollback");
+        assert_eq!(count(&mut s, "cp"), 0);
+    }
+
+    #[test]
+    fn copy_errors_before_the_response() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table cp (a int)");
+        assert_eq!(
+            errors(&copy_sql(&mut s, "copy nosuch from stdin")),
+            vec!["42P01"]
+        );
+        assert_eq!(
+            errors(&copy_sql(&mut s, "copy cp (zz) from stdin")),
+            vec!["42703"]
+        );
+        assert!(!s.is_copying_in());
+        sql(&mut s, "begin read only");
+        let ev = copy_sql(&mut s, "copy cp from stdin");
+        assert_eq!(errors(&ev), vec!["25006"]);
+        assert!(!ev.iter().any(|e| matches!(e, Ev::CopyIn(..))));
+        sql(&mut s, "rollback");
+        // FREEZE is checked after the response.
+        let ev = copy_sql(&mut s, "copy cp from stdin with (freeze on)");
+        assert_eq!(ev.len(), 2, "{ev:?}");
+        assert!(matches!(ev[0], Ev::CopyIn(..)));
+        assert_eq!(errors(&ev), vec!["55000"]);
+        assert!(!s.is_copying_in());
+    }
+
+    #[test]
+    fn copy_poll_reports_cancel_and_terminate_drops_the_copy() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table cp (a int)");
+        copy_sql(&mut s, "copy cp from stdin");
+        let flag = s.interrupt_flag();
+        flag.request_cancel();
+        let ev = feed(&mut s, |s, k| s.copy_poll(k).unwrap());
+        assert_eq!(errors(&ev), vec!["57014"]);
+        assert!(!s.is_copying_in());
+        copy_sql(&mut s, "copy cp from stdin");
+        s.terminate();
+        assert!(!s.is_copying_in());
+        assert_eq!(s.transaction_status(), TransactionStatus::Idle);
+    }
+
+    #[test]
+    fn write_statement_tags() {
+        let tag = |q: &str| write_statement_tag(&sql::parse(q).unwrap()[0]);
+        assert_eq!(tag("insert into t values (1)"), Some("INSERT"));
+        assert_eq!(tag("create index i on t (a)"), Some("CREATE INDEX"));
+        assert_eq!(tag("drop index i"), Some("DROP INDEX"));
+        assert_eq!(tag("alter table t owner to x"), Some("ALTER TABLE"));
+        assert_eq!(tag("truncate t"), Some("TRUNCATE TABLE"));
+        assert_eq!(tag("create sequence s"), Some("CREATE SEQUENCE"));
+        assert_eq!(tag("copy t from stdin"), Some("COPY FROM"));
+        assert_eq!(tag("vacuum t"), None);
+        assert_eq!(tag("select 1"), None);
+        assert_eq!(tag("explain select 1"), None);
+        assert_eq!(tag("explain (analyze) select 1"), None);
+        assert_eq!(
+            tag("explain analyze insert into t values (1)"),
+            Some("INSERT")
+        );
+        assert_eq!(tag("explain (analyze false) delete from t"), None);
+        assert_eq!(
+            tag("explain (analyze on, costs off) update t set a = 1"),
+            Some("UPDATE")
+        );
+    }
+
+    #[test]
+    fn planner_settings_reach_the_planner() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table pt (a int)");
+        sql(&mut s, "set enable_seqscan = off");
+        sql(&mut s, "set yuzhu.validate_plans = on");
+        assert!(errors(&sql(&mut s, "select * from pt")).is_empty());
+        assert_eq!(one(&mut s, "show enable_seqscan"), "off");
+    }
+
+    #[test]
+    fn ddl_goes_through_ddl_execute() {
+        let (_tc, mut s) = cl();
+        let ev = sql(&mut s, "create table dd (a int primary key, b int)");
+        assert_eq!(errors(&ev), Vec::<&str>::new(), "{ev:?}");
+        assert_eq!(tags(&ev), vec!["CREATE TABLE"]);
+        // Writing DDL is refused in a read-only transaction before anything else.
+        sql(&mut s, "begin read only");
+        for q in [
+            "truncate dd",
+            "create index ii on dd (b)",
+            "drop index ii",
+            "alter table dd owner to postgres",
+            "create sequence qq",
+        ] {
+            assert_eq!(errors(&sql(&mut s, q)), vec!["25006"], "{q}");
+            sql(&mut s, "rollback");
+            sql(&mut s, "begin read only");
+        }
+        sql(&mut s, "rollback");
     }
 }

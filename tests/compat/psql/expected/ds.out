@@ -1,0 +1,29 @@
+                  List of relations
+ Schema |         Name         |   Type   |  Owner   
+--------+----------------------+----------+----------
+ public | compat_ser_big_seq   | sequence | postgres
+ public | compat_ser_id_seq    | sequence | postgres
+ public | compat_ser_small_seq | sequence | postgres
+ public | compat_sq1           | sequence | postgres
+ public | compat_sq2           | sequence | postgres
+(5 rows)
+
+             List of relations
+ Schema |    Name    |   Type   |  Owner   
+--------+------------+----------+----------
+ public | compat_sq1 | sequence | postgres
+ public | compat_sq2 | sequence | postgres
+(2 rows)
+
+                  List of relations
+ Schema |         Name         |   Type   |  Owner   
+--------+----------------------+----------+----------
+ public | compat_ser_big_seq   | sequence | postgres
+ public | compat_ser_id_seq    | sequence | postgres
+ public | compat_ser_small_seq | sequence | postgres
+(3 rows)
+
+      List of relations
+ Schema | Name | Type | Owner 
+--------+------+------+-------
+(0 rows)

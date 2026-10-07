@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# journal-timeline.sh: journal/timeline.md の AUTO ブロックを更新する（時刻はすべて UTC）。
-#   AUTO:commits       git log（コミット時刻を UTC に統一、直前コミットとの間隔）
+# journal-timeline.sh: journal/timeline.md の AUTO ブロックを更新する（時刻はすべて JST）。
+#   AUTO:commits       git log（コミット時刻を JST に統一、直前コミットとの間隔）
 #   AUTO:workflows     Workflow ごとの開始・終了・壁時計（未完了は「進行中」）
 #   AUTO:interventions ユーザー発言（task-notification を除く、先頭 80 字）
 #   AUTO:waits         ユーザー発言から次の Workflow 開始までの時間
@@ -14,12 +14,12 @@ OUT="$ROOT/journal/timeline.md"
 cd "$ROOT"
 
 hms() { local s="$1"; printf '%dm%02ds' $((s / 60)) $((s % 60)); }
-utc() { date -u -d "$1" '+%Y-%m-%d %H:%M:%S'; }
-jst_hm() { TZ=Asia/Tokyo date -d "$1" '+%H:%M'; }
+utc() { date -d "$1" '+%Y-%m-%d %H:%M:%S'; }
+
 
 # ---- commits ----
 {
-  echo "| hash | 時刻 (UTC) | 件名 | 変更ファイル | 追加行 | 削除行 | 直前コミットから |"
+  echo "| hash | 時刻 (JST) | 件名 | 変更ファイル | 追加行 | 削除行 | 直前コミットから |"
   echo "|---|---|---|---|---|---|---|"
   # 古い順に処理して間隔を出す
   prev=""
@@ -29,11 +29,11 @@ jst_hm() { TZ=Asia/Tokyo date -d "$1" '+%H:%M'; }
     a="$(sed -En 's/.* ([0-9]+) insertions?\(\+\).*/\1/p' <<<"$stat")"
     d="$(sed -En 's/.* ([0-9]+) deletions?\(-\).*/\1/p' <<<"$stat")"
     if [[ -n "$prev" ]]; then gap="$(hms $((at - prev)))"; [[ $((at - prev)) -ge 3600 ]] && gap="$((($at - prev) / 3600))h$(((at - prev) % 3600 / 60))m"; else gap="-"; fi
-    printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$h" "$(date -u -d "@$at" '+%Y-%m-%d %H:%M:%S')" "$subj" "${f:-0}" "${a:-0}" "${d:-0}" "$gap"
+    printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$h" "$(date -d "@$at" '+%Y-%m-%d %H:%M:%S')" "$subj" "${f:-0}" "${a:-0}" "${d:-0}" "$gap"
     prev="$at"
   done < <(git log --reverse --format='%h|%at|%ad|%s' --date=format-local:'%Y-%m-%d %H:%M:%S')
   echo
-  echo "出所: \`git log\`（TZ=UTC）と \`git show --shortstat\`。生成: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+  echo "出所: \`git log\`（TZ=Asia/Tokyo）と \`git show --shortstat\`。生成: $(date '+%Y-%m-%d %H:%M:%S') JST"
 } | replace_block "$OUT" commits
 
 # ---- workflows / interventions / waits（トランスクリプトが無ければスキップ）----
@@ -63,14 +63,14 @@ if TX="$(tx_root)"; then
   done | sort -t'|' -k2 >"$rows"
 
   {
-    echo "| wf ID | 名前 / 目的 | 開始 (UTC) | 終了 (UTC) | 壁時計 | 担当 (結果済/起動) |"
+    echo "| wf ID | 名前 / 目的 | 開始 (JST) | 終了 (JST) | 壁時計 | 担当 (結果済/起動) |"
     echo "|---|---|---|---|---|---|"
     while IFS='|' read -r id start first last ns nr st name desc; do
-      s="$(date -u -d "$start" +%s)"
+      s="$(date -d "$start" +%s)"
       if [[ "$st" == "完了" ]]; then
-        e="$(date -u -d "$last" +%s)"; endcol="$(utc "$last")"; wall="$(hms $((e - s)))"
+        e="$(date -d "$last" +%s)"; endcol="$(utc "$last")"; wall="$(hms $((e - s)))"
       else
-        endcol="進行中"; wall="進行中（最終ログ ${last:+$(date -u -d "$last" +%H:%M:%S)} 時点で $(hms $(( $(date -u -d "$last" +%s) - s )))）"
+        endcol="進行中"; wall="進行中（最終ログ ${last:+$(date -d "$last" +%H:%M:%S)} 時点で $(hms $(( $(date -d "$last" +%s) - s )))）"
       fi
       printf '| %s | %s: %s | %s | %s | %s | %s/%s |\n' "$id" "$name" "$desc" "$(utc "$start")" "$endcol" "$wall" "$nr" "$ns"
     done <"$rows"
@@ -84,25 +84,25 @@ if TX="$(tx_root)"; then
          | select(.message.content|startswith("<task-notification>")|not)
          | [.timestamp, (.message.content|gsub("\n";" ")|.[0:80])]|@tsv' "$MAIN" >"$msgs"
   {
-    echo "| 時刻 (UTC) | JST | 発言（先頭 80 字） |"
-    echo "|---|---|---|"
+    echo "| 時刻 (JST) | 発言（先頭 80 字） |"
+    echo "|---|---|"
     while IFS=$'\t' read -r ts text; do
-      printf '| %s | %s | %s |\n' "$(utc "$ts")" "$(jst_hm "$ts")" "${text//|/\\|}"
+      printf '| %s | %s |\n' "$(utc "$ts")" "${text//|/\\|}"
     done <"$msgs"
     echo
     echo "出所: メイン会話 transcript（$(basename "$MAIN")）の type==user かつ content が文字列の行。このセッションの最初の記録は $(jq -r '.timestamp // empty' "$MAIN" | sort | head -1)。それ以前のセッションの発言は含まれない。"
   } | replace_block "$OUT" interventions
 
   {
-    echo "| ユーザー発言 (UTC) | 次の Workflow 起動 (UTC) | 発言から起動まで | 起動した wf |"
+    echo "| ユーザー発言 (JST) | 次の Workflow 起動 (JST) | 発言から起動まで | 起動した wf |"
     echo "|---|---|---|---|"
     while IFS=$'\t' read -r ts text; do
-      t="$(date -u -d "$ts" +%s)"; next=""; nid=""
+      t="$(date -d "$ts" +%s)"; next=""; nid=""
       while IFS='|' read -r id start _; do
-        [[ $(date -u -d "$start" +%s) -ge $t ]] && { next="$start"; nid="$id"; break; }
+        [[ $(date -d "$start" +%s) -ge $t ]] && { next="$start"; nid="$id"; break; }
       done <"$rows"
       if [[ -n "$next" ]]; then
-        printf '| %s | %s | %s | %s |\n' "$(utc "$ts")" "$(utc "$next")" "$(hms $(( $(date -u -d "$next" +%s) - t )))" "$nid"
+        printf '| %s | %s | %s | %s |\n' "$(utc "$ts")" "$(utc "$next")" "$(hms $(( $(date -d "$next" +%s) - t )))" "$nid"
       else
         printf '| %s | （以降の Workflow なし） | - | - |\n' "$(utc "$ts")"
       fi

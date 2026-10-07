@@ -40,7 +40,7 @@ jobs:
             impl/rust
             tests/tools/slttools
             tests/tools/isolation
-            tests/tools/difftest
+            tests/tools/difffuzz
       - name: Install sqllogictest-bin 0.29.1
         run: cargo install sqllogictest-bin --locked --version 0.29.1
       - name: Install PostgreSQL 17 (server / client)
@@ -59,3 +59,60 @@ jobs:
         with:
           name: done-check-logs
           path: /tmp/yuzhu-done-check
+
+  # 差分ファジング（tests/tools/difffuzz。参考。完了条件の長時間実行は tests/done-check.sh の条件 6）。
+  # シードは日付由来（失敗したシードはログに残るので、そのシードと --case で再現できる）。
+  difffuzz:
+    name: difffuzz (yuzhu vs PostgreSQL, all domains)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/tools/difffuzz
+      - name: Install PostgreSQL 17 (server / client)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-17 postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Build yuzhu-server and difffuzz
+        run: |
+          cargo build --release --manifest-path impl/rust/Cargo.toml -p yuzhu-server
+          cargo build --release --manifest-path tests/tools/difffuzz/Cargo.toml
+      - name: difffuzz unit tests
+        run: cargo test --manifest-path tests/tools/difffuzz/Cargo.toml
+      - name: Start PostgreSQL and yuzhu
+        run: |
+          tests/pg.sh start
+          tests/yuzhu.sh start --port 5433
+      - name: difffuzz (seed = date)
+        run: |
+          seed="$(date +%Y%m%d)"
+          echo "seed=$seed"
+          ex=()
+          while IFS= read -r n; do
+            case "$n" in ''|'#'*) ;; *) ex+=(--exclude "$n") ;; esac
+          done < tests/tools/difffuzz/known-excludes.txt
+          tests/tools/difffuzz/target/release/difffuzz --domain all --seed "$seed" --cases 20000 ${ex[@]+"${ex[@]}"} \
+            --pg "host=127.0.0.1 port=55432 user=postgres dbname=postgres" \
+            --yuzhu "host=127.0.0.1 port=5433 user=postgres dbname=postgres" \
+            --out difffuzz-fail.jsonl
+      - name: Upload failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: difffuzz-fail
+          path: difffuzz-fail.jsonl
+          if-no-files-found: ignore
+      - name: Stop servers
+        if: always()
+        run: |
+          tests/yuzhu.sh clean || true
+          tests/pg.sh stop || true

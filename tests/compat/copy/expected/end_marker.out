@@ -1,0 +1,19 @@
+psql:<stdin>:5: ERROR:  extra data after last expected column
+CONTEXT:  COPY compat_m1, line 2: "22	x	5"
+ a | b 
+---+---
+(0 rows)
+
+psql:<stdin>:10: ERROR:  end-of-copy marker corrupt
+CONTEXT:  COPY compat_m1, line 2
+ count 
+-------
+     0
+(1 row)
+
+psql:<stdin>:14: ERROR:  extra data after last expected column
+CONTEXT:  COPY compat_m1, line 1: "5	bad	"
+ count 
+-------
+     0
+(1 row)

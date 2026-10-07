@@ -5,8 +5,9 @@ use super::Parser;
 use super::expr::is_query_start_kw;
 use crate::error::{Error, Result, Span, sqlstate};
 use crate::sql::ast::{
-    Distinct, Expr, Ident, JoinConstraint, JoinKind, Literal, NullsOrder, ObjectName, OrderByItem,
-    Query, QueryBody, Select, SelectItem, SetOperator, SortDirection, TableAlias, TableRef, Values,
+    Cte, Distinct, Expr, Ident, JoinConstraint, JoinKind, Literal, NullsOrder, ObjectName,
+    OrderByItem, Query, QueryBody, Select, SelectItem, SetOperator, SortDirection, TableAlias,
+    TableRef, Values, With,
 };
 use crate::sql::token::{TokenKind, requires_as_label};
 
@@ -27,11 +28,89 @@ impl Parser<'_> {
 
     fn parse_query_level(&mut self) -> Result<Query> {
         let start = self.start();
-        if self.is_kw("with") {
-            return Err(self.not_supported("WITH"));
-        }
+        let with = if self.is_kw("with") {
+            Some(self.parse_with()?)
+        } else {
+            None
+        };
         let first = self.parse_set_primary()?;
-        self.continue_query(first, start)
+        let mut query = self.continue_query(first, start)?;
+        if let Some(with) = with {
+            if query.with.is_some() {
+                // `WITH a AS (..) (WITH b AS (..) SELECT ..)`: keep both.
+                let span = query.span;
+                query = Query {
+                    with: None,
+                    body: QueryBody::Nested(Box::new(query)),
+                    order_by: Vec::new(),
+                    limit: None,
+                    offset: None,
+                    span,
+                };
+            }
+            query.with = Some(with);
+        }
+        Ok(query)
+    }
+
+    /// `with_clause`: `WITH [RECURSIVE] cte [, ...]`.
+    fn parse_with(&mut self) -> Result<With> {
+        let start = self.advance().span.start;
+        // `recursive` is also a valid CTE name (`WITH recursive AS (..)`).
+        let recursive = self.is_kw("recursive")
+            && !self.nth_is_kw(1, "as")
+            && self.peek_nth(1).kind != TokenKind::LParen
+            && self.eat_kw("recursive");
+        let mut ctes = vec![self.parse_cte()?];
+        while self.eat(&TokenKind::Comma) {
+            ctes.push(self.parse_cte()?);
+        }
+        if is_dml_kw(self.peek().keyword()) {
+            return Err(self.not_supported("WITH clause on INSERT, UPDATE or DELETE"));
+        }
+        Ok(With {
+            recursive,
+            ctes,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `common_table_expr`.
+    fn parse_cte(&mut self) -> Result<Cte> {
+        let start = self.start();
+        let name = self.parse_col_id()?;
+        let columns = if self.peek_kind() == &TokenKind::LParen {
+            self.parse_paren_name_list()?
+        } else {
+            Vec::new()
+        };
+        self.expect_kw("as")?;
+        let materialized = if self.eat_kw("materialized") {
+            Some(true)
+        } else if self.is_kw("not") && self.nth_is_kw(1, "materialized") {
+            self.advance();
+            self.advance();
+            Some(false)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::LParen)?;
+        if is_dml_kw(self.peek().keyword()) {
+            return Err(self.not_supported("data-modifying statements in WITH"));
+        }
+        let query = Box::new(self.parse_query()?);
+        self.expect(&TokenKind::RParen)?;
+        let span = self.span_from(start);
+        if self.is_kw("search") || self.is_kw("cycle") {
+            return Err(self.not_supported("SEARCH and CYCLE clauses"));
+        }
+        Ok(Cte {
+            name,
+            columns,
+            materialized,
+            query,
+            span,
+        })
     }
 
     /// Parses the rest of a query whose first set-operation operand is
@@ -179,6 +258,7 @@ impl Parser<'_> {
             return Ok(*inner);
         }
         Ok(Query {
+            with: None,
             body,
             order_by,
             limit,
@@ -228,7 +308,7 @@ impl Parser<'_> {
         Ok(count)
     }
 
-    fn parse_order_by_item(&mut self) -> Result<OrderByItem> {
+    pub(super) fn parse_order_by_item(&mut self) -> Result<OrderByItem> {
         let start = self.start();
         let expr = self.parse_a_expr()?;
         let direction = if self.eat_kw("asc") {
@@ -344,7 +424,7 @@ impl Parser<'_> {
             if !self.eat_kw("all") {
                 self.eat_kw("distinct");
             }
-            group_by = self.parse_expr_list()?;
+            group_by = self.parse_group_by_list()?;
         }
         let having = if self.eat_kw("having") {
             Some(self.parse_a_expr()?)
@@ -363,6 +443,32 @@ impl Parser<'_> {
             having,
             span: self.span_from(start),
         })
+    }
+
+    /// `group_clause` items. `()`, `ROLLUP`, `CUBE` and `GROUPING SETS` have
+    /// no room in the AST.
+    fn parse_group_by_list(&mut self) -> Result<Vec<Expr>> {
+        let mut items = Vec::new();
+        loop {
+            let special = match self.peek().keyword() {
+                Some("rollup" | "cube") => self.peek_nth(1).kind == TokenKind::LParen,
+                Some("grouping") => self.nth_is_kw(1, "sets"),
+                _ => {
+                    self.peek_kind() == &TokenKind::LParen
+                        && self.peek_nth(1).kind == TokenKind::RParen
+                }
+            };
+            if special {
+                return Err(Error::not_supported(
+                    "GROUPING SETS / ROLLUP / CUBE / empty grouping sets are not supported yet",
+                )
+                .with_span(self.peek().span));
+            }
+            items.push(self.parse_a_expr()?);
+            if !self.eat(&TokenKind::Comma) {
+                return Ok(items);
+            }
+        }
     }
 
     /// `target_list`.
@@ -538,7 +644,7 @@ impl Parser<'_> {
     }
 
     /// True if the tokens from `n` on are `'('* <query start keyword>`.
-    fn parens_then_query(&self, mut n: usize) -> bool {
+    pub(super) fn parens_then_query(&self, mut n: usize) -> bool {
         while self.peek_nth(n).kind == TokenKind::LParen {
             n += 1;
         }
@@ -553,44 +659,103 @@ impl Parser<'_> {
         let start = self.start();
         if self.peek_kind() == &TokenKind::LParen {
             if self.parens_then_query(1) {
-                self.advance();
-                let query = Box::new(self.parse_query()?);
-                self.expect(&TokenKind::RParen)?;
-                let alias = self.parse_opt_alias()?;
-                return Ok(TableRef::Subquery {
-                    query,
-                    alias,
-                    span: self.span_from(start),
-                });
+                // `((select 1) x JOIN ...)` starts like `((select 1) UNION ...)`:
+                // when the nested form is ambiguous, try the subquery first and
+                // fall back to a parenthesized join.
+                if self.peek_nth(1).kind != TokenKind::LParen {
+                    return self.parse_paren_subquery(start);
+                }
+                let saved = self.snapshot();
+                let first = match self.parse_paren_subquery(start) {
+                    Ok(t) => return Ok(t),
+                    Err(e) => e,
+                };
+                let first_pos = self.pos;
+                self.restore(saved);
+                return match self.parse_paren_join() {
+                    Ok(t) => Ok(t),
+                    Err(e) if self.pos >= first_pos => Err(e),
+                    Err(_) => Err(first),
+                };
             }
-            self.advance();
-            let inner = self.parse_table_ref()?;
-            if !matches!(inner, TableRef::Join { .. }) {
-                return Err(self.unexpected());
-            }
-            self.expect(&TokenKind::RParen)?;
-            if self.is_kw("as") || self.at_col_id() {
-                return Err(self.not_supported("aliases for parenthesized joins"));
-            }
-            return Ok(inner);
+            return self.parse_paren_join();
         }
         if self.is_kw("lateral") {
             return Err(self.not_supported("LATERAL"));
         }
-        if self.is_kw("only") {
-            return Err(self.not_supported("ONLY"));
+        if self.is_kw("rows") && self.nth_is_kw(1, "from") {
+            return Err(self.not_supported("ROWS FROM"));
         }
-        let name = self.parse_object_name()?;
-        if self.peek_kind() == &TokenKind::LParen {
-            return Err(self.not_supported("functions in FROM"));
-        }
-        self.eat_op("*");
+        let name = if self.eat_kw("only") {
+            // No inheritance: `ONLY t` and `ONLY (t)` mean `t`.
+            let paren = self.eat(&TokenKind::LParen);
+            let name = self.parse_object_name()?;
+            if paren {
+                self.expect(&TokenKind::RParen)?;
+            }
+            name
+        } else {
+            let name = self.parse_object_name()?;
+            if self.peek_kind() == &TokenKind::LParen {
+                return self.parse_function_table(name, start);
+            }
+            self.eat_op("*");
+            name
+        };
         let alias = self.parse_opt_alias()?;
         if self.is_kw("tablesample") {
             return Err(self.not_supported("TABLESAMPLE"));
         }
         Ok(TableRef::Table {
             name,
+            alias,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `'(' query ')' [alias]`, at the `(`.
+    fn parse_paren_subquery(&mut self, start: u32) -> Result<TableRef> {
+        self.advance();
+        let query = Box::new(self.parse_query()?);
+        self.expect(&TokenKind::RParen)?;
+        let alias = self.parse_opt_alias()?;
+        Ok(TableRef::Subquery {
+            query,
+            alias,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `'(' joined_table ')'`, at the `(`.
+    fn parse_paren_join(&mut self) -> Result<TableRef> {
+        self.advance();
+        let inner = self.parse_table_ref()?;
+        if !matches!(inner, TableRef::Join { .. }) {
+            return Err(self.unexpected());
+        }
+        self.expect(&TokenKind::RParen)?;
+        if self.is_kw("as") || self.at_col_id() {
+            return Err(self.not_supported("aliases for parenthesized joins"));
+        }
+        Ok(inner)
+    }
+
+    /// `func_table`: the arguments and alias after `name`.
+    fn parse_function_table(&mut self, name: ObjectName, start: u32) -> Result<TableRef> {
+        self.expect(&TokenKind::LParen)?;
+        let args = if self.peek_kind() == &TokenKind::RParen {
+            Vec::new()
+        } else {
+            self.parse_expr_list()?
+        };
+        self.expect(&TokenKind::RParen)?;
+        if self.is_kw("with") && self.nth_is_kw(1, "ordinality") {
+            return Err(self.not_supported("WITH ORDINALITY"));
+        }
+        let alias = self.parse_opt_alias()?;
+        Ok(TableRef::Function {
+            name,
+            args,
             alias,
             span: self.span_from(start),
         })
@@ -621,6 +786,7 @@ fn table_ref_span(t: &TableRef) -> Span {
     match t {
         TableRef::Table { span, .. }
         | TableRef::Subquery { span, .. }
+        | TableRef::Function { span, .. }
         | TableRef::Join { span, .. } => *span,
     }
 }
@@ -631,4 +797,9 @@ fn multiple(what: &str, pos: u32) -> Error {
         format!("multiple {what} clauses not allowed"),
     )
     .with_span(Span::new(pos, pos))
+}
+
+/// Keywords that start a data-modifying statement.
+fn is_dml_kw(kw: Option<&str>) -> bool {
+    matches!(kw, Some("insert" | "update" | "delete" | "merge"))
 }

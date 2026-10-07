@@ -1,11 +1,12 @@
 //! Transaction control, SET / SHOW / RESET, EXPLAIN.
 
 use super::Parser;
+use super::ddl::OptArg;
 use super::expr::is_query_start_kw;
-use crate::error::{Error, Result, sqlstate};
+use crate::error::{Error, Result};
 use crate::sql::ast::{
-    Explain, ParamTarget, ResetStmt, SetArg, SetStmt, SetTransaction, SetValue, ShowStmt,
-    Statement, TransactionKind, TransactionMode, TransactionStmt,
+    Explain, ExplainOption, ExplainValue, ParamTarget, ResetStmt, SetArg, SetStmt, SetTransaction,
+    SetValue, ShowStmt, Statement, TransactionKind, TransactionMode, TransactionStmt,
 };
 use crate::sql::token::{KeywordCategory, TokenKind, keyword_category};
 
@@ -417,42 +418,47 @@ impl Parser<'_> {
 
     pub(super) fn parse_explain(&mut self) -> Result<Explain> {
         let start = self.advance().span.start;
-        let mut analyze = false;
-        let mut verbose = false;
+        let mut options = Vec::new();
         if self.peek_kind() == &TokenKind::LParen {
             self.advance();
             loop {
-                let name_tok = self.peek().clone();
-                let name = match &name_tok.kind {
-                    TokenKind::Word { value, .. } => value.clone(),
-                    _ => return Err(self.unexpected()),
+                let name_span = self.peek().span;
+                let name = if self.is_kw("analyze") || self.is_kw("analyse") {
+                    self.advance();
+                    "analyze".to_string()
+                } else {
+                    self.parse_non_reserved_word()?.value
                 };
-                self.advance();
-                let value = self.parse_explain_option_value()?;
-                match name.as_str() {
-                    "analyze" | "analyse" => analyze = value,
-                    "verbose" => verbose = value,
-                    "costs" | "buffers" | "timing" | "summary" | "format" | "settings" | "wal"
-                    | "generic_plan" | "serialize" | "memory" => {}
-                    _ => {
-                        return Err(Error::new(
-                            sqlstate::SYNTAX_ERROR,
-                            format!("unrecognized EXPLAIN option \"{name}\""),
-                        )
-                        .with_span(name_tok.span));
-                    }
-                }
+                let value = self.parse_opt_arg()?.map(|a| match a {
+                    OptArg::Word(w) | OptArg::Str(w) => ExplainValue::Word(w),
+                    OptArg::Int(t) => t
+                        .parse::<i64>()
+                        .map_or(ExplainValue::Other(t), ExplainValue::Integer),
+                    OptArg::Dec(t) => ExplainValue::Other(t),
+                });
+                options.push(ExplainOption {
+                    name,
+                    value,
+                    name_span,
+                });
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
             }
             self.expect(&TokenKind::RParen)?;
         } else {
-            if self.eat_kw("analyze") || self.eat_kw("analyse") {
-                analyze = true;
-            }
-            if self.eat_kw("verbose") {
-                verbose = true;
+            for (kws, name) in [
+                (["analyze", "analyse"], "analyze"),
+                (["verbose", "verbose"], "verbose"),
+            ] {
+                if self.is_kw(kws[0]) || self.is_kw(kws[1]) {
+                    let name_span = self.advance().span;
+                    options.push(ExplainOption {
+                        name: name.to_string(),
+                        value: None,
+                        name_span,
+                    });
+                }
             }
         }
         let statement = match self.peek().keyword() {
@@ -465,27 +471,9 @@ impl Parser<'_> {
             _ => return Err(self.unexpected()),
         };
         Ok(Explain {
-            analyze,
-            verbose,
+            options,
             statement: Box::new(statement),
             span: self.span_from(start),
         })
-    }
-
-    /// The optional value of an EXPLAIN option, as a boolean (`true` when
-    /// absent; non-boolean values such as `FORMAT JSON` also give `true`).
-    fn parse_explain_option_value(&mut self) -> Result<bool> {
-        let t = self.peek().clone();
-        let value = match &t.kind {
-            TokenKind::Comma | TokenKind::RParen => return Ok(true),
-            TokenKind::Word { value, .. } => !matches!(value.as_str(), "false" | "off"),
-            TokenKind::String(s) => {
-                !matches!(s.to_ascii_lowercase().as_str(), "false" | "off" | "0")
-            }
-            TokenKind::Integer(s) | TokenKind::Decimal(s) => s != "0",
-            _ => return Err(self.unexpected()),
-        };
-        self.advance();
-        Ok(value)
     }
 }

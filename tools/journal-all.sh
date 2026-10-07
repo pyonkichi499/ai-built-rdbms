@@ -4,7 +4,7 @@
 # tools/journal-{timeline,workflows,decisions,metrics,verify,snapshots,readme}.sh を順に実行する。
 # 1 つが失敗しても続行し、最後に失敗した節を一覧にして非 0 で終了する。
 # 書き込み先は journal/ のみ（各スクリプトの責務）。git add / commit / push は行わない。
-# 時刻はすべて UTC。
+# 時刻はすべて JST。
 #
 # 使い方:
 #   tools/journal-all.sh [--dry-run] [--run-tests]
@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-export TZ=UTC
+export TZ=Asia/Tokyo
 export LC_ALL=C.UTF-8 2>/dev/null || true
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +44,7 @@ done
 
 cd "$REPO_ROOT" || exit 1
 
-echo "== journal-all 開始 (UTC $(date '+%Y-%m-%d %H:%M:%S')) 引数: ${PASS_ARGS[*]:-なし} =="
+echo "== journal-all 開始 (JST $(date '+%Y-%m-%d %H:%M:%S')) 引数: ${PASS_ARGS[*]:-なし} =="
 
 FAILED=()
 for name in "${SECTIONS[@]}"; do

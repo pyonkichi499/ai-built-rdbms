@@ -1,0 +1,39 @@
+           List of relations
+ Schema |   Name    | Type  |  Owner   
+--------+-----------+-------+----------
+ public | compat_t1 | table | postgres
+ public | compat_t2 | table | postgres
+ public | compat_t3 | table | postgres
+(3 rows)
+
+           List of relations
+ Schema |   Name    | Type  |  Owner   
+--------+-----------+-------+----------
+ public | compat_t1 | table | postgres
+(1 row)
+
+           List of relations
+ Schema |   Name    | Type  |  Owner   
+--------+-----------+-------+----------
+ public | compat_t1 | table | postgres
+ public | compat_t2 | table | postgres
+ public | compat_t3 | table | postgres
+(3 rows)
+
+      List of relations
+ Schema | Name | Type | Owner 
+--------+------+------+-------
+(0 rows)
+
+           List of relations
+ Schema |   Name    | Type  |  Owner   
+--------+-----------+-------+----------
+ public | compat_t1 | table | postgres
+ public | compat_t2 | table | postgres
+ public | compat_t3 | table | postgres
+(3 rows)
+
+      List of relations
+ Schema | Name | Type | Owner 
+--------+------+------+-------
+(0 rows)

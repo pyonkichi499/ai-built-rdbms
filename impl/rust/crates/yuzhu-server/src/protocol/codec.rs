@@ -243,11 +243,29 @@ pub fn read_message<R: Read>(
         }
         b'X' => FrontendMessage::Terminate,
         b'S' => FrontendMessage::Sync,
+        b'd' => FrontendMessage::CopyData(body),
+        b'c' => FrontendMessage::CopyDone,
+        b'f' => FrontendMessage::CopyFail(copy_fail_message(&body)),
         _ => match ExtendedKind::from_tag(tag) {
             Some(kind) => FrontendMessage::Extended(kind),
             None => FrontendMessage::Unknown(tag),
         },
     }))
+}
+
+/// The NUL-terminated message of a CopyFail; empty if it is malformed
+/// (the COPY is aborted either way).
+fn copy_fail_message(body: &[u8]) -> String {
+    let Some((&0, s)) = body.split_last() else {
+        return String::new();
+    };
+    let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+    let s = &s[..end];
+    if client_latin1() {
+        s.iter().map(|&b| char::from(b)).collect()
+    } else {
+        String::from_utf8(s.to_vec()).unwrap_or_default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +318,19 @@ fn put_error_fields(buf: &mut Vec<u8>, f: &ErrorFields<'_>) {
         buf.push(b'P');
         put_cstr(buf, &p.to_string());
     }
+    // PostgreSQL's order: W (context), then s t c n.
+    for (code, value) in [
+        (b'W', f.context),
+        (b's', f.schema),
+        (b't', f.table),
+        (b'c', f.column),
+        (b'n', f.constraint),
+    ] {
+        if let Some(v) = value {
+            buf.push(code);
+            put_cstr(buf, v);
+        }
+    }
     buf.push(0);
 }
 
@@ -346,6 +377,7 @@ pub fn encode(msg: &BackendMessage<'_>) -> io::Result<Vec<u8>> {
         BackendMessage::DataRow(_) => b'D',
         BackendMessage::CommandComplete(_) => b'C',
         BackendMessage::EmptyQueryResponse => b'I',
+        BackendMessage::CopyInResponse { .. } => b'G',
         BackendMessage::ErrorResponse(_) => b'E',
         BackendMessage::NoticeResponse(_) => b'N',
         BackendMessage::NegotiateProtocolVersion { .. } => b'v',
@@ -367,6 +399,19 @@ pub fn encode(msg: &BackendMessage<'_>) -> io::Result<Vec<u8>> {
         BackendMessage::DataRow(values) => put_data_row(&mut buf, values)?,
         BackendMessage::CommandComplete(tag) => put_cstr(&mut buf, tag),
         BackendMessage::EmptyQueryResponse => {}
+        BackendMessage::CopyInResponse {
+            format,
+            column_formats,
+        } => {
+            buf.push(*format);
+            put_i16(
+                &mut buf,
+                i16::try_from(column_formats.len()).map_err(|_| too_long())?,
+            );
+            for f in *column_formats {
+                put_i16(&mut buf, *f);
+            }
+        }
         BackendMessage::ErrorResponse(f) | BackendMessage::NoticeResponse(f) => {
             put_error_fields(&mut buf, f);
         }
@@ -832,6 +877,7 @@ mod tests {
             detail: Some("d"),
             hint: Some("h"),
             position: Some(17),
+            ..ErrorFields::default()
         };
         let bytes = enc(&BackendMessage::ErrorResponse(f));
         assert_eq!(bytes[0], b'E');
@@ -843,6 +889,75 @@ mod tests {
         assert_eq!(usize::try_from(len).unwrap(), bytes.len() - 1);
     }
 
+    #[test]
+    fn encode_error_response_diagnostic_fields_in_postgres_order() {
+        let f = ErrorFields {
+            severity: "ERROR",
+            code: "23502",
+            message: "m",
+            position: Some(3),
+            context: Some("COPY t, line 1"),
+            schema: Some("public"),
+            table: Some("t"),
+            column: Some("a"),
+            constraint: Some("k"),
+            ..ErrorFields::default()
+        };
+        let bytes = enc(&BackendMessage::ErrorResponse(f));
+        assert_eq!(
+            &bytes[5..],
+            b"SERROR\0VERROR\0C23502\0Mm\0P3\0WCOPY t, line 1\0spublic\0tt\0ca\0nk\0\0".as_slice()
+        );
+    }
+
+    #[test]
+    fn encode_copy_in_response() {
+        assert_eq!(
+            enc(&BackendMessage::CopyInResponse {
+                format: 0,
+                column_formats: &[0, 0]
+            }),
+            [b'G', 0, 0, 0, 11, 0, 0, 2, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            enc(&BackendMessage::CopyInResponse {
+                format: 0,
+                column_formats: &[]
+            }),
+            [b'G', 0, 0, 0, 7, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn copy_messages_are_read() {
+        assert_eq!(
+            read_msg(&msg_bytes(b'd', b"1\tx\n")).unwrap(),
+            Some(FrontendMessage::CopyData(b"1\tx\n".to_vec()))
+        );
+        assert_eq!(
+            read_msg(&msg_bytes(b'd', b"")).unwrap(),
+            Some(FrontendMessage::CopyData(Vec::new()))
+        );
+        assert_eq!(
+            read_msg(&msg_bytes(b'c', b"")).unwrap(),
+            Some(FrontendMessage::CopyDone)
+        );
+        assert_eq!(
+            read_msg(&msg_bytes(b'f', b"boom\0")).unwrap(),
+            Some(FrontendMessage::CopyFail("boom".into()))
+        );
+    }
+
+    #[test]
+    fn malformed_copy_fail_message_is_empty() {
+        for body in [&b""[..], b"no terminator", b"\xff\xfe\0"] {
+            assert_eq!(
+                read_msg(&msg_bytes(b'f', body)).unwrap(),
+                Some(FrontendMessage::CopyFail(String::new())),
+                "{body:?}"
+            );
+        }
+    }
     #[test]
     fn encode_notice_response() {
         let f = ErrorFields {

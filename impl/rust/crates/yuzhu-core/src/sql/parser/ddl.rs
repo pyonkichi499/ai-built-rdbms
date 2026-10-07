@@ -1,12 +1,37 @@
-//! DDL: CREATE TABLE, DROP TABLE.
+//! DDL: CREATE TABLE, DROP TABLE, constraints, `WITH (...)` options.
+//! Indexes, ALTER TABLE, TRUNCATE and VACUUM are in `ddl_index.rs`,
+//! sequences in `seq.rs`.
 
 use super::Parser;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::sql::ast::{
     ColumnConstraint, ColumnConstraintKind, ColumnDefinition, CreateTable, DropBehavior, DropTable,
-    Ident, SourceExpr, Statement, TableConstraint, TableConstraintKind, TableElement,
+    GeneratedWhen, Ident, IndexParams, KeyConstraint, ObjectName, RelOption, SeqPersistence,
+    SourceExpr, Statement, TableConstraint, TableConstraintKind, TableElement,
 };
 use crate::sql::token::TokenKind;
+
+/// The argument of a `name [value]` option (`def_arg`, `utility_option_arg`).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum OptArg {
+    /// Unquoted word.
+    Word(String),
+    /// Quoted word or string literal content.
+    Str(String),
+    /// Integer literal text with its sign (`-` only).
+    Int(String),
+    /// Decimal literal text with its sign.
+    Dec(String),
+}
+
+impl OptArg {
+    /// The text of the argument (`RelOption` / `VacuumOption` values).
+    pub(super) fn into_text(self) -> String {
+        match self {
+            OptArg::Word(s) | OptArg::Str(s) | OptArg::Int(s) | OptArg::Dec(s) => s,
+        }
+    }
+}
 
 /// Object kinds after CREATE / DROP that are valid PostgreSQL syntax but
 /// not supported yet (`0A000` instead of a syntax error).
@@ -24,7 +49,6 @@ const CREATE_OBJECTS: &[&str] = &[
     "foreign",
     "function",
     "group",
-    "index",
     "language",
     "materialized",
     "operator",
@@ -36,7 +60,6 @@ const CREATE_OBJECTS: &[&str] = &[
     "role",
     "rule",
     "schema",
-    "sequence",
     "server",
     "statistics",
     "subscription",
@@ -53,14 +76,31 @@ const CREATE_OBJECTS: &[&str] = &[
 impl Parser<'_> {
     pub(super) fn parse_create(&mut self) -> Result<Statement> {
         let start = self.advance().span.start;
+        if self.is_kw("unique") || self.is_kw("index") {
+            return self.parse_create_index(start);
+        }
         if self.is_kw("global") || self.is_kw("local") {
             self.advance();
         }
-        if self.is_kw("temp") || self.is_kw("temporary") {
+        let temp = self.is_kw("temp") || self.is_kw("temporary");
+        let unlogged = self.is_kw("unlogged");
+        if (temp || unlogged) && self.nth_is_kw(1, "sequence") {
+            self.advance();
+            let persistence = if temp {
+                SeqPersistence::Temporary
+            } else {
+                SeqPersistence::Unlogged
+            };
+            return self.parse_create_sequence(start, persistence);
+        }
+        if temp {
             return Err(self.not_supported("temporary tables"));
         }
-        if self.is_kw("unlogged") {
+        if unlogged {
             return Err(self.not_supported("unlogged tables"));
+        }
+        if self.is_kw("sequence") {
+            return self.parse_create_sequence(start, SeqPersistence::Permanent);
         }
         if !self.is_kw("table") {
             return Err(match self.peek().keyword() {
@@ -97,6 +137,12 @@ impl Parser<'_> {
             }
             self.expect(&TokenKind::RParen)?;
         }
+        let options = if self.is_kw("with") && self.peek_nth(1).kind == TokenKind::LParen {
+            self.advance();
+            self.parse_rel_options()?
+        } else {
+            Vec::new()
+        };
         for kw in [
             "inherits",
             "partition",
@@ -116,6 +162,7 @@ impl Parser<'_> {
             name,
             if_not_exists,
             elements,
+            options,
             span: self.span_from(start),
         }))
     }
@@ -159,11 +206,17 @@ impl Parser<'_> {
         let expr = self.parse_a_expr()?;
         let text = self.source_expr_text(expr_start);
         self.expect(&TokenKind::RParen)?;
+        let mut no_inherit = false;
         if self.is_kw("no") && self.nth_is_kw(1, "inherit") {
             self.advance();
             self.advance();
+            no_inherit = true;
         }
-        Ok(SourceExpr { expr, text })
+        Ok(SourceExpr {
+            expr,
+            text,
+            no_inherit,
+        })
     }
 
     fn parse_column_constraints(&mut self) -> Result<Vec<ColumnConstraint>> {
@@ -191,7 +244,11 @@ impl Parser<'_> {
                     let expr_start = self.start();
                     let expr = self.parse_b_expr()?;
                     let text = self.source_expr_text(expr_start);
-                    ColumnConstraintKind::Default(SourceExpr { expr, text })
+                    ColumnConstraintKind::Default(SourceExpr {
+                        expr,
+                        text,
+                        no_inherit: false,
+                    })
                 }
                 "check" => {
                     self.advance();
@@ -200,14 +257,14 @@ impl Parser<'_> {
                 "primary" => {
                     self.advance();
                     self.expect_kw("key")?;
-                    self.reject_index_parameters()?;
-                    ColumnConstraintKind::PrimaryKey
+                    ColumnConstraintKind::PrimaryKey(self.parse_index_params(false)?)
                 }
                 "unique" => {
                     self.advance();
-                    self.skip_nulls_distinct()?;
-                    self.reject_index_parameters()?;
-                    ColumnConstraintKind::Unique
+                    let nulls_not_distinct = self.parse_nulls_not_distinct()?;
+                    let mut params = self.parse_index_params(false)?;
+                    params.nulls_not_distinct = nulls_not_distinct;
+                    ColumnConstraintKind::Unique(params)
                 }
                 "references" => {
                     self.advance();
@@ -220,7 +277,7 @@ impl Parser<'_> {
                     self.skip_fk_actions()?;
                     ColumnConstraintKind::References { table, columns }
                 }
-                "generated" => return Err(self.not_supported("generated columns")),
+                "generated" => self.parse_generated()?,
                 "collate" if name.is_none() => {
                     self.advance();
                     let collation = self.parse_object_name()?;
@@ -233,7 +290,7 @@ impl Parser<'_> {
                     continue;
                 }
                 "deferrable" | "initially" | "not" if name.is_none() => {
-                    if self.skip_constraint_attribute()? {
+                    if self.skip_constraint_attribute(&mut false)? {
                         continue;
                     }
                     // `NOT` followed by neither NULL nor DEFERRABLE.
@@ -243,29 +300,72 @@ impl Parser<'_> {
                 _ if name.is_some() => return Err(self.unexpected()),
                 _ => break,
             };
-            self.skip_constraint_attributes()?;
+            let deferrable = self.parse_constraint_attributes()?
+                && matches!(
+                    kind,
+                    ColumnConstraintKind::PrimaryKey(_)
+                        | ColumnConstraintKind::Unique(_)
+                        | ColumnConstraintKind::References { .. }
+                );
             constraints.push(ColumnConstraint {
                 name,
                 kind,
+                deferrable,
                 span: self.span_from(start),
             });
         }
         Ok(constraints)
     }
 
+    /// `GENERATED {ALWAYS | BY DEFAULT} AS IDENTITY [(sequence options)]`.
+    /// Generated columns (`AS (expr) STORED`) are `0A000` at `GENERATED`.
+    fn parse_generated(&mut self) -> Result<ColumnConstraintKind> {
+        let generated = self.advance().span;
+        let when = if self.eat_kw("always") {
+            GeneratedWhen::Always
+        } else {
+            self.expect_kw("by")?;
+            self.expect_kw("default")?;
+            GeneratedWhen::ByDefault
+        };
+        self.expect_kw("as")?;
+        if !self.eat_kw("identity") {
+            return Err(
+                Error::not_supported("generated columns is not supported yet").with_span(generated),
+            );
+        }
+        let options = if self.peek_kind() == &TokenKind::LParen {
+            self.advance();
+            let options = self.parse_seq_options()?;
+            if options.is_empty() {
+                return Err(self.unexpected());
+            }
+            self.expect(&TokenKind::RParen)?;
+            options
+        } else {
+            Vec::new()
+        };
+        Ok(ColumnConstraintKind::Identity { when, options })
+    }
+
     /// Skips one of `DEFERRABLE`, `NOT DEFERRABLE`, `INITIALLY
-    /// {DEFERRED|IMMEDIATE}`; returns false if none is at the cursor.
-    fn skip_constraint_attribute(&mut self) -> Result<bool> {
+    /// {DEFERRED|IMMEDIATE}`, updating `deferrable`; returns false if none
+    /// is at the cursor.
+    fn skip_constraint_attribute(&mut self, deferrable: &mut bool) -> Result<bool> {
         if self.eat_kw("deferrable") {
+            *deferrable = true;
             return Ok(true);
         }
         if self.is_kw("not") && self.nth_is_kw(1, "deferrable") {
             self.advance();
             self.advance();
+            *deferrable = false;
             return Ok(true);
         }
         if self.eat_kw("initially") {
-            if !self.eat_kw("deferred") {
+            if self.eat_kw("deferred") {
+                *deferrable = true;
+            } else {
                 self.expect_kw("immediate")?;
             }
             return Ok(true);
@@ -273,28 +373,138 @@ impl Parser<'_> {
         Ok(false)
     }
 
-    fn skip_constraint_attributes(&mut self) -> Result<()> {
-        while self.skip_constraint_attribute()? {}
-        Ok(())
+    /// Skips all constraint attributes; true if the constraint was made
+    /// deferrable (`DEFERRABLE` or `INITIALLY DEFERRED`).
+    fn parse_constraint_attributes(&mut self) -> Result<bool> {
+        let mut deferrable = false;
+        while self.skip_constraint_attribute(&mut deferrable)? {}
+        Ok(deferrable)
     }
 
-    /// `[NULLS [NOT] DISTINCT]`.
-    fn skip_nulls_distinct(&mut self) -> Result<()> {
+    /// `[NULLS [NOT] DISTINCT]`; true for `NULLS NOT DISTINCT`.
+    fn parse_nulls_not_distinct(&mut self) -> Result<bool> {
         if self.is_kw("nulls") && (self.nth_is_kw(1, "distinct") || self.nth_is_kw(1, "not")) {
             self.advance();
-            self.eat_kw("not");
+            let not = self.eat_kw("not");
             self.expect_kw("distinct")?;
+            return Ok(not);
         }
-        Ok(())
+        Ok(false)
     }
 
-    fn reject_index_parameters(&self) -> Result<()> {
-        for kw in ["include", "with", "using"] {
-            if self.is_kw(kw) {
-                return Err(self.not_supported("index parameters"));
+    /// `[INCLUDE (cols)] [WITH (...)] [USING INDEX TABLESPACE name]`.
+    /// `INCLUDE` is only valid for table constraints.
+    fn parse_index_params(&mut self, table_level: bool) -> Result<IndexParams> {
+        let mut params = IndexParams::default();
+        if table_level && self.eat_kw("include") {
+            params.include = self.parse_paren_name_list()?;
+        }
+        if self.is_kw("with") && self.peek_nth(1).kind == TokenKind::LParen {
+            self.advance();
+            params.options = self.parse_rel_options()?;
+        }
+        if self.is_kw("using") && self.nth_is_kw(1, "index") && self.nth_is_kw(2, "tablespace") {
+            self.advance();
+            self.advance();
+            self.advance();
+            params.tablespace = Some(self.parse_col_id()?);
+        }
+        Ok(params)
+    }
+
+    /// `'(' reloption [, ...] ')'`, with the cursor on the `(`:
+    /// `name [. name] [= value]`.
+    pub(super) fn parse_rel_options(&mut self) -> Result<Vec<RelOption>> {
+        self.expect(&TokenKind::LParen)?;
+        let mut options = Vec::new();
+        loop {
+            let start = self.start();
+            let mut name = self.parse_col_label()?;
+            let mut namespace = None;
+            if self.eat(&TokenKind::Dot) {
+                namespace = Some(name);
+                name = self.parse_col_label()?;
+            }
+            let value = if self.eat_op("=") {
+                match self.parse_opt_arg()? {
+                    Some(v) => Some(v.into_text()),
+                    None => return Err(self.unexpected()),
+                }
+            } else {
+                None
+            };
+            options.push(RelOption {
+                namespace,
+                name,
+                value,
+                span: self.span_from(start),
+            });
+            if !self.eat(&TokenKind::Comma) {
+                break;
             }
         }
-        Ok(())
+        self.expect(&TokenKind::RParen)?;
+        Ok(options)
+    }
+
+    /// An option argument: a word, a string, or a number with an optional
+    /// sign. `None` when the cursor is on `,` or `)` (no argument).
+    pub(super) fn parse_opt_arg(&mut self) -> Result<Option<OptArg>> {
+        let t = self.peek().clone();
+        let arg = match &t.kind {
+            TokenKind::Comma | TokenKind::RParen => return Ok(None),
+            TokenKind::Word { value, quoted } => {
+                if *quoted {
+                    OptArg::Str(value.clone())
+                } else {
+                    OptArg::Word(value.clone())
+                }
+            }
+            TokenKind::String(s) => OptArg::Str(s.clone()),
+            TokenKind::Integer(_) | TokenKind::Decimal(_) => return self.parse_signed_number(),
+            TokenKind::Op(o) if o == "-" || o == "+" => return self.parse_signed_number(),
+            _ => return Err(self.unexpected()),
+        };
+        self.advance();
+        Ok(Some(arg))
+    }
+
+    /// `NumericOnly`: `[+|-] number`. A `+` sign is dropped.
+    pub(super) fn parse_signed_number(&mut self) -> Result<Option<OptArg>> {
+        let mut negative = false;
+        if self.is_op("-") {
+            negative = true;
+            self.advance();
+        } else if self.is_op("+") {
+            self.advance();
+        }
+        let (text, is_int) = match self.peek_kind() {
+            TokenKind::Integer(s) => (s.clone(), true),
+            TokenKind::Decimal(s) => (s.clone(), false),
+            _ => return Err(self.unexpected()),
+        };
+        self.advance();
+        let text = if negative { format!("-{text}") } else { text };
+        Ok(Some(if is_int {
+            OptArg::Int(text)
+        } else {
+            OptArg::Dec(text)
+        }))
+    }
+
+    /// `relation_expr`: `[ONLY] name [*]` or `ONLY (name)`; true if `ONLY`.
+    pub(super) fn parse_relation_name(&mut self) -> Result<(ObjectName, bool)> {
+        if self.eat_kw("only") {
+            if self.eat(&TokenKind::LParen) {
+                let name = self.parse_object_name()?;
+                self.expect(&TokenKind::RParen)?;
+                return Ok((name, true));
+            }
+            return Ok((self.parse_object_name()?, true));
+        }
+        let name = self.parse_object_name()?;
+        self.eat_op("*");
+        Ok((name, false))
     }
 
     /// `[MATCH FULL|PARTIAL|SIMPLE] [ON DELETE action] [ON UPDATE action]`.
@@ -323,7 +533,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn parse_table_constraint(&mut self) -> Result<TableConstraint> {
+    pub(super) fn parse_table_constraint(&mut self) -> Result<TableConstraint> {
         let start = self.start();
         let name: Option<Ident> = if self.eat_kw("constraint") {
             Some(self.parse_col_id()?)
@@ -338,17 +548,15 @@ impl Parser<'_> {
             }
             "unique" => {
                 self.advance();
-                self.skip_nulls_distinct()?;
-                let cols = self.parse_paren_name_list()?;
-                self.reject_index_parameters()?;
-                TableConstraintKind::Unique(cols)
+                let nulls_not_distinct = self.parse_nulls_not_distinct()?;
+                let mut key = self.parse_key_constraint()?;
+                key.params.nulls_not_distinct = nulls_not_distinct;
+                TableConstraintKind::Unique(key)
             }
             "primary" => {
                 self.advance();
                 self.expect_kw("key")?;
-                let cols = self.parse_paren_name_list()?;
-                self.reject_index_parameters()?;
-                TableConstraintKind::PrimaryKey(cols)
+                TableConstraintKind::PrimaryKey(self.parse_key_constraint()?)
             }
             "foreign" => {
                 self.advance();
@@ -371,16 +579,50 @@ impl Parser<'_> {
             "exclude" => return Err(self.not_supported("EXCLUDE constraints")),
             _ => return Err(self.unexpected()),
         };
-        self.skip_constraint_attributes()?;
+        let deferrable = self.parse_constraint_attributes()?
+            && matches!(
+                kind,
+                TableConstraintKind::PrimaryKey(_)
+                    | TableConstraintKind::Unique(_)
+                    | TableConstraintKind::ForeignKey { .. }
+            );
         Ok(TableConstraint {
             name,
             kind,
+            deferrable,
             span: self.span_from(start),
         })
     }
 
+    /// After `PRIMARY KEY` / `UNIQUE [NULLS ...]` at table level:
+    /// `(cols) [INCLUDE ...] [WITH ...] [USING INDEX TABLESPACE t]` or
+    /// `USING INDEX name`.
+    fn parse_key_constraint(&mut self) -> Result<KeyConstraint> {
+        if self.is_kw("using") && self.nth_is_kw(1, "index") && !self.nth_is_kw(2, "tablespace") {
+            self.advance();
+            self.advance();
+            let index = self.parse_col_id()?;
+            return Ok(KeyConstraint {
+                columns: Vec::new(),
+                params: IndexParams {
+                    using_index: Some(index),
+                    ..IndexParams::default()
+                },
+            });
+        }
+        let columns = self.parse_paren_name_list()?;
+        let params = self.parse_index_params(true)?;
+        Ok(KeyConstraint { columns, params })
+    }
+
     pub(super) fn parse_drop(&mut self) -> Result<Statement> {
         let start = self.advance().span.start;
+        if self.is_kw("index") {
+            return self.parse_drop_index(start);
+        }
+        if self.is_kw("sequence") {
+            return self.parse_drop_sequence(start);
+        }
         if !self.is_kw("table") {
             return Err(match self.peek().keyword() {
                 Some(kw) if CREATE_OBJECTS.contains(&kw) || kw == "owned" => {
@@ -399,18 +641,23 @@ impl Parser<'_> {
         while self.eat(&TokenKind::Comma) {
             names.push(self.parse_object_name()?);
         }
-        let behavior = if self.eat_kw("cascade") {
-            Some(DropBehavior::Cascade)
-        } else if self.eat_kw("restrict") {
-            Some(DropBehavior::Restrict)
-        } else {
-            None
-        };
+        let behavior = self.parse_drop_behavior();
         Ok(Statement::DropTable(DropTable {
             names,
             if_exists,
             behavior,
             span: self.span_from(start),
         }))
+    }
+
+    /// `[CASCADE | RESTRICT]`.
+    pub(super) fn parse_drop_behavior(&mut self) -> Option<DropBehavior> {
+        if self.eat_kw("cascade") {
+            Some(DropBehavior::Cascade)
+        } else if self.eat_kw("restrict") {
+            Some(DropBehavior::Restrict)
+        } else {
+            None
+        }
     }
 }

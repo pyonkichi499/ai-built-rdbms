@@ -1,0 +1,39 @@
+# difffuzz の既知の差を除く針（--exclude と同じ。1 行 1 針、部分文字列が含まれる文だけを両方のサーバへ流さない）。
+# 既知の差が他の差分を隠すときだけ、原因と一緒に書く。直ったら消す。tests/done-check.sh（条件 6）が読む。
+
+# --- 完了条件 6 の整理（done-check ラウンド 3）。針は部分文字列。いずれも M4 の範囲外か、環境・実装の既定による差。直ったら消す。
+# RETURNING（INSERT / UPDATE / DELETE、WITH 内の DML を含む）は M4 の後半・任意（00 D-26）。未実装の間は 0A000 で、PG が別のエラーを返す文だけ差になる。
+RETURNING
+# 範囲外（M5 以降）: DISCARD、LOCK TABLE、2PC（COMMIT / ROLLBACK PREPARED）、TEMP テーブル、SAVEPOINT、SET TRANSACTION SNAPSHOT、ALTER TABLE ADD COLUMN、生成列
+DISCARD
+LOCK TABLE
+PREPARED '
+CREATE TEMP TABLE
+SAVEPOINT
+SET TRANSACTION SNAPSHOT
+ADD COLUMN
+GENERATED ALWAYS
+# pg_settings ビュー、SHOW ALL、client_min_messages の DEBUG 出力は範囲外
+pg_settings
+SHOW ALL
+SET client_min_messages TO DEBUG
+# 環境の差: PG の TimeZone は initdb が選ぶ Etc/UTC（yuzhu は UTC）、server_version_num は PG のマイナーバージョン
+SHOW TIME ZONE
+SHOW TimeZone
+SHOW timezone
+current_setting('TIMEZONE')
+SHOW server_version_num
+# XID の割り当て: PG は最初の行の更新まで遅延するが、yuzhu は書き込み文の開始時に割り当てる（M3 の設計）
+txid_current_if_assigned
+# EXPLAIN のコスト欄は固定表示（00 D10: テストは COSTS OFF で比べる）
+EXPLAIN SELECT 1;
+# 範囲外: CREATE SCHEMA（M5 以降）
+CREATE SCHEMA
+# 範囲外（M5 以降）: DO（匿名コードブロック。PG は中止中のトランザクションで 25P02 を先に返すが yuzhu は構文の段階で 0A000）、
+# CREATE TABLE ... AS（0A000）、REPEATABLE READ / SERIALIZABLE（0A000。PG は BEGIN の中なら 25001）
+DO $$
+_g AS SELECT
+ISOLATION LEVEL REPEATABLE READ
+ISOLATION LEVEL SERIALIZABLE
+# float の -0 と 0 は ORDER BY で同順位。PG の整列は不安定なので順序が一致するとは限らない（実装の差ではなく整列の非決定性）
+ORDER BY 2, 1 LIMIT 3

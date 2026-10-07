@@ -7,7 +7,7 @@ statement ok
 CREATE TABLE cr10_bad (id int NOT NULL, v varchar(20))
 
 statement count 3
-INSERT INTO cr10_bad VALUES (1, 'a'), (2, 'b'), (3, 'c')
+INSERT INTO cr10_bad VALUES (1, 'cr10badmark_a'), (2, 'cr10badmark_b'), (3, 'cr10badmark_c')
 
 statement ok
 CREATE TABLE cr10_ok (id int NOT NULL, v varchar(20))

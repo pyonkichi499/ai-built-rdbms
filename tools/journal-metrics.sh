@@ -4,9 +4,9 @@
 #   --run-tests : tests/run.sh で slt と restart を実行して通過数を取る（無ければ前回値を引き継ぐ）
 #   --dry-run   : 書き換えずに、更新後の AUTO ブロックを標準出力へ出す
 # 冪等: 直前の行と HEAD と状態 ID（git status と git diff のハッシュ）が同じなら追記しない。
-# 書き換えるのは journal/metrics.md の AUTO ブロックだけ。時刻はすべて UTC。
+# 書き換えるのは journal/metrics.md の AUTO ブロックだけ。時刻はすべて JST。
 set -euo pipefail
-export TZ=UTC LC_ALL=C
+export TZ=Asia/Tokyo LC_ALL=C
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 OUT=journal/metrics.md
 LABEL="(ラベルなし)"; RUN=0; DRY=0; [ "${JOURNAL_DRY_RUN:-0}" = 1 ] && DRY=1
@@ -41,7 +41,7 @@ if ! declare -F replace_block >/dev/null; then
 fi
 
 # ---- 計測 ----
-now="$(date -u '+%Y-%m-%d %H:%M:%S')"
+now="$(date '+%Y-%m-%d %H:%M:%S')"
 head="$(git rev-parse --short HEAD)"
 rs_lines="$(find impl -name '*.rs' -print0 | xargs -0 cat | wc -l)"
 tests_n="$(grep -rh '#\[test\]' impl --include='*.rs' | wc -l)"
@@ -50,8 +50,8 @@ slt_m1="$(find tests/slt/m1 -name '*.slt' 2>/dev/null | wc -l)"
 slt_m2="$(find tests/slt/m2 -name '*.slt' 2>/dev/null | wc -l)"
 areas_m1="$(find tests/slt/m1 -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
 areas_m2="$(find tests/slt/m2 -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
-spec_d="$(cat spec/design/* 2>/dev/null | wc -l)"
-spec_r="$(cat spec/research/* 2>/dev/null | wc -l)"
+spec_d="$(find spec/design -type f -name "*.md" -print0 | xargs -0 cat | wc -l)"
+spec_r="$(find spec/research -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null | wc -l)"
 restart_n="$(find tests/restart -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
 EX=(':!journal' ':!tools/journal-*.sh')   # 日誌自身の変更は状態に含めない
 dirty_files="$(git status --short -- . "${EX[@]}" | wc -l)"
@@ -90,13 +90,13 @@ else
 fi
 
 series="$(printf '%s\n%s\n%s\n' \
-'| UTC 時刻 | ラベル | HEAD | Rust 行数 | #[test] 数 | slt 総数 | slt m1 / m2 | 領域数 | spec 行数 design / research | slt 通過 yuzhu | slt 通過 pg | restart 数 | restart 通過 | 未コミット変更ファイル数 | 未コミット行 (+/-) | QUESTIONS ★行数 | 未承認★数 | 状態 ID |' \
+'| JST 時刻 | ラベル | HEAD | Rust 行数 | #[test] 数 | slt 総数 | slt m1 / m2 | 領域数 | spec 行数 design / research | slt 通過 yuzhu | slt 通過 pg | restart 数 | restart 通過 | 未コミット変更ファイル数 | 未コミット行 (+/-) | QUESTIONS ★行数 | 未承認★数 | 状態 ID |' \
 '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|' "$new_rows")"
 
 areas="$( { echo '| 世代 | 領域 | ファイル数 |'; echo '|---|---|---|'
   for g in m1 m2; do for d in tests/slt/$g/*/; do [ -d "$d" ] && echo "| $g | $(basename "$d") | $(find "$d" -name '*.slt' | wc -l) |"; done; done
   echo "| restart | (シナリオ ${restart_n} 件) | $(find tests/restart -name '*.slt' 2>/dev/null | wc -l) |"
-  echo "| 計 | 全 .slt | $slt_all |"; echo; echo "計測時刻: $now UTC / HEAD $head"; } )"
+  echo "| 計 | 全 .slt | $slt_all |"; echo; echo "計測時刻: $now JST / HEAD $head"; } )"
 
 if [ "$DRY" = 1 ]; then printf '%s\n\n%s\n' "$series" "$areas"; exit 0; fi
 printf '%s\n' "$series" | replace_block "$OUT" series

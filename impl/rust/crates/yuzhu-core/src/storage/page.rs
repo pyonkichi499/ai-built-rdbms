@@ -141,6 +141,123 @@ impl Page {
         self.put_u16(OFF_VERSION, PAGESIZE_VERSION);
     }
 
+    /// Initializes an empty page with a `special_size`-byte special area
+    /// (multiple of 8; `06-btree.md` §4.2). Everything else is zeroed.
+    pub fn init_special(&mut self, special_size: usize) {
+        assert!(
+            special_size.is_multiple_of(MAXALIGN) && special_size <= BLCKSZ - SIZE_OF_PAGE_HEADER,
+            "invalid special size {special_size}"
+        );
+        self.0.fill(0);
+        let special = BLCKSZ - special_size;
+        self.put_u16(OFF_LOWER, SIZE_OF_PAGE_HEADER as u16);
+        self.put_u16(OFF_UPPER, special as u16);
+        self.put_u16(OFF_SPECIAL, special as u16);
+        self.put_u16(OFF_VERSION, PAGESIZE_VERSION);
+    }
+
+    /// `pd_special..BLCKSZ`; empty when `pd_special` is out of range.
+    pub fn special_area(&self) -> &[u8] {
+        let s = usize::from(self.special());
+        if !(SIZE_OF_PAGE_HEADER..=BLCKSZ).contains(&s) {
+            return &[];
+        }
+        &self.0[s..]
+    }
+
+    pub fn special_area_mut(&mut self) -> &mut [u8] {
+        let s = usize::from(self.special());
+        if !(SIZE_OF_PAGE_HEADER..=BLCKSZ).contains(&s) {
+            return &mut [];
+        }
+        &mut self.0[s..]
+    }
+
+    /// Free bytes minus one new line pointer, without the
+    /// `MAX_HEAP_TUPLES_PER_PAGE` limit.
+    pub fn free_space_unbounded(&self) -> usize {
+        let lower = usize::from(self.lower());
+        let upper = usize::from(self.upper());
+        if upper <= lower {
+            return 0;
+        }
+        (upper - lower).saturating_sub(ITEM_ID_SIZE)
+    }
+
+    /// Inserts `data` as line pointer `off` (`1..=max_offset + 1`), shifting
+    /// the later line pointers back by one. The tuple body goes at the bottom
+    /// of the free space; existing bodies do not move. `None` (page untouched)
+    /// if it does not fit or `off` is out of range.
+    pub fn insert_item_at(&mut self, off: u16, data: &[u8]) -> Option<u16> {
+        let lower = usize::from(self.lower());
+        let upper = usize::from(self.upper());
+        if upper < lower || lower < SIZE_OF_PAGE_HEADER || upper > usize::from(self.special()) {
+            return None;
+        }
+        let n = self.max_offset();
+        if off == 0 || off > n + 1 {
+            return None;
+        }
+        let size = align_up(data.len());
+        if size + ITEM_ID_SIZE > upper - lower || data.len() > 0x7FFF {
+            return None;
+        }
+        let new_upper = upper - size;
+        self.0[new_upper..upper].fill(0);
+        self.0[new_upper..new_upper + data.len()].copy_from_slice(data);
+        let pos = Self::item_id_pos(off);
+        self.0.copy_within(pos..lower, pos + ITEM_ID_SIZE);
+        let id = ItemId {
+            off: new_upper as u16,
+            flags: LpFlags::Normal,
+            len: data.len() as u16,
+        };
+        self.0[pos..pos + ITEM_ID_SIZE].copy_from_slice(&id.encode().to_le_bytes());
+        self.put_u16(OFF_LOWER, (lower + ITEM_ID_SIZE) as u16);
+        self.put_u16(OFF_UPPER, new_upper as u16);
+        Some(off)
+    }
+
+    /// Raw bytes from the end of the page header to `pd_lower` (metapage
+    /// payload). Empty when `pd_lower` is out of range.
+    pub fn body(&self) -> &[u8] {
+        let l = usize::from(self.lower());
+        if !(SIZE_OF_PAGE_HEADER..=BLCKSZ).contains(&l) {
+            return &[];
+        }
+        &self.0[SIZE_OF_PAGE_HEADER..l]
+    }
+
+    pub fn body_mut(&mut self) -> &mut [u8] {
+        let l = usize::from(self.lower());
+        if !(SIZE_OF_PAGE_HEADER..=BLCKSZ).contains(&l) {
+            return &mut [];
+        }
+        &mut self.0[SIZE_OF_PAGE_HEADER..l]
+    }
+
+    /// Writes `pd_lower` (range is the caller's responsibility).
+    pub fn set_lower(&mut self, lower: u16) {
+        self.put_u16(OFF_LOWER, lower);
+    }
+
+    /// Builds a whole page from a special area and items in line-pointer
+    /// order (bodies packed downward in that order). `None` if they do not
+    /// fit. `pd_lsn` and `pd_checksum` are 0.
+    pub fn build_with_items(special: &[u8], items: &[&[u8]]) -> Option<Box<Page>> {
+        if !special.len().is_multiple_of(MAXALIGN) || special.len() > BLCKSZ - SIZE_OF_PAGE_HEADER {
+            return None;
+        }
+        let mut page = Box::new(Page::zeroed());
+        page.init_special(special.len());
+        let s = usize::from(page.special());
+        page.0[s..].copy_from_slice(special);
+        for (i, item) in items.iter().enumerate() {
+            page.insert_item_at(u16::try_from(i + 1).ok()?, item)?;
+        }
+        Some(page)
+    }
+
     /// `pd_upper == 0`. Only meaningful for pages that passed `verify`.
     pub fn is_new(&self) -> bool {
         self.upper() == 0
@@ -627,5 +744,110 @@ mod tests {
         p.set_lsn(0x0102_0304_0506_0708);
         assert_eq!(p.lsn(), 0x0102_0304_0506_0708);
         assert_eq!(p.0[0], 0x08);
+    }
+
+    fn bt_page() -> Page {
+        let mut p = Page::zeroed();
+        p.init_special(16);
+        p
+    }
+
+    #[test]
+    fn init_special_layout() {
+        let p = bt_page();
+        assert_eq!((p.lower(), p.upper(), p.special()), (24, 8176, 8176));
+        assert_eq!(p.0[18..20], 0x2001u16.to_le_bytes());
+        assert_eq!(p.special_area().len(), 16);
+        assert_eq!(p.free_space_unbounded(), 8152 - 4);
+        assert!(sealed(p, 1).verify(1).is_ok());
+        let mut q = Page::zeroed();
+        q.init_special(8);
+        q.special_area_mut().copy_from_slice(&[7; 8]);
+        assert_eq!(q.special(), 8184);
+        assert_eq!(&q.0[8184..], &[7; 8]);
+    }
+
+    #[test]
+    fn insert_item_at_front_middle_end_and_full() {
+        let mut p = bt_page();
+        assert_eq!(p.insert_item_at(1, b"bbbb"), Some(1));
+        assert_eq!(p.insert_item_at(1, b"aaaaa"), Some(1));
+        assert_eq!(p.insert_item_at(3, b"dd"), Some(3));
+        assert_eq!(p.insert_item_at(3, b"c"), Some(3));
+        assert_eq!(p.insert_item_at(0, b"x"), None);
+        assert_eq!(p.insert_item_at(6, b"x"), None);
+        let got: Vec<&[u8]> = (1..=4).map(|i| p.item(i).unwrap()).collect();
+        assert_eq!(got, [&b"aaaaa"[..], b"bbbb", b"c", b"dd"]);
+        // Bodies are packed in insertion order: "bbbb" is highest.
+        let off = |i| p.item_id(i).unwrap().off;
+        assert!(off(2) > off(1) && off(1) > off(4) && off(4) > off(3));
+        assert!(sealed(p, 1).verify(1).is_ok());
+    }
+
+    #[test]
+    fn insert_item_at_fills_exactly_and_rejects_without_change() {
+        let mut p = bt_page();
+        // 8152 usable = 2 * (4000 + 4) + 144
+        assert!(p.insert_item_at(1, &[1; 4000]).is_some());
+        assert!(p.insert_item_at(2, &[2; 4000]).is_some());
+        let before = p.clone();
+        assert_eq!(p.insert_item_at(1, &[3; 141]), None);
+        assert_eq!(p.0[..], before.0[..]);
+        assert!(p.insert_item_at(3, &[3; 136]).is_some());
+        assert_eq!(p.free_space_unbounded(), 0);
+        assert_eq!(p.insert_item_at(1, &[1]), None);
+    }
+
+    #[test]
+    fn insert_item_at_ignores_heap_tuple_limit() {
+        let mut p = bt_page();
+        for _ in 0..MAX_HEAP_TUPLES_PER_PAGE + 10 {
+            p.insert_item_at(1, &[1]).unwrap();
+        }
+        assert!(usize::from(p.max_offset()) > MAX_HEAP_TUPLES_PER_PAGE);
+        assert_eq!(p.free_space(), 0);
+    }
+
+    #[test]
+    fn build_with_items_matches_sequential_insert() {
+        let items: Vec<Vec<u8>> = (0..20).map(|i| vec![i as u8; 5 + i * 7]).collect();
+        let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
+        let special: Vec<u8> = (0..16).collect();
+        let built = Page::build_with_items(&special, &refs).unwrap();
+        let mut p = bt_page();
+        p.special_area_mut().copy_from_slice(&special);
+        for (i, it) in refs.iter().enumerate() {
+            p.insert_item_at((i + 1) as u16, it).unwrap();
+        }
+        assert_eq!(built.0[..], p.0[..]);
+        assert_eq!(built.lsn(), 0);
+        assert_eq!(built.checksum(), 0);
+        assert!(sealed(*built, 2).verify(2).is_ok());
+        let big = vec![0u8; 8200];
+        assert!(Page::build_with_items(&special, &[&big]).is_none());
+        assert!(Page::build_with_items(&[0; 7], &[]).is_none());
+    }
+
+    #[test]
+    fn body_and_set_lower() {
+        let mut p = Page::zeroed();
+        p.init_special(16);
+        assert!(p.body().is_empty());
+        p.set_lower(56);
+        assert_eq!(p.body().len(), 32);
+        p.body_mut()[..4].copy_from_slice(&0x0005_3162_u32.to_le_bytes());
+        assert_eq!(p.0[24..28], 0x0005_3162_u32.to_le_bytes());
+        assert_eq!(p.max_offset(), 8);
+        assert!(sealed(p, 0).verify(0).is_ok());
+        let mut bad = Page::zeroed();
+        bad.set_lower(0xFFFF);
+        assert!(bad.body().is_empty());
+    }
+
+    #[test]
+    fn special_area_out_of_range_is_empty() {
+        let mut p = Page::zeroed();
+        assert!(p.special_area().is_empty());
+        assert!(p.special_area_mut().is_empty());
     }
 }

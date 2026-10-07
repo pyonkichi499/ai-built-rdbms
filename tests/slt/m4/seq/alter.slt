@@ -206,19 +206,11 @@ ALTER SEQUENCE sq_al_r RESTART WITH 100
 statement ok
 ROLLBACK
 
-# KNOWN-DIFF: KD-11 PostgreSQL は ALTER SEQUENCE の RESTART を ROLLBACK で取り消す
-skipif yuzhu
+# ROLLBACK で RESTART は取り消される（新しい relfilenode に書くので PostgreSQL と同じ）
 query I
 SELECT nextval('sq_al_r')
 ----
 4
-
-# KNOWN-DIFF: KD-11 yuzhu は ALTER SEQUENCE の状態をロールバックしない
-onlyif yuzhu
-query I
-SELECT nextval('sq_al_r')
-----
-100
 
 statement ok
 DROP TABLE sq_al_o

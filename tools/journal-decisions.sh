@@ -12,7 +12,7 @@
 # 使い方: tools/journal-decisions.sh [--dry-run] [--run-tests]
 #   --dry-run   差分を標準出力に出すだけで書かない
 #   --run-tests 受け取るだけで使わない（journal-all.sh からの引き回し用）
-# 時刻はすべて UTC。書き込み先は journal/decisions.md のみ。
+# 時刻はすべて JST。書き込み先は journal/decisions.md のみ。
 
 set -euo pipefail
 # shellcheck source=journal-lib.sh
@@ -37,7 +37,7 @@ need git
 ROOT="$(repo_root)"
 cd "$ROOT"
 OUT="journal/decisions.md"
-NOW="$(date -u '+%Y-%m-%d %H:%M:%S')"
+NOW="$(date '+%Y-%m-%d %H:%M:%S')"
 
 # 長い文字列を n 文字で切る（マルチバイト対応は bash の ${var:0:n} に任せる）。
 cut_chars() {
@@ -50,9 +50,9 @@ esc() { sed 's/|/\\|/g' <<<"$1"; }
 
 # ---------------------------------------------------------------- qindex
 gen_qindex() {
-  echo "_生成: ${NOW} UTC。出所: QUESTIONS.md（行番号は現在のファイル）、初出コミットは \`git log -S\` の最古の結果（日時は UTC）。_"
+  echo "_生成: ${NOW} JST。出所: QUESTIONS.md（行番号は現在のファイル）、初出コミットは \`git log -S\` の最古の結果（日時は JST）。_"
   echo
-  echo "| Q | 見出し | ★ | 行 | 初出コミット (UTC) |"
+  echo "| Q | 見出し | ★ | 行 | 初出コミット (JST) |"
   echo "|---|---|---|---|---|"
   local n=0 star=0 line ln id title star_mark first
   while IFS= read -r line; do
@@ -78,7 +78,7 @@ gen_qindex() {
 
 # ---------------------------------------------------------------- dtable
 gen_dtable() {
-  echo "_生成: ${NOW} UTC。出所: \`grep -n '^| D[0-9][0-9]* ' spec/design/*.md\`。列は 行番号 / ID / 題 / 採用（4 列目。列が無い表は 不明）。_"
+  echo "_生成: ${NOW} JST。出所: \`grep -n '^| D[0-9][0-9]* ' spec/design/*.md\`。列は 行番号 / ID / 題 / 採用（4 列目。列が無い表は 不明）。_"
   local f any
   for f in spec/design/*.md; do
     any="$(grep -c '^| D[0-9][0-9]* ' "$f" || true)"
@@ -117,7 +117,7 @@ gen_unverified() {
     done < <(grep '^<!-- unv ' "$OUT" || true)
   fi
 
-  echo "_生成: ${NOW} UTC。出所: \`grep -c 未検証\`（行数ベース）。前回値は本ブロック内のコメント行に保存している。_"
+  echo "_生成: ${NOW} JST。出所: \`grep -c 未検証\`（行数ベース）。前回値は本ブロック内のコメント行に保存している。_"
   echo
   echo "| ファイル | 現在 | 前回 | 差分 |"
   echo "|---|---|---|---|"
@@ -145,7 +145,7 @@ gen_unverified() {
 
 # ---------------------------------------------------------------- deps
 gen_deps() {
-  echo "_生成: ${NOW} UTC。出所: \`git log -p -- '*Cargo.toml' '*Cargo.lock'\`（コミット済み）と \`git diff HEAD\`（未コミット）。追加行（+）のみ。内部クレート yuzhu-* と package メタデータは除く。_"
+  echo "_生成: ${NOW} JST。出所: \`git log -p -- '*Cargo.toml' '*Cargo.lock'\`（コミット済み）と \`git diff HEAD\`（未コミット）。追加行（+）のみ。内部クレート yuzhu-* と package メタデータは除く。_"
   echo
   echo "| 状態 | コミット | ファイル | 追加された行 |"
   echo "|---|---|---|---|"
@@ -192,7 +192,7 @@ gen_deps() {
 gen_grep_block() { # <見出し文> <grep パターン> <対象...>
   local desc="$1" pat="$2"
   shift 2
-  echo "_生成: ${NOW} UTC。出所: ${desc}_"
+  echo "_生成: ${NOW} JST。出所: ${desc}_"
   echo
   echo "| 場所 | 該当行（先頭 100 字） |"
   echo "|---|---|"

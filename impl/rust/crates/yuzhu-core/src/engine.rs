@@ -16,9 +16,9 @@ use crate::datadir::{self, OidAllocator, PidFile};
 use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result, Severity, sqlstate};
 use crate::recovery::{self, log};
-use crate::storage::TableStore;
 use crate::storage::stack::{StackConfig, StorageStack};
 use crate::storage::vfs::Vfs;
+use crate::storage::{IndexStore, SequenceStore, TableStore};
 use crate::txn::{FIRST_COMMAND_ID, TxnManager};
 use crate::types::Oid;
 use crate::util::sync::lock;
@@ -69,6 +69,8 @@ pub struct Cluster {
     next_session_id: AtomicU64,
     /// Read-only values for `SHOW` (`shared_buffers`, `data_directory`, ...).
     server_settings: Vec<(&'static str, String)>,
+    /// The time zone database (`m4/09` §5.1): one per cluster, read lazily.
+    zones: yuzhu_datetime::ZoneDb,
 }
 
 fn fatal(state: crate::SqlState, message: String) -> Error {
@@ -118,6 +120,7 @@ impl Cluster {
             poisoned: AtomicBool::new(false),
             next_session_id: AtomicU64::new(1),
             server_settings: server_settings(opts, parts.rel_seg_blocks, parts.wal_segment_size),
+            zones: yuzhu_datetime::ZoneDb::system(),
         });
         if let Err(e) = cluster.finish_start(did_redo) {
             // The data directory is left as it is (for inspection); only the
@@ -381,6 +384,21 @@ impl Cluster {
         &self.storage
     }
 
+    /// `StorageStack::index`（B+Tree。`m4/02-pipeline-refactor.md` §5.2 の P0-b、提案 14）。
+    pub fn indexes(&self) -> &Arc<dyn IndexStore> {
+        &self.stack.index
+    }
+
+    /// `StorageStack::seq`（シーケンス。同上）。
+    pub fn sequences(&self) -> &Arc<dyn SequenceStore> {
+        &self.stack.seq
+    }
+
+    /// The time zone database (`yuzhu_datetime::ZoneDb`), shared by every session.
+    pub fn zones(&self) -> &yuzhu_datetime::ZoneDb {
+        &self.zones
+    }
+
     pub fn control(&self) -> &Arc<ControlFileHandle> {
         &self.control
     }
@@ -553,6 +571,7 @@ mod tests {
             ty: SqlType::INT4,
             not_null: false,
             default: None,
+            identity: None,
         }];
         db.catalog
             .create_table(
@@ -567,6 +586,8 @@ mod tests {
                     checks: vec![],
                     attrdef_oids: vec![],
                     constraint_oids: vec![],
+                    indexes: vec![],
+                    extra_depends: vec![],
                 },
             )
             .unwrap();

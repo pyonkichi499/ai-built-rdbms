@@ -15,8 +15,17 @@ const ALL: [Ty; 9] = [
     Ty::Bool,
 ];
 
-const CAST_TARGETS: [&str; 9] =
-    ["smallint", "integer", "bigint", "real", "float8", "double precision", "text", "varchar(3)", "boolean"];
+const CAST_TARGETS: [&str; 9] = [
+    "smallint",
+    "integer",
+    "bigint",
+    "real",
+    "float8",
+    "double precision",
+    "text",
+    "varchar(3)",
+    "boolean",
+];
 
 pub fn scenario(ctx: &mut Ctx) {
     let ncols = ctx.rng.range(1, 4) as usize;
@@ -43,7 +52,12 @@ pub fn scenario(ctx: &mut Ctx) {
                 let s = match form {
                     0 => format!("SELECT CAST({lit} AS {dst});"),
                     1 => format!("SELECT ({lit})::{dst};"),
-                    _ => format!("SELECT {dst} {}", format!("'{}';", ctx.rng.pick(&["1", "0", "t", "abc", "12.5", "-7", "99999999999"]))),
+                    _ => {
+                        let v = ctx
+                            .rng
+                            .pick(&["1", "0", "t", "abc", "12.5", "-7", "99999999999"]);
+                        format!("SELECT {dst} '{v}';")
+                    }
                 };
                 ctx.push(s);
             }
@@ -59,34 +73,163 @@ pub fn scenario(ctx: &mut Ctx) {
 }
 
 const INT_STRS: &[&str] = &[
-    "0", "1", "-1", "+5", "  7 ", "\t42\n", "-0", "007", "32767", "32768", "-32768", "-32769", "2147483647",
-    "2147483648", "-2147483648", "-2147483649", "9223372036854775807", "9223372036854775808",
-    "-9223372036854775808", "-9223372036854775809", "99999999999999999999", "1.5", "1e3", "0x10", "1_000",
-    "", " ", "abc", "1 2", "--1", "+-1", "12abc", "٣", "1,000",
-    "0b11", "0o7", "+", "-", "0 ", "00000000000000000000001", "-0000009223372036854775808", "- 1", "1 ", "\u{a0}1", "+0", "-32768 ",
+    "0",
+    "1",
+    "-1",
+    "+5",
+    "  7 ",
+    "\t42\n",
+    "-0",
+    "007",
+    "32767",
+    "32768",
+    "-32768",
+    "-32769",
+    "2147483647",
+    "2147483648",
+    "-2147483648",
+    "-2147483649",
+    "9223372036854775807",
+    "9223372036854775808",
+    "-9223372036854775808",
+    "-9223372036854775809",
+    "99999999999999999999",
+    "1.5",
+    "1e3",
+    "0x10",
+    "1_000",
+    "",
+    " ",
+    "abc",
+    "1 2",
+    "--1",
+    "+-1",
+    "12abc",
+    "٣",
+    "1,000",
+    "0b11",
+    "0o7",
+    "+",
+    "-",
+    "0 ",
+    "00000000000000000000001",
+    "-0000009223372036854775808",
+    "- 1",
+    "1 ",
+    "\u{a0}1",
+    "+0",
+    "-32768 ",
     "٣٤",
 ];
 
 const FLOAT_STRS: &[&str] = &[
-    "0", "-0", "1", "1.5", "-2.25", "0.1", "0.3", "1e10", "1E-5", "1.5e300", "1e308", "1e309", "-1e309", "1e-320",
-    "1e-400", "3.4028235e38", "3.4028236e38", "3.5e38", "1e-45", "1e-46", "1.17549435e-38", "NaN", "nan", "-NaN",
-    "Infinity", "-Infinity", "inf", "-inf", "+inf", "infinit", "  2.5  ", ".5", "5.", "1e", "e5", "1.2.3",
-    "123456789.123456789", "16777217", "0.30000000000000004",
-    "1e+5", "1E+05", "+1.5", "- 1", "1e-", "0x10", "Inf", "+Infinity", "-nan", "nanx", "1_0", "100000000", "1e23",
-    "4.9e-324", "2.2250738585072014e-308", "1.7976931348623157e308", "1.7976931348623159e308", "9007199254740993",
-    "0.1e1", "1e0.5", "-Inf", "iNfInItY", "1e-39", "8.5e37", "1.4e-45", "3.4028234e38",
+    "0",
+    "-0",
+    "1",
+    "1.5",
+    "-2.25",
+    "0.1",
+    "0.3",
+    "1e10",
+    "1E-5",
+    "1.5e300",
+    "1e308",
+    "1e309",
+    "-1e309",
+    "1e-320",
+    "1e-400",
+    "3.4028235e38",
+    "3.4028236e38",
+    "3.5e38",
+    "1e-45",
+    "1e-46",
+    "1.17549435e-38",
+    "NaN",
+    "nan",
+    "-NaN",
+    "Infinity",
+    "-Infinity",
+    "inf",
+    "-inf",
+    "+inf",
+    "infinit",
+    "  2.5  ",
+    ".5",
+    "5.",
+    "1e",
+    "e5",
+    "1.2.3",
+    "123456789.123456789",
+    "16777217",
+    "0.30000000000000004",
+    "1e+5",
+    "1E+05",
+    "+1.5",
+    "- 1",
+    "1e-",
+    "0x10",
+    "Inf",
+    "+Infinity",
+    "-nan",
+    "nanx",
+    "1_0",
+    "100000000",
+    "1e23",
+    "4.9e-324",
+    "2.2250738585072014e-308",
+    "1.7976931348623157e308",
+    "1.7976931348623159e308",
+    "9007199254740993",
+    "0.1e1",
+    "1e0.5",
+    "-Inf",
+    "iNfInItY",
+    "1e-39",
+    "8.5e37",
+    "1.4e-45",
+    "3.4028234e38",
 ];
 
 const BOOL_STRS: &[&str] = &[
-    "t", "f", "true", "false", "TRUE", "False", "yes", "no", "y", "n", "on", "off", "of", "o", "1", "0", "tr", "tru",
-    "fals", "  t  ", "ye", "ofx", "2", "-1", "", " ", "maybe", "truee", "yess", "T",
-    "Yes", "NO", "On", "OFF", "TrUe", "\tt", "t\n", "f f", "00", "01", "+1", "oFf", "nO", "Y", "N",
+    "t", "f", "true", "false", "TRUE", "False", "yes", "no", "y", "n", "on", "off", "of", "o", "1",
+    "0", "tr", "tru", "fals", "  t  ", "ye", "ofx", "2", "-1", "", " ", "maybe", "truee", "yess",
+    "T", "Yes", "NO", "On", "OFF", "TrUe", "\tt", "t\n", "f f", "00", "01", "+1", "oFf", "nO", "Y",
+    "N",
 ];
 
 const TEXT_STRS: &[&str] = &[
-    "", "a", "abc", "abcde", "abcdef", "abc   ", "abcde   ", "abcdef  ", "  x", "日本語", "日本語テキスト", "O''Brien",
-    "a\\b", "line1\nline2", "ＡＢＣ", "x y z w v u",
-    "\t", "  ", "\\", "%", "_", "😀", "é", "e\u{301}", "12", "-3", "1.5", "true", "ß", "İ", "ǅ", "a  b ",
+    "",
+    "a",
+    "abc",
+    "abcde",
+    "abcdef",
+    "abc   ",
+    "abcde   ",
+    "abcdef  ",
+    "  x",
+    "日本語",
+    "日本語テキスト",
+    "O''Brien",
+    "a\\b",
+    "line1\nline2",
+    "ＡＢＣ",
+    "x y z w v u",
+    "\t",
+    "  ",
+    "\\",
+    "%",
+    "_",
+    "😀",
+    "é",
+    "e\u{301}",
+    "12",
+    "-3",
+    "1.5",
+    "true",
+    "ß",
+    "İ",
+    "ǅ",
+    "a  b ",
 ];
 
 const INT_TYPES: [&str; 5] = ["smallint", "int2", "integer", "int", "bigint"];
@@ -100,53 +243,128 @@ fn q(s: &str) -> String {
 fn extra(ctx: &mut Ctx) {
     let n = ctx.rng.range(4, 10);
     for _ in 0..n {
-        let s = match ctx.rng.weighted(&[5, 5, 4, 3, 3, 3, 3, 2, 2, 2, 3, 3, 2, 4, 3, 3, 3, 4, 4]) {
-            0 => format!("SELECT {}::{};", q(ctx.rng.pick(&INT_STRS)), ctx.rng.pick(&INT_TYPES)),
+        let s = match ctx
+            .rng
+            .weighted(&[5, 5, 4, 3, 3, 3, 3, 2, 2, 2, 3, 3, 2, 4, 3, 3, 3, 4, 4])
+        {
+            0 => format!(
+                "SELECT {}::{};",
+                q(ctx.rng.pick(INT_STRS)),
+                ctx.rng.pick(&INT_TYPES)
+            ),
             1 => {
                 let t = *ctx.rng.pick(&FLOAT_TYPES);
                 let t = if t == "float" && ctx.rng.chance(50) {
-                    *ctx.rng.pick(&["float(10)", "float(24)", "float(25)", "float(53)"])
+                    *ctx.rng
+                        .pick(&["float(10)", "float(24)", "float(25)", "float(53)"])
                 } else {
                     t
                 };
-                format!("SELECT {}::{};", q(ctx.rng.pick(&FLOAT_STRS)), t)
+                format!("SELECT {}::{};", q(ctx.rng.pick(FLOAT_STRS)), t)
             }
-            2 => format!("SELECT {}::boolean;", q(ctx.rng.pick(&BOOL_STRS))),
+            2 => format!("SELECT {}::boolean;", q(ctx.rng.pick(BOOL_STRS))),
             3 => {
                 let a = *ctx.rng.pick(&[
-                    "32767::int2", "(-32768)::int2", "2147483647", "(-2147483648)", "9223372036854775807::bigint",
-                    "(-9223372036854775807-1)", "1", "0", "-1", "100000",
+                    "32767::int2",
+                    "(-32768)::int2",
+                    "2147483647",
+                    "(-2147483648)",
+                    "9223372036854775807::bigint",
+                    "(-9223372036854775807-1)",
+                    "1",
+                    "0",
+                    "-1",
+                    "100000",
                 ]);
                 let b = *ctx.rng.pick(&[
-                    "1::int2", "2::int2", "0", "1", "-1", "2", "(-1)::bigint", "0::bigint", "2147483647", "32767::int2",
+                    "1::int2",
+                    "2::int2",
+                    "0",
+                    "1",
+                    "-1",
+                    "2",
+                    "(-1)::bigint",
+                    "0::bigint",
+                    "2147483647",
+                    "32767::int2",
                 ]);
                 let op = *ctx.rng.pick(&["+", "-", "*", "/", "%"]);
                 format!("SELECT ({a}) {op} ({b});")
             }
             4 => {
                 let v = *ctx.rng.pick(&[
-                    "0.5", "1.5", "2.5", "-0.5", "-1.5", "-2.5", "32767.5", "32768.4", "2147483647.5", "2147483648",
-                    "9.2233720368547758e18", "-9.2233720368547758e18", "1e19", "'NaN'", "'Infinity'", "'-Infinity'",
+                    "0.5",
+                    "1.5",
+                    "2.5",
+                    "-0.5",
+                    "-1.5",
+                    "-2.5",
+                    "32767.5",
+                    "32768.4",
+                    "2147483647.5",
+                    "2147483648",
+                    "9.2233720368547758e18",
+                    "-9.2233720368547758e18",
+                    "1e19",
+                    "'NaN'",
+                    "'Infinity'",
+                    "'-Infinity'",
                 ]);
                 let ft = *ctx.rng.pick(&["float4", "float8"]);
                 let it = *ctx.rng.pick(&INT_TYPES);
-                let v = if v.starts_with('\'') { v.to_string() } else { q(v) };
+                let v = if v.starts_with('\'') {
+                    v.to_string()
+                } else {
+                    q(v)
+                };
                 format!("SELECT ({v}::{ft})::{it};")
             }
             5 => {
                 let a = *ctx.rng.pick(&[
-                    "0.1", "0.2", "1.0", "3", "1e20", "1e-20", "123456.789", "16777216", "'NaN'", "'Infinity'",
-                    "'-Infinity'", "0", "-0.0", "1e308", "3.4e38",
+                    "0.1",
+                    "0.2",
+                    "1.0",
+                    "3",
+                    "1e20",
+                    "1e-20",
+                    "123456.789",
+                    "16777216",
+                    "'NaN'",
+                    "'Infinity'",
+                    "'-Infinity'",
+                    "0",
+                    "-0.0",
+                    "1e308",
+                    "3.4e38",
                 ]);
-                let b = *ctx.rng.pick(&["0.1", "0.2", "3", "0", "1e308", "3.4e38", "'NaN'", "'Infinity'", "2", "-1"]);
+                let b = *ctx.rng.pick(&[
+                    "0.1",
+                    "0.2",
+                    "3",
+                    "0",
+                    "1e308",
+                    "3.4e38",
+                    "'NaN'",
+                    "'Infinity'",
+                    "2",
+                    "-1",
+                ]);
                 let ft = *ctx.rng.pick(&["float4", "float8"]);
                 let op = *ctx.rng.pick(&["+", "-", "*", "/", "<", "=", ">="]);
-                let a = if a.starts_with('\'') { a.to_string() } else { q(a) };
-                let b = if b.starts_with('\'') { b.to_string() } else { q(b) };
+                let a = if a.starts_with('\'') {
+                    a.to_string()
+                } else {
+                    q(a)
+                };
+                let b = if b.starts_with('\'') {
+                    b.to_string()
+                } else {
+                    q(b)
+                };
                 format!("SELECT {a}::{ft} {op} {b}::{ft};")
             }
             6 => {
-                let v = q(ctx.rng.pick(&TEXT_STRS));
+                let v = q(ctx.rng.pick(TEXT_STRS));
                 let n = ctx.rng.range(1, 8);
                 match ctx.rng.below(4) {
                     0 => format!("SELECT {v}::varchar({n});"),
@@ -157,17 +375,43 @@ fn extra(ctx: &mut Ctx) {
             }
             7 => {
                 let ty = *ctx.rng.pick(&[
-                    "varchar(0)", "varchar(-1)", "varchar(10485760)", "varchar(10485761)", "varchar(1.5)", "varchar(a)",
-                    "int4(3)", "boolean(1)", "text(5)", "float(0)", "float(54)", "float4(3)", "smallint(2)",
+                    "varchar(0)",
+                    "varchar(-1)",
+                    "varchar(10485760)",
+                    "varchar(10485761)",
+                    "varchar(1.5)",
+                    "varchar(a)",
+                    "int4(3)",
+                    "boolean(1)",
+                    "text(5)",
+                    "float(0)",
+                    "float(54)",
+                    "float4(3)",
+                    "smallint(2)",
                     "varchar(1,2)",
                 ]);
                 format!("SELECT 'a'::{ty};")
             }
             8 => {
                 let e = *ctx.rng.pick(&[
-                    "1", "2147483648", "'1.5'::float8", "'1e3'::float4", "'a'", "true", "1::int2", "1::int2 + 1",
-                    "1::int2 + 1::bigint", "'1.5'::float4 + 1", "'1.5'::float4 + '1.5'::float8", "(1 = 1)", "NULL",
-                    "'a'::varchar(3)", "'a'::varchar(3) || 'b'", "-32768", "-9223372036854775808", "+1",
+                    "1",
+                    "2147483648",
+                    "'1.5'::float8",
+                    "'1e3'::float4",
+                    "'a'",
+                    "true",
+                    "1::int2",
+                    "1::int2 + 1",
+                    "1::int2 + 1::bigint",
+                    "'1.5'::float4 + 1",
+                    "'1.5'::float4 + '1.5'::float8",
+                    "(1 = 1)",
+                    "NULL",
+                    "'a'::varchar(3)",
+                    "'a'::varchar(3) || 'b'",
+                    "-32768",
+                    "-9223372036854775808",
+                    "+1",
                 ]);
                 format!("SELECT pg_typeof({e});")
             }
@@ -179,44 +423,65 @@ fn extra(ctx: &mut Ctx) {
                 ));
                 let k = ctx.rng.range(1, 4);
                 for _ in 0..k {
-                    let a = q(ctx.rng.pick(&FLOAT_STRS));
-                    let b = q(ctx.rng.pick(&FLOAT_STRS));
-                    let c = q(ctx.rng.pick(&TEXT_STRS));
-                    let d = q(ctx.rng.pick(&BOOL_STRS));
-                    let e = q(ctx.rng.pick(&INT_STRS));
-                    let f = q(ctx.rng.pick(&INT_STRS));
-                    ctx.push(format!("INSERT INTO {name} VALUES ({a}, {b}, {c}, {d}, {e}, {f});"));
+                    let a = q(ctx.rng.pick(FLOAT_STRS));
+                    let b = q(ctx.rng.pick(FLOAT_STRS));
+                    let c = q(ctx.rng.pick(TEXT_STRS));
+                    let d = q(ctx.rng.pick(BOOL_STRS));
+                    let e = q(ctx.rng.pick(INT_STRS));
+                    let f = q(ctx.rng.pick(INT_STRS));
+                    ctx.push(format!(
+                        "INSERT INTO {name} VALUES ({a}, {b}, {c}, {d}, {e}, {f});"
+                    ));
                 }
                 format!("SELECT * FROM {name} ORDER BY 1, 2, 3, 4, 5, 6;")
             }
             10 => {
-                let a = *ctx.rng.pick(&["32767::int2", "(-32768)::int2", "2147483647", "(-2147483648)", "9223372036854775807::bigint", "(-9223372036854775807-1)", "0", "1", "-5"]);
+                let a = *ctx.rng.pick(&[
+                    "32767::int2",
+                    "(-32768)::int2",
+                    "2147483647",
+                    "(-2147483648)",
+                    "9223372036854775807::bigint",
+                    "(-9223372036854775807-1)",
+                    "0",
+                    "1",
+                    "-5",
+                ]);
                 match ctx.rng.below(6) {
                     0 => format!("SELECT -({a});"),
                     1 => format!("SELECT abs({a});"),
                     2 => format!("SELECT +({a});"),
                     3 => {
-                        let b = *ctx.rng.pick(&["1::int2", "2147483648", "0", "(-1)", "32767::int2", "2147483647"]);
+                        let b = *ctx.rng.pick(&[
+                            "1::int2",
+                            "2147483648",
+                            "0",
+                            "(-1)",
+                            "32767::int2",
+                            "2147483647",
+                        ]);
                         let op = *ctx.rng.pick(&["=", "<>", "<", "<=", ">", ">="]);
                         format!("SELECT ({a}) {op} ({b});")
                     }
-                    4 => format!("SELECT ({a})::text, ({a})::float4, ({a})::float8, ({a})::boolean;"),
+                    4 => {
+                        format!("SELECT ({a})::text, ({a})::float4, ({a})::float8, ({a})::boolean;")
+                    }
                     _ => format!("SELECT ({a})::varchar({});", ctx.rng.range(1, 12)),
                 }
             }
             11 => {
-                let f = q(ctx.rng.pick(&FLOAT_STRS));
+                let f = q(ctx.rng.pick(FLOAT_STRS));
                 match ctx.rng.below(6) {
                     0 => format!("SELECT {f}::float4::text, {f}::float8::text;"),
                     1 => format!("SELECT {f}::float8::float4;"),
                     2 => format!("SELECT {f}::float4::float8;"),
                     3 => format!("SELECT -({f}::float8), abs({f}::float4);"),
                     4 => {
-                        let b = q(ctx.rng.pick(&BOOL_STRS));
+                        let b = q(ctx.rng.pick(BOOL_STRS));
                         format!("SELECT {b}::boolean::text, {b}::boolean::int, NOT {b}::boolean;")
                     }
                     _ => {
-                        let i = q(ctx.rng.pick(&INT_STRS));
+                        let i = q(ctx.rng.pick(INT_STRS));
                         format!("SELECT {i}::bigint::text, {i}::int::bool, {i}::int2::float8;")
                     }
                 }
@@ -224,9 +489,33 @@ fn extra(ctx: &mut Ctx) {
             13 => {
                 // 整数リテラルの書式（16 進・8 進・2 進・アンダースコア・指数）と型の決まり方
                 let l = *ctx.rng.pick(&[
-                    "0x10", "0xFF", "0X1f", "0o17", "0b101", "1_000", "1_0_0", "0x_1", "0x", "0b2", "0o8", "1__0",
-                    "1_", "1.", ".5", "1.e2", "1e2", "1e+2", "1e", "00012", "0x7FFFFFFF", "0x80000000",
-                    "0xFFFFFFFFFFFFFFFF", "0x7FFFFFFFFFFFFFFF", "2147483648", "9223372036854775808", "1.5e0",
+                    "0x10",
+                    "0xFF",
+                    "0X1f",
+                    "0o17",
+                    "0b101",
+                    "1_000",
+                    "1_0_0",
+                    "0x_1",
+                    "0x",
+                    "0b2",
+                    "0o8",
+                    "1__0",
+                    "1_",
+                    "1.",
+                    ".5",
+                    "1.e2",
+                    "1e2",
+                    "1e+2",
+                    "1e",
+                    "00012",
+                    "0x7FFFFFFF",
+                    "0x80000000",
+                    "0xFFFFFFFFFFFFFFFF",
+                    "0x7FFFFFFFFFFFFFFF",
+                    "2147483648",
+                    "9223372036854775808",
+                    "1.5e0",
                 ]);
                 match ctx.rng.below(3) {
                     0 => format!("SELECT {l};"),
@@ -237,11 +526,23 @@ fn extra(ctx: &mut Ctx) {
             14 => {
                 // 演算子: ビット演算・シフト・累乗・除算の端
                 let a = *ctx.rng.pick(&[
-                    "1::int2", "(-1)::int2", "32767::int2", "5", "(-5)", "2147483647", "9223372036854775807::bigint",
-                    "(-9223372036854775807-1)", "0", "255",
+                    "1::int2",
+                    "(-1)::int2",
+                    "32767::int2",
+                    "5",
+                    "(-5)",
+                    "2147483647",
+                    "9223372036854775807::bigint",
+                    "(-9223372036854775807-1)",
+                    "0",
+                    "255",
                 ]);
-                let b = *ctx.rng.pick(&["0", "1", "2", "7", "15", "16", "31", "32", "63", "64", "(-1)", "3::int2"]);
-                let op = *ctx.rng.pick(&["&", "|", "#", "<<", ">>", "/", "%", "^", "div"]);
+                let b = *ctx.rng.pick(&[
+                    "0", "1", "2", "7", "15", "16", "31", "32", "63", "64", "(-1)", "3::int2",
+                ]);
+                let op = *ctx
+                    .rng
+                    .pick(&["&", "|", "#", "<<", ">>", "/", "%", "^", "div"]);
                 match op {
                     "div" => format!("SELECT div(({a})::float8, ({b})::float8), mod(({a})::bigint, ({b})::bigint);"),
                     "^" => format!("SELECT ({a})::float8 ^ ({b})::float8;"),
@@ -250,7 +551,7 @@ fn extra(ctx: &mut Ctx) {
             }
             15 => {
                 // 浮動小数の出力・関数・特殊値
-                let f = q(ctx.rng.pick(&FLOAT_STRS));
+                let f = q(ctx.rng.pick(FLOAT_STRS));
                 let t = *ctx.rng.pick(&["float4", "float8"]);
                 match ctx.rng.below(7) {
                     0 => format!("SELECT {f}::{t} = {f}::{t}, {f}::{t} < 'NaN'::{t}, {f}::{t} > 'Infinity'::{t};"),
@@ -264,8 +565,8 @@ fn extra(ctx: &mut Ctx) {
             }
             16 => {
                 // text / varchar の関数と比較・連結・NULL・暗黙キャスト
-                let a = q(ctx.rng.pick(&TEXT_STRS));
-                let b = q(ctx.rng.pick(&TEXT_STRS));
+                let a = q(ctx.rng.pick(TEXT_STRS));
+                let b = q(ctx.rng.pick(TEXT_STRS));
                 let n = ctx.rng.range(1, 6);
                 match ctx.rng.below(8) {
                     0 => format!("SELECT {a} || {b}, {a}::varchar({n}) || {b}::varchar({n}), {a} || 1, {a} || true;"),
@@ -288,18 +589,18 @@ fn extra(ctx: &mut Ctx) {
                 ctx.push(format!("CREATE TABLE {name} (i {it} DEFAULT {def}, f {ft}, c varchar({vn}) DEFAULT 'ab', b boolean DEFAULT 'y');"));
                 let k = ctx.rng.range(1, 3);
                 for _ in 0..k {
-                    let i = q(ctx.rng.pick(&INT_STRS));
-                    let f = q(ctx.rng.pick(&FLOAT_STRS));
-                    let c = q(ctx.rng.pick(&TEXT_STRS));
-                    let b = q(ctx.rng.pick(&BOOL_STRS));
+                    let i = q(ctx.rng.pick(INT_STRS));
+                    let f = q(ctx.rng.pick(FLOAT_STRS));
+                    let c = q(ctx.rng.pick(TEXT_STRS));
+                    let b = q(ctx.rng.pick(BOOL_STRS));
                     match ctx.rng.below(3) {
                         0 => ctx.push(format!("INSERT INTO {name} (f) VALUES ({f});")),
                         1 => ctx.push(format!("INSERT INTO {name} VALUES ({i}, {f}, {c}, {b});")),
                         _ => ctx.push(format!("INSERT INTO {name} (i, c) VALUES ({i}, {c});")),
                     }
                 }
-                let i = q(ctx.rng.pick(&INT_STRS));
-                let c = q(ctx.rng.pick(&TEXT_STRS));
+                let i = q(ctx.rng.pick(INT_STRS));
+                let c = q(ctx.rng.pick(TEXT_STRS));
                 match ctx.rng.below(4) {
                     0 => ctx.push(format!("UPDATE {name} SET i = {i};")),
                     1 => ctx.push(format!("UPDATE {name} SET c = {c};")),
@@ -311,9 +612,19 @@ fn extra(ctx: &mut Ctx) {
             18 => {
                 // 文字列リテラルの書式（E 文字列・Unicode エスケープ・ドル引用）と型変換
                 let l = *ctx.rng.pick(&[
-                    "E'a\\nb'", "E'\\x41'", "E'\\101'", "E'\\u00e9'", "E'\\U0001F600'", "E'\\q'",
-                    "$$a b$$", "$t$x'y$t$", "E'\\0'",
-                    "E'\\x'", "'é'", "''''", "E'\\b\\f\\r\\t'",
+                    "E'a\\nb'",
+                    "E'\\x41'",
+                    "E'\\101'",
+                    "E'\\u00e9'",
+                    "E'\\U0001F600'",
+                    "E'\\q'",
+                    "$$a b$$",
+                    "$t$x'y$t$",
+                    "E'\\0'",
+                    "E'\\x'",
+                    "'é'",
+                    "''''",
+                    "E'\\b\\f\\r\\t'",
                 ]);
                 match ctx.rng.below(5) {
                     0 => format!("SELECT {l};"),
@@ -325,12 +636,33 @@ fn extra(ctx: &mut Ctx) {
             }
             _ => {
                 let ty = *ctx.rng.pick(&[
-                    "int2", "int4", "int8", "float4", "float8", "bool", "varchar", "character varying(4)",
-                    "char varying(4)", "character varying", "double precision", "real", "smallint", "bigint",
-                    "integer", "int", "text", "boolean", "oid", "name", "unknowntype", "char",
+                    "int2",
+                    "int4",
+                    "int8",
+                    "float4",
+                    "float8",
+                    "bool",
+                    "varchar",
+                    "character varying(4)",
+                    "char varying(4)",
+                    "character varying",
+                    "double precision",
+                    "real",
+                    "smallint",
+                    "bigint",
+                    "integer",
+                    "int",
+                    "text",
+                    "boolean",
+                    "oid",
+                    "name",
+                    "unknowntype",
+                    "char",
                     "character(3)",
                 ]);
-                let v = *ctx.rng.pick(&["1", "0", "'1'", "'a'", "true", "'1.5'", "NULL"]);
+                let v = *ctx
+                    .rng
+                    .pick(&["1", "0", "'1'", "'a'", "true", "'1.5'", "NULL"]);
                 format!("SELECT {v}::{ty};")
             }
         };

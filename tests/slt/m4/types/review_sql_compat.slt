@@ -1,0 +1,142 @@
+# レビュー指摘（sql-compat）の回帰: 関数呼び出し形の numeric キャスト、exp(numeric)、lpad/rpad の長さ上限、
+# right の INT_MIN、to_regtype の構文エラー、IS [NOT] DISTINCT FROM NULL、CHECK ... NO INHERIT、DEFAULT NULL、
+# 日時型の DEFAULT の定数化、単項演算子の HINT、DDL のエラー位置は psql 側の LINE 行なので slt では SQLSTATE だけ見る
+
+# numeric -> int / float8 の関数呼び出し形は numeric 版（四捨五入）に解決される
+query IIITR
+SELECT int4(2.5::numeric), int2(0.5::numeric), int8(12345678901234.5::numeric), float8(1234.5678::numeric)::text, float8(0.1)
+----
+3 1 12345678901235 1234.5678 0.1
+
+query I
+SELECT int4(2.5)
+----
+3
+
+statement error (0A000)
+SELECT int4('NaN'::numeric)
+
+statement error (0A000)
+SELECT int2('Infinity'::numeric)
+
+statement error (22003)
+SELECT int4(3000000000::numeric)
+
+# exp(numeric) は numeric
+query TT
+SELECT exp(1::numeric), pg_typeof(exp(1::numeric))
+----
+2.7182818284590452 numeric
+
+query T
+SELECT exp(100::numeric)
+----
+26881171418161354484126255515800135873611119
+
+query T
+SELECT exp(-1::numeric)
+----
+0.3678794411714423
+
+query T
+SELECT exp(10.123456789::numeric)
+----
+24920.767949009910
+
+statement error (22003)
+SELECT exp(1000000::numeric)
+
+# lpad / rpad の長さ上限は 54000
+statement error (54000)
+SELECT length(lpad('abc', 2147483647))
+
+statement error (54000)
+SELECT length(rpad('abc', 2147483647))
+
+query T
+SELECT lpad('abc', -5) || '|'
+----
+|
+
+# right(text, INT_MIN)
+query TT
+SELECT right('abc', -2147483648), right('abc', -1)
+----
+abc bc
+
+# radians のアンダーフロー
+statement error (22003)
+SELECT radians(5e-324::float8)
+
+# to_regtype は構文エラーを 42601 で返す（存在しない名前・空文字列は NULL）
+statement error (42601)
+SELECT to_regtype('a%')
+
+statement error (42601)
+SELECT to_regtype('a b')
+
+statement error (42601)
+SELECT to_regtype('a.b.c.d')
+
+query T
+SELECT coalesce(to_regtype('nosuch_type'), 0::oid::regtype)::text
+----
+-
+
+# IS [NOT] DISTINCT FROM NULL は NullTest になる
+statement ok
+CREATE TABLE ty_rsc_dp (a int, b text, CONSTRAINT rsc_k10 CHECK (a IS DISTINCT FROM 3 OR b IS NOT DISTINCT FROM NULL))
+
+query T
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'rsc_k10'
+----
+CHECK (((a IS DISTINCT FROM 3) OR (b IS NULL)))
+
+# CHECK ... NO INHERIT
+statement ok
+CREATE TABLE ty_rsc_ni (a int CHECK (a > 1) NO INHERIT, b int, CONSTRAINT ty_rsc_ni_b CHECK (b > 0))
+
+query TB
+SELECT pg_get_constraintdef(oid), connoinherit FROM pg_constraint WHERE conrelid = 'ty_rsc_ni'::regclass ORDER BY conname
+----
+CHECK ((a > 1)) NO INHERIT t
+CHECK ((b > 0)) f
+
+# DEFAULT NULL は既定値なし。日時型の文字列 DEFAULT は CREATE 時に定数になる
+statement ok
+CREATE TABLE ty_rsc_df (m text DEFAULT NULL, p timestamptz DEFAULT '2020-01-01 00:00:00+09', q date DEFAULT '2020-01-02', i int DEFAULT '5')
+
+query TBT
+SELECT a.attname, a.atthasdef, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum WHERE a.attrelid = 'ty_rsc_df'::regclass AND a.attnum > 0 ORDER BY a.attnum
+----
+m f NULL
+p t '2019-12-31 15:00:00+00'::timestamp with time zone
+q t '2020-01-02'::date
+i t 5
+
+# 単項演算子がないときのエラー
+statement ok
+CREATE TABLE ty_rsc_e1 (b text)
+
+statement error (42883)
+SELECT -b FROM ty_rsc_e1
+
+# avg(float8) の 2 乗和のオーバーフロー
+statement error (22003)
+SELECT avg(f) FROM (VALUES (1::float8), (0::float8), (1e300::float8)) v(f)
+
+# DDL のエラーの SQLSTATE
+statement error (42703)
+CREATE TABLE rsc_k1 (a int, PRIMARY KEY (a, zz))
+
+statement error (42701)
+CREATE TABLE rsc_k2 (a int, UNIQUE (a, a))
+
+statement error (42710)
+CREATE TABLE rsc_k3 (a int, CONSTRAINT c1 CHECK (a > 0), CONSTRAINT c1 CHECK (a < 10))
+
+statement error (42703)
+ALTER TABLE ty_rsc_ni ADD PRIMARY KEY (zz)
+
+statement ok
+DROP TABLE ty_rsc_dp, ty_rsc_ni, ty_rsc_df, ty_rsc_e1

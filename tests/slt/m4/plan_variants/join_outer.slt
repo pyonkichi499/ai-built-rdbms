@@ -1,0 +1,2672 @@
+# 生成物（tests/gen/plan_variants/join_outer.tpl から `slttools plan-variants expand` で作る。手で直さない）。
+# 同じ問い合わせを enable_* の設定を変えて流し、結果が同じことを確かめる。
+
+statement ok
+CREATE TABLE pv_jo_t (a int PRIMARY KEY, b int, c text)
+
+statement ok
+CREATE TABLE pv_jo_u (d int PRIMARY KEY, b int, e int)
+
+statement ok
+CREATE TABLE pv_jo_v (f int, g int)
+
+statement ok
+CREATE INDEX pv_jo_u_b ON pv_jo_u (b)
+
+statement ok
+INSERT INTO pv_jo_t SELECT g, g % 6, 't' || g FROM generate_series(1, 60) g
+
+statement ok
+INSERT INTO pv_jo_u SELECT g * 2, g % 4, g % 5 FROM generate_series(1, 40) g
+
+statement ok
+INSERT INTO pv_jo_u VALUES (101, NULL, 3)
+
+statement ok
+INSERT INTO pv_jo_v SELECT g % 12, g FROM generate_series(1, 30) g
+
+# profile: default
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+# profile: no_hashjoin
+
+statement ok
+SET enable_hashjoin = off
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+statement ok
+RESET enable_hashjoin
+
+# profile: no_nestloop
+
+statement ok
+SET enable_nestloop = off
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_hashjoin_no_nestloop
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_nestloop = off
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_indexscan
+
+statement ok
+SET enable_indexscan = off
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+statement ok
+RESET enable_indexscan
+
+# profile: no_seqscan
+
+statement ok
+SET enable_seqscan = off
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+statement ok
+RESET enable_seqscan
+
+# profile: combined
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_hashagg = off
+
+statement ok
+SET enable_indexscan = off
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE t.a < 20
+----
+1	NULL
+10	10
+11	NULL
+12	12
+13	NULL
+14	14
+15	NULL
+16	16
+17	NULL
+18	18
+19	NULL
+2	2
+3	NULL
+4	4
+5	NULL
+6	6
+7	NULL
+8	8
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t RIGHT JOIN pv_jo_u u ON t.a = u.d WHERE u.d < 30
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+26	26
+28	28
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d WHERE t.a IS NULL OR u.d IS NULL OR t.a < 5
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	2
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	4
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+7	NULL
+9	NULL
+NULL	101
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND u.e = 3 WHERE t.a < 30
+----
+1	NULL
+10	NULL
+11	NULL
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+16	16
+17	NULL
+18	NULL
+19	NULL
+2	NULL
+20	NULL
+21	NULL
+22	NULL
+23	NULL
+24	NULL
+25	NULL
+26	26
+27	NULL
+28	NULL
+29	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.e = 3
+----
+16	16
+26	26
+36	36
+46	46
+56	56
+6	6
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NULL AND t.a < 20
+----
+1	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+3	NULL
+5	NULL
+7	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.b = u.b WHERE t.a < 4
+----
+1	10
+1	18
+1	2
+1	26
+1	34
+1	42
+1	50
+1	58
+1	66
+1	74
+2	12
+2	20
+2	28
+2	36
+2	4
+2	44
+2	52
+2	60
+2	68
+2	76
+3	14
+3	22
+3	30
+3	38
+3	46
+3	54
+3	6
+3	62
+3	70
+3	78
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d LEFT JOIN pv_jo_v v ON v.f = t.b WHERE t.a < 6
+----
+1	NULL	1
+1	NULL	13
+1	NULL	25
+2	2	14
+2	2	2
+2	2	26
+3	NULL	15
+3	NULL	27
+3	NULL	3
+4	4	16
+4	4	28
+4	4	4
+5	NULL	17
+5	NULL	29
+5	NULL	5
+
+query III rowsort
+SELECT t.a, u.d, v.g FROM pv_jo_t t LEFT JOIN (pv_jo_u u JOIN pv_jo_v v ON u.b = v.f) ON t.a = u.d WHERE t.a < 14
+----
+1	NULL	NULL
+10	10	1
+10	10	13
+10	10	25
+11	NULL	NULL
+12	12	14
+12	12	2
+12	12	26
+13	NULL	NULL
+2	2	1
+2	2	13
+2	2	25
+3	NULL	NULL
+4	4	14
+4	4	2
+4	4	26
+5	NULL	NULL
+6	6	15
+6	6	27
+6	6	3
+7	NULL	NULL
+8	8	12
+8	8	24
+9	NULL	NULL
+
+query II rowsort
+SELECT t.a, v.g FROM pv_jo_t t LEFT JOIN pv_jo_v v ON t.a = v.f WHERE t.a BETWEEN 5 AND 15
+----
+10	10
+10	22
+11	11
+11	23
+12	NULL
+13	NULL
+14	NULL
+15	NULL
+5	17
+5	29
+5	5
+6	18
+6	30
+6	6
+7	19
+7	7
+8	20
+8	8
+9	21
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t FULL JOIN pv_jo_u u ON t.a = u.d AND t.a > 10 WHERE t.a IS NULL OR u.d IS NULL
+----
+1	NULL
+10	NULL
+11	NULL
+13	NULL
+15	NULL
+17	NULL
+19	NULL
+2	NULL
+21	NULL
+23	NULL
+25	NULL
+27	NULL
+29	NULL
+3	NULL
+31	NULL
+33	NULL
+35	NULL
+37	NULL
+39	NULL
+4	NULL
+41	NULL
+43	NULL
+45	NULL
+47	NULL
+49	NULL
+5	NULL
+51	NULL
+53	NULL
+55	NULL
+57	NULL
+59	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+NULL	10
+NULL	101
+NULL	2
+NULL	4
+NULL	6
+NULL	62
+NULL	64
+NULL	66
+NULL	68
+NULL	70
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	8
+NULL	80
+
+query II rowsort
+SELECT u.d, v.g FROM pv_jo_u u RIGHT JOIN pv_jo_v v ON u.d = v.f WHERE v.g < 15
+----
+10	10
+2	14
+2	2
+4	4
+6	6
+8	8
+NULL	1
+NULL	11
+NULL	12
+NULL	13
+NULL	3
+NULL	5
+NULL	7
+NULL	9
+
+query I rowsort
+SELECT count(*) FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d
+----
+60
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d WHERE u.d IS NOT NULL AND t.a < 25
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+2	2
+20	20
+22	22
+24	24
+4	4
+6	6
+8	8
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_t t LEFT JOIN pv_jo_u u ON t.a = u.d AND t.b = u.b WHERE t.a < 10
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+
+query II rowsort
+SELECT t.a, u.d FROM pv_jo_u u LEFT JOIN pv_jo_t t ON t.a = u.d WHERE u.d > 70
+----
+NULL	101
+NULL	72
+NULL	74
+NULL	76
+NULL	78
+NULL	80
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_hashagg
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+DROP TABLE pv_jo_t
+
+statement ok
+DROP TABLE pv_jo_u
+
+statement ok
+DROP TABLE pv_jo_v

@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use super::Datum;
-use super::regex::Regex;
+use super::regex::regex_match as regex_match_cached;
 use crate::error::{Error, Result, SqlState, sqlstate};
 
 fn bad_arg(what: &str) -> Error {
@@ -105,6 +105,9 @@ pub fn right(args: &[Datum]) -> Result<Datum> {
     let count = s.chars().count();
     let skip = if n >= 0 {
         count.saturating_sub(usize::try_from(n).unwrap_or(usize::MAX))
+    } else if n == i64::from(i32::MIN) {
+        // PG は `-n` が INT_MIN のまま負になり、全体を返す。
+        0
     } else {
         usize::try_from(n.unsigned_abs())
             .unwrap_or(usize::MAX)
@@ -162,9 +165,16 @@ pub fn strpos(args: &[Datum]) -> Result<Datum> {
 }
 
 fn pad(args: &[Datum], left_pad: bool) -> Result<Datum> {
-    const MAX_LEN: i64 = 1 << 30;
+    // PG: MaxAllocSize / 最大エンコード長（UTF-8 は 4 バイト）。
+    const MAX_LEN: i64 = 0x3fff_ffff / 4;
     let s = text(args, 0)?;
-    let want = int(args, 1)?.clamp(0, MAX_LEN);
+    let want = int(args, 1)?.max(0);
+    if want > MAX_LEN {
+        return Err(Error::new(
+            sqlstate::PROGRAM_LIMIT_EXCEEDED,
+            "requested length too large",
+        ));
+    }
     let fill: Vec<char> = match args.get(2) {
         Some(_) => text(args, 2)?.chars().collect(),
         None => vec![' '],
@@ -320,8 +330,7 @@ fn md5_hex(data: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 fn regex_match(args: &[Datum], icase: bool) -> Result<bool> {
-    let re = Regex::new(text(args, 1)?, icase)?;
-    Ok(re.is_match(text(args, 0)?))
+    regex_match_cached(text(args, 0)?, text(args, 1)?, icase)
 }
 
 /// `text ~ text`.
@@ -338,6 +347,22 @@ pub fn texticregexeq(args: &[Datum]) -> Result<Datum> {
 }
 /// `text !~* text`.
 pub fn texticregexne(args: &[Datum]) -> Result<Datum> {
+    regex_match(args, true).map(|b| Datum::Bool(!b))
+}
+/// `name ~ text`.
+pub fn nameregexeq(args: &[Datum]) -> Result<Datum> {
+    regex_match(args, false).map(Datum::Bool)
+}
+/// `name !~ text`.
+pub fn nameregexne(args: &[Datum]) -> Result<Datum> {
+    regex_match(args, false).map(|b| Datum::Bool(!b))
+}
+/// `name ~* text`.
+pub fn nameicregexeq(args: &[Datum]) -> Result<Datum> {
+    regex_match(args, true).map(Datum::Bool)
+}
+/// `name !~* text`.
+pub fn nameicregexne(args: &[Datum]) -> Result<Datum> {
     regex_match(args, true).map(|b| Datum::Bool(!b))
 }
 
@@ -808,7 +833,15 @@ pub fn degrees(args: &[Datum]) -> Result<Datum> {
 }
 /// `radians(float8)`.
 pub fn radians(args: &[Datum]) -> Result<Datum> {
-    Ok(Datum::Float8(float(args, 0)? * 0.017_453_292_519_943_295))
+    let a = float(args, 0)?;
+    let r = a * 0.017_453_292_519_943_295;
+    if r == 0.0 && a != 0.0 {
+        return Err(Error::new(
+            sqlstate::NUMERIC_VALUE_OUT_OF_RANGE,
+            "value out of range: underflow",
+        ));
+    }
+    Ok(Datum::Float8(r))
 }
 
 /// `div(numeric, numeric)`: truncated integer division.
@@ -841,8 +874,242 @@ mod tests {
     }
 
     #[test]
+    fn pad_rejects_oversized_length_like_postgres() {
+        let e = lpad(&[t("abc"), Int4(i32::MAX)]).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::PROGRAM_LIMIT_EXCEEDED);
+        assert_eq!(e.message, "requested length too large");
+        assert!(rpad(&[t("abc"), Int4(i32::MAX)]).is_err());
+        assert_eq!(lpad(&[t("abc"), Int4(-5)]).unwrap(), t(""));
+    }
+
+    #[test]
+    fn right_with_int_min_returns_whole_string() {
+        assert_eq!(right(&[t("abc"), Int4(i32::MIN)]).unwrap(), t("abc"));
+        assert_eq!(left(&[t("abc"), Int4(i32::MIN)]).unwrap(), t(""));
+    }
+
+    #[test]
+    fn radians_underflow_is_an_error() {
+        let e = radians(&[Float8(5e-324)]).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::NUMERIC_VALUE_OUT_OF_RANGE);
+        assert_eq!(e.message, "value out of range: underflow");
+        assert_eq!(radians(&[Float8(0.0)]).unwrap(), Float8(0.0));
+    }
+
+    #[test]
     fn md5_digest() {
         assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
         assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// generate_series（`m4/09-types-functions.md` §10.1。FROM 句でだけ呼べる集合返却関数）
+// ---------------------------------------------------------------------------
+
+/// `generate_series(start, stop[, step])` の行の生成器。加算が桁あふれしたら終わる。
+struct Series {
+    cur: i64,
+    stop: i64,
+    step: i64,
+    /// 結果が int4 なら true（桁あふれの境界が `i32` になる）。
+    int4: bool,
+    done: bool,
+}
+
+impl crate::catalog::SetIter for Series {
+    fn next(&mut self) -> Result<Option<Datum>> {
+        if self.done {
+            return Ok(None);
+        }
+        let in_range = if self.step > 0 {
+            self.cur <= self.stop
+        } else {
+            self.cur >= self.stop
+        };
+        if !in_range {
+            self.done = true;
+            return Ok(None);
+        }
+        let v = self.cur;
+        match self.cur.checked_add(self.step) {
+            Some(n) if !self.int4 || i32::try_from(n).is_ok() => self.cur = n,
+            _ => self.done = true,
+        }
+        Ok(Some(if self.int4 {
+            Datum::Int4(i32::try_from(v).map_err(|_| bad_arg("generate_series"))?)
+        } else {
+            Datum::Int8(v)
+        }))
+    }
+}
+
+/// 引数に NULL があれば 0 行（strict）。`step = 0` は `22023`。
+fn series_begin(args: &[Datum], int4: bool) -> Result<Box<dyn crate::catalog::SetIter>> {
+    if args.iter().any(Datum::is_null) {
+        return Ok(Box::new(Series {
+            cur: 0,
+            stop: 0,
+            step: 1,
+            int4,
+            done: true,
+        }));
+    }
+    let first = int(args, 0)?;
+    let last = int(args, 1)?;
+    let by = if args.len() > 2 { int(args, 2)? } else { 1 };
+    if by == 0 {
+        return Err(Error::new(
+            sqlstate::INVALID_PARAMETER_VALUE,
+            "step size cannot equal zero",
+        ));
+    }
+    Ok(Box::new(Series {
+        cur: first,
+        stop: last,
+        step: by,
+        int4,
+        done: false,
+    }))
+}
+
+/// `generate_series(int4, int4[, int4])`。
+pub fn generate_series_i4(args: &[Datum]) -> Result<Box<dyn crate::catalog::SetIter>> {
+    series_begin(args, true)
+}
+
+/// `generate_series(int8, int8[, int8])`。
+pub fn generate_series_i8(args: &[Datum]) -> Result<Box<dyn crate::catalog::SetIter>> {
+    series_begin(args, false)
+}
+
+#[cfg(test)]
+mod series_tests {
+    use super::*;
+
+    fn collect(
+        f: fn(&[Datum]) -> Result<Box<dyn crate::catalog::SetIter>>,
+        a: &[Datum],
+    ) -> Vec<Datum> {
+        let mut it = f(a).unwrap();
+        let mut out = Vec::new();
+        while let Some(d) = it.next().unwrap() {
+            out.push(d);
+            assert!(out.len() < 100, "runaway series");
+        }
+        out
+    }
+
+    #[test]
+    fn series_rules() {
+        use Datum::{Int4, Int8, Null};
+        assert_eq!(
+            collect(generate_series_i4, &[Int4(1), Int4(3)]),
+            vec![Int4(1), Int4(2), Int4(3)]
+        );
+        assert_eq!(
+            collect(generate_series_i4, &[Int4(3), Int4(1), Int4(-1)]),
+            vec![Int4(3), Int4(2), Int4(1)]
+        );
+        assert!(collect(generate_series_i4, &[Int4(3), Int4(1)]).is_empty());
+        assert_eq!(
+            collect(generate_series_i4, &[Int4(1), Int4(10), Int4(4)]),
+            vec![Int4(1), Int4(5), Int4(9)]
+        );
+        // 桁あふれで止まる。
+        assert_eq!(
+            collect(generate_series_i4, &[Int4(i32::MAX - 1), Int4(i32::MAX)]),
+            vec![Int4(i32::MAX - 1), Int4(i32::MAX)]
+        );
+        assert_eq!(
+            collect(generate_series_i8, &[Int8(i64::MAX - 1), Int8(i64::MAX)]),
+            vec![Int8(i64::MAX - 1), Int8(i64::MAX)]
+        );
+        assert_eq!(
+            collect(
+                generate_series_i4,
+                &[Int4(i32::MIN + 1), Int4(i32::MIN), Int4(-1)]
+            ),
+            vec![Int4(i32::MIN + 1), Int4(i32::MIN)]
+        );
+        // NULL は 0 行。
+        assert!(collect(generate_series_i4, &[Null, Int4(3)]).is_empty());
+        assert!(collect(generate_series_i8, &[Int8(1), Null, Int8(1)]).is_empty());
+        let Err(e) = generate_series_i4(&[Int4(1), Int4(3), Int4(0)]) else {
+            panic!("step 0 must fail")
+        };
+        assert_eq!(e.sqlstate.code(), "22023");
+        assert_eq!(e.message, "step size cannot equal zero");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pg_size_pretty(bigint)（`\dt+`。`m4/11-tests-plan.md` G-3）
+// ---------------------------------------------------------------------------
+
+/// `pg_size_pretty(bigint)`: `10 kB` のように、整数の単位（半分の端数は絶対値が大きい側に丸める）。
+#[allow(clippy::manual_midpoint)] // 絶対値が大きい側へ丸める（midpoint は 0 方向）
+pub fn pg_size_pretty(args: &[Datum]) -> Result<Datum> {
+    // (単位, 打ち切りの上限, 丸めるか, 次の単位へ進むときのシフト)。PostgreSQL の `size_pretty_units`。
+    const UNITS: [(&str, i64, bool, u32); 6] = [
+        ("bytes", 10 * 1024, false, 9),
+        ("kB", 20 * 1024 - 1, true, 10),
+        ("MB", 20 * 1024 - 1, true, 10),
+        ("GB", 20 * 1024 - 1, true, 10),
+        ("TB", 20 * 1024 - 1, true, 10),
+        ("PB", i64::MAX, true, 0),
+    ];
+    let mut size = int(args, 0)?;
+    for (name, limit, round, shift) in UNITS {
+        if size.unsigned_abs() < limit.unsigned_abs() || name == "PB" {
+            if round {
+                size = (size + if size < 0 { -1 } else { 1 }) / 2;
+            }
+            return Ok(Datum::Text(format!("{size} {name}")));
+        }
+        size >>= shift;
+    }
+    Err(bad_arg("pg_size_pretty"))
+}
+
+/// `obj_description(oid[, name])`: コメントは持たないので常に NULL。
+pub fn obj_description(_args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Null)
+}
+
+#[cfg(test)]
+mod size_pretty_tests {
+    use super::*;
+
+    #[test]
+    fn matches_postgresql() {
+        let f = |n: i64| match pg_size_pretty(&[Datum::Int8(n)]).unwrap() {
+            Datum::Text(s) => s,
+            other => panic!("{other:?}"),
+        };
+        for (n, want) in [
+            (0, "0 bytes"),
+            (1023, "1023 bytes"),
+            (10239, "10239 bytes"),
+            (10240, "10 kB"),
+            (10752, "11 kB"),
+            (10753, "11 kB"),
+            (11264, "11 kB"),
+            (20479, "20 kB"),
+            (20991, "20 kB"),
+            (20992, "21 kB"),
+            (1_048_576, "1024 kB"),
+            (10_485_247, "10239 kB"),
+            (10_485_248, "10 MB"),
+            (20_971_520, "20 MB"),
+            (21_474_836_480, "20 GB"),
+            (-10240, "-10 kB"),
+            (-10752, "-11 kB"),
+            (-10753, "-11 kB"),
+            (-20992, "-21 kB"),
+            (i64::MAX, "8192 PB"),
+        ] {
+            assert_eq!(f(n), want, "{n}");
+        }
     }
 }

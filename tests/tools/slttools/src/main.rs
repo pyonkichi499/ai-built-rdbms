@@ -3,11 +3,14 @@
 //!   slttools lint [--only L01,L02] [--known-diffs FILE] [paths...]
 //!   slttools consistency [--add] [--check] [paths...]
 //!
-//! 未実装: plan-variants / large-keys / pgregress（K3・K1 との共同の部分）。
+//!   slttools plan-variants base|expand|check
+//!
+//! 未実装:  large-keys / pgregress（K3・K1 との共同の部分）。
 
 mod consistency;
 mod lint;
 mod parse;
+mod planvar;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -26,7 +29,7 @@ fn repo_root() -> PathBuf {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  slttools lint [--only L01,L02] [--known-diffs FILE] [--warnings-as-errors] [paths...]\n  slttools consistency [--add] [--check] [paths...]"
+        "usage:\n  slttools lint [--only L01,L02] [--known-diffs FILE] [--warnings-as-errors] [paths...]\n  slttools consistency [--add] [--check] [paths...]\n  slttools plan-variants base|expand|check"
     );
     ExitCode::from(2)
 }
@@ -114,6 +117,22 @@ fn main() -> ExitCode {
                 }
             }
         }
+        "plan-variants" => match planvar::run(&root, &rest) {
+            Ok(bad) => {
+                for b in &bad {
+                    println!("differs: {}", b.display());
+                }
+                if bad.is_empty() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+            Err(e) => {
+                eprintln!("slttools plan-variants: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => usage(),
     }
 }

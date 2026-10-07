@@ -17,7 +17,7 @@ yuzhu だけで意味を持つ検査は `# YUZHU-ONLY: 理由`。PG 側 `skipif 
 | KD-8 | 外側の問い合わせに属する集約（`(select max(t.a))`）は `0A000` | 03-Q4、02-Q4 |
 | KD-9 | `ANY` / `ALL` の配列形、`ARRAY(SELECT ...)`、行値のその他の使い方、全行参照（`count(t)`）は `0A000` | 03-Q8、03-Q9、03-Q15 |
 | KD-10 | `JOIN ... USING (...) AS j`、括弧つき JOIN の別名は `0A000` | 03-Q13 |
-| KD-11 | `ALTER SEQUENCE` / `TRUNCATE ... RESTART IDENTITY` の状態はロールバックされない。`log_cnt` は ALTER のたびに 0 | 08-Q5、08-Q14 |
+| KD-11 | `ALTER SEQUENCE` / `TRUNCATE ... RESTART IDENTITY` の `log_cnt` は ALTER のたびに 0（状態のロールバックは、新しい relfilenode に書くようにして PostgreSQL と同じにした） | 08-Q5、08-Q14 |
 | KD-12 | `pg_typeof(1/0)` は `integer`（PostgreSQL は評価してエラー）。`timestamp(7)` の `WARNING` なし。DEFAULT の `'now'::timestamp` が使うたびの時刻 | 09-Q6、09-Q10、09-Q7 |
 | KD-13 | 正規表現の後方参照・先読みは `0A000` | 09-Q5 |
 | KD-14 | `pg_class.relpages` / `reltuples`、`relhasindex` の更新時機、`pg_type.typmodin` が 0 | 07-Q12、07-Q13、09 §3.2 |

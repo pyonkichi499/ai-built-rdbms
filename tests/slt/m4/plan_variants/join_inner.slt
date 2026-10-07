@@ -1,0 +1,4470 @@
+# 生成物（tests/gen/plan_variants/join_inner.tpl から `slttools plan-variants expand` で作る。手で直さない）。
+# 同じ問い合わせを enable_* の設定を変えて流し、結果が同じことを確かめる。
+
+statement ok
+CREATE TABLE pv_ji_t (a int PRIMARY KEY, b int, c text)
+
+statement ok
+CREATE TABLE pv_ji_u (d int PRIMARY KEY, b int, e text)
+
+statement ok
+CREATE TABLE pv_ji_w (x int, y int)
+
+statement ok
+CREATE INDEX pv_ji_t_b ON pv_ji_t (b)
+
+statement ok
+CREATE INDEX pv_ji_u_b ON pv_ji_u (b)
+
+statement ok
+INSERT INTO pv_ji_t SELECT g, g % 7, 'x' || g FROM generate_series(1, 120) g
+
+statement ok
+INSERT INTO pv_ji_t VALUES (121, NULL, 'nul1'), (122, NULL, 'nul2')
+
+statement ok
+INSERT INTO pv_ji_u SELECT g, g % 5, 'y' || g FROM generate_series(1, 80) g
+
+statement ok
+INSERT INTO pv_ji_u VALUES (81, NULL, 'nul3')
+
+statement ok
+INSERT INTO pv_ji_w SELECT g % 10, g FROM generate_series(1, 40) g
+
+# profile: default
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+# profile: no_hashjoin
+
+statement ok
+SET enable_hashjoin = off
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+statement ok
+RESET enable_hashjoin
+
+# profile: no_nestloop
+
+statement ok
+SET enable_nestloop = off
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_hashjoin_no_nestloop
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_nestloop = off
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_indexscan
+
+statement ok
+SET enable_indexscan = off
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+statement ok
+RESET enable_indexscan
+
+# profile: no_seqscan
+
+statement ok
+SET enable_seqscan = off
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+statement ok
+RESET enable_seqscan
+
+# profile: combined
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_hashagg = off
+
+statement ok
+SET enable_indexscan = off
+
+query IT rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a < 30
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query ITT rowsort
+SELECT t.a, t.c, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d
+----
+1	x1	y1
+10	x10	y10
+11	x11	y11
+12	x12	y12
+13	x13	y13
+14	x14	y14
+15	x15	y15
+16	x16	y16
+17	x17	y17
+18	x18	y18
+19	x19	y19
+2	x2	y2
+20	x20	y20
+21	x21	y21
+22	x22	y22
+23	x23	y23
+24	x24	y24
+25	x25	y25
+26	x26	y26
+27	x27	y27
+28	x28	y28
+29	x29	y29
+3	x3	y3
+30	x30	y30
+31	x31	y31
+32	x32	y32
+33	x33	y33
+34	x34	y34
+35	x35	y35
+36	x36	y36
+37	x37	y37
+38	x38	y38
+39	x39	y39
+4	x4	y4
+40	x40	y40
+41	x41	y41
+42	x42	y42
+43	x43	y43
+44	x44	y44
+45	x45	y45
+46	x46	y46
+47	x47	y47
+48	x48	y48
+49	x49	y49
+5	x5	y5
+50	x50	y50
+51	x51	y51
+52	x52	y52
+53	x53	y53
+54	x54	y54
+55	x55	y55
+56	x56	y56
+57	x57	y57
+58	x58	y58
+59	x59	y59
+6	x6	y6
+60	x60	y60
+61	x61	y61
+62	x62	y62
+63	x63	y63
+64	x64	y64
+65	x65	y65
+66	x66	y66
+67	x67	y67
+68	x68	y68
+69	x69	y69
+7	x7	y7
+70	x70	y70
+71	x71	y71
+72	x72	y72
+73	x73	y73
+74	x74	y74
+75	x75	y75
+76	x76	y76
+77	x77	y77
+78	x78	y78
+79	x79	y79
+8	x8	y8
+80	x80	y80
+81	x81	nul3
+9	x9	y9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.a < 12 AND u.d < 12
+----
+1	1
+1	11
+1	6
+10	3
+10	8
+11	4
+11	9
+2	2
+2	7
+3	3
+3	8
+4	4
+4	9
+7	10
+7	5
+8	1
+8	11
+8	6
+9	2
+9	7
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t, pv_ji_u u WHERE t.b = u.b AND t.a < 8 AND u.d < 8
+----
+1	1
+1	6
+2	2
+2	7
+3	3
+4	4
+7	5
+
+query IT rowsort
+SELECT t.a, u.e FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b AND t.a = u.d
+----
+1	y1
+2	y2
+3	y3
+35	y35
+36	y36
+37	y37
+38	y38
+39	y39
+4	y4
+70	y70
+71	y71
+72	y72
+73	y73
+74	y74
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a + 1 = u.d WHERE t.a < 20
+----
+1	2
+10	11
+11	12
+12	13
+13	14
+14	15
+15	16
+16	17
+17	18
+18	19
+19	20
+2	3
+3	4
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND t.b > u.b
+----
+10	10
+11	11
+12	12
+13	13
+15	15
+16	16
+17	17
+18	18
+19	19
+20	20
+25	25
+26	26
+27	27
+30	30
+31	31
+32	32
+33	33
+34	34
+40	40
+41	41
+45	45
+46	46
+47	47
+48	48
+5	5
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+6	6
+60	60
+61	61
+62	62
+65	65
+66	66
+67	67
+68	68
+69	69
+75	75
+76	76
+80	80
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d AND u.e <> 'y5'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+41	41
+42	42
+43	43
+44	44
+45	45
+46	46
+47	47
+48	48
+49	49
+50	50
+51	51
+52	52
+53	53
+54	54
+55	55
+56	56
+57	57
+58	58
+59	59
+6	6
+60	60
+61	61
+62	62
+63	63
+64	64
+65	65
+66	66
+67	67
+68	68
+69	69
+7	7
+70	70
+71	71
+72	72
+73	73
+74	74
+75	75
+76	76
+77	77
+78	78
+79	79
+8	8
+80	80
+81	81
+9	9
+
+query II rowsort
+SELECT t1.a, t2.a FROM pv_ji_t t1 JOIN pv_ji_t t2 ON t1.a = t2.b WHERE t1.a < 20
+----
+1	1
+1	106
+1	113
+1	120
+1	15
+1	22
+1	29
+1	36
+1	43
+1	50
+1	57
+1	64
+1	71
+1	78
+1	8
+1	85
+1	92
+1	99
+2	100
+2	107
+2	114
+2	16
+2	2
+2	23
+2	30
+2	37
+2	44
+2	51
+2	58
+2	65
+2	72
+2	79
+2	86
+2	9
+2	93
+3	10
+3	101
+3	108
+3	115
+3	17
+3	24
+3	3
+3	31
+3	38
+3	45
+3	52
+3	59
+3	66
+3	73
+3	80
+3	87
+3	94
+4	102
+4	109
+4	11
+4	116
+4	18
+4	25
+4	32
+4	39
+4	4
+4	46
+4	53
+4	60
+4	67
+4	74
+4	81
+4	88
+4	95
+5	103
+5	110
+5	117
+5	12
+5	19
+5	26
+5	33
+5	40
+5	47
+5	5
+5	54
+5	61
+5	68
+5	75
+5	82
+5	89
+5	96
+6	104
+6	111
+6	118
+6	13
+6	20
+6	27
+6	34
+6	41
+6	48
+6	55
+6	6
+6	62
+6	69
+6	76
+6	83
+6	90
+6	97
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d JOIN pv_ji_w w ON w.x = t.b WHERE t.a < 10
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	15
+5	5	25
+5	5	35
+5	5	5
+6	6	16
+6	6	26
+6	6	36
+6	6	6
+7	7	10
+7	7	20
+7	7	30
+7	7	40
+8	8	1
+8	8	11
+8	8	21
+8	8	31
+9	9	12
+9	9	2
+9	9	22
+9	9	32
+
+query III rowsort
+SELECT t.a, u.d, w.y FROM pv_ji_t t, pv_ji_u u, pv_ji_w w WHERE t.a = u.d AND u.b = w.x AND t.a < 6
+----
+1	1	1
+1	1	11
+1	1	21
+1	1	31
+2	2	12
+2	2	2
+2	2	22
+2	2	32
+3	3	13
+3	3	23
+3	3	3
+3	3	33
+4	4	14
+4	4	24
+4	4	34
+4	4	4
+5	5	10
+5	5	20
+5	5	30
+5	5	40
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NULL
+----
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b WHERE t.b IS NOT NULL AND t.a < 4 AND u.d < 6
+----
+1	1
+2	2
+3	3
+
+query II rowsort
+SELECT t.a, w.y FROM pv_ji_t t JOIN pv_ji_w w ON t.a = w.y
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+2	2
+20	20
+21	21
+22	22
+23	23
+24	24
+25	25
+26	26
+27	27
+28	28
+29	29
+3	3
+30	30
+31	31
+32	32
+33	33
+34	34
+35	35
+36	36
+37	37
+38	38
+39	39
+4	4
+40	40
+5	5
+6	6
+7	7
+8	8
+9	9
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t CROSS JOIN pv_ji_u u WHERE t.a < 4 AND u.d < 4
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+3	1
+3	2
+3	3
+
+query I rowsort
+SELECT count(*) FROM pv_ji_t t JOIN pv_ji_u u ON t.b = u.b
+----
+1376
+
+query II rowsort
+SELECT t.a, u.d FROM pv_ji_t t JOIN pv_ji_u u ON t.a = u.d WHERE t.a BETWEEN 10 AND 20 AND u.d % 2 = 0
+----
+10	10
+12	12
+14	14
+16	16
+18	18
+20	20
+
+query II rowsort
+SELECT a, d FROM pv_ji_t JOIN pv_ji_u ON a = d WHERE c LIKE 'x1%'
+----
+1	1
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19
+
+query I rowsort
+SELECT a FROM pv_ji_t NATURAL JOIN (SELECT d AS a FROM pv_ji_u WHERE d < 9) s
+----
+1
+2
+3
+4
+5
+6
+7
+8
+
+query II rowsort
+SELECT a, b FROM pv_ji_t JOIN pv_ji_u USING (b) WHERE a < 10 AND d < 10
+----
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+7	0
+8	1
+8	1
+9	2
+9	2
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_hashagg
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+DROP TABLE pv_ji_t
+
+statement ok
+DROP TABLE pv_ji_u
+
+statement ok
+DROP TABLE pv_ji_w

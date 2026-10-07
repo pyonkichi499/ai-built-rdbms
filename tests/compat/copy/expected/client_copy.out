@@ -1,0 +1,12 @@
+ a | b 
+---+---
+ 1 | x
+ 2 | y
+(2 rows)
+
+psql:<stdin>:5: ERROR:  invalid input syntax for type integer: "x"
+CONTEXT:  COPY compat_f1, line 1, column a: "x"
+ count 
+-------
+     2
+(1 row)

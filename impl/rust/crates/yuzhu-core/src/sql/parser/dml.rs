@@ -4,7 +4,7 @@ use super::Parser;
 use super::expr::is_query_start_kw;
 use crate::error::Result;
 use crate::sql::ast::{
-    Assignment, Delete, Ident, Insert, InsertSource, QueryBody, SelectItem, Update,
+    Assignment, Delete, Ident, Insert, InsertSource, OverridingKind, QueryBody, SelectItem, Update,
 };
 use crate::sql::token::TokenKind;
 
@@ -49,8 +49,20 @@ impl Parser<'_> {
             }
             self.expect(&TokenKind::RParen)?;
         }
-        if self.is_kw("overriding") {
-            return Err(self.not_supported("OVERRIDING"));
+        let overriding = if self.eat_kw("overriding") {
+            let kind = if self.eat_kw("system") {
+                OverridingKind::System
+            } else {
+                self.expect_kw("user")?;
+                OverridingKind::User
+            };
+            self.expect_kw("value")?;
+            Some(kind)
+        } else {
+            None
+        };
+        if overriding.is_some() && self.is_kw("default") && self.nth_is_kw(1, "values") {
+            return Err(self.unexpected());
         }
         let source = if self.is_kw("default") && self.nth_is_kw(1, "values") {
             self.advance();
@@ -79,6 +91,7 @@ impl Parser<'_> {
             table,
             alias,
             columns,
+            overriding,
             source,
             returning,
             span: self.span_from(start),

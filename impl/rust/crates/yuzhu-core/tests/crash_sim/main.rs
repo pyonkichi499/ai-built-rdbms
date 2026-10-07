@@ -131,6 +131,8 @@ pub(crate) struct CaseSpec {
     pub(crate) shutdown: bool,
     /// 仕込んだ変異の名前（再現用。`mutation.rs` の `mutations()`）。
     pub(crate) mutation: Option<&'static str>,
+    /// リカバリの後、検査の前にカタログへ傷を付ける（コミットする）。
+    pub(crate) damage: Option<mutation::CatalogDamage>,
 }
 
 impl CaseSpec {
@@ -152,6 +154,7 @@ impl CaseSpec {
             later_ops: 200,
             shutdown: false,
             mutation: None,
+            damage: None,
         }
     }
 
@@ -219,12 +222,20 @@ impl fmt::Display for Failure {
 
 pub(crate) const SMALL_NTX: u32 = 4;
 pub(crate) const LARGE_NTX: u32 = 25;
+/// この数以上のトランザクションを流す版を「大きい版」とする（`indexed_table` の索引の一括構築）。
+pub(crate) const BIG_NTX: u32 = 20;
 /// `wal_fill` が WAL を 2 MiB のセグメントの外まで進める数。
 pub(crate) const WAL_FILL_NTX: u32 = 110;
 
 fn options_for(spec: &CaseSpec, w: &Workload) -> TestClusterOptions {
     let mut o = TestClusterOptions::crash_sim(spec.seed);
     o.nframes = w.nframes;
+    if w.name == "indexed_table" && spec.ntx >= BIG_NTX {
+        // 一括構築の 1 レコードは 33 ページを同時にピンする（`BT_BUILD_BATCH_PAGES` = 32 + メタ）。
+        // 06 §7.11 の `shared_buffers = 24` では `XX000 no unpinned buffers available` になるので、
+        // 構築を通す大きい版だけ 48 にする（実装の不具合として報告済み）。
+        o.nframes = 48;
+    }
     o.knobs = spec.knobs;
     o
 }
@@ -262,7 +273,8 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
 /// ワークロードを障害なしで最後まで走らせ、起動後の I/O の総数を返す（N の範囲を決める）。
 pub(crate) fn measure(workload: &'static str, seed: u64, ntx: u32) -> u64 {
     let w = workload::by_name(workload);
-    let spec = CaseSpec::new(workload, seed);
+    let mut spec = CaseSpec::new(workload, seed);
+    spec.ntx = ntx;
     let opts = options_for(&spec, &w);
     let TestCluster { vfs, cluster, .. } =
         TestCluster::with_options(opts.clone()).expect("initdb and start");
@@ -284,7 +296,8 @@ pub(crate) fn measure(workload: &'static str, seed: u64, ntx: u32) -> u64 {
 /// 障害なしで走らせ、（ワークロードの終わりまでの I/O の数, 正常停止の終わりまでの I/O の数）を返す。
 pub(crate) fn measure_with_shutdown(workload: &'static str, seed: u64, ntx: u32) -> (u64, u64) {
     let w = workload::by_name(workload);
-    let spec = CaseSpec::new(workload, seed);
+    let mut spec = CaseSpec::new(workload, seed);
+    spec.ntx = ntx;
     let opts = options_for(&spec, &w);
     let TestCluster { vfs, cluster, .. } =
         TestCluster::with_options(opts.clone()).expect("initdb and start");
@@ -307,6 +320,19 @@ pub(crate) fn measure_with_shutdown(workload: &'static str, seed: u64, ntx: u32)
     (ran, run.ops_done())
 }
 
+/// M4 のワークロードは DROP・TRUNCATE・ROLLBACK で関係ファイルを消す。チェックポイントの後始末（`finish_pending_unlinks`）の
+/// `SyncDir` の失敗は警告だけで次のチェックポイントにやり直す設計（完了したチェックポイントの後なので止めない）。
+/// なのでその失敗は「握りつぶし」ではない（孤児は D15 で許す）。
+fn leftover_cleanup_may_absorb(spec: &CaseSpec) -> bool {
+    matches!(
+        spec.arm,
+        Arm::FaultAt {
+            op: FaultOp::SyncDir,
+            ..
+        }
+    ) && workload::M4_WORKLOAD_NAMES.contains(&spec.workload)
+}
+
 /// 1 件を実行する。
 pub(crate) fn run_case(spec: &CaseSpec) -> Result<(), Failure> {
     let w = workload::by_name(spec.workload);
@@ -316,13 +342,13 @@ pub(crate) fn run_case(spec: &CaseSpec) -> Result<(), Failure> {
         round,
         violation: v,
     };
+
     let TestCluster {
         mut vfs,
         mut cluster,
         ..
     } = TestCluster::with_options(opts.clone()).expect("initdb and start");
     vfs.set_ignore_sync_dir(spec.ignore_sync_dir);
-
     let mut model = Model::default();
     let mut rng = Rng::new(spec.seed ^ 0x5eed);
     let mut wl_rng = Rng::new(spec.seed);
@@ -345,7 +371,7 @@ pub(crate) fn run_case(spec: &CaseSpec) -> Result<(), Failure> {
             w.checkpoint_every,
         );
         let ran_to_end = match (w.run)(&mut run, &mut wl_rng, round, spec.ntx) {
-            Ok(()) if run.arm_must_stop() && run.fired() => {
+            Ok(()) if run.arm_must_stop() && run.fired() && !leftover_cleanup_may_absorb(spec) => {
                 return Err(fail(
                     round,
                     violation(
@@ -358,6 +384,15 @@ pub(crate) fn run_case(spec: &CaseSpec) -> Result<(), Failure> {
             Err(Stop::Crashed) => false,
             Err(Stop::Bug(m)) => return Err(fail(round, violation("workload", m))),
         };
+        if ran_to_end && matches!(spec.arm, Arm::None) && !spec.shutdown && round == 0 {
+            // 障害なしで最後まで走った: 孤児ファイル（後始末漏れ）がない。
+            if let Err(Stop::Bug(m)) = run.rollback_open() {
+                return Err(fail(round, violation("workload", m)));
+            }
+            if let Err(v) = invariants::check_no_orphans(&run.cluster) {
+                return Err(fail(round, v));
+            }
+        }
         if ran_to_end && spec.shutdown {
             // 正常停止（ShuttingDown → Shutdown チェックポイント → ShutDown）。I/O のどこかで凍結してもよい。
             if let Err(Stop::Bug(m)) = run.shutdown() {
@@ -431,6 +466,14 @@ pub(crate) fn run_case(spec: &CaseSpec) -> Result<(), Failure> {
                 Err(v) => return Err(fail(round, v)),
             }
         }
+        if let Some(d) = spec.damage
+            && let Err(m) = mutation::damage_catalog(&recovered, d)
+        {
+            return Err(fail(
+                round,
+                violation("workload", format!("cannot damage the catalog: {m}")),
+            ));
+        }
         let checked = catch_unwind(AssertUnwindSafe(|| {
             check_after_recovery(
                 &recovered, &disk, &committed, &unknown, &pre, &crash, w.check,
@@ -488,12 +531,43 @@ mod tests {
 
     const WORKLOADS: &[&str] = workload::WORKLOAD_NAMES;
 
+    /// M3 と M4 のワークロード全部（障害注入・物理比較・夜間 soak 用）。
+    fn all_workloads() -> Vec<&'static str> {
+        WORKLOADS
+            .iter()
+            .chain(workload::M4_WORKLOAD_NAMES)
+            .copied()
+            .collect()
+    }
+
+    /// M3 のワークロード名の一覧に M4 のものを足す。
+    fn with_m4(base: &[&'static str]) -> Vec<&'static str> {
+        base.iter()
+            .chain(workload::M4_WORKLOAD_NAMES)
+            .copied()
+            .collect()
+    }
+
+    /// 小さい版のトランザクション数（M3 は `SMALL_NTX`）。
+    fn small_ntx(w: &str) -> u32 {
+        if workload::M4_WORKLOAD_NAMES.contains(&w) {
+            m4_small_ntx(w)
+        } else {
+            SMALL_NTX
+        }
+    }
+
     /// 起動後の I/O の通し番号 N をすべて試す（小さいワークロード）。
     fn sweep(workload: &'static str, mode: ModeSpec, stride: u64) {
-        let total = measure(workload, 1, SMALL_NTX);
+        sweep_ntx(workload, mode, stride, SMALL_NTX);
+    }
+
+    fn sweep_ntx(workload: &'static str, mode: ModeSpec, stride: u64, ntx: u32) {
+        let total = measure(workload, 1, ntx);
         let mut n = 0;
         while n <= total {
             let mut spec = CaseSpec::new(workload, 1);
+            spec.ntx = ntx;
             spec.arm = Arm::CrashAt(n);
             spec.mode = mode;
             expect_ok(run_case(&spec));
@@ -501,10 +575,313 @@ mod tests {
         }
         // 最後（障害なし）も。
         let mut spec = CaseSpec::new(workload, 1);
+        spec.ntx = ntx;
         spec.mode = mode;
         expect_ok(run_case(&spec));
     }
 
+    // ----- M4: ワークロード 6〜8（11 §3.6.1）-----
+
+    const M4: &[&str] = workload::M4_WORKLOAD_NAMES;
+
+    /// 小さい版のトランザクション数（`sequences` は 1 周で部品 A〜J を全部通る数）。
+    fn m4_small_ntx(w: &str) -> u32 {
+        match w {
+            "sequences" => 11,
+            "ddl_mix" => 9,
+            _ => SMALL_NTX,
+        }
+    }
+
+    #[test]
+    fn m4_workloads_run_without_faults() {
+        for w in M4 {
+            for ntx in [m4_small_ntx(w), LARGE_NTX] {
+                let ops = measure(w, 1, ntx);
+                assert!(ops > 0, "{w}");
+            }
+        }
+    }
+
+    /// 小さい版: N を 0 から最後まで全部（`stride` 刻み）。
+    fn sweep_m4(workload: &'static str, mode: ModeSpec, stride: u64) {
+        sweep_ntx(workload, mode, stride, m4_small_ntx(workload));
+    }
+
+    #[test]
+    fn indexed_table_every_crash_point() {
+        sweep_m4("indexed_table", ModeSpec::Drop, 1);
+        sweep_m4("indexed_table", ModeSpec::Keep, 1);
+    }
+
+    #[test]
+    fn sequences_every_crash_point() {
+        sweep_m4("sequences", ModeSpec::Drop, 1);
+        sweep_m4("sequences", ModeSpec::Keep, 1);
+    }
+
+    #[test]
+    fn ddl_mix_every_crash_point() {
+        sweep_m4("ddl_mix", ModeSpec::Drop, 1);
+        sweep_m4("ddl_mix", ModeSpec::Keep, 1);
+    }
+
+    /// 小さい版を、`RandomSubset` と `TornSectors`（512 / 4096 / 1）でも全部の N について試す。
+    #[test]
+    fn m4_every_crash_point_with_torn_and_random_modes() {
+        let modes = [
+            ModeSpec::Random(50),
+            ModeSpec::Torn {
+                sector: 512,
+                percent: 50,
+            },
+            ModeSpec::Torn {
+                sector: 4096,
+                percent: 50,
+            },
+            ModeSpec::Torn {
+                sector: 1,
+                percent: 60,
+            },
+        ];
+        for w in M4 {
+            let ntx = m4_small_ntx(w);
+            let total = measure(w, 1, ntx);
+            for n in 0..=total {
+                let mode = modes[usize::try_from(n % modes.len() as u64).unwrap_or(0)];
+                let mut spec = CaseSpec::new(w, 1 + 17 * (n + 1));
+                spec.ntx = ntx;
+                spec.arm = Arm::CrashAt(n);
+                spec.mode = mode;
+                expect_ok(run_case(&spec));
+            }
+        }
+    }
+
+    /// 大きい版: 固定のシード（CI は 24 個 = ワークロードごとに 8）で N とクラッシュのしかた
+    /// （`DropUnsynced`、`KeepAll`、`RandomSubset`、`TornSectors { 512 / 4096 }`）を選ぶ。
+    #[test]
+    fn m4_random_crash_points() {
+        for (i, w) in M4.iter().enumerate() {
+            let total = measure(w, 100, LARGE_NTX);
+            for k in 0..8u64 {
+                let seed = 100 + k;
+                let mut rng = Rng::new(seed ^ ((i as u64 + 7) << 8));
+                let mut spec = CaseSpec::new(w, seed);
+                spec.ntx = LARGE_NTX;
+                spec.arm = Arm::CrashAt(rng.below(total + 1));
+                spec.mode = random_mode(&mut rng);
+                expect_ok(run_case(&spec));
+            }
+        }
+    }
+
+    /// I10: M4 のワークロードでも、クラッシュ → リカバリ → 続き、をくり返す。
+    #[test]
+    fn m4_repeated_crashes_and_recoveries() {
+        for (i, w) in M4.iter().enumerate() {
+            let ntx = m4_small_ntx(w);
+            let total = measure(w, 200, ntx);
+            for k in 0..3u64 {
+                let seed = 200 + k;
+                let mut rng = Rng::new(seed ^ ((i as u64 + 7) << 8));
+                let mut spec = CaseSpec::new(w, seed);
+                spec.ntx = ntx;
+                spec.arm = Arm::CrashAt(rng.below(total + 1));
+                spec.mode = random_mode(&mut rng);
+                spec.rounds = 4;
+                spec.later_ops = total;
+                expect_ok(run_case(&spec));
+            }
+        }
+    }
+
+    /// I9: リカバリの途中でクラッシュしても、再リカバリで同じ内容になる。
+    #[test]
+    fn m4_crash_during_recovery() {
+        for w in M4 {
+            let ntx = m4_small_ntx(w);
+            let total = measure(w, 300, ntx);
+            for k in 0..4u64 {
+                let mut rng = Rng::new(300 + k);
+                let mut spec = CaseSpec::new(w, 300 + k);
+                spec.ntx = ntx;
+                spec.arm = Arm::CrashAt(rng.below(total + 1));
+                spec.mode = random_mode(&mut rng);
+                spec.recovery_crash_at = Some(rng.below(120));
+                spec.double_recovery = true;
+                spec.rounds = 2;
+                spec.later_ops = total;
+                expect_ok(run_case(&spec));
+            }
+        }
+    }
+
+    /// 正常停止（停止チェックポイント）の各 I/O でクラッシュさせても、M4 の不変条件が成り立つ。
+    #[test]
+    fn m4_shutdown_at_every_io_point() {
+        for w in M4 {
+            let ntx = m4_small_ntx(w);
+            let (ran, done) = measure_with_shutdown(w, 1, ntx);
+            for n in ran.saturating_sub(3)..=done + 1 {
+                let mut spec = CaseSpec::new(w, 1);
+                spec.ntx = ntx;
+                spec.shutdown = true;
+                spec.arm = Arm::CrashAt(n);
+                spec.mode = ModeSpec::Drop;
+                expect_ok(run_case(&spec));
+            }
+        }
+    }
+
+    /// 大きい版の `indexed_table` は、33 ページ以上の索引を一括構築する（32 ページごとのレコードを通す）。
+    #[test]
+    fn indexed_table_builds_an_index_of_more_than_32_pages() {
+        let w = workload::by_name("indexed_table");
+        let mut best = 0;
+        for seed in 1..=6u64 {
+            let mut spec = CaseSpec::new("indexed_table", seed);
+            spec.ntx = LARGE_NTX;
+            let opts = options_for(&spec, &w);
+            let TestCluster { vfs, cluster, .. } =
+                TestCluster::with_options(opts.clone()).expect("initdb and start");
+            let mut run = Run::new(
+                vfs,
+                Arc::clone(&cluster),
+                &opts,
+                Model::default(),
+                Arm::None,
+                w.checkpoint_every,
+            );
+            let mut rng = Rng::new(seed);
+            (w.run)(&mut run, &mut rng, 0, LARGE_NTX).expect("the workload runs without faults");
+            let defs =
+                yuzhu_core::testing::user_relation_defs(&cluster, "postgres").expect("catalog");
+            for idx in defs.iter().flat_map(|t| t.indexes.iter()) {
+                if idx.name == "t_big_ix" {
+                    let n = cluster
+                        .stack()
+                        .pool
+                        .nblocks(idx.locator, yuzhu_core::storage::smgr::ForkNumber::Main)
+                        .expect("nblocks");
+                    best = best.max(n);
+                }
+            }
+            run.drop_sessions();
+            cluster.abandon();
+        }
+        assert!(
+            best >= 34,
+            "the largest bulk-built index has only {best} blocks"
+        );
+    }
+
+    // ----- M4 の変異テスト（11 §3.6.3）: 既定のシード集合のうち少なくとも 1 つで検出する -----
+
+    /// 変異 `name` を既定のシード集合（`mutation::SEEDS`）で試し、期待する不変条件の違反で検出されることを確かめる。
+    #[allow(clippy::print_stderr)]
+    fn detects_m4(name: &str) {
+        let m = mutation::m4_mutations()
+            .into_iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("no mutation {name}"));
+        match mutation::detect(&m, mutation::SEEDS) {
+            None => panic!("mutation {:?} was not detected by any seed", m.name),
+            Some(f) => {
+                eprintln!("mutation {:?} detected: {f}", m.name);
+                assert!(
+                    m.expect.contains(&f.violation.inv),
+                    "mutation {:?} was detected as {} (expected one of {:?})\n{f}",
+                    m.name,
+                    f.violation.inv,
+                    m.expect
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detects_index_without_full_page_writes() {
+        detects_m4("index: no full page writes");
+    }
+
+    #[test]
+    fn detects_index_broken_wal_before_data() {
+        detects_m4("index: break WAL-before-data");
+    }
+
+    #[test]
+    fn detects_index_redo_without_page_lsn_check() {
+        detects_m4("index: REDO ignores page_lsn");
+    }
+
+    #[test]
+    fn detects_index_split_in_two_records() {
+        detects_m4("index: split in two records");
+    }
+
+    #[test]
+    fn detects_lossy_index_insert() {
+        detects_m4("index: lossy insert");
+    }
+
+    #[test]
+    fn detects_sequence_without_commit_flush() {
+        detects_m4("sequence: no flush at commit");
+    }
+
+    #[test]
+    fn detects_sequence_ignoring_foreign_wal() {
+        detects_m4("sequence: ignore foreign WAL");
+    }
+
+    #[test]
+    fn detects_sequence_redo_skipping_newer_pages() {
+        detects_m4("sequence: REDO skips if page newer");
+    }
+
+    #[test]
+    fn detects_sequence_without_force_log() {
+        detects_m4("sequence: no force_log");
+    }
+
+    #[test]
+    fn detects_lost_pg_depend_row() {
+        detects_m4("catalog: lost pg_depend row");
+    }
+
+    #[test]
+    fn detects_lost_pg_index_row() {
+        detects_m4("catalog: lost pg_index row");
+    }
+
+    /// M4 の変異は表（11 §3.6.3）の 11 行すべてで、テストが 1 つずつある。
+    #[test]
+    fn every_m4_mutation_has_a_test() {
+        assert_eq!(mutation::m4_mutations().len(), 11);
+    }
+
+    /// 変異を仕込まなければ、M4 のワークロードで何も見つからない（偽陽性がない）。
+    #[test]
+    fn unmutated_m4_runs_are_clean() {
+        let m = mutation::Mutation {
+            name: "none",
+            expect: &[],
+            workloads: workload::M4_WORKLOAD_NAMES,
+            modes: &[
+                ModeSpec::Drop,
+                ModeSpec::Torn {
+                    sector: 512,
+                    percent: 50,
+                },
+                ModeSpec::Random(50),
+            ],
+            apply: |_| {},
+        };
+        if let Some(f) = mutation::detect(&m, &mutation::SEEDS[..2]) {
+            panic!("{f}");
+        }
+    }
     #[test]
     fn workloads_run_without_faults() {
         for w in WORKLOADS {
@@ -522,6 +899,7 @@ mod tests {
         let workload = get("YUZHU_CRASH_WORKLOAD").unwrap_or_else(|| "bank".into());
         let name = WORKLOADS
             .iter()
+            .chain(workload::M4_WORKLOAD_NAMES)
             .chain(std::iter::once(&workload::WAL_FILL))
             .find(|w| **w == workload)
             .unwrap_or_else(|| panic!("unknown workload {workload}"));
@@ -613,9 +991,9 @@ mod tests {
     }
 
     #[test]
-    fn ddl_mix_every_crash_point() {
-        sweep("ddl_mix", ModeSpec::Drop, 1);
-        sweep("ddl_mix", ModeSpec::Keep, 2);
+    fn ddl_plain_every_crash_point() {
+        sweep("ddl_plain", ModeSpec::Drop, 1);
+        sweep("ddl_plain", ModeSpec::Keep, 2);
     }
 
     #[test]
@@ -706,14 +1084,15 @@ mod tests {
     /// 可視性に効かない項目（ctid 連鎖、cmax など）のずれも見つける。
     #[test]
     fn redo_rebuilds_the_same_pages_as_runtime() {
-        for w in WORKLOADS.iter().chain([&workload::WAL_FILL]) {
+        for w in all_workloads().iter().chain([&workload::WAL_FILL]) {
             let ntx = if *w == workload::WAL_FILL {
                 30
             } else {
                 LARGE_NTX
             };
             let wl = workload::by_name(w);
-            let spec = CaseSpec::new(w, 5);
+            let mut spec = CaseSpec::new(w, 5);
+            spec.ntx = ntx;
             let opts = options_for(&spec, &wl);
             // 同じ手順を 2 回（決定的）。1 回目は WAL だけを残して REDO、2 回目は実行時のまま書き出す。
             let play = || {
@@ -779,7 +1158,7 @@ mod tests {
     /// I9: リカバリの途中でクラッシュしても、再リカバリで同じ内容になる。2 回続けてリカバリしても同じ。
     #[test]
     fn crash_during_recovery_and_double_recovery() {
-        for w in ["bank", "hot_update", "ddl_mix"] {
+        for w in ["bank", "hot_update", "ddl_plain"] {
             let total = measure(w, 300, SMALL_NTX);
             for k in 0..6u64 {
                 let mut rng = Rng::new(300 + k);
@@ -799,9 +1178,10 @@ mod tests {
     /// 起きた障害を握りつぶして最後まで走ったら違反（`run_case`）。N は 0 から 60 まで全部。
     #[test]
     fn fsync_failure_panics_and_recovers() {
-        for w in ["bank", "applog", "ddl_mix"] {
+        for w in with_m4(&["bank", "applog", "ddl_plain"]) {
             for n in 0..60u64 {
                 let mut spec = CaseSpec::new(w, 400 + n);
+                spec.ntx = small_ntx(w);
                 spec.arm = Arm::FsyncFailAt(n);
                 spec.mode = if n % 2 == 0 {
                     ModeSpec::Drop
@@ -816,9 +1196,10 @@ mod tests {
     /// 失敗した fsync のデータを忘れるディスク（`FsyncFailAndForget`）でも、リカバリで I1〜I8 が成り立つ。
     #[test]
     fn fsync_failure_with_forgotten_data_recovers() {
-        for w in ["bank", "applog", "ddl_mix", "small_pool"] {
+        for w in with_m4(&["bank", "applog", "ddl_plain", "small_pool"]) {
             for n in (0..60u64).step_by(3) {
                 let mut spec = CaseSpec::new(w, 450 + n);
+                spec.ntx = small_ntx(w);
                 spec.arm = Arm::FaultAt {
                     op: FaultOp::Sync,
                     n,
@@ -841,10 +1222,11 @@ mod tests {
             (FaultOp::Write, FaultKind::Eio),
             (FaultOp::Write, FaultKind::ShortWrite),
         ];
-        for w in ["bank", "ddl_mix", "small_pool"] {
+        for w in with_m4(&["bank", "ddl_plain", "small_pool"]) {
             for (op, kind) in kinds {
                 for n in (0..40u64).step_by(2) {
                     let mut spec = CaseSpec::new(w, 500 + n);
+                    spec.ntx = small_ntx(w);
                     spec.arm = Arm::FaultAt { op, n, kind };
                     spec.mode = if n % 4 == 0 {
                         ModeSpec::Drop
@@ -900,7 +1282,7 @@ mod tests {
     /// 再起動後（クリーン起動）に内容が残っている。
     #[test]
     fn shutdown_at_every_io_point_and_clean_restart() {
-        for w in ["bank", "applog", "ddl_mix", "hot_update"] {
+        for w in ["bank", "applog", "ddl_plain", "hot_update"] {
             let total = measure_with_shutdown(w, 1, SMALL_NTX);
             let base = total.0;
             // ワークロードの最後の数 I/O（ROLLBACK）から、停止の最後まで。
@@ -959,7 +1341,8 @@ mod tests {
             .unwrap_or(200);
         for seed in 1000..1000 + seeds {
             let mut rng = Rng::new(seed);
-            let w = WORKLOADS[usize::try_from(rng.below(WORKLOADS.len() as u64)).unwrap_or(0)];
+            let all = all_workloads();
+            let w = all[usize::try_from(rng.below(all.len() as u64)).unwrap_or(0)];
             let total = measure(w, seed, LARGE_NTX);
             let mut spec = CaseSpec::new(w, seed);
             spec.ntx = LARGE_NTX;

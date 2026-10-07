@@ -7,9 +7,9 @@
 #   <root>/*/subagents/workflows/wf_*/journal.jsonl  (started / result の記録。時刻は持たない)
 #   <root>/*/subagents/workflows/wf_*/agent-*.jsonl  (各担当の発言・tool 呼び出し・timestamp・usage)
 #   <root>/*/workflows/scripts/*-<wf_id>.js          (meta.phases = 計画)
-# 時刻はすべて UTC。jq 1.6 で動く。
+# 時刻はすべて JST。jq 1.6 で動く。
 set -euo pipefail
-export TZ=UTC LC_ALL=C.UTF-8
+export TZ=Asia/Tokyo LC_ALL=C.UTF-8
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
@@ -28,7 +28,7 @@ done
 # --- 共通処理(journal-lib.sh があれば読み込み、無い関数だけ補う) ---
 # shellcheck disable=SC1091
 [ -f "$here/journal-lib.sh" ] && source "$here/journal-lib.sh"
-export TZ=UTC
+export TZ=Asia/Tokyo
 
 command -v jq >/dev/null || { echo "jq が必要です" >&2; exit 1; }
 
@@ -145,7 +145,7 @@ def ts: sub("\\.[0-9]+Z$";"Z") | fromdateiso8601;
 def pad2: tostring | if length<2 then "0"+. else . end;
 def fd: if .==null then "不明" else
   (. as $s | if $s>=3600 then "\($s/3600|floor)h\(($s%3600/60|floor)|pad2)m" else "\($s/60|floor)m\(($s%60)|pad2)s" end) end;
-def ft: if .==null then "不明" else (sub("\\.[0-9]+Z$";"Z") | sub("T";" ") | sub("Z$";"")) end;
+def ft: if .==null then "不明" else (sub("\\.[0-9]+Z$";"Z") | fromdateiso8601 | . + 32400 | strftime("%Y-%m-%d %H:%M:%S")) end;
 def pct: if .==null then "不明" else "\((. * 1000 | round) / 10)%" end;
 def esc: gsub("\\|";"\\|");
 def short: split($repo + "/") | join("");
@@ -173,13 +173,13 @@ def summarize:
 ([.[] | summarize] | sort_by(.start // "9")) as $ws
 | ($ws | map(.end // empty) | max) as $latest
 | ([
-  "> 自動生成(tools/journal-workflows.sh)。時刻はすべて UTC。出所: `\($root)/*/subagents/workflows/wf_*/` の journal.jsonl と agent-*.jsonl、`workflows/scripts/*.js` の meta.phases。",
-  "> 最新ログ時刻: \($latest | ft) UTC。壁時計 = 担当ファイルの最小 timestamp から最大 timestamp まで(journal.jsonl 自体は時刻を持たない)。進行中の Workflow は最新ログ時刻までの暫定値。",
+  "> 自動生成(tools/journal-workflows.sh)。時刻はすべて JST。出所: `\($root)/*/subagents/workflows/wf_*/` の journal.jsonl と agent-*.jsonl、`workflows/scripts/*.js` の meta.phases。",
+  "> 最新ログ時刻: \($latest | ft) JST。壁時計 = 担当ファイルの最小 timestamp から最大 timestamp まで(journal.jsonl 自体は時刻を持たない)。進行中の Workflow は最新ログ時刻までの暫定値。",
   "> 最長/壁時計 = 最長担当の所要 ÷ 壁時計。並列効率 = 全担当の所要の合計 ÷ 壁時計(1.0 なら実質直列、大きいほど並列が効いている)。",
   "",
   "### Workflow 一覧",
   "",
-  "| Workflow | 名前 | 状態 | 開始 (UTC) | 終了 (UTC) | 壁時計 | 担当数 (結果あり) | 最長担当 | 最長/壁時計 | 合計稼働 | 並列効率 |",
+  "| Workflow | 名前 | 状態 | 開始 (JST) | 終了 (JST) | 壁時計 | 担当数 (結果あり) | 最長担当 | 最長/壁時計 | 合計稼働 | 並列効率 |",
   "|---|---|---|---|---|---|---|---|---|---|---|",
   ($ws[] |
     "| \(.id) | \(.name | or_unk) | \(.status) | \(.start | ft) | \(.end | ft)\(if .status=="進行中" then " (暫定)" else "" end) | \(.wall | fd) | \(.count) (\(.done)) | \(if .longest then "\(.longest.label | short | esc) (\(.longest.dur | fd))" else "不明" end) | \(.longest_ratio | pct) | \(.busy | fd) | \(if .parallel then "×\((.parallel * 100 | round) / 100)" else "不明" end) |"),
@@ -193,7 +193,7 @@ def summarize:
     (if $w.desc!="" then "- 説明: \($w.desc)" else empty end),
     "- journal.jsonl の行数: \($w.journal_lines)、agent-*.jsonl の数: \($w.agent_files)、started の担当数: \($w.count)",
     "",
-    "| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |",
+    "| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |",
     "|---|---|---|---|---|---|---|",
     (
       ($w.planned // []) as $pl
@@ -231,7 +231,7 @@ def summarize:
   "",
   ( [ $ws[] | . as $w | $w.agents[] | select(.state=="running") | {wf:$w.id, a:.} ] as $run
     | if ($run|length)==0 then "- なし" else
-        ( "| Workflow | 担当 | フェーズ | 開始 (UTC) | 最終ログ (UTC) | ここまでの所要 |", "|---|---|---|---|---|---|",
+        ( "| Workflow | 担当 | フェーズ | 開始 (JST) | 最終ログ (JST) | ここまでの所要 |", "|---|---|---|---|---|---|",
           ($run[] | "| \(.wf) | \(.a.label | short | esc) | \(.a.phase) | \(.a.start | ft) | \(.a.end | ft) | \(.a.dur | fd) |") )
       end )
 ] | join("\n")) as $ledger
@@ -243,7 +243,7 @@ def summarize:
   ($ws[] | . as $w | (
     "### \($w.id) \($w.name) (\($w.status))",
     "",
-    "| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |",
+    "| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |",
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ($w.agents | sort_by(.start // "9") | .[] |
       if .nofile then

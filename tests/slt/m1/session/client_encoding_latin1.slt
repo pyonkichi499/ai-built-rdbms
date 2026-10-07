@@ -26,3 +26,6 @@ query T
 SHOW client_encoding
 ----
 UTF8
+
+statement ok
+RESET client_encoding

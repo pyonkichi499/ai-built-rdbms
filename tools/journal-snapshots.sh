@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# journal/snapshots.md の AUTO:status ブロック（git status と git log、UTC）だけを更新する。冪等。
+# journal/snapshots.md の AUTO:status ブロック（git status と git log、JST）だけを更新する。冪等。
 # 使い方: tools/journal-snapshots.sh [--dry-run]
 set -euo pipefail
-export TZ=UTC
+export TZ=Asia/Tokyo
 root="$(cd "$(dirname "$0")/.." && pwd)"
 file="$root/journal/snapshots.md"
 dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 cd "$root"
 
 body() {
-  echo "取得: $(date -u '+%Y-%m-%d %H:%M:%S') UTC / HEAD $(git rev-parse --short HEAD) / ブランチ $(git branch --show-current)"
+  echo "取得: $(date '+%Y-%m-%d %H:%M:%S') JST / HEAD $(git rev-parse --short HEAD) / ブランチ $(git branch --show-current)"
   echo
   echo "git status --short: $(git status --short | wc -l) 件"
   echo
@@ -21,7 +21,7 @@ body() {
   git status --short
   echo '```'
   echo
-  echo 'git log -n 5（UTC）:'
+  echo 'git log -n 5（JST）:'
   echo
   echo '```text'
   git log -n 5 --format='%h %ad %s' --date=format-local:'%Y-%m-%d %H:%M:%S'

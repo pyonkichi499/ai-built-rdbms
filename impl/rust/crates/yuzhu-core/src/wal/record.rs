@@ -250,6 +250,9 @@ fn info_is_valid(rmgr: RmgrId, info: u8) -> bool {
         RmgrId::Xlog => matches!(info, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50),
         RmgrId::Xact | RmgrId::Smgr => matches!(info, 0x00 | 0x10),
         RmgrId::Heap => matches!(info & 0x7F, 0x00 | 0x10 | 0x20),
+        // BTREE_INSERT_LEAF = 0x00、BTREE_PAGES = 0x10、SEQ_LOG = 0x00（00 §13.4）。
+        RmgrId::Btree => matches!(info, 0x00 | 0x10),
+        RmgrId::Seq => info == 0x00,
     }
 }
 

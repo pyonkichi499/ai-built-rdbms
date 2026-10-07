@@ -3,8 +3,17 @@
 use super::expr::{expr, random_cls};
 use super::{error_stmt, insert_row_sql, make_table, Cls, Ctx, Table, Ty};
 
-const TYS: [Ty; 9] =
-    [Ty::Int4, Ty::Int4, Ty::Int8, Ty::Int2, Ty::Text, Ty::Varchar(5), Ty::Bool, Ty::Numeric, Ty::Float8];
+const TYS: [Ty; 9] = [
+    Ty::Int4,
+    Ty::Int4,
+    Ty::Int8,
+    Ty::Int2,
+    Ty::Text,
+    Ty::Varchar(5),
+    Ty::Bool,
+    Ty::Numeric,
+    Ty::Float8,
+];
 
 fn num_expr(ctx: &mut Ctx, scope: &[(String, Cls)]) -> String {
     let c = random_cls(&mut ctx.rng);
@@ -69,7 +78,11 @@ fn where_clause(ctx: &mut Ctx, t: &Table, scope: &[(String, Cls)]) -> String {
         8 => format!("({}) IS UNKNOWN", expr(&mut ctx.rng, scope, Cls::Bool, d)),
         9 => "NULL".into(),
         10 => (if ctx.rng.chance(50) { "true" } else { "false" }).into(),
-        11 => format!("{} OR {}", expr(&mut ctx.rng, scope, Cls::Bool, d), expr(&mut ctx.rng, scope, Cls::Bool, d)),
+        11 => format!(
+            "{} OR {}",
+            expr(&mut ctx.rng, scope, Cls::Bool, d),
+            expr(&mut ctx.rng, scope, Cls::Bool, d)
+        ),
         12 => format!("NOT ({})", expr(&mut ctx.rng, scope, Cls::Bool, d)),
         _ => expr(&mut ctx.rng, scope, Cls::Bool, d),
     }
@@ -79,7 +92,20 @@ fn values_stmt(ctx: &mut Ctx) -> String {
     let ncol = ctx.rng.range(1, 3) as usize;
     let nrow = ctx.rng.range(1, 4) as usize;
     let pool = [
-        "1", "2", "NULL", "2.5", "'a'", "'b'", "true", "-3", "10000000000", "0.10", "'1'", "1.0e0", "NULL::text", "2147483647",
+        "1",
+        "2",
+        "NULL",
+        "2.5",
+        "'a'",
+        "'b'",
+        "true",
+        "-3",
+        "10000000000",
+        "0.10",
+        "'1'",
+        "1.0e0",
+        "NULL::text",
+        "2147483647",
     ];
     // 列ごとに型の系統を揃えることが多い（混ぜるとエラー・型昇格の確認になる）
     let fam: Vec<&[&str]> = (0..ncol)
@@ -102,7 +128,12 @@ fn values_stmt(ctx: &mut Ctx) -> String {
         0 => format!("VALUES {} ORDER BY {}", rows.join(", "), order.join(", ")),
         1 => {
             let cols: Vec<String> = (0..ncol).map(|i| format!("v{i}")).collect();
-            let _ = cols; format!("VALUES {} ORDER BY {} OFFSET 0", rows.join(", "), order.join(", "))
+            let _ = cols;
+            format!(
+                "VALUES {} ORDER BY {} OFFSET 0",
+                rows.join(", "),
+                order.join(", ")
+            )
         }
         _ => format!("VALUES {} ORDER BY 1{} LIMIT 3", rows.join(", "), dir(ctx)),
     };
@@ -115,7 +146,18 @@ fn typeof_stmt(ctx: &mut Ctx, scope: &[(String, Cls)], t: &Table) -> String {
     // 式の型推論: pg_typeof と、演算の結果型（int2+int8, numeric/float 混在など）
     let a = ctx.rng.pick(&t.cols).name.clone();
     let b = ctx.rng.pick(&t.cols).name.clone();
-    let lits = ["1", "1.5", "1::smallint", "1::bigint", "'x'", "NULL", "true", "1e0", "'1'", "2147483648"];
+    let lits = [
+        "1",
+        "1.5",
+        "1::smallint",
+        "1::bigint",
+        "'x'",
+        "NULL",
+        "true",
+        "1e0",
+        "'1'",
+        "2147483648",
+    ];
     let l = *ctx.rng.pick(&lits);
     let e = match ctx.rng.below(8) {
         0 => format!("{a} + {l}"),
@@ -127,7 +169,11 @@ fn typeof_stmt(ctx: &mut Ctx, scope: &[(String, Cls)], t: &Table) -> String {
         6 => format!("{a} = {l}"),
         _ => num_expr(ctx, scope),
     };
-    format!("SELECT pg_typeof({e})::text, {e} FROM {} ORDER BY 2, 1 LIMIT {};", t.name, ctx.rng.range(1, 3))
+    format!(
+        "SELECT pg_typeof({e})::text, {e} FROM {} ORDER BY 2, 1 LIMIT {};",
+        t.name,
+        ctx.rng.range(1, 3)
+    )
 }
 
 pub fn scenario(ctx: &mut Ctx) {
@@ -188,8 +234,16 @@ pub fn scenario(ctx: &mut Ctx) {
         }
         // 別名・テーブル別名・列の並び
         let use_alias = ctx.rng.chance(25);
-        let tref = if use_alias { "x".to_string() } else { t.name.clone() };
-        let from = if use_alias { format!("{} AS x", t.name) } else { t.name.clone() };
+        let tref = if use_alias {
+            "x".to_string()
+        } else {
+            t.name.clone()
+        };
+        let from = if use_alias {
+            format!("{} AS x", t.name)
+        } else {
+            t.name.clone()
+        };
         let mut items: Vec<String> = Vec::new();
         let mut aliases: Vec<Option<String>> = Vec::new();
         match ctx.rng.below(6) {
@@ -206,7 +260,11 @@ pub fn scenario(ctx: &mut Ctx) {
         for i in 0..k {
             let e = if ctx.rng.chance(25) {
                 let c = ctx.rng.pick(&t.cols).name.clone();
-                if use_alias && ctx.rng.chance(50) { format!("{tref}.{c}") } else { c }
+                if use_alias && ctx.rng.chance(50) {
+                    format!("{tref}.{c}")
+                } else {
+                    c
+                }
             } else {
                 num_expr(ctx, &scope)
             };
@@ -230,7 +288,11 @@ pub fn scenario(ctx: &mut Ctx) {
             }
         }
         let width = if star {
-            (if items[0] == "*" || items[0].ends_with(".*") { t.cols.len() } else { 0 }) + k
+            (if items[0] == "*" || items[0].ends_with(".*") {
+                t.cols.len()
+            } else {
+                0
+            }) + k
         } else {
             items.len()
         };
@@ -278,6 +340,14 @@ pub fn drop_known_missing(ctx: &mut Ctx) {
     if std::env::var("DIFFFUZZ_SKIP_FUNCS").is_err() {
         return;
     }
-    const NEEDLES: [&str; 6] = ["position(", "round(", "substr(", "trim(", "replace(", "left("];
-    ctx.stmts.retain(|s| !(s.starts_with("SELECT") && NEEDLES.iter().any(|n| s.contains(n))));
+    const NEEDLES: [&str; 6] = [
+        "position(",
+        "round(",
+        "substr(",
+        "trim(",
+        "replace(",
+        "left(",
+    ];
+    ctx.stmts
+        .retain(|s| !(s.starts_with("SELECT") && NEEDLES.iter().any(|n| s.contains(n))));
 }

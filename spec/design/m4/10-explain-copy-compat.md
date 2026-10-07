@@ -1497,7 +1497,7 @@ pub enum CopyOptionValue { Word(String), String(String), Integer(i64), List(Vec<
 | `freeze` | ブール（省略 = true） | §5.6 | |
 | `delimiter` | 1 バイトの文字列 | 既定はタブ | 1 バイトでない・空: `0A000 COPY delimiter must be a single one-byte character`（PostgreSQL は `0A000`）。改行・復帰: `22023 COPY delimiter cannot be newline or carriage return`。`\` `.` 英数字 `\r` `\n`: `22023 COPY delimiter cannot be "x"`（text 形式で使えないのは `\`、`.`、`0-9`、`a-z`、`A-Z`） |
 | `null` | 文字列 | 既定は `\N` | 改行・復帰を含む: `22023 COPY null representation cannot use newline or carriage return`。区切り文字を含む: `22023 COPY delimiter character must not appear in the NULL specification` |
-| `default` | 文字列 | そのフィールドは列の DEFAULT（PG16+） | `null` と同じ文字列: `0A000 NULL specification and DEFAULT specification cannot be the same`。区切り文字を含む: `22023 COPY delimiter character must not appear in the DEFAULT specification` |
+| `default` | 文字列 | そのフィールドは列の DEFAULT（PG16+） | `null` と同じ文字列: `0A000 NULL specification and DEFAULT specification cannot be the same`。区切り文字を含む: `0A000 COPY delimiter character must not appear in the DEFAULT specification` |
 | `header` | ブール | true なら**最初の 1 行を捨てる**（text 形式。PG17 は text でも受け付ける）。`match` は `0A000` | `header 'x'` は `42601 header requires a Boolean value or "match"` |
 | `encoding` | 文字列 | `UTF8`（大文字小文字・`UTF-8` を区別しない）のみ。他の有効な名前は `0A000`、無効な名前は `22023 argument to option "encoding" must be a valid encoding name` | |
 | `log_verbosity` | `default` / `verbose` / `terse` | 受け付けて無視。他の値は `22023 COPY LOG_VERBOSITY "foo" not recognized` | |

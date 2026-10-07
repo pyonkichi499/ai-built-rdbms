@@ -2,23 +2,25 @@
 //!
 //! Both counts are evaluated once, OFFSET first (as PostgreSQL's
 //! `recompute_limits`). NULL means "no limit" / "no offset"; negative
-//! values raise 2201X / 2201W.
+//! values raise 2201X / 2201W. `rewind` discards the state so the counts are
+//! evaluated again (they may read `Param`s) and rewinds the input.
 
-use crate::analyzer::{BoundExpr, BoundExprKind};
-use crate::catalog::FnKind;
+use crate::catalog::{CastMethod, FnKind};
 use crate::error::{Error, Result, sqlstate};
 use crate::executor::{BoxedExecutor, ExecCtx, Executor, eval};
+use crate::expr::ExprKind;
+use crate::planner::physical::PhysExpr;
 use crate::types::{Datum, Row};
 
 pub struct LimitExec {
     input: BoxedExecutor,
-    limit: Option<BoundExpr>,
-    offset: Option<BoundExpr>,
+    limit: Option<PhysExpr>,
+    offset: Option<PhysExpr>,
     /// `(remaining to skip, remaining to emit)` once evaluated.
     state: Option<(u64, Option<u64>)>,
     /// 下位ノードの定数部分式。PostgreSQL はプランナの定数畳み込みでエラーを出すので、
     /// LIMIT / OFFSET の検査より先に評価する。
-    folds: Vec<BoundExpr>,
+    folds: Vec<PhysExpr>,
 }
 
 impl std::fmt::Debug for LimitExec {
@@ -32,7 +34,7 @@ impl std::fmt::Debug for LimitExec {
 }
 
 impl LimitExec {
-    pub fn new(input: BoxedExecutor, limit: Option<BoundExpr>, offset: Option<BoundExpr>) -> Self {
+    pub fn new(input: BoxedExecutor, limit: Option<PhysExpr>, offset: Option<PhysExpr>) -> Self {
         LimitExec {
             input,
             limit,
@@ -44,13 +46,37 @@ impl LimitExec {
 
     /// 定数畳み込みで評価する式を渡す（`collect_constants` の結果）。
     #[must_use]
-    pub fn with_folds(mut self, folds: Vec<BoundExpr>) -> Self {
+    pub fn with_folds(mut self, folds: Vec<PhysExpr>) -> Self {
         self.folds = folds;
         self
     }
+
+    /// OFFSET → LIMIT の順に評価して状態を作る。
+    fn start(&mut self, ctx: &mut ExecCtx<'_>) -> Result<()> {
+        for e in &self.folds {
+            eval(e, &Row::new(), ctx)?;
+        }
+        let offset = eval_count(self.offset.as_ref(), ctx)?;
+        if offset.is_some_and(|v| v < 0) {
+            return Err(Error::new(
+                sqlstate::INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE,
+                "OFFSET must not be negative",
+            ));
+        }
+        let limit = eval_count(self.limit.as_ref(), ctx)?;
+        if limit.is_some_and(|v| v < 0) {
+            return Err(Error::new(
+                sqlstate::INVALID_ROW_COUNT_IN_LIMIT_CLAUSE,
+                "LIMIT must not be negative",
+            ));
+        }
+        let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
+        self.state = Some((offset.map_or(0, to_u64), limit.map(to_u64)));
+        Ok(())
+    }
 }
 
-fn eval_count(expr: Option<&BoundExpr>, ctx: &ExecCtx<'_>) -> Result<Option<i64>> {
+fn eval_count(expr: Option<&PhysExpr>, ctx: &mut ExecCtx<'_>) -> Result<Option<i64>> {
     let Some(e) = expr else {
         return Ok(None);
     };
@@ -66,25 +92,7 @@ fn eval_count(expr: Option<&BoundExpr>, ctx: &ExecCtx<'_>) -> Result<Option<i64>
 impl Executor for LimitExec {
     fn next(&mut self, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
         if self.state.is_none() {
-            for e in std::mem::take(&mut self.folds) {
-                eval(&e, &Row::new(), ctx)?;
-            }
-            let offset = eval_count(self.offset.as_ref(), ctx)?;
-            if offset.is_some_and(|v| v < 0) {
-                return Err(Error::new(
-                    sqlstate::INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE,
-                    "OFFSET must not be negative",
-                ));
-            }
-            let limit = eval_count(self.limit.as_ref(), ctx)?;
-            if limit.is_some_and(|v| v < 0) {
-                return Err(Error::new(
-                    sqlstate::INVALID_ROW_COUNT_IN_LIMIT_CLAUSE,
-                    "LIMIT must not be negative",
-                ));
-            }
-            let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
-            self.state = Some((offset.map_or(0, to_u64), limit.map(to_u64)));
+            self.start(ctx)?;
         }
         let Some((skip, remaining)) = self.state.as_mut() else {
             return Ok(None);
@@ -96,78 +104,53 @@ impl Executor for LimitExec {
             if self.input.next(ctx)?.is_none() {
                 return Ok(None);
             }
+            ctx.check_interrupts()?;
             *skip -= 1;
         }
         let row = self.input.next(ctx)?;
-        if row.is_some()
-            && let Some(r) = remaining.as_mut()
-        {
-            *r -= 1;
+        if row.is_some() {
+            ctx.check_interrupts()?;
+            if let Some(r) = remaining.as_mut() {
+                *r -= 1;
+            }
         }
         Ok(row)
     }
-}
 
-fn is_constant(e: &BoundExpr) -> bool {
-    match &e.kind {
-        BoundExprKind::Literal(_) => true,
-        BoundExprKind::ColumnRef { .. } | BoundExprKind::SessionValue(_) => false,
-        BoundExprKind::Function { func, args } => {
-            matches!(func.kind, FnKind::Pure(_)) && args.iter().all(is_constant)
-        }
-        _ => children(e).iter().all(|x| is_constant(x)),
+    fn rewind(&mut self, ctx: &mut ExecCtx<'_>) -> Result<()> {
+        self.state = None;
+        self.input.rewind(ctx)
     }
 }
 
-/// 式の直下の子。
-fn children(e: &BoundExpr) -> Vec<&BoundExpr> {
+fn is_constant(e: &PhysExpr) -> bool {
     match &e.kind {
-        BoundExprKind::Literal(_)
-        | BoundExprKind::ColumnRef { .. }
-        | BoundExprKind::SessionValue(_) => vec![],
-        BoundExprKind::Operator { args, .. } | BoundExprKind::Function { args, .. } => {
-            args.iter().collect()
-        }
-        BoundExprKind::Cast { expr, .. }
-        | BoundExprKind::CoerceTypmod { expr, .. }
-        | BoundExprKind::BoolTest { expr, .. } => vec![expr],
-        BoundExprKind::Not(x) | BoundExprKind::IsNull(x) | BoundExprKind::IsNotNull(x) => {
-            vec![x]
-        }
-        BoundExprKind::And(v)
-        | BoundExprKind::Or(v)
-        | BoundExprKind::Coalesce(v)
-        | BoundExprKind::MinMax { args: v, .. } => v.iter().collect(),
-        BoundExprKind::NullIf { left, right, .. }
-        | BoundExprKind::DistinctFrom { left, right, .. } => vec![left, right],
-        BoundExprKind::Case { arms, else_result } => arms
-            .iter()
-            .flat_map(|(c, r)| [c, r])
-            .chain(else_result.as_deref())
-            .collect(),
-        BoundExprKind::Like {
-            expr,
-            pattern,
-            escape,
+        ExprKind::Literal(_) => true,
+        // `TypeEnv` を使う変換は stable なので定数畳み込みしない（11 §7.1 の C-14）。
+        ExprKind::Column(_)
+        | ExprKind::SessionValue(_)
+        | ExprKind::SubLink { .. }
+        | ExprKind::SubLinkOutput(_)
+        | ExprKind::Aggregate(_)
+        | ExprKind::Cast {
+            method: CastMethod::Env(_),
             ..
-        } => [&**expr, &**pattern]
-            .into_iter()
-            .chain(escape.as_deref())
-            .collect(),
-        BoundExprKind::InList { expr, list, .. } => {
-            std::iter::once(&**expr).chain(list.iter()).collect()
+        } => false,
+        ExprKind::Function { func, args } => {
+            matches!(func.kind, FnKind::Pure(_)) && args.iter().all(is_constant)
         }
+        _ => e.children().into_iter().all(is_constant),
     }
 }
 
 /// 定数だけでできた最大の部分式（リテラルそのものは除く）を集める。
-pub fn collect_constants(e: &BoundExpr, out: &mut Vec<BoundExpr>) {
+pub fn collect_constants(e: &PhysExpr, out: &mut Vec<PhysExpr>) {
     if is_constant(e) {
-        if !matches!(e.kind, BoundExprKind::Literal(_)) {
+        if !matches!(e.kind, ExprKind::Literal(_)) {
             out.push(e.clone());
         }
     } else {
-        for x in children(e) {
+        for x in e.children() {
             collect_constants(x, out);
         }
     }
@@ -176,16 +159,16 @@ pub fn collect_constants(e: &BoundExpr, out: &mut Vec<BoundExpr>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::eval::tests::{int, lit, null};
+    use crate::executor::eval::tests::{int, lit, null, param};
     use crate::executor::nodes::ValuesExec;
-    use crate::executor::nodes::test_util::Fixture;
+    use crate::executor::nodes::test_util::{CountingExec, Fixture, drain};
     use crate::types::SqlType;
 
-    fn i8(v: i64) -> BoundExpr {
+    fn i8(v: i64) -> PhysExpr {
         lit(Datum::Int8(v), SqlType::INT8)
     }
 
-    fn run(limit: Option<BoundExpr>, offset: Option<BoundExpr>) -> Result<Vec<i64>> {
+    fn run(limit: Option<PhysExpr>, offset: Option<PhysExpr>) -> Result<Vec<i64>> {
         let mut f = Fixture::new();
         let input = Box::new(ValuesExec::new((1..=5).map(|v| vec![int(v)]).collect()));
         let mut e: BoxedExecutor = Box::new(LimitExec::new(input, limit, offset));
@@ -229,5 +212,51 @@ mod tests {
             e.sqlstate,
             sqlstate::INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE
         );
+    }
+
+    #[test]
+    fn rewind_replays_and_reevaluates_counts() {
+        let mut f = Fixture::with_params(1);
+        let mut ctx = f.ctx();
+        let input = Box::new(ValuesExec::new((1..=5).map(|v| vec![int(v)]).collect()));
+        let mut e: BoxedExecutor = Box::new(LimitExec::new(
+            input,
+            Some(param(0, SqlType::INT8)),
+            Some(i8(1)),
+        ));
+        e.rewind(&mut ctx).unwrap();
+        ctx.params[0] = Datum::Int8(2);
+        let rows = drain(&mut e, &mut ctx).unwrap();
+        assert_eq!(rows, vec![vec![Datum::Int4(2)], vec![Datum::Int4(3)]]);
+        ctx.params[0] = Datum::Int8(1);
+        e.rewind(&mut ctx).unwrap();
+        assert_eq!(drain(&mut e, &mut ctx).unwrap(), vec![vec![Datum::Int4(2)]]);
+    }
+
+    #[test]
+    fn skip_loop_checks_interrupts_per_input_row() {
+        let mut f = Fixture::new();
+        f.interrupts.request_cancel();
+        let (input, reads, _) = CountingExec::ints(1_000);
+        let mut e: BoxedExecutor = Box::new(LimitExec::new(Box::new(input), None, Some(i8(500))));
+        let err = f.run(&mut e).unwrap_err();
+        assert_eq!(err.sqlstate, sqlstate::QUERY_CANCELED);
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn constant_subexpressions_are_collected() {
+        let mut out = Vec::new();
+        collect_constants(&int(1), &mut out);
+        assert!(out.is_empty());
+        collect_constants(
+            &crate::executor::eval::tests::op(
+                &crate::executor::eval::tests::GT,
+                crate::executor::eval::tests::col(0, SqlType::INT4),
+                int(1),
+            ),
+            &mut out,
+        );
+        assert!(out.is_empty());
     }
 }

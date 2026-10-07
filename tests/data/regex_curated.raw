@@ -1,0 +1,328 @@
+^(foo.*)$		foo
+^(foo.*)$		foobar
+^(foo.*)$		xfoo
+^(foo.)$		foox
+^(foo.)$		foo
+^(foo.)$		fooxy
+^(Foo\.Bar)$		Foo.Bar
+^(Foo\.Bar)$		FooxBar
+^(t\$)$		t$
+^(t\$)$		t
+^((x|y))$		x
+^((x|y))$		y
+^((x|y))$		xy
+^([a-c].*)$		apple
+^([a-c].*)$		dog
+^(a+b)$		aaab
+^(a+b)$		b
+^pg_		pg_catalog
+^pg_		xpg_
+^pg_toast		pg_toast_1
+^pg_toast		public
+^(.*)$		
+^(.*)$		anything
+^(tbl_[0-9]+)$		tbl_42
+^(tbl_[0-9]+)$		tbl_x
+^(a\|b)$		a|b
+^(a\|b)$		a
+^(\(x\))$		(x)
+^(\[x\])$		[x]
+^(a\*b)$		a*b
+^(a\?b)$		a?b
+^(a\+b)$		a+b
+^(a\{2\})$		a{2}
+^(a\^b)$		a^b
+^(Foo)$		foo
+^(foo)$		FOO
+^(foo)$	i	FOO
+^(pub.*)$		public
+^(public)$		public
+a$		a⏎
+a.b		a⏎b
+(?n)^b		a⏎b
+(?n)a.b		a⏎b
+(?w)^b		a⏎b
+(?p)^b		a⏎b
+(?n)a$		a⏎b
+(?w)a$		a⏎b
+(?w)a.b		a⏎b
+(?n)\Ab		a⏎b
+(?n)a\Z		a⏎b
+(?n)[^a]		⏎
+(?p)[^a]		⏎
+(?w)[^a]		⏎
+(?n)\D		⏎
+(?n)[\D]		⏎
+(?n)\W		⏎
+(?n)[[:space:]]		⏎
+é		é
+.		é
+\w		é
+~*		
+é	i	É
+(?i)a		A
+a	i	A
+(?c)a	i	A
+(?ic)a		A
+(?ci)a		A
+(?x) a b 		ab
+(?x) a\ b		a b
+(?x)a # c⏎ b		ab
+(?x)a[#]b		a#b
+(?x)a[ ]b		a b
+(?x)a *b		aab
+(?x)a* ?		a
+(?x)a*? 		a
+(?x)a{2} ?		aa
+(?xt)a b		a b
+(?tx)a b		a b
+(?q)a.b		a.b
+(?q)a.b		axb
+***=a.b		a.b
+***=a.b		axb
+***:a.b		axb
+***?		a
+***x		a
+(?#x)a		a
+a(?#c)*		a
+(?z)		a
+(?i		a
+(?i:a)		a
+a(?i)		a
+(?i)(?i)a		a
+(?		a
+(?=a)		a
+(?<=a)		a
+(?<n>a)		a
+(		a
+)		a
+a)		a
+(a		a
+[		a
+[]		a
+[a-		a
+[[:alpha:]		a
+[[.a		a
+a{2		a
+a{1,		a
+a{1,2		a
+{1}		a
+*		a
++		a
+?a		a
+a**		a
+a*+		a
+a?*		a
+^*		a
+$*		a
+a|*		a
+a{1,2}{3}		a
+a{1}*		a
+\y*		a
+(*)		a
+(?:)		a
+a||b		a
+(|a)		a
+()*		a
+a{0}		a
+a{0,0}		a
+a{1}{		a
+a{2,1}		a
+a{256}		a
+a{255}		a
+a{1,256}		a
+a{99999999999}		a
+a{,2}		a{,2}
+a{x}		a{x}
+a{		a{
+{		{
+a}		a}
+a{1x}		a
+a{1,x}		a
+a{ 1}		a
+^{1}		a
+$+		a
+x|^		a
+^^a		a
+a$$		a
+\1		a
+\9		a
+\8		a
+\89		a
+(a)\2		a
+\x41		A
+\x4		A
+\x		A
+\xg		A
+A		A
+\u041		A
+\U00000041		A
+\U0041		A
+\0		A
+\012		⏎
+\0123		⏎3
+\101		A
+\10		A
+\18		A
+\cA		A
+\ca		A
+\c		A
+\c1		A
+\B		\
+\e		a
+\a		a
+\b		a
+\f		a
+\v		a
+\h		a
+\q		a
+\_		_
+\é		é
+\ 		 
+\-		-
+\z		a
+\x{41}		A
+\xFFFFFFFF		A
+\x110000		A
+\x00041		A
+\U7fffffff		A
+\xD800		A
+[\m]		a
+[\y]		a
+[\A]		a
+[\1]		a
+[\b]		a
+[\q]		a
+[\x41]		A
+[\101]		A
+[\0]		a
+[\cA]		a
+[A]		A
+[a\-z]		-
+[\]]		]
+[a-\x7a]		b
+[--a]		-
+[--a]		a
+[a--]		a
+[a-a]		a
+[%--]		-
+[[.a.]-c]		b
+[[:alpha:]-z]		a
+[a-[:alpha:]]		a
+[[.-.]]		-
+[[=a=]]		a
+[[=ab=]]		a
+[[.ab.]]		a
+[]a]		]
+[^]a]		b
+[[:word:]]		_
+[[:ascii:]]		a
+[[:Alpha:]]		a
+[\d-z]		a
+[a-\d]		a
+[\w-z]		a
+[z-a]		a
+[a-c-e]		a
+[--]		-
+[a-]		-
+[-a]		-
+[^-a]		b
+[--+]		a
+[,--]		-
+[a-b-c]		a
+[a-c-]		-
+[a-c--]		a
+[a-c-a]		a
+[b--]		a
+[[.-.]-c]		b
+[[.hyphen.]]		-
+[[.space.]]		 
+[[.NUL.]]		a
+[[.HYPHEN.]]		a
+[[.hyphen-minus.]]		-
+[[.tilde.]]		~
+[[.DEL.]]		a
+[[.zero.]]		0
+[[.solidus.]]		/
+[[.period.]]		.
+[[.underscore.]]		_
+[[.tab.]]		⏎
+[[.newline.]]		⏎
+[[.foo.]]		a
+[[..]]		a
+[[::]]		a
+[[:foo:]]		a
+[a-[=c=]]		a
+[[=a=]-c]		b
+[[:digit:]-]		-
+[[:digit:]-a]		a
+[\d-]		-
+[\d-a]		a
+[[]		[
+[a[]		[
+[[a]		a
+[[:]		a
+[[:a:]		a
+[[.]		a
+[[.].]]		]
+[[.[.]]		[
+[[=]		a
+[a-\]]		a
+[a-^]		a
+[^^]		a
+[^^]		^
+[\^]		^
+[\D]		a
+[\D]		1
+[\D]		D
+[a-c\D]		x
+[a-c\D]		5
+[^\D]		a
+[^\D]		1
+[\S]		 
+[\W]		!
+[[:<:]]a		a
+a[[:>:]]		a
+\mfoo\M		a foo b
+\mfoo\M		afoob
+\yfoo\y		(foo)
+\yfoo\y		xfoo
+\Yoo		foo
+\Y		
+\y		
+\m		
+\M		
+\Y		-
+\y		-
+\y		a
+\Y		a
+\Afoo		foo
+foo\Z		foo⏎
+a^b		ab
+a$b		ab
+\d+		ab12
+[[:upper:]]		aBc
+[[:upper:]]	i	abc
+[^a-c]	i	B
+[a-c]+	i	XBX
+^[a-c]{2,3}$		abc
+^[a-c]{2,3}$		abcd
+^(a|aa)+$		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!
+^(a+)+$		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!
+(a*)*b		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.		é
+.		
+^.$		日
+^..$		日本
+\w		_
+\s		a b
+[[:space:]]		⏎
+[[:blank:]]		a b
+[[:punct:]]		a!
+[[:print:]]		⏎
+[[:graph:]]		 
+[[:cntrl:]]		a
+[[:xdigit:]]		g
+[[:alnum:]]		é
+[[:alpha:]]		é
+[[:lower:]]	i	A

@@ -17,7 +17,7 @@
 
 #![allow(clippy::print_stderr)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -128,6 +128,85 @@ fn check(snap: &Snapshot, confirmed: &Confirmed, ddl_rounds: i32) -> Result<(), 
     Ok(())
 }
 
+/// I15（`m4/08` §7.5）: `serial` 列 `log.id` の払い出し。再起動後に `id` の重複がなく、
+/// `COMMIT` を確認した `id` がすべて残り、`nextval` が（残っている行と確認済みの `id` の）最大より大きく、
+/// 前回の再起動後の `nextval` より大きいこと（払い出しの巻き戻りがない）。
+fn check_serial(
+    log_ids: &[i64],
+    confirmed: &BTreeSet<i64>,
+    next: i64,
+    prev_next: i64,
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for &id in log_ids {
+        if !seen.insert(id) {
+            return Err(format!("log.id {id} was issued twice (I15)"));
+        }
+    }
+    if let Some(missing) = confirmed.iter().find(|id| !seen.contains(id)) {
+        return Err(format!(
+            "log.id {missing} was confirmed by COMMIT but is missing after recovery (I1/I15)"
+        ));
+    }
+    let max_seen = seen.iter().next_back().copied().unwrap_or(0);
+    if next <= max_seen {
+        return Err(format!(
+            "nextval after recovery is {next}, not above the largest log.id {max_seen} (I15)"
+        ));
+    }
+    if let Some(&max_confirmed) = confirmed.iter().next_back()
+        && next <= max_confirmed
+    {
+        return Err(format!(
+            "nextval after recovery is {next}, not above the largest confirmed id {max_confirmed} (I15)"
+        ));
+    }
+    if next <= prev_next {
+        return Err(format!(
+            "nextval after recovery is {next}, not above the value {prev_next} issued after the previous recovery (I15)"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod serial_check_tests {
+    use super::*;
+
+    #[test]
+    fn healthy_serial_state_passes() {
+        let confirmed = BTreeSet::from([1, 2, 4]);
+        check_serial(&[1, 2, 3, 4], &confirmed, 40, 0).unwrap();
+    }
+
+    #[test]
+    fn duplicate_id_is_detected() {
+        let e = check_serial(&[1, 2, 2], &BTreeSet::new(), 40, 0).unwrap_err();
+        assert!(e.contains("twice"), "{e}");
+    }
+
+    #[test]
+    fn lost_confirmed_id_is_detected() {
+        let e = check_serial(&[1, 2], &BTreeSet::from([1, 3]), 40, 0).unwrap_err();
+        assert!(e.contains("missing"), "{e}");
+    }
+
+    #[test]
+    fn nextval_not_above_the_maximum_is_detected() {
+        let e = check_serial(&[1, 5], &BTreeSet::new(), 5, 0).unwrap_err();
+        assert!(e.contains("largest log.id"), "{e}");
+        // 確認済みの id が行として残っていても、残っていなくても、nextval は超えていなければならない。
+        let e = check_serial(&[1, 2], &BTreeSet::from([2]), 2, 0).unwrap_err();
+        assert!(e.contains("largest"), "{e}");
+    }
+
+    #[test]
+    fn nextval_going_backwards_across_recoveries_is_detected() {
+        let e = check_serial(&[1, 2], &BTreeSet::new(), 40, 40).unwrap_err();
+        assert!(e.contains("previous recovery"), "{e}");
+        check_serial(&[1, 2], &BTreeSet::new(), 41, 40).unwrap();
+    }
+}
 #[cfg(test)]
 mod check_tests {
     use super::*;
@@ -432,18 +511,41 @@ fn snapshot(c: &mut Client, ddl_rounds: i32) -> Snapshot {
     }
 }
 
+/// 再起動後に `log.id` と `nextval('log_id_seq')` を読んで `check_serial` で検査する。
+/// 成功したら、この回で払い出された `nextval` の値を返す。
+fn check_serial_after_recovery(
+    c: &mut Client,
+    confirmed_ids: &BTreeSet<i64>,
+    prev_next: i64,
+) -> Result<i64, String> {
+    let log_ids: Vec<i64> = rows(c, "SELECT id FROM log")
+        .map_err(|e| format!("read log.id: {e}"))?
+        .iter()
+        .map(|r| int(&r[0]))
+        .collect();
+    let next: i64 = rows(c, "SELECT nextval('log_id_seq')")
+        .map_err(|e| format!("nextval after recovery: {e}"))?
+        .first()
+        .map(|r| int(&r[0]))
+        .ok_or("nextval returned no row")?;
+    check_serial(&log_ids, confirmed_ids, next, prev_next)?;
+    Ok(next)
+}
+
 // ---------------------------------------------------------------------------
 // ワークロード
 // ---------------------------------------------------------------------------
 
 /// 1 本のクライアント。接続が切れるまで、振込 + 追記ログを 1 トランザクションで流す。
 /// `COMMIT` の応答を受け取るたびに `confirmed` を増やす。
+#[allow(clippy::too_many_arguments)]
 fn client_loop(
     port: u16,
     client: i32,
     round: i32,
     seed: u64,
     confirmed: &AtomicU32,
+    ids: &Mutex<Vec<i64>>,
     stop: &AtomicBool,
     unexpected: &Mutex<Vec<String>>,
 ) {
@@ -458,25 +560,44 @@ fn client_loop(
             + i32::try_from(rng.range(0, u64::from((ACCOUNTS - 1).unsigned_abs()))).unwrap_or(0))
             % ACCOUNTS;
         let amt = rng.range(1, 100);
+        let mut pending_id = None;
         let statements = [
             "BEGIN".to_owned(),
             format!("UPDATE accounts SET balance = balance - {amt} WHERE id = {src}"),
             format!("UPDATE accounts SET balance = balance + {amt} WHERE id = {dst}"),
-            format!("INSERT INTO log VALUES ({client}, {round}, {seq}, {src}, {dst}, {amt})"),
+            format!(
+                "INSERT INTO log (client, round, seq, src, dst, amt) \
+                 VALUES ({client}, {round}, {seq}, {src}, {dst}, {amt})"
+            ),
             format!("INSERT INTO filler VALUES ({client}, '{filler}')"),
+            "SELECT currval('log_id_seq')".to_owned(),
             "COMMIT".to_owned(),
         ];
         for sql in &statements {
-            if let Err(e) = c.simple_query(sql) {
-                // 接続が切れたのは想定どおり。SQL のエラーは不具合。
-                if e.as_db_error().is_some() {
-                    unexpected
-                        .lock()
-                        .expect("lock")
-                        .push(format!("client {client}: {sql}: {e}"));
+            match c.simple_query(sql) {
+                Ok(msgs) => {
+                    if let Some(id) = msgs.iter().find_map(|m| match m {
+                        SimpleQueryMessage::Row(r) => r.get(0).and_then(|v| v.parse::<i64>().ok()),
+                        _ => None,
+                    }) {
+                        pending_id = Some(id);
+                    }
                 }
-                return;
+                Err(e) => {
+                    // 接続が切れたのは想定どおり。SQL のエラーは不具合。
+                    if e.as_db_error().is_some() {
+                        unexpected
+                            .lock()
+                            .expect("lock")
+                            .push(format!("client {client}: {sql}: {e}"));
+                    }
+                    return;
+                }
             }
+        }
+        // `COMMIT` の応答を受け取った: 払い出された `id` は必ず残る。
+        if let Some(id) = pending_id {
+            ids.lock().expect("lock").push(id);
         }
         confirmed.fetch_add(1, Ordering::SeqCst);
         seq += 1;
@@ -607,7 +728,7 @@ fn kill9_bank_transfer_and_append_log() {
         .expect("create accounts");
     c.batch_execute(
         "CREATE TABLE log (client int NOT NULL, round int NOT NULL, seq int NOT NULL, \
-         src int NOT NULL, dst int NOT NULL, amt int NOT NULL)",
+         src int NOT NULL, dst int NOT NULL, amt int NOT NULL, id serial)",
     )
     .expect("create log");
     c.batch_execute("CREATE TABLE filler (client int NOT NULL, s text NOT NULL)")
@@ -618,6 +739,8 @@ fn kill9_bank_transfer_and_append_log() {
     }
 
     let mut confirmed = Confirmed::new();
+    let mut confirmed_ids = BTreeSet::new();
+    let mut prev_next = 0i64;
     let churn = Arc::new(Mutex::new(Churn::default()));
     let mut total_confirmed = 0u64;
     for round in 0..rounds {
@@ -631,17 +754,28 @@ fn kill9_bank_transfer_and_append_log() {
         let nclients = i32::try_from(rng.range(4, 9)).expect("clients");
         let stop = Arc::new(AtomicBool::new(false));
         let unexpected = Arc::new(Mutex::new(Vec::new()));
+        let round_ids = Arc::new(Mutex::new(Vec::<i64>::new()));
         let counters: Vec<Arc<AtomicU32>> =
             (0..nclients).map(|_| Arc::new(AtomicU32::new(0))).collect();
         let threads: Vec<_> = (0..nclients)
             .map(|client| {
                 let counter = Arc::clone(&counters[usize::try_from(client).expect("client")]);
                 let stop = Arc::clone(&stop);
+                let round_ids = Arc::clone(&round_ids);
                 let unexpected = Arc::clone(&unexpected);
                 let port = h.port;
                 let seed = rng.next();
                 std::thread::spawn(move || {
-                    client_loop(port, client, round, seed, &counter, &stop, &unexpected);
+                    client_loop(
+                        port,
+                        client,
+                        round,
+                        seed,
+                        &counter,
+                        &round_ids,
+                        &stop,
+                        &unexpected,
+                    );
                 })
             })
             .collect();
@@ -672,6 +806,7 @@ fn kill9_bank_transfer_and_append_log() {
             confirmed.insert((i32::try_from(client).expect("client"), round), n);
         }
         total_confirmed += u64::from(round_total);
+        confirmed_ids.extend(round_ids.lock().expect("lock").iter().copied());
 
         c = h.start();
         let snap = snapshot(&mut c, round + 1);
@@ -680,6 +815,13 @@ fn kill9_bank_transfer_and_append_log() {
                 "round {round} (seed {seed}): {e}\nserver log: {}",
                 h.log_path().display()
             );
+        }
+        match check_serial_after_recovery(&mut c, &confirmed_ids, prev_next) {
+            Ok(next) => prev_next = next,
+            Err(e) => panic!(
+                "round {round} (seed {seed}): {e}\nserver log: {}",
+                h.log_path().display()
+            ),
         }
         if let Err(e) = check_churn(&mut c, &churn.lock().expect("lock")) {
             panic!(
@@ -704,6 +846,8 @@ fn kill9_bank_transfer_and_append_log() {
     let snap = snapshot(&mut c, rounds);
     check(&snap, &confirmed, rounds).expect("after a clean restart");
     check_churn(&mut c, &churn.lock().expect("lock")).expect("churn tables after a clean restart");
+    check_serial_after_recovery(&mut c, &confirmed_ids, prev_next)
+        .expect("serial after a clean restart");
     drop(c);
     h.kill9();
     assert_eq!(h.restarts, u32::try_from(rounds).expect("rounds") + 1);

@@ -144,7 +144,7 @@ M4 の設計（`spec/design/m4/` の 00〜11 章）で、**ユーザーの不在
 - **M4-Q91 [08-Q2] ★ `SEQ_LOG` の形**: 仮決め: ブロック 1 個、`WILL_INIT`、タプル全体、メインデータなし。REDO は無条件に上書き。理由: PG と同じ。REDO が単純で FPW の対象外。影響: 差分レコードにすると REDO が LSN の順序に依存し FPW が要る（+1 日）。
 - **M4-Q92 [08-Q3] ★ SERIAL の DEFAULT の保存形式**: 仮決め: `pg_attrdef.adbin` に `nextval('<oid>'::regclass)`。`pg_get_expr` が名前に戻す。利用者が書いた DEFAULT は M2 のとおり。理由: 名前の変更・検索パスの影響を受けない。影響: すべての DEFAULT を正規形にすると deparse に OID 形式のモード（+0.5 日）。
 - **M4-Q93 [08-Q4] ROLLBACK では flush しない**: 理由: 中断した値は外から見えない前提（PG と同じ保証）。影響: 中断でも `finish_without_xid` 相当で flush する（工数ほぼ 0。I15 が強まる）。
-- **M4-Q94 [08-Q5] `ALTER SEQUENCE` はその場で書き換える（状態はロールバックされない）**: 仮決め: `log_cnt` は常に 0。`TRUNCATE ... RESTART IDENTITY` も同じ（KD-11）。理由: 00 の `reset` と D-9。PG の方式は M5 の表ロックなしでは払い出しが失われうる。影響: 新しい relfilenode 方式（+2 日）は M5 のロックが要る。
+- **M4-Q94 [08-Q5] `ALTER SEQUENCE` はその場で書き換える（状態はロールバックされない）**: 仮決め: `log_cnt` は常に 0。`TRUNCATE ... RESTART IDENTITY` も同じ（KD-11）。理由: 00 の `reset` と D-9。PG の方式は M5 の表ロックなしでは払い出しが失われうる。影響: 新しい relfilenode 方式（+2 日）は M5 のロックが要る。 【更新】新しい relfilenode に状態を書く方式に変更済み（ROLLBACK で戻る。PostgreSQL と同じ。`ddl::sequence::rewrite_file`）。
 - **M4-Q95 [08-Q6] `TEMPORARY` / `UNLOGGED` シーケンス、`ALTER SEQUENCE RENAME` / `SET SCHEMA` は `0A000`**: 影響: RENAME は +0.25 日（KD-17）。
 - **M4-Q96 [08-Q7] 他のセッションの先取りを全部捨てる（`reset_generation`）**: 影響: シーケンスごとの世代にできる +0.25 日。
 - **M4-Q97 [08-Q8] 払い出した値を覆う WAL の LSN をページの LSN で決める（PostgreSQL の穴を塞ぐ）**: 理由: PG の方式は他トランザクションの未 flush の `SEQ_LOG` に依存した払い出しがクラッシュで重複しうる。影響: 「自分が書いた分」に戻すと PG と同じ穴（層 1 の変異試験が検出する）。

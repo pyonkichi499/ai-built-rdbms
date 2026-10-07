@@ -3,10 +3,11 @@
 //! candidates and `func_select_candidate`.
 
 use super::Analyzer;
-use super::bound::{BoundExpr, BoundExprKind, SessionValueKind};
+use super::bound::{BoundExpr, BoundExprKind};
 use super::coerce::{CoercionContext, Pathway, tname};
-use crate::catalog::{BuiltinOperator, builtin};
+use crate::catalog::{BuiltinOperator, FnKind, builtin};
 use crate::error::{Error, Result, Span, sqlstate};
+use crate::expr::SessionValueKind;
 use crate::types::{Oid, SqlType, oid};
 
 /// Keeps the candidates with the highest score.
@@ -242,7 +243,7 @@ impl Analyzer<'_> {
                 sqlstate::UNDEFINED_FUNCTION,
                 format!("operator does not exist: {}", describe()),
             )
-            .with_hint("No operator matches the given name and argument types. You might need to add explicit type casts.")
+            .with_hint(no_operator_hint(left.is_none()))
             .with_span(span)
         })
     }
@@ -318,21 +319,55 @@ impl Analyzer<'_> {
     }
 
     /// Function call resolution (`func_get_detail`), including the
-    /// function-style cast `typename(x)`.
+    /// function-style cast `typename(x)`. 集合返却関数は FROM 句以外では呼べない（0A000）。
     pub(super) fn make_func_call(
         &self,
         name: &str,
         args: Vec<BoundExpr>,
         span: Span,
     ) -> Result<BoundExpr> {
-        // regtype is not supported, so `pg_typeof(x)` folds to the type name
-        // as text (its text output equals the regtype output).
+        self.make_func_call_ext(name, args, span, false)
+    }
+
+    /// [`Self::make_func_call`]。`allow_set` は FROM 句の関数（`FnKind::Set` を許す）。
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn make_func_call_ext(
+        &self,
+        name: &str,
+        args: Vec<BoundExpr>,
+        span: Span,
+        allow_set: bool,
+    ) -> Result<BoundExpr> {
+        // `pg_typeof(x)` does not evaluate its argument (09-Q6): it folds to the argument's type
+        // name (a `regtype` literal).
+        // `unknown` for a bare unknown literal.
         if name == "pg_typeof" && args.len() == 1 {
+            let lit = || {
+                BoundExpr::new(
+                    BoundExprKind::Literal(crate::types::Datum::Oid(args[0].ty.oid)),
+                    SqlType::REGTYPE,
+                    span,
+                )
+            };
+            // 副作用のある引数（`nextval()` など）は PG と同じく評価する:
+            // `CASE WHEN arg IS NULL THEN <型名> ELSE <型名> END`。
+            if matches!(
+                args[0].kind,
+                BoundExprKind::Literal(_) | BoundExprKind::Column(_)
+            ) {
+                return Ok(lit());
+            }
+            let cond = BoundExpr::new(
+                BoundExprKind::IsNull(Box::new(args[0].clone())),
+                SqlType::BOOL,
+                span,
+            );
             return Ok(BoundExpr::new(
-                BoundExprKind::Literal(crate::types::Datum::Text(super::coerce::tname(
-                    args[0].ty.oid,
-                ))),
-                SqlType::TEXT,
+                BoundExprKind::Case {
+                    arms: vec![(cond, lit())],
+                    else_result: Some(Box::new(lit())),
+                },
+                SqlType::REGTYPE,
                 span,
             ));
         }
@@ -404,11 +439,19 @@ impl Analyzer<'_> {
                 }
         };
         let func = all[chosen];
+        if !allow_set && matches!(func.kind, FnKind::Set(_)) {
+            return Err(Error::not_supported(
+                "set-returning functions are only supported in the FROM clause",
+            )
+            .with_span(span));
+        }
 
         // Functions that read session state become session values.
         let session = match func.oid {
             861 => Some(SessionValueKind::CurrentCatalog),
             1402 => Some(SessionValueKind::CurrentSchema),
+            1299 => Some(SessionValueKind::Now),
+            2647 => Some(SessionValueKind::TransactionTimestamp),
             _ => None,
         };
         if let Some(kind) = session {
@@ -436,14 +479,97 @@ impl Analyzer<'_> {
 /// (timestamps) or XID assignment in read-only transactions. They fail with
 /// 0A000 rather than 42883.
 fn is_unsupported_pg_function(name: &str) -> bool {
+    matches!(name, "timeofday" | "txid_current" | "pg_current_xact_id")
+}
+
+/// 存在するスキーマか。M4 には `CREATE SCHEMA` がないので、`pg_catalog` / `public` / `pg_toast` /
+/// `information_schema` だけを既知とする（`m4/03` §3.5）。
+pub(super) fn schema_exists(name: &str) -> bool {
     matches!(
         name,
-        "now"
-            | "statement_timestamp"
-            | "transaction_timestamp"
-            | "clock_timestamp"
-            | "timeofday"
-            | "txid_current"
-            | "pg_current_xact_id"
+        "pg_catalog" | "public" | "pg_toast" | "information_schema"
     )
+}
+
+impl Analyzer<'_> {
+    /// `expr COLLATE name`（D3-13。`m4/03` §5.12.3）。照合順序は C だけなので式をそのまま返す
+    /// （型も変えない）。`"C"` `"POSIX"` `"default"`（`pg_catalog.` つきでもよい）だけ通る。
+    /// `span` は `COLLATE` の位置。
+    pub(super) fn collate(
+        &self,
+        e: BoundExpr,
+        collation: &crate::sql::ast::ObjectName,
+        span: Span,
+    ) -> Result<BoundExpr> {
+        let name = collation.name().value.as_str();
+        let schema = collation.schema().map(|s| s.value.as_str());
+        if let Some(s) = schema
+            && !schema_exists(s)
+        {
+            return Err(Error::new(
+                sqlstate::INVALID_SCHEMA_NAME,
+                format!("schema \"{s}\" does not exist"),
+            )
+            .with_span(span));
+        }
+        let known = matches!(name, "C" | "POSIX" | "default");
+        if !known || schema.is_some_and(|s| s != "pg_catalog") {
+            let shown = schema.map_or_else(|| name.to_owned(), |s| format!("{s}.{name}"));
+            return Err(Error::new(
+                sqlstate::UNDEFINED_OBJECT,
+                format!("collation \"{shown}\" for encoding \"UTF8\" does not exist"),
+            )
+            .with_span(span));
+        }
+        if e.ty.oid != oid::UNKNOWN && self.category(e.ty.oid) != 'S' {
+            return Err(Error::new(
+                sqlstate::DATATYPE_MISMATCH,
+                format!("collations are not supported by type {}", tname(e.ty.oid)),
+            )
+            .with_span(span));
+        }
+        Ok(e)
+    }
+
+    /// `a OPERATOR(schema.op) b`（`m4/03` §5.12.4）。`schema` が `None` か `pg_catalog` なら普通の
+    /// 演算子の解決。存在しないスキーマは `3F000`、`public` など演算子のないスキーマは `42883`。
+    pub(super) fn qualified_operator(
+        &self,
+        schema: Option<&crate::sql::ast::Ident>,
+        name: &str,
+        left: Option<BoundExpr>,
+        right: BoundExpr,
+        span: Span,
+    ) -> Result<BoundExpr> {
+        let Some(s) = schema.filter(|s| s.value != "pg_catalog") else {
+            return self.make_op(name, left, right, span);
+        };
+        if !schema_exists(&s.value) {
+            return Err(Error::new(
+                sqlstate::INVALID_SCHEMA_NAME,
+                format!("schema \"{}\" does not exist", s.value),
+            )
+            .with_span(span));
+        }
+        let shown = format!("{}.{name}", s.value);
+        let described = match &left {
+            Some(l) => format!("{} {shown} {}", tname(l.ty.oid), tname(right.ty.oid)),
+            None => format!("{shown} {}", tname(right.ty.oid)),
+        };
+        Err(Error::new(
+            sqlstate::UNDEFINED_FUNCTION,
+            format!("operator does not exist: {described}"),
+        )
+        .with_hint(no_operator_hint(left.is_none()))
+        .with_span(span))
+    }
+}
+
+/// PG は単項演算子のとき単数形のヒントを出す。
+fn no_operator_hint(unary: bool) -> &'static str {
+    if unary {
+        "No operator matches the given name and argument type. You might need to add an explicit type cast."
+    } else {
+        "No operator matches the given name and argument types. You might need to add explicit type casts."
+    }
 }

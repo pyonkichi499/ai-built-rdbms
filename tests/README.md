@@ -161,7 +161,7 @@ M1 の規則に加えて:
   このため、**カタログを調べるファイルは、他のユーザーテーブルが存在しない状態**（前のファイルが DROP 済み）で流します。
   toast テーブルの列が混ざらないよう、そのファイルでは `text` 型の列を使いません（`varchar(n)` で行の最大長が約 2KB に収まれば toast テーブルは作られません）。
 - 集約（`count(*)` など）、JOIN、サブクエリは M4 なので使いません。行数は `statement count N`、空の結果は `query T` + 空の期待値で確かめます。
-- PostgreSQL が成功して yuzhu が `0A000` を返す機能（`RETURNING`、`UPDATE ... FROM`、`DELETE ... USING`）は、`onlyif yuzhu` を付けて yuzhu だけで確かめます。
+- PostgreSQL が成功して yuzhu が `0A000` を返す機能は、`onlyif yuzhu` を付けて yuzhu だけで確かめます。
 - `statement error` は SQLSTATE（`(23514)`）で照合します。`--override` は `db error: ...` の形で書き出すので、**override したあとは必ず SQLSTATE の形に直します**。
 - `--override` は空の結果を `statement count 0` に書き換えます。`query T` + 空の期待値に戻します。
 - カタログの `oid` 以外の列で比べる行は、yuzhu が持つものに限ります（`pg_am` なら `oid IN (2, 403)`、`pg_type` なら yuzhu が持つ型の OID）。
@@ -182,7 +182,7 @@ ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port
 ### 差分ファジング（`tests/tools/difffuzz`）
 
 本物の PostgreSQL 17 と yuzhu に同じ SQL を同じ順序で流し、行・コマンドタグ・SQLSTATE・エラーメッセージを突き合わせる。
-領域は `expr` `types` `query` `dml` `txn`（`--domain all` は case 番号で順に切り替える）。外部クレートなしで、`psql` を子プロセスで呼ぶ。
+領域は `expr` `types` `query` `dml` `txn`（M1〜M3）と `join` `agg` `subquery` `setop` `index` `ddl`（M4。多重集合比較、評価順で変わるエラーの別扱い、`enable_*` 変種と索引の有無の検査つき）。`--domain all` は case 番号で順に切り替える。外部クレートなしで、`psql` を子プロセスで呼ぶ。
 乱数は自前なので、`(seed, case)` が決まれば SQL は常に同じ。
 
 ```sh
@@ -196,6 +196,7 @@ target/release/difffuzz --domain expr --seed 1 --case 13 -v   # 差分の 1 ケ�
 - 終了コード: 0 = 差分なし、1 = 差分あり、2 = 実行エラー。差分は JSON Lines（SQL、両者の出力、seed、case、シナリオ全体）。
 - 差分が出たら最小の SQL に縮め、yuzhu を直し、`tests/slt/` に回帰テストを足す（PG でも通ること）。
 - yuzhu 側が未対応（`0A000`）の文は `--skip-unsupported` で数えるだけにできる。メッセージの差は `--no-message` で無視できる。
+- M4 の完了判定（`tests/done-check.sh` 条件 6）は `--domain all` を固定シード 1〜32（各 200 ケース = 約 3,600 文）と 1001〜1004（各 10,000 ケース = 約 18 万文）で流す。既知の差で他の差分が隠れるときだけ `tests/tools/difffuzz/known-excludes.txt` に針を書く。
 - 詳細なオプションは `tests/tools/difffuzz/README.md`。
 
 ### CI

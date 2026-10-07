@@ -31,3 +31,9 @@ query T
 SHOW statement_timeout
 ----
 1500ms
+
+statement ok
+RESET extra_float_digits
+
+statement ok
+RESET statement_timeout

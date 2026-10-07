@@ -1,0 +1,3188 @@
+# 生成物（tests/gen/plan_variants/join_semi_anti.tpl から `slttools plan-variants expand` で作る。手で直さない）。
+# 同じ問い合わせを enable_* の設定を変えて流し、結果が同じことを確かめる。
+
+statement ok
+CREATE TABLE pv_js_t (a int PRIMARY KEY, b int)
+
+statement ok
+CREATE TABLE pv_js_u (d int, b int)
+
+statement ok
+CREATE INDEX pv_js_u_d ON pv_js_u (d)
+
+statement ok
+INSERT INTO pv_js_t SELECT g, g % 9 FROM generate_series(1, 70) g
+
+statement ok
+INSERT INTO pv_js_u SELECT g % 30, g % 9 FROM generate_series(1, 50) g
+
+statement ok
+INSERT INTO pv_js_u VALUES (NULL, 3), (200, NULL)
+
+# profile: default
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+# profile: no_hashjoin
+
+statement ok
+SET enable_hashjoin = off
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+statement ok
+RESET enable_hashjoin
+
+# profile: no_nestloop
+
+statement ok
+SET enable_nestloop = off
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_hashjoin_no_nestloop
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_nestloop = off
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_indexscan
+
+statement ok
+SET enable_indexscan = off
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+statement ok
+RESET enable_indexscan
+
+# profile: no_seqscan
+
+statement ok
+SET enable_seqscan = off
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+statement ok
+RESET enable_seqscan
+
+# profile: combined
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_hashagg = off
+
+statement ok
+SET enable_indexscan = off
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u)
+----
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a NOT IN (SELECT d FROM pv_js_u WHERE d IS NOT NULL)
+----
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE b IN (SELECT b FROM pv_js_u u WHERE u.d = t.a)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+1
+10
+11
+12
+13
+14
+18
+19
+2
+20
+3
+4
+5
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND u.b > t.b)
+----
+15
+16
+17
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a < 10 AND (EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a) OR b = 1)
+----
+1
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d < 15) AND b < 5
+----
+1
+10
+11
+12
+13
+2
+3
+4
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE EXISTS (SELECT 1 FROM pv_js_u u WHERE u.d = t.a AND EXISTS (SELECT 1 FROM pv_js_t t2 WHERE t2.a = u.d + 1))
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a IN (SELECT d FROM pv_js_u WHERE d IN (SELECT a FROM pv_js_t WHERE a % 3 = 0))
+----
+12
+15
+18
+21
+24
+27
+3
+6
+9
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a = ANY (SELECT d FROM pv_js_u WHERE d > 20)
+----
+21
+22
+23
+24
+25
+26
+27
+28
+29
+
+query I rowsort
+SELECT a FROM pv_js_t t WHERE a <> ALL (SELECT d FROM pv_js_u WHERE d IS NOT NULL AND d > 25)
+----
+1
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+2
+20
+21
+22
+23
+24
+25
+3
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+4
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+5
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+6
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+7
+70
+8
+9
+
+query I rowsort
+SELECT count(*) FROM pv_js_t t WHERE NOT EXISTS (SELECT 1 FROM pv_js_u)
+----
+0
+
+query II rowsort
+SELECT t.a, (SELECT count(*) FROM pv_js_u u WHERE u.d = t.a) FROM pv_js_t t WHERE t.a < 8
+----
+1	2
+2	2
+3	2
+4	2
+5	2
+6	2
+7	2
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_hashagg
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+DROP TABLE pv_js_t
+
+statement ok
+DROP TABLE pv_js_u

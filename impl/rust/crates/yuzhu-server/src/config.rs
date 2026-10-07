@@ -15,8 +15,9 @@ use yuzhu_core::engine::DEFAULT_MAX_WAL_SIZE;
 
 /// Size of one buffer frame (a page), the unit of a bare `shared_buffers`.
 const BLOCK_BYTES: u64 = 8192;
-/// PostgreSQL's minimum for `shared_buffers` (128kB).
-const MIN_FRAMES: usize = 16;
+/// Minimum for `shared_buffers` (512kB). PostgreSQL allows 128kB, but a B+Tree build pins up to 33
+/// buffers at once and a split pins `3h + 1`, so fewer frames fail with "no unpinned buffers".
+const MIN_FRAMES: usize = 64;
 /// Smallest accepted `max_wal_size` (one minimum WAL segment).
 const MIN_MAX_WAL_SIZE: u64 = 2 << 20;
 
@@ -198,7 +199,7 @@ pub fn parse_shared_buffers(value: &SizeValue) -> Result<usize, ConfigError> {
         .map_err(|_| ConfigError::Invalid("shared_buffers is too large".into()))?;
     if frames < MIN_FRAMES {
         return Err(ConfigError::Invalid(format!(
-            "shared_buffers must be at least 128kB ({MIN_FRAMES} blocks)"
+            "shared_buffers must be at least 512kB ({MIN_FRAMES} blocks)"
         )));
     }
     Ok(frames)
@@ -425,9 +426,10 @@ mod tests {
         let text = |s: &str| parse_shared_buffers(&SizeValue::Text(s.into()));
         assert_eq!(text("128MB").unwrap(), 16384);
         assert_eq!(text("1GB").unwrap(), 131_072);
-        assert_eq!(text("128kB").unwrap(), 16);
+        assert_eq!(text("512kB").unwrap(), 64);
+        assert!(text("128kB").is_err());
         assert_eq!(text("100").unwrap(), 100);
-        assert_eq!(parse_shared_buffers(&SizeValue::Number(32)).unwrap(), 32);
+        assert_eq!(parse_shared_buffers(&SizeValue::Number(80)).unwrap(), 80);
         assert!(text("64kB").is_err());
         assert!(text("0").is_err());
         assert!(text("abc").is_err());

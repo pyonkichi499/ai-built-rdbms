@@ -12,7 +12,7 @@
 # 使い方: tools/journal-verify.sh [--dry-run] [--run-tests]
 #   --dry-run   差分を標準出力に出すだけで書かない
 #   --run-tests 受け取るだけで使わない（journal-all.sh からの引き回し用）
-# 時刻はすべて UTC。書き込み先は journal/setbacks.md のみ。
+# 時刻はすべて JST。書き込み先は journal/setbacks.md のみ。
 
 set -euo pipefail
 # shellcheck source=journal-lib.sh
@@ -75,8 +75,8 @@ HEX_RE='(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])'
 
 gen() {
   local now
-  now="$(date -u '+%Y-%m-%d %H:%M:%S')"
-  echo "生成: ${now} UTC / 出所: 各 wf_*/journal.jsonl の type==result の result.summary、git、tests/slt/"
+  now="$(date '+%Y-%m-%d %H:%M:%S')"
+  echo "生成: ${now} JST / 出所: 各 wf_*/journal.jsonl の type==result の result.summary、git、tests/slt/"
   echo "対象 result 数: $(wc -l <"$RESULTS")（出所: 各 journal.jsonl の type==result 行の合計）"
   echo
 
@@ -125,7 +125,7 @@ gen() {
   echo "該当行数: ${hits}（出所: 上記）"
   echo
 
-  echo "### 実ファイルの状態（${now} UTC 時点）"
+  echo "### 実ファイルの状態（${now} JST 時点）"
   echo
   echo "| 項目 | 値 | 出所 |"
   echo "|---|---|---|"

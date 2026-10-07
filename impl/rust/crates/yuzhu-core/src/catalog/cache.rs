@@ -16,14 +16,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use super::TableDef;
+use super::{RelKind, TableDef};
 use crate::types::Oid;
 
 #[derive(Debug, Default)]
 struct CacheInner {
     by_oid: HashMap<Oid, Arc<TableDef>>,
-    /// namespace OID -> name -> table OID.
-    by_name: HashMap<Oid, HashMap<String, Oid>>,
+    /// namespace OID -> name -> (OID, 種別)。表・シーケンス・索引（M2 の `by_name` は表だけだった）。
+    by_name: HashMap<Oid, HashMap<String, (Oid, RelKind)>>,
+    /// 索引の OID -> 表の OID。
+    index_owner: HashMap<Oid, Oid>,
     generation: u64,
 }
 
@@ -54,13 +56,19 @@ impl CatalogCache {
         self.read().by_oid.get(&oid).cloned()
     }
 
-    /// The OID of the table `name` in namespace `nsp`, if it is cached.
-    /// A miss says nothing about whether the table exists.
-    pub fn get_by_name(&self, nsp: Oid, name: &str) -> Option<Oid> {
+    /// The `(OID, kind)` of the table / sequence / index `name` in namespace `nsp`, if it is cached.
+    /// A miss says nothing about whether the relation exists.
+    pub fn get_relation_by_name(&self, nsp: Oid, name: &str) -> Option<(Oid, RelKind)> {
         self.read().by_name.get(&nsp)?.get(name).copied()
     }
 
-    /// Inserts only if `built_at_gen` equals the current generation.
+    /// 索引の OID から、その表の OID。
+    pub fn get_index_owner(&self, index_oid: Oid) -> Option<Oid> {
+        self.read().index_owner.get(&index_oid).copied()
+    }
+
+    /// Inserts only if `built_at_gen` equals the current generation. `def` goes into `by_oid`; `def` and
+    /// every index of `def` go into `by_name` and `index_owner`.
     pub fn insert(&self, def: Arc<TableDef>, built_at_gen: u64) {
         let mut g = self.write();
         if g.generation != built_at_gen {
@@ -69,7 +77,14 @@ impl CatalogCache {
         g.by_name
             .entry(def.namespace)
             .or_default()
-            .insert(def.name.clone(), def.oid);
+            .insert(def.name.clone(), (def.oid, def.kind));
+        for i in &def.indexes {
+            g.by_name
+                .entry(i.namespace)
+                .or_default()
+                .insert(i.name.clone(), (i.oid, RelKind::Index));
+            g.index_owner.insert(i.oid, def.oid);
+        }
         g.by_oid.insert(def.oid, def);
     }
 
@@ -78,6 +93,7 @@ impl CatalogCache {
         let mut g = self.write();
         g.by_oid.clear();
         g.by_name.clear();
+        g.index_owner.clear();
         g.generation += 1;
     }
 
@@ -108,9 +124,12 @@ mod tests {
         assert!(c.get_by_oid(16384).is_none());
         c.insert(def(16384, "t"), 0);
         assert_eq!(c.get_by_oid(16384).unwrap().name, "t");
-        assert_eq!(c.get_by_name(2200, "t"), Some(16384));
-        assert_eq!(c.get_by_name(2200, "u"), None);
-        assert_eq!(c.get_by_name(11, "t"), None);
+        assert_eq!(
+            c.get_relation_by_name(2200, "t"),
+            Some((16384, RelKind::Table))
+        );
+        assert_eq!(c.get_relation_by_name(2200, "u"), None);
+        assert_eq!(c.get_relation_by_name(11, "t"), None);
         assert_eq!(c.len(), 1);
     }
 
@@ -135,7 +154,7 @@ mod tests {
         c.insert(def(16385, "b"), 0);
         c.invalidate_all();
         assert!(c.is_empty());
-        assert_eq!(c.get_by_name(2200, "a"), None);
+        assert_eq!(c.get_relation_by_name(2200, "a"), None);
         assert_eq!(c.generation(), 1);
         c.invalidate_all();
         assert_eq!(c.generation(), 2);
@@ -173,7 +192,10 @@ mod tests {
         // Whatever survived is consistent between the two maps.
         for oid in 16384..16384 + 4000 {
             if let Some(d) = c.get_by_oid(oid) {
-                assert_eq!(c.get_by_name(d.namespace, &d.name), Some(oid));
+                assert_eq!(
+                    c.get_relation_by_name(d.namespace, &d.name).map(|x| x.0),
+                    Some(oid)
+                );
             }
         }
         assert!(c.generation() >= 16);

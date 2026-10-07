@@ -1,0 +1,20 @@
+# NULLIF の左辺が NULL 定数なら、右辺を評価せずに NULL へ畳まれる（PG の厳格な演算子の畳み込み）。右辺が 22003 になる行でもエラーにならない
+
+statement ok
+CREATE TABLE ty_nf_t (a int)
+
+statement ok
+INSERT INTO ty_nf_t VALUES (-2147483648), (1)
+
+query I
+SELECT nullif(nullif(NULL % 4, 1), a - 2147483647) FROM ty_nf_t
+----
+NULL
+NULL
+
+# 左辺が NULL でなければ右辺は評価される
+statement error (22003)
+SELECT nullif(1, a - 2147483647) FROM ty_nf_t
+
+statement ok
+DROP TABLE ty_nf_t

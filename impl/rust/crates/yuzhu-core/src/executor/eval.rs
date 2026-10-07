@@ -1,51 +1,87 @@
-//! Expression evaluation. (Owned by the executor implementer.)
+//! Expression evaluation over [`PhysExpr`] (`m4/02` §3.7.2、`m4/05` §4.1).
 //!
 //! Evaluation order is left to right. Strict operators/functions/casts
 //! return NULL without being called when an argument is NULL; `AND`/`OR`
 //! follow three-valued logic and stop at the first deciding operand;
 //! `CASE` and `COALESCE` evaluate lazily (`COALESCE(1, 1/0)` is 1).
 //!
+//! [`eval`] / [`eval_pred`] take the whole [`ExecCtx`] (they can read
+//! `Param`s and run sub-queries); [`eval_const`] takes only an [`EvalCtx`]
+//! (planner-time folding, defaults, `LIMIT`): a `SubLink` or `Param` there is
+//! an internal error.
+//!
 //! This module also holds the output stage that turns result rows into
 //! text ([`row_to_text`]), including the `regproc` display rule.
 
-use super::{EvalCtx, ExecCtx, SessionInfo};
-use crate::analyzer::{BoolTestKind, BoundExpr, BoundExprKind, SessionValueKind};
+use super::{EvalCtx, ExecCtx, SessionInfo, subplan};
 use crate::catalog::{BuiltinFunction, BuiltinOperator, CastMethod, FnKind, builtin};
 use crate::error::{Error, Result, sqlstate};
+use crate::expr::{BoolTestKind, ExprKind, PhysCol, SessionValueKind};
+use crate::planner::physical::PhysExpr;
 use crate::types::io::OutputOpts;
-use crate::types::{Datum, Oid, Row, SqlType, io, ops};
+use crate::types::{Datum, Oid, Row, SqlType, TypeEnv, io};
 
-/// The evaluation context (session values and catalog) of a running
-/// statement.
+/// The evaluation context (session values, catalog, type environment) of a
+/// running statement.
 pub fn eval_ctx<'a>(ctx: &ExecCtx<'a>) -> EvalCtx<'a> {
-    EvalCtx {
-        session: ctx.session,
-        catalog: ctx.catalog,
-        runtime: ctx.runtime,
-    }
+    ctx.eval_ctx()
+}
+
+/// Which context an evaluation runs in.
+enum Env<'e, 'a> {
+    Full(&'e mut ExecCtx<'a>),
+    Const(&'e EvalCtx<'a>),
 }
 
 /// Evaluates `expr` over `row`. AND/OR use three-valued logic; strict
 /// functions and operators return NULL without being called when an
 /// argument is NULL.
-pub fn eval(expr: &BoundExpr, row: &Row, ctx: &ExecCtx<'_>) -> Result<Datum> {
-    eval_expr(expr, row, &eval_ctx(ctx))
-}
-
-/// Like [`eval`], but takes only the session values and the catalog.
-pub fn eval_expr(expr: &BoundExpr, row: &Row, ctx: &EvalCtx<'_>) -> Result<Datum> {
-    Evaluator { row, ctx }.eval(expr)
+pub fn eval(expr: &PhysExpr, row: &Row, ctx: &mut ExecCtx<'_>) -> Result<Datum> {
+    Evaluator {
+        env: Env::Full(ctx),
+        row,
+        sub: None,
+    }
+    .eval(expr)
 }
 
 /// Evaluates a predicate: `Some(b)` for a boolean, `None` for NULL.
-pub fn eval_bool(expr: &BoundExpr, row: &Row, ctx: &EvalCtx<'_>) -> Result<Option<bool>> {
-    let d = eval_expr(expr, row, ctx)?;
-    to_bool(&d)
+pub fn eval_pred(expr: &PhysExpr, row: &Row, ctx: &mut ExecCtx<'_>) -> Result<Option<bool>> {
+    to_bool(&eval(expr, row, ctx)?)
 }
 
-/// [`eval_bool`] for node code that holds an [`ExecCtx`].
-pub fn eval_pred(expr: &BoundExpr, row: &Row, ctx: &ExecCtx<'_>) -> Result<Option<bool>> {
-    eval_bool(expr, row, &eval_ctx(ctx))
+/// Like [`eval`], but takes only the session values and the catalog.
+/// `SubLink` and `Param` are internal errors.
+pub fn eval_const(expr: &PhysExpr, row: &Row, ctx: &EvalCtx<'_>) -> Result<Datum> {
+    Evaluator {
+        env: Env::Const(ctx),
+        row,
+        sub: None,
+    }
+    .eval(expr)
+}
+
+/// [`eval_const`] for a predicate.
+pub fn eval_const_pred(expr: &PhysExpr, row: &Row, ctx: &EvalCtx<'_>) -> Result<Option<bool>> {
+    to_bool(&eval_const(expr, row, ctx)?)
+}
+
+/// Used by `executor/subplan.rs`: evaluates a `SubLink` `test`, where
+/// `SubLinkOutput(i)` is `sub[i]` (the sub-query's current row) and
+/// `Local(i)` is `row[i]`.
+#[allow(dead_code)] // X1 の `eval_sublink` が使う（P0 では未使用）。
+pub(crate) fn eval_with_sub_row(
+    expr: &PhysExpr,
+    row: &Row,
+    sub: &Row,
+    ctx: &mut ExecCtx<'_>,
+) -> Result<Datum> {
+    Evaluator {
+        env: Env::Full(ctx),
+        row,
+        sub: Some(sub),
+    }
+    .eval(expr)
 }
 
 /// The display name of a function OID for `regproc` output (PostgreSQL's
@@ -84,82 +120,117 @@ fn call_function(func: &BuiltinFunction, vals: &[Datum], ctx: &EvalCtx<'_>) -> R
         FnKind::Pure(f) => f(vals),
         FnKind::Context(f) => f(vals, ctx.catalog, ctx.session),
         FnKind::Runtime(f) => f(vals, ctx.runtime),
+        FnKind::Set(_) => Err(crate::error::Error::internal(
+            "set-returning function called as a scalar (FROM-clause only)",
+        )),
     }
 }
 
-struct Evaluator<'a> {
-    row: &'a Row,
-    ctx: &'a EvalCtx<'a>,
+struct Evaluator<'e, 'a> {
+    env: Env<'e, 'a>,
+    row: &'e Row,
+    /// The sub-query's current row (`SubLinkOutput`), only inside a `SubLink` `test`.
+    sub: Option<&'e Row>,
 }
 
-impl Evaluator<'_> {
-    fn eval(&self, expr: &BoundExpr) -> Result<Datum> {
+impl<'a> Evaluator<'_, 'a> {
+    /// The context for function and cast calls. Built on the spot so it does not
+    /// borrow `self` (a `SubLink` needs `&mut ExecCtx`).
+    fn ec(&self) -> EvalCtx<'a> {
+        match &self.env {
+            Env::Full(c) => c.eval_ctx(),
+            Env::Const(c) => **c,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn eval(&mut self, expr: &PhysExpr) -> Result<Datum> {
         match &expr.kind {
-            BoundExprKind::Literal(d) => Ok(d.clone()),
-            BoundExprKind::ColumnRef { index } => self
+            ExprKind::Literal(d) => Ok(d.clone()),
+            ExprKind::Column(PhysCol::Local(index)) => self
                 .row
                 .get(*index)
                 .cloned()
                 .ok_or_else(|| Error::internal(format!("column index {index} out of range"))),
-            BoundExprKind::Operator { op, args } => {
+            ExprKind::Column(PhysCol::Param(p)) => match &self.env {
+                Env::Full(c) => c.param(*p).cloned(),
+                Env::Const(_) => Err(Error::internal(format!(
+                    "parameter {} in a constant context",
+                    p.0
+                ))),
+            },
+            ExprKind::Aggregate(_) => {
+                Err(Error::internal("aggregate expression in a physical plan"))
+            }
+            ExprKind::SubLinkOutput(i) => self
+                .sub
+                .and_then(|s| s.get(usize::from(*i)))
+                .cloned()
+                .ok_or_else(|| {
+                    Error::internal(format!("SubLinkOutput({i}) outside a sub-query test"))
+                }),
+            ExprKind::SubLink { query, .. } => match &mut self.env {
+                Env::Full(c) => subplan::eval_sublink(*query, self.row, c),
+                Env::Const(_) => Err(Error::internal("subquery in a constant context")),
+            },
+            ExprKind::Operator { op, args } => {
                 let Some(vals) = self.eval_strict_args(args)? else {
                     return Ok(Datum::Null);
                 };
                 (op.func)(&vals)
             }
-            BoundExprKind::Function { func, args } => {
+            ExprKind::Function { func, args } => {
                 if func.strict {
                     let Some(vals) = self.eval_strict_args(args)? else {
                         return Ok(Datum::Null);
                     };
-                    call_function(func, &vals, self.ctx)
+                    call_function(func, &vals, &self.ec())
                 } else {
                     let vals = args
                         .iter()
                         .map(|a| self.eval(a))
                         .collect::<Result<Vec<_>>>()?;
-                    call_function(func, &vals, self.ctx)
+                    call_function(func, &vals, &self.ec())
                 }
             }
-            BoundExprKind::Cast {
+            ExprKind::Cast {
                 expr: inner,
                 method,
+                ..
             } => {
                 let d = self.eval(inner)?;
-                apply_cast(d, inner.ty, expr.ty, *method)
+                apply_cast(d, inner.ty, expr.ty, *method, self.ec().type_env)
             }
-            BoundExprKind::CoerceTypmod {
+            ExprKind::CoerceTypmod {
                 expr: inner,
                 explicit,
             } => {
                 let d = self.eval(inner)?;
                 coerce_typmod(d, expr.ty, *explicit)
             }
-            BoundExprKind::And(args) => self.eval_and(args),
-            BoundExprKind::Or(args) => self.eval_or(args),
-            BoundExprKind::Not(inner) => Ok(match to_bool(&self.eval(inner)?)? {
+            ExprKind::And(args) => self.eval_and(args),
+            ExprKind::Or(args) => self.eval_or(args),
+            ExprKind::Not(inner) => Ok(match to_bool(&self.eval(inner)?)? {
                 None => Datum::Null,
                 Some(b) => Datum::Bool(!b),
             }),
-            BoundExprKind::IsNull(inner) => Ok(Datum::Bool(self.eval(inner)?.is_null())),
-            BoundExprKind::IsNotNull(inner) => Ok(Datum::Bool(!self.eval(inner)?.is_null())),
-            BoundExprKind::BoolTest { expr: inner, test } => {
+            ExprKind::IsNull(inner) => Ok(Datum::Bool(self.eval(inner)?.is_null())),
+            ExprKind::IsNotNull(inner) => Ok(Datum::Bool(!self.eval(inner)?.is_null())),
+            ExprKind::BoolTest { expr: inner, test } => {
                 let v = to_bool(&self.eval(inner)?)?;
                 Ok(Datum::Bool(bool_test(v, *test)))
             }
-            BoundExprKind::Case { arms, else_result } => {
-                self.eval_case(arms, else_result.as_deref())
-            }
-            BoundExprKind::Coalesce(args) => self.eval_coalesce(args),
-            BoundExprKind::MinMax { args, cmp, .. } => self.eval_min_max(args, cmp),
-            BoundExprKind::NullIf { left, right, eq_op } => self.eval_nullif(left, right, eq_op),
-            BoundExprKind::DistinctFrom {
+            ExprKind::Case { arms, else_result } => self.eval_case(arms, else_result.as_deref()),
+            ExprKind::Coalesce(args) => self.eval_coalesce(args),
+            ExprKind::MinMax { args, cmp, .. } => self.eval_min_max(args, cmp),
+            ExprKind::NullIf { left, right, eq_op } => self.eval_nullif(left, right, eq_op),
+            ExprKind::DistinctFrom {
                 left,
                 right,
                 eq_op,
                 negated,
             } => self.eval_distinct_from(left, right, eq_op, *negated),
-            BoundExprKind::Like {
+            ExprKind::Like {
                 expr: inner,
                 pattern,
                 escape,
@@ -172,20 +243,20 @@ impl Evaluator<'_> {
                 *negated,
                 *case_insensitive,
             ),
-            BoundExprKind::InList {
+            ExprKind::InList {
                 expr: inner,
                 list,
                 eq_op,
                 negated,
             } => self.eval_in_list(inner, list, eq_op, *negated),
-            BoundExprKind::SessionValue(kind) => Ok(session_value(self.ctx.session, *kind)),
+            ExprKind::SessionValue(kind) => session_value(&self.ec(), *kind),
         }
     }
 
     fn eval_case(
-        &self,
-        arms: &[(BoundExpr, BoundExpr)],
-        else_result: Option<&BoundExpr>,
+        &mut self,
+        arms: &[(PhysExpr, PhysExpr)],
+        else_result: Option<&PhysExpr>,
     ) -> Result<Datum> {
         for (cond, result) in arms {
             if to_bool(&self.eval(cond)?)? == Some(true) {
@@ -198,7 +269,7 @@ impl Evaluator<'_> {
         }
     }
 
-    fn eval_coalesce(&self, args: &[BoundExpr]) -> Result<Datum> {
+    fn eval_coalesce(&mut self, args: &[PhysExpr]) -> Result<Datum> {
         for a in args {
             let d = self.eval(a)?;
             if !d.is_null() {
@@ -209,9 +280,9 @@ impl Evaluator<'_> {
     }
 
     fn eval_nullif(
-        &self,
-        left: &BoundExpr,
-        right: &BoundExpr,
+        &mut self,
+        left: &PhysExpr,
+        right: &PhysExpr,
         eq_op: &BuiltinOperator,
     ) -> Result<Datum> {
         let l = self.eval(left)?;
@@ -227,9 +298,9 @@ impl Evaluator<'_> {
     }
 
     fn eval_distinct_from(
-        &self,
-        left: &BoundExpr,
-        right: &BoundExpr,
+        &mut self,
+        left: &PhysExpr,
+        right: &PhysExpr,
         eq_op: &BuiltinOperator,
         negated: bool,
     ) -> Result<Datum> {
@@ -243,7 +314,7 @@ impl Evaluator<'_> {
         Ok(Datum::Bool(distinct != negated))
     }
 
-    fn eval_min_max(&self, args: &[BoundExpr], cmp: &BuiltinOperator) -> Result<Datum> {
+    fn eval_min_max(&mut self, args: &[PhysExpr], cmp: &BuiltinOperator) -> Result<Datum> {
         let mut best = Datum::Null;
         for a in args {
             let v = self.eval(a)?;
@@ -258,10 +329,10 @@ impl Evaluator<'_> {
     }
 
     fn eval_like(
-        &self,
-        inner: &BoundExpr,
-        pattern: &BoundExpr,
-        escape: Option<&BoundExpr>,
+        &mut self,
+        inner: &PhysExpr,
+        pattern: &PhysExpr,
+        escape: Option<&PhysExpr>,
         negated: bool,
         case_insensitive: bool,
     ) -> Result<Datum> {
@@ -283,9 +354,9 @@ impl Evaluator<'_> {
     }
 
     fn eval_in_list(
-        &self,
-        inner: &BoundExpr,
-        list: &[BoundExpr],
+        &mut self,
+        inner: &PhysExpr,
+        list: &[PhysExpr],
         eq_op: &BuiltinOperator,
         negated: bool,
     ) -> Result<Datum> {
@@ -319,7 +390,7 @@ impl Evaluator<'_> {
     }
 
     /// Evaluates all arguments; `None` if any is NULL (strict call).
-    fn eval_strict_args(&self, args: &[BoundExpr]) -> Result<Option<Vec<Datum>>> {
+    fn eval_strict_args(&mut self, args: &[PhysExpr]) -> Result<Option<Vec<Datum>>> {
         let mut vals = Vec::with_capacity(args.len());
         let mut any_null = false;
         for a in args {
@@ -330,7 +401,7 @@ impl Evaluator<'_> {
         Ok((!any_null).then_some(vals))
     }
 
-    fn eval_and(&self, args: &[BoundExpr]) -> Result<Datum> {
+    fn eval_and(&mut self, args: &[PhysExpr]) -> Result<Datum> {
         let mut saw_null = false;
         for a in args {
             match to_bool(&self.eval(a)?)? {
@@ -346,7 +417,7 @@ impl Evaluator<'_> {
         })
     }
 
-    fn eval_or(&self, args: &[BoundExpr]) -> Result<Datum> {
+    fn eval_or(&mut self, args: &[PhysExpr]) -> Result<Datum> {
         let mut saw_null = false;
         for a in args {
             match to_bool(&self.eval(a)?)? {
@@ -374,8 +445,17 @@ fn bool_test(v: Option<bool>, test: BoolTestKind) -> bool {
     }
 }
 
-fn session_value(s: &SessionInfo, kind: SessionValueKind) -> Datum {
-    match kind {
+fn session_value(ec: &EvalCtx<'_>, kind: SessionValueKind) -> Result<Datum> {
+    use crate::types::datetime;
+    let s: &SessionInfo = ec.session;
+    // `CURRENT_DATE` and friends: the transaction start time and the session settings.
+    let dt = |what: &str| {
+        ec.type_env
+            .datetime
+            .as_ref()
+            .ok_or_else(|| Error::internal(format!("{what} requires a DateTimeEnv")))
+    };
+    Ok(match kind {
         SessionValueKind::CurrentUser | SessionValueKind::User | SessionValueKind::CurrentRole => {
             Datum::Text(s.current_user.clone())
         }
@@ -384,7 +464,21 @@ fn session_value(s: &SessionInfo, kind: SessionValueKind) -> Datum {
         SessionValueKind::CurrentSchema => {
             s.current_schema.clone().map_or(Datum::Null, Datum::Text)
         }
-    }
+        SessionValueKind::CurrentDate => {
+            let env = dt("CURRENT_DATE")?;
+            datetime::current_date(env.now.0, env)?
+        }
+        SessionValueKind::CurrentTimestamp { precision } => {
+            datetime::current_timestamp(dt("CURRENT_TIMESTAMP")?.now.0, precision)?
+        }
+        SessionValueKind::Now | SessionValueKind::TransactionTimestamp => {
+            datetime::current_timestamp(dt("now")?.now.0, -1)?
+        }
+        SessionValueKind::LocalTimestamp { precision } => {
+            let env = dt("LOCALTIMESTAMP")?;
+            datetime::local_timestamp(env.now.0, precision, env)?
+        }
+    })
 }
 
 /// Calls an equality operator on two non-NULL values.
@@ -393,33 +487,39 @@ fn call_eq(op: &BuiltinOperator, l: &Datum, r: &Datum) -> Result<Option<bool>> {
 }
 
 fn text_of(d: &Datum) -> Result<&str> {
-    d.as_str()
-        .ok_or_else(|| Error::internal(format!("expected a text value, got {d:?}")))
+    match d {
+        Datum::BpChar(s) => Some(s.as_str()),
+        other => other.as_str(),
+    }
+    .ok_or_else(|| Error::internal(format!("expected a text value, got {d:?}")))
 }
 
 /// Converts `d` (of type `from`) to type `to` using `method`. NULL stays
-/// NULL.
-pub fn apply_cast(d: Datum, from: SqlType, to: SqlType, method: CastMethod) -> Result<Datum> {
+/// NULL. `env` is for `CastMethod::Env` (`TimeZone`, `now`, names).
+pub fn apply_cast(
+    d: Datum,
+    from: SqlType,
+    to: SqlType,
+    method: CastMethod,
+    env: &TypeEnv<'_>,
+) -> Result<Datum> {
     if d.is_null() {
         return Ok(Datum::Null);
     }
     match method {
         CastMethod::Binary => Ok(d),
         CastMethod::Function(f) => f(&[d]),
+        CastMethod::Env(f) => f(&[d], env),
         CastMethod::InOut => {
-            let s = io::output_text(&d, from).unwrap_or_default();
-            io::input_text(&s, SqlType::of(to.oid))
+            let s = io::output_text_env(&d, from, env).unwrap_or_default();
+            io::input_text_env(&s, SqlType::of(to.oid), env)
         }
     }
 }
 
-/// Applies `ty.typmod` (the `varchar(n)` length) to a value.
+/// Applies `ty.typmod` (varchar / char length, numeric and timestamp precision) to a value.
 pub fn coerce_typmod(d: Datum, ty: SqlType, explicit: bool) -> Result<Datum> {
-    match d {
-        Datum::Text(s) => Ok(Datum::Text(ops::varchar_coerce(s, ty.typmod, explicit)?)),
-        Datum::Numeric(n) => Ok(Datum::Numeric(n.apply_typmod(ty.typmod)?)),
-        other => Ok(other),
-    }
+    crate::types::typmod::apply_typmod(d, ty, explicit)
 }
 
 /// Validates a LIKE `ESCAPE` string: empty = no escape character, one
@@ -567,26 +667,34 @@ pub(crate) mod tests {
             session: s,
             catalog,
             runtime: &crate::executor::NullRuntime,
+            type_env: Box::leak(Box::new(TypeEnv::default())),
         }
     }
 
-    pub(crate) fn lit(d: Datum, ty: SqlType) -> BoundExpr {
-        BoundExpr::new(BoundExprKind::Literal(d), ty, Span::default())
+    pub(crate) fn lit(d: Datum, ty: SqlType) -> PhysExpr {
+        PhysExpr::new(ExprKind::Literal(d), ty, Span::default())
     }
-    pub(crate) fn int(v: i32) -> BoundExpr {
+    pub(crate) fn int(v: i32) -> PhysExpr {
         lit(Datum::Int4(v), SqlType::INT4)
     }
-    pub(crate) fn text(s: &str) -> BoundExpr {
+    pub(crate) fn text(s: &str) -> PhysExpr {
         lit(Datum::Text(s.into()), SqlType::TEXT)
     }
-    pub(crate) fn null(ty: SqlType) -> BoundExpr {
+    pub(crate) fn null(ty: SqlType) -> PhysExpr {
         lit(Datum::Null, ty)
     }
-    pub(crate) fn boolean(b: Option<bool>) -> BoundExpr {
+    pub(crate) fn boolean(b: Option<bool>) -> PhysExpr {
         lit(b.map_or(Datum::Null, Datum::Bool), SqlType::BOOL)
     }
-    pub(crate) fn col(index: usize, ty: SqlType) -> BoundExpr {
-        BoundExpr::new(BoundExprKind::ColumnRef { index }, ty, Span::default())
+    pub(crate) fn col(index: usize, ty: SqlType) -> PhysExpr {
+        PhysExpr::new(ExprKind::Column(PhysCol::Local(index)), ty, Span::default())
+    }
+    pub(crate) fn param(id: u16, ty: SqlType) -> PhysExpr {
+        PhysExpr::new(
+            ExprKind::Column(PhysCol::Param(crate::expr::ParamId(id))),
+            ty,
+            Span::default(),
+        )
     }
 
     fn int4eq(a: &[Datum]) -> Result<Datum> {
@@ -650,10 +758,10 @@ pub(crate) mod tests {
         kind: FnKind::Pure(textlen),
     };
 
-    pub(crate) fn op(o: &'static BuiltinOperator, l: BoundExpr, r: BoundExpr) -> BoundExpr {
+    pub(crate) fn op(o: &'static BuiltinOperator, l: PhysExpr, r: PhysExpr) -> PhysExpr {
         let ty = SqlType::of(o.result);
-        BoundExpr::new(
-            BoundExprKind::Operator {
+        PhysExpr::new(
+            ExprKind::Operator {
                 op: o,
                 args: vec![l, r],
             },
@@ -661,15 +769,15 @@ pub(crate) mod tests {
             Span::default(),
         )
     }
-    fn div(l: BoundExpr, r: BoundExpr) -> BoundExpr {
+    fn div(l: PhysExpr, r: PhysExpr) -> PhysExpr {
         op(&DIV, l, r)
     }
-    fn mk(kind: BoundExprKind, ty: SqlType) -> BoundExpr {
-        BoundExpr::new(kind, ty, Span::default())
+    fn mk(kind: ExprKind<PhysCol, crate::expr::SubPlanId>, ty: SqlType) -> PhysExpr {
+        PhysExpr::new(kind, ty, Span::default())
     }
 
-    fn ev(e: &BoundExpr) -> Result<Datum> {
-        eval_expr(e, &vec![], &ectx(&session()))
+    fn ev(e: &PhysExpr) -> Result<Datum> {
+        eval_const(e, &vec![], &ectx(&session()))
     }
 
     #[test]
@@ -677,17 +785,17 @@ pub(crate) mod tests {
         assert_eq!(ev(&int(3)).unwrap(), Datum::Int4(3));
         let row = vec![Datum::Int4(10), Datum::Text("x".into())];
         assert_eq!(
-            eval_expr(&col(1, SqlType::TEXT), &row, &ectx(&session())).unwrap(),
+            eval_const(&col(1, SqlType::TEXT), &row, &ectx(&session())).unwrap(),
             Datum::Text("x".into())
         );
-        assert!(eval_expr(&col(5, SqlType::TEXT), &row, &ectx(&session())).is_err());
+        assert!(eval_const(&col(5, SqlType::TEXT), &row, &ectx(&session())).is_err());
         assert_eq!(ev(&div(int(7), int(2))).unwrap(), Datum::Int4(3));
         // Strict: NULL argument -> NULL without calling (no division error).
         assert_eq!(ev(&div(null(SqlType::INT4), int(0))).unwrap(), Datum::Null);
         let e = ev(&div(int(1), int(0))).unwrap_err();
         assert_eq!(e.sqlstate, sqlstate::DIVISION_BY_ZERO);
         let f = mk(
-            BoundExprKind::Function {
+            ExprKind::Function {
                 func: &LENGTH,
                 args: vec![text("héllo")],
             },
@@ -695,7 +803,7 @@ pub(crate) mod tests {
         );
         assert_eq!(ev(&f).unwrap(), Datum::Int4(5));
         let f = mk(
-            BoundExprKind::Function {
+            ExprKind::Function {
                 func: &LENGTH,
                 args: vec![null(SqlType::TEXT)],
             },
@@ -709,8 +817,8 @@ pub(crate) mod tests {
         let t = || boolean(Some(true));
         let f = || boolean(Some(false));
         let n = || boolean(None);
-        let and = |a, b| mk(BoundExprKind::And(vec![a, b]), SqlType::BOOL);
-        let or = |a, b| mk(BoundExprKind::Or(vec![a, b]), SqlType::BOOL);
+        let and = |a, b| mk(ExprKind::And(vec![a, b]), SqlType::BOOL);
+        let or = |a, b| mk(ExprKind::Or(vec![a, b]), SqlType::BOOL);
         assert_eq!(ev(&and(t(), n())).unwrap(), Datum::Null);
         assert_eq!(ev(&and(f(), n())).unwrap(), Datum::Bool(false));
         assert_eq!(ev(&and(n(), f())).unwrap(), Datum::Bool(false));
@@ -722,7 +830,7 @@ pub(crate) mod tests {
         let boom = op(&EQ, div(int(1), int(0)), int(1));
         assert_eq!(ev(&and(f(), boom.clone())).unwrap(), Datum::Bool(false));
         assert_eq!(ev(&or(t(), boom)).unwrap(), Datum::Bool(true));
-        let not = |a| mk(BoundExprKind::Not(Box::new(a)), SqlType::BOOL);
+        let not = |a| mk(ExprKind::Not(Box::new(a)), SqlType::BOOL);
         assert_eq!(ev(&not(n())).unwrap(), Datum::Null);
         assert_eq!(ev(&not(t())).unwrap(), Datum::Bool(false));
     }
@@ -730,11 +838,11 @@ pub(crate) mod tests {
     #[test]
     fn null_tests_and_bool_tests() {
         let isnull = mk(
-            BoundExprKind::IsNull(Box::new(null(SqlType::INT4))),
+            ExprKind::IsNull(Box::new(null(SqlType::INT4))),
             SqlType::BOOL,
         );
         assert_eq!(ev(&isnull).unwrap(), Datum::Bool(true));
-        let notnull = mk(BoundExprKind::IsNotNull(Box::new(int(1))), SqlType::BOOL);
+        let notnull = mk(ExprKind::IsNotNull(Box::new(int(1))), SqlType::BOOL);
         assert_eq!(ev(&notnull).unwrap(), Datum::Bool(true));
         let cases = [
             (None, BoolTestKind::IsTrue, false),
@@ -748,7 +856,7 @@ pub(crate) mod tests {
         ];
         for (v, test, want) in cases {
             let e = mk(
-                BoundExprKind::BoolTest {
+                ExprKind::BoolTest {
                     expr: Box::new(boolean(v)),
                     test,
                 },
@@ -761,17 +869,17 @@ pub(crate) mod tests {
     #[test]
     fn case_and_coalesce_are_lazy() {
         let c = mk(
-            BoundExprKind::Coalesce(vec![null(SqlType::INT4), int(1), div(int(1), int(0))]),
+            ExprKind::Coalesce(vec![null(SqlType::INT4), int(1), div(int(1), int(0))]),
             SqlType::INT4,
         );
         assert_eq!(ev(&c).unwrap(), Datum::Int4(1));
         let c = mk(
-            BoundExprKind::Coalesce(vec![null(SqlType::INT4), null(SqlType::INT4)]),
+            ExprKind::Coalesce(vec![null(SqlType::INT4), null(SqlType::INT4)]),
             SqlType::INT4,
         );
         assert_eq!(ev(&c).unwrap(), Datum::Null);
         let case = mk(
-            BoundExprKind::Case {
+            ExprKind::Case {
                 arms: vec![
                     (boolean(None), div(int(1), int(0))),
                     (boolean(Some(true)), int(2)),
@@ -783,7 +891,7 @@ pub(crate) mod tests {
         );
         assert_eq!(ev(&case).unwrap(), Datum::Int4(2));
         let case = mk(
-            BoundExprKind::Case {
+            ExprKind::Case {
                 arms: vec![(boolean(Some(false)), int(1))],
                 else_result: None,
             },
@@ -791,7 +899,7 @@ pub(crate) mod tests {
         );
         assert_eq!(ev(&case).unwrap(), Datum::Null);
         let case = mk(
-            BoundExprKind::Case {
+            ExprKind::Case {
                 arms: vec![(boolean(Some(false)), int(1))],
                 else_result: Some(Box::new(int(9))),
             },
@@ -804,7 +912,7 @@ pub(crate) mod tests {
     fn nullif() {
         let n = |l, r| {
             mk(
-                BoundExprKind::NullIf {
+                ExprKind::NullIf {
                     left: Box::new(l),
                     right: Box::new(r),
                     eq_op: &EQ,
@@ -820,9 +928,9 @@ pub(crate) mod tests {
 
     #[test]
     fn in_list_null_semantics() {
-        let inl = |x, list: Vec<BoundExpr>, negated| {
+        let inl = |x, list: Vec<PhysExpr>, negated| {
             mk(
-                BoundExprKind::InList {
+                ExprKind::InList {
                     expr: Box::new(x),
                     list,
                     eq_op: &EQ,
@@ -908,7 +1016,7 @@ pub(crate) mod tests {
     fn like_node() {
         let like = |s, p, negated| {
             mk(
-                BoundExprKind::Like {
+                ExprKind::Like {
                     expr: Box::new(s),
                     pattern: Box::new(p),
                     escape: None,
@@ -957,7 +1065,7 @@ pub(crate) mod tests {
     fn context_functions_see_catalog_and_session() {
         let f = |arg| {
             mk(
-                BoundExprKind::Function {
+                ExprKind::Function {
                     func: &CTX_FN,
                     args: vec![arg],
                 },
@@ -1007,25 +1115,28 @@ pub(crate) mod tests {
     #[test]
     fn casts_typmod_and_session_values() {
         let c = mk(
-            BoundExprKind::Cast {
+            ExprKind::Cast {
                 expr: Box::new(int(5)),
                 method: CastMethod::Function(int4_to_int8),
+                implicit: false,
             },
             SqlType::INT8,
         );
         assert_eq!(ev(&c).unwrap(), Datum::Int8(5));
         let c = mk(
-            BoundExprKind::Cast {
+            ExprKind::Cast {
                 expr: Box::new(boolean(Some(true))),
                 method: CastMethod::InOut,
+                implicit: false,
             },
             SqlType::TEXT,
         );
         assert_eq!(ev(&c).unwrap(), Datum::Text("t".into()));
         let c = mk(
-            BoundExprKind::Cast {
+            ExprKind::Cast {
                 expr: Box::new(text("12x")),
                 method: CastMethod::InOut,
+                implicit: false,
             },
             SqlType::INT4,
         );
@@ -1034,16 +1145,17 @@ pub(crate) mod tests {
             sqlstate::INVALID_TEXT_REPRESENTATION
         );
         let c = mk(
-            BoundExprKind::Cast {
+            ExprKind::Cast {
                 expr: Box::new(null(SqlType::TEXT)),
                 method: CastMethod::InOut,
+                implicit: false,
             },
             SqlType::INT4,
         );
         assert_eq!(ev(&c).unwrap(), Datum::Null);
         let t = |explicit| {
             mk(
-                BoundExprKind::CoerceTypmod {
+                ExprKind::CoerceTypmod {
                     expr: Box::new(text("abcd")),
                     explicit,
                 },
@@ -1055,7 +1167,7 @@ pub(crate) mod tests {
             ev(&t(false)).unwrap_err().sqlstate,
             sqlstate::STRING_DATA_RIGHT_TRUNCATION
         );
-        let sv = |k| mk(BoundExprKind::SessionValue(k), SqlType::NAME);
+        let sv = |k| mk(ExprKind::SessionValue(k), SqlType::NAME);
         assert_eq!(
             ev(&sv(SessionValueKind::CurrentUser)).unwrap(),
             Datum::Text("alice".into())
@@ -1071,12 +1183,12 @@ pub(crate) mod tests {
         let mut s = session();
         s.current_schema = None;
         assert_eq!(
-            eval_expr(&sv(SessionValueKind::CurrentSchema), &vec![], &ectx(&s)).unwrap(),
+            eval_const(&sv(SessionValueKind::CurrentSchema), &vec![], &ectx(&s)).unwrap(),
             Datum::Null
         );
-        assert!(eval_bool(&int(1), &vec![], &ectx(&session())).is_err());
+        assert!(eval_const_pred(&int(1), &vec![], &ectx(&session())).is_err());
         assert_eq!(
-            eval_bool(&op(&GT, int(2), int(1)), &vec![], &ectx(&session())).unwrap(),
+            eval_const_pred(&op(&GT, int(2), int(1)), &vec![], &ectx(&session())).unwrap(),
             Some(true)
         );
     }
@@ -1103,17 +1215,17 @@ pub(crate) mod tests {
             runtime: &PidRuntime,
             ..ectx(&s)
         };
-        let call = |name: &str, args: Vec<BoundExpr>, ty: SqlType| {
+        let call = |name: &str, args: Vec<PhysExpr>, ty: SqlType| {
             let func = crate::catalog::builtin::functions_named(name)[0];
-            let e = mk(BoundExprKind::Function { func, args }, ty);
-            eval_expr(&e, &vec![], &ctx)
+            let e = mk(ExprKind::Function { func, args }, ty);
+            eval_const(&e, &vec![], &ctx)
         };
         assert_eq!(
             call("pg_backend_pid", vec![], SqlType::INT4).unwrap(),
             Datum::Int4(777)
         );
         let arr = |v| lit(Datum::Int4Array(v), SqlType::of(oid::INT4_ARRAY));
-        let blocked = |pid: BoundExpr, v| {
+        let blocked = |pid: PhysExpr, v| {
             call(
                 "pg_isolation_test_session_is_blocked",
                 vec![pid, arr(v)],
@@ -1134,5 +1246,127 @@ pub(crate) mod tests {
             .unwrap(),
             Datum::Void
         );
+    }
+
+    // ---- P0-c: Param・SubLink・Aggregate・SubLinkOutput（`m4/02` §6.2 の eval_param_and_misplaced_kinds）----
+
+    static COUNT_STAR: crate::catalog::BuiltinAggregate = crate::catalog::BuiltinAggregate {
+        oid: 2803,
+        name: "count",
+        args: &[],
+        result: oid::INT8,
+        kind: crate::catalog::AggKind::CountStar,
+    };
+
+    fn run_full(e: &PhysExpr, row: &Row, params: usize) -> Result<Datum> {
+        let mut f = crate::executor::nodes::test_util::Fixture::with_params(params);
+        let mut ctx = f.ctx();
+        ctx.params
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, p)| *p = Datum::Int4(i32::try_from(i).unwrap() + 100));
+        eval(e, row, &mut ctx)
+    }
+
+    #[test]
+    fn eval_param_and_misplaced_kinds() {
+        // Param は ctx.params[p]。
+        assert_eq!(
+            run_full(&param(1, SqlType::INT4), &vec![], 2).unwrap(),
+            Datum::Int4(101)
+        );
+        // 範囲外は XX000。
+        let e = run_full(&param(5, SqlType::INT4), &vec![], 2).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        // eval_const に Param が現れたら XX000。
+        let e = ev(&param(0, SqlType::INT4)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        // Aggregate は物理式に現れない。
+        let agg = mk(
+            ExprKind::Aggregate(Box::new(crate::expr::AggCall {
+                func: &COUNT_STAR,
+                args: vec![],
+                distinct: false,
+                filter: None,
+                order_by: Vec::new(),
+            })),
+            SqlType::INT8,
+        );
+        assert_eq!(
+            run_full(&agg, &vec![], 0).unwrap_err().sqlstate,
+            sqlstate::INTERNAL_ERROR
+        );
+        // sub が無いときの SubLinkOutput。
+        let out = mk(ExprKind::SubLinkOutput(0), SqlType::INT4);
+        assert_eq!(
+            run_full(&out, &vec![], 0).unwrap_err().sqlstate,
+            sqlstate::INTERNAL_ERROR
+        );
+        // SubLink は eval_const では XX000、eval では subplan::eval_sublink（P0 はスタブ）。
+        let sub = mk(
+            ExprKind::SubLink {
+                kind: crate::expr::SubLinkKind::Exists,
+                test: None,
+                query: crate::expr::SubPlanId(0),
+            },
+            SqlType::BOOL,
+        );
+        assert_eq!(ev(&sub).unwrap_err().sqlstate, sqlstate::INTERNAL_ERROR);
+        // `subplans` が空の問い合わせでは、範囲外の SubPlanId は XX000（評価は subplan.rs のテスト）。
+        let e = run_full(&sub, &vec![], 0).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        assert_eq!(e.message, "SubPlan id out of range");
+    }
+
+    #[test]
+    fn eval_with_sub_row_resolves_sub_link_output() {
+        let mut f = crate::executor::nodes::test_util::Fixture::new();
+        let mut ctx = f.ctx();
+        // test = (row[0] = sub[0])
+        let test = op(
+            &EQ,
+            col(0, SqlType::INT4),
+            mk(ExprKind::SubLinkOutput(0), SqlType::INT4),
+        );
+        let row = vec![Datum::Int4(2)];
+        let hit = eval_with_sub_row(&test, &row, &vec![Datum::Int4(2)], &mut ctx).unwrap();
+        let miss = eval_with_sub_row(&test, &row, &vec![Datum::Int4(3)], &mut ctx).unwrap();
+        assert_eq!((hit, miss), (Datum::Bool(true), Datum::Bool(false)));
+        // 範囲外の SubLinkOutput は XX000。
+        let e = eval_with_sub_row(&test, &row, &vec![], &mut ctx).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn current_date_and_timestamp_need_a_datetime_env() {
+        // DateTimeEnv が無い文脈では XX000（初期化・テストの文脈）。
+        for k in [
+            SessionValueKind::CurrentDate,
+            SessionValueKind::CurrentTimestamp { precision: -1 },
+            SessionValueKind::LocalTimestamp { precision: 3 },
+        ] {
+            let e = ev(&mk(ExprKind::SessionValue(k), SqlType::DATE)).unwrap_err();
+            assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        }
+    }
+
+    #[test]
+    fn cast_env_receives_the_type_env() {
+        fn env_cast(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+            Ok(Datum::Int4(
+                env.extra_float_digits + args[0].as_i64().map_or(0, |v| i32::try_from(v).unwrap()),
+            ))
+        }
+        let c = mk(
+            ExprKind::Cast {
+                expr: Box::new(int(5)),
+                method: CastMethod::Env(env_cast),
+                implicit: false,
+            },
+            SqlType::INT4,
+        );
+        // TypeEnv::default() の extra_float_digits は 1。
+        assert_eq!(ev(&c).unwrap(), Datum::Int4(6));
+        assert_eq!(run_full(&c, &vec![], 0).unwrap(), Datum::Int4(6));
     }
 }

@@ -5,14 +5,42 @@ use super::query::{dir, limit_offset};
 use super::{Ctx, Table};
 
 const LITS: &[&str] = &[
-    "1", "2", "-1", "0", "NULL", "2.5", "0.10", "1.0e0", "'a'", "'B'", "''", "'abc'", "true", "false", "10000000000",
-    "2147483648", "'2024-02-29'", "0.5::numeric(3,1)", "(-7)::int2", "1::int2", "1::bigint",
-    "1.5::real", "'NaN'::float8", "'Infinity'::float8", "-0.0", "'x'::varchar(2)", 
-    "123456789.123456789", "1e300", "'1'", "'t'::bool", "1e-5", "'-Infinity'::float8",
+    "1",
+    "2",
+    "-1",
+    "0",
+    "NULL",
+    "2.5",
+    "0.10",
+    "1.0e0",
+    "'a'",
+    "'B'",
+    "''",
+    "'abc'",
+    "true",
+    "false",
+    "10000000000",
+    "2147483648",
+    "'2024-02-29'",
+    "0.5::numeric(3,1)",
+    "(-7)::int2",
+    "1::int2",
+    "1::bigint",
+    "1.5::real",
+    "'NaN'::float8",
+    "'Infinity'::float8",
+    "-0.0",
+    "'x'::varchar(2)",
+    "123456789.123456789",
+    "1e300",
+    "'1'",
+    "'t'::bool",
+    "1e-5",
+    "'-Infinity'::float8",
 ];
 
 fn lit(ctx: &mut Ctx) -> &'static str {
-    *ctx.rng.pick(LITS)
+    ctx.rng.pick(LITS)
 }
 
 pub fn r3_stmt(ctx: &mut Ctx, t: &Table) {

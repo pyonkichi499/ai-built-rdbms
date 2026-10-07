@@ -6,8 +6,11 @@ use std::sync::Arc;
 
 use super::buffer::{BufferPool, WalFlush};
 use super::heap_store::HeapStore;
+use super::index_store::BtreeStore;
+use super::sequence::SeqStore;
 use super::smgr::StorageManager;
 use super::vfs::Vfs;
+use super::{IndexStore, SequenceStore};
 use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result};
 use crate::txn::Xid;
@@ -48,6 +51,10 @@ pub struct StorageStack {
     pub pool: Arc<BufferPool>,
     pub clog: Arc<Clog>,
     pub heap: Arc<HeapStore>,
+    /// B+Tree（M4）。B1・B2 が実体を作るまでは `not_supported` を返すスタブ。
+    pub index: Arc<dyn IndexStore>,
+    /// シーケンス（M4）。Q1 が実体を作るまでは `not_supported` を返すスタブ。
+    pub seq: Arc<dyn SequenceStore>,
     pub wal: Arc<Wal>,
 }
 
@@ -82,12 +89,20 @@ impl StorageStack {
             Arc::clone(&clog),
             Arc::clone(&wal),
         ));
+        let index =
+            Arc::new(BtreeStore::new(Arc::clone(&pool), Arc::clone(&wal)).with_knobs(cfg.knobs));
+        let seq = Arc::new(
+            SeqStore::new(Arc::clone(&pool), Arc::clone(&smgr), Arc::clone(&wal))
+                .with_knobs(cfg.knobs),
+        );
         Ok(StorageStack {
             vfs,
             smgr,
             pool,
             clog,
             heap,
+            index,
+            seq,
             wal,
         })
     }

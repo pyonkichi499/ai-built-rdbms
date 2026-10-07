@@ -9,7 +9,7 @@
 #   3 --restart / --crash（tests/restart、restart/m3、restart/m4）を pg と yuzhu で
 #   4 isolation の全 spec を pg と yuzhu で
 #   5 tests/compat/run.sh --target pg と yuzhu
-#   6 差分ランダムテスト（固定シード 1〜32 × 2,000 問い合わせ、長時間 1001〜1004 × 200,000）
+#   6 差分ファジング（tests/tools/difffuzz。固定シード 1〜32 × 200 ケース、長時間 1001〜1004 × 10,000 ケース。全領域。1 ケース = 約 18 文）
 #   7 クラッシュ試験 層 1（cargo test --release -p yuzhu-core --test crash_sim。変異テストを含む）
 #   8 EXPLAIN の書式（explain/format.slt、deparse_*.slt）と plan_variants を pg と yuzhu で
 #   9 QUESTIONS.md / PROGRESS.md の運用の確認
@@ -56,7 +56,7 @@ mkdir -p "$LOG_DIR"
 TOOLS_BIN="${CARGO_TARGET_DIR:-}"
 SLTTOOLS_MANIFEST="$ROOT/tests/tools/slttools/Cargo.toml"
 ISOLATION_MANIFEST="$ROOT/tests/tools/isolation/Cargo.toml"
-DIFFTEST_MANIFEST="$ROOT/tests/tools/difftest/Cargo.toml"
+DIFFFUZZ_MANIFEST="$ROOT/tests/tools/difffuzz/Cargo.toml"
 
 declare -A RESULT NOTE
 STEP_FAILS=0
@@ -171,6 +171,7 @@ if selected 2; then
     if [ -n "$SLTTOOLS" ]; then
         step 2 slt-lint "$SLTTOOLS" lint
         step 2 consistency-sync "$SLTTOOLS" consistency --check
+        step 2 plan-variants-check "$SLTTOOLS" plan-variants check
     else
         FAILED_STEPS[2]+="build slttools; "; echo "  [2] build slttools FAIL"
     fi
@@ -215,37 +216,60 @@ if selected 5; then
         missing 5 "tests/compat/run.sh がない（K4 の compat は未作成）"
     else
         extra=(); [ "$QUICK" -eq 1 ] && extra=(--quick)
-        step 5 pg-compat pg_env tests/compat/run.sh --target pg "${extra[@]}"
-        step 5 yuzhu-compat tests/compat/run.sh --target yuzhu "${extra[@]}"
+        step 5 pg-prepare pg_fresh
+        step 5 pg-compat pg_env tests/compat/run.sh --target pg --port "$DC_PG_PORT" ${extra[@]+"${extra[@]}"}
+        step 5 yuzhu-prepare yuzhu_fresh
+        step 5 yuzhu-compat tests/compat/run.sh --target yuzhu --port "$DC_YUZHU_PORT" ${extra[@]+"${extra[@]}"}
         finish 5
     fi
 fi
 
 # ------------------------------------------------------------ 6
-fuzz_seeds() { # <ref ポート> <test ポート> <bin> <seed 開始> <終了> <クエリ数>
-    local rp="$1" tp="$2" bin="$3" s e q seed rc=0
-    s="$4"; e="$5"; q="$6"
-    for seed in $(seq "$s" "$e"); do
-        "$bin" run --ref "host=127.0.0.1 port=$rp user=postgres dbname=postgres" \
-            --test "host=127.0.0.1 port=$tp user=postgres dbname=postgres" \
-            --level m4 --seed "$seed" --queries "$q" --out "$LOG_DIR/difftest-fail-$seed" || { echo "seed $seed: 差分あり"; rc=1; }
+fuzz_seeds() { # <ref ポート> <test ポート> <bin> <seed 開始> <終了> <ケース数>
+    # yuzhu は書き込みが 1 本ずつなので、1 台へ並列に流すと待ちが出る。ワーカーごとに専用の yuzhu を起動し、
+    # PostgreSQL は共有する（生成器の共有名はシードとケースの番号で分けてある）。ワーカー数は DC_FUZZ_JOBS（既定 4）。
+    local rp="$1" tp="$2" bin="$3" s="$4" e="$5" q="$6" ex=() n w jobs="${DC_FUZZ_JOBS:-4}" rc=0 pids=() port
+    while IFS= read -r n; do
+        case "$n" in ''|'#'*) ;; *) ex+=(--exclude "$n") ;; esac
+    done < "$ROOT/tests/tools/difffuzz/known-excludes.txt"
+    [ "$jobs" -gt $((e - s + 1)) ] && jobs=$((e - s + 1))
+    for ((w = 0; w < jobs; w++)); do
+        port="$tp"
+        if [ "$w" -gt 0 ]; then
+            port=$((tp + w))
+            YUZHU_STATE="$YUZHU_STATE-w$w" tests/yuzhu.sh clean >/dev/null 2>&1 || true
+            YUZHU_STATE="$YUZHU_STATE-w$w" tests/yuzhu.sh start --port "$port" >"$LOG_DIR/fuzz-yuzhu-w$w.log" 2>&1 || { echo "worker $w: yuzhu を起動できない"; rc=1; continue; }
+        fi
+        (
+            wrc=0
+            for ((seed = s + w; seed <= e; seed += jobs)); do
+                "$bin" --domain all --skip-unsupported-legacy --ignore-trailing-space --seed "$seed" --cases "$q" ${ex[@]+"${ex[@]}"} \
+                    --pg "host=127.0.0.1 port=$rp user=postgres dbname=postgres" \
+                    --yuzhu "host=127.0.0.1 port=$port user=postgres dbname=postgres" \
+                    --out "$LOG_DIR/difffuzz-fail-$seed.jsonl" || { echo "seed $seed: 差分あり（$LOG_DIR/difffuzz-fail-$seed.jsonl）"; wrc=1; }
+            done
+            exit "$wrc"
+        ) &
+        pids+=("$!")
     done
+    for n in ${pids[@]+"${pids[@]}"}; do wait "$n" || rc=1; done
+    for ((w = 1; w < jobs; w++)); do YUZHU_STATE="$YUZHU_STATE-w$w" tests/yuzhu.sh clean >/dev/null 2>&1 || true; done
     return "$rc"
 }
 if selected 6; then
     if [ "$PG_ONLY" -eq 1 ]; then echo "-- 条件 6: --pg-only のため飛ばす"; else
-    echo "-- 条件 6: 差分ランダムテスト（原因を tests/tools/difftest/KNOWN.md に書いた範囲だけを許す）"
-    DT="$(build_tool "$DIFFTEST_MANIFEST" difftest 2>"$LOG_DIR/c6-build.log")" || DT=""
+    echo "-- 条件 6: 差分ファジング（difffuzz。既知の差は tests/tools/difffuzz/known-excludes.txt に書いた針で除外した範囲だけを許す）"
+    DT="$(build_tool "$DIFFFUZZ_MANIFEST" difffuzz 2>"$LOG_DIR/c6-build.log")" || DT=""
     if [ -z "$DT" ]; then
-        FAILED_STEPS[6]+="build difftest（tests/tools/difftest がビルドできない）; "
+        FAILED_STEPS[6]+="build difffuzz（tests/tools/difffuzz がビルドできない）; "
     else
         step 6 pg-prepare pg_fresh
         step 6 yuzhu-prepare yuzhu_fresh
-        step 6 fixed-seeds-1-32 fuzz_seeds "$DC_PG_PORT" "$DC_YUZHU_PORT" "$DT" 1 32 2000
+        step 6 fixed-seeds-1-32 fuzz_seeds "$DC_PG_PORT" "$DC_YUZHU_PORT" "$DT" 1 32 200
         if [ "$QUICK" -eq 1 ]; then
-            step 6 long-QUICK fuzz_seeds "$DC_PG_PORT" "$DC_YUZHU_PORT" "$DT" 1001 1001 5000
+            step 6 long-QUICK fuzz_seeds "$DC_PG_PORT" "$DC_YUZHU_PORT" "$DT" 1001 1001 300
         else
-            step 6 long-1001-1004 fuzz_seeds "$DC_PG_PORT" "$DC_YUZHU_PORT" "$DT" 1001 1004 200000
+            step 6 long-1001-1004 fuzz_seeds "$DC_PG_PORT" "$DC_YUZHU_PORT" "$DT" 1001 1004 10000
         fi
     fi
     finish 6

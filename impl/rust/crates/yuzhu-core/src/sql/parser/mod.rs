@@ -9,13 +9,20 @@
 //! Some syntax that has no room in the AST (row constructors, array
 //! subscripts, window functions, ...) is rejected here with `0A000`.
 
+mod copy;
 mod ddl;
+mod ddl_index;
 mod dml;
 mod expr;
 mod misc;
 mod select;
+mod seq;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_query;
+#[cfg(test)]
+mod tests_stmt;
 
 use super::ast::{Checkpoint, Expr, Ident, ObjectName, Statement};
 use super::lexer::tokenize;
@@ -82,7 +89,7 @@ pub(crate) struct Parser<'a> {
 /// ([`check_stack_depth`]). Later stages (analyzer, executor, `Drop` of the
 /// tree) recurse over the tree, so bounding its height here is what keeps a
 /// single query from overflowing a connection thread's stack.
-pub const MAX_NESTING_DEPTH: usize = 1000;
+pub const MAX_NESTING_DEPTH: usize = 5000;
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(sql: &'a str) -> Self {
@@ -97,6 +104,25 @@ impl<'a> Parser<'a> {
             depth: 0,
             height: 0,
         }
+    }
+
+    /// Parser position for backtracking (see [`Parser::restore`]).
+    pub(super) fn snapshot(&self) -> (usize, u32, usize, usize, usize) {
+        (
+            self.pos,
+            self.prev_end,
+            self.depth,
+            self.height,
+            self.defaults.len(),
+        )
+    }
+
+    pub(super) fn restore(&mut self, s: (usize, u32, usize, usize, usize)) {
+        self.pos = s.0;
+        self.prev_end = s.1;
+        self.depth = s.2;
+        self.height = s.3;
+        self.defaults.truncate(s.4);
     }
 
     // ----- nesting depth guard -----------------------------------------
@@ -382,6 +408,10 @@ impl<'a> Parser<'a> {
                 "delete" => self.parse_delete().map(Statement::Delete),
                 "create" => self.parse_create(),
                 "drop" => self.parse_drop(),
+                "alter" => self.parse_alter(),
+                "truncate" => self.parse_truncate(),
+                "vacuum" | "analyze" | "analyse" => self.parse_vacuum(),
+                "copy" => self.parse_copy(),
                 "begin" | "start" | "commit" | "end" | "rollback" | "abort" | "savepoint"
                 | "release" => self.parse_transaction().map(Statement::Transaction),
                 "set" => self.parse_set().map(Statement::Set),
@@ -392,11 +422,10 @@ impl<'a> Parser<'a> {
                     let span = self.advance().span;
                     Ok(Statement::Checkpoint(Checkpoint { span }))
                 }
-                "prepare" | "alter" | "truncate" | "grant" | "revoke" | "copy" | "execute"
-                | "deallocate" | "discard" | "listen" | "notify" | "unlisten" | "vacuum"
-                | "analyze" | "analyse" | "lock" | "declare" | "fetch" | "move" | "close"
-                | "comment" | "merge" | "call" | "do" | "reindex" | "cluster" | "security"
-                | "refresh" | "import" | "load" | "reassign" => {
+                "prepare" | "grant" | "revoke" | "execute" | "deallocate" | "discard"
+                | "listen" | "notify" | "unlisten" | "lock" | "declare" | "fetch" | "move"
+                | "close" | "comment" | "merge" | "call" | "do" | "reindex" | "cluster"
+                | "security" | "refresh" | "import" | "load" | "reassign" => {
                     Err(self.not_supported(&value.to_ascii_uppercase()))
                 }
                 _ => Err(self.unexpected()),

@@ -1,0 +1,332 @@
+-- case group_by_order
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select t.c, count(*) from t join u on t.a = u.a where u.d > 1 group by t.c order by 2 desc
+-- build
+Sort [#6:count DESC NULLS FIRST]
+  Project [#2:t.c #6:count]
+    Aggregate group=[#2:t.c] aggs=[#6 := count(*)]
+      Filter (#4:u.d > 1)
+        Join Inner on (#0:t.a = #3:u.a)
+          Get t [#0:t.a #1:t.b #2:t.c]
+          Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+Sort [#6:count DESC NULLS FIRST]
+  Project [#2:t.c #6:count]
+    Aggregate group=[#2:t.c] aggs=[#6 := count(*)]
+      Join Inner on (#0:t.a = #3:u.a)
+        Get t [#0:t.a #1:t.b #2:t.c]
+        Filter (#4:u.d > 1)
+          Get u [#3:u.a #4:u.d #5:u.e]
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+Sort [#6:count DESC NULLS FIRST]
+  Project [#2:t.c #6:count]
+    Aggregate group=[#2:t.c] aggs=[#6 := count(*)]
+      Join Inner on (#0:t.a = #3:u.a)
+        Project [#0:t.a #2:t.c]
+          Get t [#0:t.a #1:t.b #2:t.c]
+        Project [#3:u.a]
+          Filter (#4:u.d > 1)
+            Get u [#3:u.a #4:u.d #5:u.e]
+-- case right_join_swapped
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select * from t right join u on t.a = u.a
+-- build
+Project [#0:t.a #1:t.b #2:t.c #3:u.a #4:u.d #5:u.e]
+  Join Left on (#0:t.a = #3:u.a)
+    Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a #1:t.b #2:t.c #3:u.a #4:u.d #5:u.e]
+  Join Left on (#3:u.a = #0:t.a)
+    Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case scalar_subquery
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a, (select max(d) from u where u.a = t.a) from t
+-- build
+Project [#0:t.a #7 := {SubLink Scalar}]
+  ~ Project [#6:max]
+      Aggregate group=[] aggs=[#6 := max(#4:u.d)]
+        Filter (#3:u.a = #0:t.a)
+          Get u [#3:u.a #4:u.d #5:u.e]
+  Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case shared_cte
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+with x as materialized (select a from t) select * from x join x y on x.a = y.a
+-- build
+Project [#3:x.a #4:y.a]
+  Join Inner on (#3:x.a = #4:y.a)
+    CteScan x [#3:x.a]
+    CteScan x as y [#4:y.a]
+CTE x [#0] output=[#0:t.a]
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case union_order_limit
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t union select a from u order by 1 limit 3
+-- build
+Limit limit=CAST(3 AS bigint)
+  Sort [#6:a ASC NULLS LAST]
+    SetOp Union all=false cols=[#6:a] left=[#0:t.a] right=[#3:u.a]
+      Project [#0:t.a]
+        Get t [#0:t.a #1:t.b #2:t.c]
+      Project [#3:u.a]
+        Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+Limit limit=3
+  Sort [#6:a ASC NULLS LAST]
+    SetOp Union all=false cols=[#6:a] left=[#0:t.a] right=[#3:u.a]
+      Project [#0:t.a]
+        Get t [#0:t.a #1:t.b #2:t.c]
+      Project [#3:u.a]
+        Get u [#3:u.a #4:u.d #5:u.e]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case distinct_on
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select distinct on (a, b) a, b, c from t order by a
+-- build
+Distinct on=[#0:t.a, #1:t.b]
+  Sort [#0:t.a ASC NULLS LAST, #1:t.b ASC NULLS LAST]
+    Project [#0:t.a #1:t.b #2:t.c]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case pk_group_dependent
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select id, v from p group by id
+-- build
+Project [#0:p.id #1:p.v]
+  Aggregate group=[#0:p.id #1:p.v] aggs=[]
+    Get p [#0:p.id #1:p.v]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case values
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+values (1, 2), (3, 4)
+-- build
+Values rows=2 [#0:*VALUES*.column1 #1:*VALUES*.column2] (1, 2), (3, 4)
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case function_scan
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select * from generate_series(1, 3) g where g > 1
+-- build
+Project [#0:g.g]
+  Filter (#0:g.g > 1)
+    FunctionScan generate_series(1, 3) as g [#0:g.g]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case delete_using
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+delete from t using u where t.a = u.a and u.d = 1
+-- build
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Filter ((#0:t.a = #4:u.a) AND (#5:u.d = 1))
+      Join Inner
+        Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+        Get u [#4:u.a #5:u.d #6:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Join Inner on (#0:t.a = #4:u.a)
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+      Filter (#5:u.d = 1)
+        Get u [#4:u.a #5:u.d #6:u.e]
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Join Inner on (#0:t.a = #4:u.a)
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+      Project [#4:u.a]
+        Filter (#5:u.d = 1)
+          Get u [#4:u.a #5:u.d #6:u.e]

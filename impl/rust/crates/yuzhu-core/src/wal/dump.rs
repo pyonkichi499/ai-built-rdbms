@@ -135,6 +135,9 @@ fn desc(rec: &DecodedRecord) -> String {
         RmgrId::Xact => xact_desc(rec),
         RmgrId::Smgr => smgr_desc(rec),
         RmgrId::Heap => heap_desc(rec),
+        // 各モジュールの `describe`（本実装は B1 / Q1）。
+        RmgrId::Btree => crate::storage::btree::wal::describe(rec),
+        RmgrId::Seq => crate::storage::sequence::describe(rec),
     }
 }
 

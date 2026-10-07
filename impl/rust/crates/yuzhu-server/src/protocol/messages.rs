@@ -50,6 +50,19 @@ pub enum ExtendedKind {
 }
 
 impl ExtendedKind {
+    /// The message type byte.
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::Parse => b'P',
+            Self::Bind => b'B',
+            Self::Describe => b'D',
+            Self::Execute => b'E',
+            Self::Close => b'C',
+            Self::Flush => b'H',
+            Self::FunctionCall => b'F',
+        }
+    }
+
     /// Maps a message type byte to an extended-query kind.
     pub fn from_tag(tag: u8) -> Option<Self> {
         Some(match tag {
@@ -76,6 +89,13 @@ pub enum FrontendMessage {
     Sync,
     /// One of `P B D E C H F` (body discarded).
     Extended(ExtendedKind),
+    /// `d`: CopyData (raw bytes of a `COPY FROM STDIN` stream).
+    CopyData(Vec<u8>),
+    /// `c`: CopyDone.
+    CopyDone,
+    /// `f`: CopyFail with the client's message (empty if it is not valid
+    /// UTF-8 or not NUL terminated).
+    CopyFail(String),
     /// Any other type byte (body discarded).
     Unknown(u8),
 }
@@ -108,6 +128,16 @@ pub struct ErrorFields<'a> {
     pub hint: Option<&'a str>,
     /// `P`: 1-based character position in the query string.
     pub position: Option<u32>,
+    /// `W`: context (e.g. `COPY t, line 3`).
+    pub context: Option<&'a str>,
+    /// `s`: schema name.
+    pub schema: Option<&'a str>,
+    /// `t`: table name.
+    pub table: Option<&'a str>,
+    /// `c`: column name.
+    pub column: Option<&'a str>,
+    /// `n`: constraint name.
+    pub constraint: Option<&'a str>,
 }
 
 /// A backend message.
@@ -129,7 +159,13 @@ pub enum BackendMessage<'a> {
     CommandComplete(&'a str),
     /// `I` EmptyQueryResponse.
     EmptyQueryResponse,
-    /// `E` ErrorResponse.
+    /// `G` CopyInResponse: overall format (0 = text) and one format code
+    /// per column.
+    CopyInResponse {
+        format: u8,
+        column_formats: &'a [i16],
+    },
+    /// `E`ErrorResponse.
     ErrorResponse(ErrorFields<'a>),
     /// `N` NoticeResponse.
     NoticeResponse(ErrorFields<'a>),

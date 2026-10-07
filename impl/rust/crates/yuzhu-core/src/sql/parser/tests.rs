@@ -8,9 +8,9 @@ use super::{parse, parse_expr};
 use crate::error::{Error, Span, sqlstate};
 use crate::sql::ast::{
     BoolTestValue, CastSyntax, ColumnConstraintKind, Distinct, DropBehavior, Expr, InsertSource,
-    JoinConstraint, JoinKind, Literal, NullsOrder, ParamTarget, Query, QueryBody, Select,
-    SelectItem, SetArg, SetOperator, SetValue, SortDirection, Statement, TableConstraintKind,
-    TableElement, TableRef, TransactionKind, TransactionMode, TypeName,
+    JoinConstraint, JoinKind, Literal, NullsOrder, ParamTarget, Quantifier, Query, QueryBody,
+    Select, SelectItem, SetArg, SetOperator, SetValue, SortDirection, Statement,
+    TableConstraintKind, TableElement, TableRef, TransactionKind, TransactionMode, TypeName,
 };
 
 // ----- rendering --------------------------------------------------------
@@ -232,6 +232,35 @@ fn sexp(e: &Expr) -> String {
         Expr::NullIf { left, right, .. } => format!("(nullif {} {})", sexp(left), sexp(right)),
         Expr::SessionValue { kind, .. } => format!("<{}>", kind.column_name()),
         Expr::Default { .. } => "DEFAULT".into(),
+        Expr::QuantifiedSubquery {
+            expr,
+            op,
+            quantifier,
+            query,
+            ..
+        } => format!(
+            "({op}-{} {} {})",
+            if *quantifier == Quantifier::All {
+                "all"
+            } else {
+                "any"
+            },
+            sexp(expr),
+            query_str(query)
+        ),
+        Expr::Collate {
+            expr, collation, ..
+        } => format!(
+            "(collate {} {})",
+            sexp(expr),
+            collation
+                .parts
+                .iter()
+                .map(|p| p.value.clone())
+                .collect::<Vec<_>>()
+                .join(".")
+        ),
+        Expr::Row { items, .. } => format!("(row {})", list(items)),
     }
 }
 
@@ -296,6 +325,7 @@ fn table_str(t: &TableRef) -> String {
             }
             s
         }
+        TableRef::Function { name, args, .. } => format!("{}({})", name.name().value, list(args)),
         TableRef::Subquery { query, alias, .. } => format!(
             "[{}]{}",
             query_str(query),
@@ -743,15 +773,11 @@ fn subqueries() {
 
 #[test]
 fn not_supported_expressions() {
-    unsupported("SELECT (1, 2)");
     unsupported("SELECT a[1] FROM t");
     unsupported("SELECT ARRAY[1]");
-    unsupported("SELECT row(1, 2)");
-    unsupported("SELECT a COLLATE \"C\" FROM t");
     unsupported("SELECT count(*) OVER () FROM t");
     unsupported("SELECT f(x => 1)");
     unsupported("SELECT a SIMILAR TO 'x' FROM t");
-    unsupported("SELECT current_date");
     unsupported("SELECT count(t.*) FROM t");
 }
 
@@ -995,8 +1021,6 @@ fn joins_group_by_subqueries() {
     );
     syntax("SELECT * FROM a JOIN b", "", 23);
     syntax("SELECT * FROM (a)", ")", 17);
-    unsupported("SELECT * FROM generate_series(1, 3)");
-    unsupported("WITH x AS (SELECT 1) SELECT * FROM x");
     unsupported("SELECT * FROM t, LATERAL (SELECT 1) s");
 }
 
@@ -1091,11 +1115,17 @@ fn create_table_variants() {
     let TableElement::Column(a) = &ct.elements[0] else {
         panic!()
     };
-    assert_eq!(a.constraints[0].kind, ColumnConstraintKind::PrimaryKey);
+    assert!(matches!(
+        a.constraints[0].kind,
+        ColumnConstraintKind::PrimaryKey(_)
+    ));
     let TableElement::Column(b) = &ct.elements[1] else {
         panic!()
     };
-    assert_eq!(b.constraints[0].kind, ColumnConstraintKind::Unique);
+    assert!(matches!(
+        b.constraints[0].kind,
+        ColumnConstraintKind::Unique(_)
+    ));
     assert!(matches!(
         b.constraints[1].kind,
         ColumnConstraintKind::References { .. }
@@ -1103,7 +1133,7 @@ fn create_table_variants() {
     let TableElement::Constraint(pk) = &ct.elements[3] else {
         panic!()
     };
-    assert!(matches!(&pk.kind, TableConstraintKind::PrimaryKey(c) if c.len() == 2));
+    assert!(matches!(&pk.kind, TableConstraintKind::PrimaryKey(c) if c.columns.len() == 2));
     assert!(
         matches!(&ct.elements[5], TableElement::Constraint(c) if matches!(c.kind, TableConstraintKind::ForeignKey { .. }))
     );
@@ -1116,7 +1146,6 @@ fn create_table_variants() {
     syntax("CREATE TABLE t (a int CONSTRAINT c)", ")", 35);
     unsupported("CREATE TEMP TABLE t (a int)");
     unsupported("CREATE TABLE t AS SELECT 1");
-    unsupported("CREATE INDEX i ON t (a)");
     unsupported("CREATE TABLE t (a int GENERATED ALWAYS AS (1) STORED)");
     syntax("CREATE foo", "foo", 8);
 }
@@ -1134,7 +1163,6 @@ fn drop_table() {
     };
     assert!(!d.if_exists);
     assert_eq!(d.behavior, None);
-    unsupported("DROP INDEX i");
 }
 
 #[test]
@@ -1421,29 +1449,22 @@ fn explain() {
     let Statement::Explain(x) = one("EXPLAIN SELECT 1") else {
         panic!()
     };
-    assert!(!x.analyze && !x.verbose);
+    assert!(x.options.is_empty());
     assert!(matches!(*x.statement, Statement::Query(_)));
     let Statement::Explain(x) = one("EXPLAIN ANALYZE VERBOSE INSERT INTO t VALUES (1)") else {
         panic!()
     };
-    assert!(x.analyze && x.verbose);
+    assert_eq!(x.options.len(), 2);
     let Statement::Explain(x) = one("EXPLAIN (ANALYZE, COSTS OFF, FORMAT JSON) SELECT 1") else {
         panic!()
     };
-    assert!(x.analyze && !x.verbose);
-    assert_eq!(
-        err("EXPLAIN (foo) SELECT 1").message,
-        "unrecognized EXPLAIN option \"foo\""
-    );
+    assert_eq!(x.options[0].name, "analyze");
     syntax("EXPLAIN BEGIN", "BEGIN", 9);
 }
 
 #[test]
 fn unsupported_statements() {
-    unsupported("ALTER TABLE t ADD COLUMN b int");
-    unsupported("TRUNCATE t");
-    unsupported("VACUUM");
-    unsupported("COPY t FROM STDIN");
+    unsupported("GRANT SELECT ON t TO u");
 }
 
 #[test]
@@ -1578,19 +1599,19 @@ fn moderate_nesting_still_parses() {
 
 #[test]
 fn nesting_limit_on_a_big_stack() {
-    // With enough stack, recursion is bounded by MAX_NESTING_DEPTH (1000
+    // With enough stack, recursion is bounded by MAX_NESTING_DEPTH (5000
     // levels; `SELECT` and the target expression take two of them).
     std::thread::Builder::new()
-        .stack_size(64 << 20)
+        .stack_size(512 << 20)
         .spawn(|| {
-            crate::sql::set_stack_budget(56 << 20);
+            crate::sql::set_stack_budget(480 << 20);
             let parens = |n: usize| format!("SELECT {}1{}", "(".repeat(n), ")".repeat(n));
-            assert!(parse(&parens(990)).is_ok());
-            assert_too_deep(&parens(1000));
-            assert!(parse(&format!("SELECT {}true", "NOT ".repeat(990))).is_ok());
-            assert_too_deep(&format!("SELECT {}true", "NOT ".repeat(1000)));
-            assert!(parse(&format!("SELECT 1{}", "+1".repeat(990))).is_ok());
-            assert_too_deep(&format!("SELECT 1{}", "+1".repeat(1000)));
+            assert!(parse(&parens(4990)).is_ok());
+            assert_too_deep(&parens(5000));
+            assert!(parse(&format!("SELECT {}true", "NOT ".repeat(4990))).is_ok());
+            assert_too_deep(&format!("SELECT {}true", "NOT ".repeat(5000)));
+            assert!(parse(&format!("SELECT 1{}", "+1".repeat(4990))).is_ok());
+            assert_too_deep(&format!("SELECT 1{}", "+1".repeat(5000)));
         })
         .unwrap()
         .join()

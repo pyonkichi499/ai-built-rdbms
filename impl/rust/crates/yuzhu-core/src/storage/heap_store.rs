@@ -10,7 +10,7 @@ use crate::storage::heap::scan::decode_if_visible;
 use crate::storage::heap::tuple::{
     HEAP_KEYS_UPDATED, HEAP_XMAX_LOCK_BITS, TupleFlags, TupleHeader, form_tuple,
 };
-use crate::storage::heap::visibility::satisfies_update;
+use crate::storage::heap::visibility::{classify, satisfies_dirty, satisfies_update};
 use crate::storage::heap::wal::{
     HEAP_DELETE, HEAP_INIT_PAGE, HEAP_UPDATE, HeapDeleteMain, HeapUpdateMain,
 };
@@ -18,10 +18,11 @@ use crate::storage::page::LpFlags;
 use crate::storage::smgr::{ForkNumber, RelFileLocator};
 use crate::storage::smgr_wal::log_and_create;
 use crate::storage::{
-    HeapScan, HeapTuple, RelHandle, TableStore, TmResult, UpdateOutcome, WriteCtx,
+    DirtyResult, HeapScan, HeapTuple, RelHandle, TableStore, TmResult, TupleState, UpdateOutcome,
+    WriteCtx,
 };
-use crate::txn::Snapshot;
 use crate::txn::clog::Clog;
+use crate::txn::{Snapshot, Xid};
 use crate::types::{Datum, Tid};
 use crate::wal::{Lsn, RecordBuilder, RegFlags, RmgrId, Wal};
 
@@ -338,6 +339,53 @@ impl TableStore for HeapStore {
             .map_err(|e| page_error(e, rel.locator, tid.block))?;
         decode_if_visible(bytes, tid, rel, snap, &self.clog)
     }
+
+    fn begin_scan_all(&self, rel: &RelHandle) -> Result<HeapScan> {
+        let nblocks = self.pool.nblocks(rel.locator, ForkNumber::Main)?;
+        // SnapshotAny: `visible` returns true for every LP_NORMAL tuple.
+        let any = Snapshot {
+            xmin: Xid::INVALID,
+            xmax: Xid::INVALID,
+            xip: Vec::new(),
+            curcid: u32::MAX,
+            own_xid: None,
+        };
+        Ok(HeapScan::new(rel.clone(), any, nblocks))
+    }
+
+    fn tuple_state(&self, t: &HeapTuple, own: Option<Xid>) -> Result<TupleState> {
+        classify(&self.clog, t.xmin, t.xmax, own)
+    }
+
+    fn fetch_dirty(&self, rel: &RelHandle, own: Option<Xid>, tid: Tid) -> Result<DirtyResult> {
+        if !self.block_exists(rel.locator, tid)? {
+            return Ok(DirtyResult::Invisible);
+        }
+        let hdr = {
+            let buf = self.pool.read_buffer(tag(rel.locator, tid.block))?;
+            let guard = buf.read()?;
+            let page = &*guard;
+            if page.is_new() || tid.offset > page.max_offset() {
+                return Ok(DirtyResult::Invisible);
+            }
+            let id = page
+                .item_id(tid.offset)
+                .map_err(|e| page_error(e, rel.locator, tid.block))?;
+            if id.flags != LpFlags::Normal {
+                return Ok(DirtyResult::Invisible);
+            }
+            let bytes = page
+                .item(tid.offset)
+                .map_err(|e| page_error(e, rel.locator, tid.block))?;
+            TupleHeader::read(bytes)?
+        };
+        // Latch and pin are released; only now consult the clog.
+        satisfies_dirty(&self.clog, &hdr, own)
+    }
+
+    fn nblocks(&self, rel: &RelHandle) -> Result<u32> {
+        self.pool.nblocks(rel.locator, ForkNumber::Main)
+    }
 }
 
 #[cfg(test)]
@@ -388,6 +436,7 @@ mod tests {
                     AttrDesc::from_type(oid::TEXT),
                 ],
             }),
+            indexes: Arc::from([]),
         };
         Fixture { ts, rel }
     }
@@ -556,6 +605,89 @@ mod tests {
                 .any(|r| r.row[1] == Datum::Text("y".repeat(5000)))
         );
         assert_eq!(f.ts.stack.pool.pinned_frames(), 0);
+    }
+
+    #[test]
+    fn scan_all_returns_dead_versions_and_ignores_new_blocks() {
+        let f = fixture();
+        f.xid(4, Some(XidStatus::Committed));
+        f.xid(5, Some(XidStatus::Aborted));
+        f.xid(6, None);
+        let h = &f.ts.stack.heap;
+        let t1 = h.insert(&f.rel, &w(4, 0), &row(1, "a")).unwrap();
+        h.insert(&f.rel, &w(5, 0), &row(2, "aborted")).unwrap();
+        h.insert(&f.rel, &w(6, 0), &row(3, "own")).unwrap();
+        let snap = Fixture::snap(Some(6), 7, 5);
+        h.delete(&f.rel, &w(6, 1), &snap, t1).unwrap();
+        let mut s = h.begin_scan_all(&f.rel).unwrap();
+        for i in 0..30 {
+            h.insert(&f.rel, &w(6, 1), &row(i, &"q".repeat(900)))
+                .unwrap();
+        }
+        let mut got = vec![];
+        while let Some(t) = h.scan_next(&mut s).unwrap() {
+            got.push(t);
+        }
+        assert!(h.nblocks(&f.rel).unwrap() > 1);
+        assert!(got.len() >= 3);
+        assert_eq!(got[0].xmax, Xid(6));
+        assert_eq!(got[1].xmin, Xid(5));
+        assert_eq!(got[2].xmax, Xid::INVALID);
+        let own = Some(Xid(6));
+        assert_eq!(
+            h.tuple_state(&got[0], own).unwrap(),
+            TupleState::DeletedBySelf
+        );
+        assert_eq!(
+            h.tuple_state(&got[1], own).unwrap(),
+            TupleState::InsertAborted
+        );
+        assert_eq!(h.tuple_state(&got[2], own).unwrap(), TupleState::Live);
+        // blocks added after begin_scan_all are not read
+        assert!(got.len() < 33);
+    }
+
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn fetch_dirty_ignores_command_ids_and_bad_tids() {
+        let f = fixture();
+        f.xid(4, Some(XidStatus::Committed));
+        f.xid(5, Some(XidStatus::Aborted));
+        f.xid(6, None);
+        f.xid(7, Some(XidStatus::Committed));
+        let h = &f.ts.stack.heap;
+        let own = Some(Xid(6));
+        let a = h.insert(&f.rel, &w(4, 0), &row(1, "c")).unwrap();
+        let b = h.insert(&f.rel, &w(5, 0), &row(2, "ab")).unwrap();
+        let c = h.insert(&f.rel, &w(6, 9), &row(3, "own")).unwrap();
+        let d = h.insert(&f.rel, &w(4, 0), &row(4, "del")).unwrap();
+        let e = h.insert(&f.rel, &w(4, 0), &row(5, "delc")).unwrap();
+        h.delete(&f.rel, &w(6, 0), &Fixture::snap(Some(6), 8, 0), d)
+            .unwrap();
+        h.delete(&f.rel, &w(7, 0), &Fixture::snap(Some(7), 8, 0), e)
+            .unwrap();
+        let fd = |tid| h.fetch_dirty(&f.rel, own, tid).unwrap();
+        assert_eq!(fd(a), DirtyResult::Visible);
+        assert_eq!(fd(b), DirtyResult::Invisible);
+        assert_eq!(fd(c), DirtyResult::Visible);
+        assert_eq!(fd(d), DirtyResult::Invisible);
+        assert_eq!(fd(e), DirtyResult::Invisible);
+        for tid in [
+            Tid {
+                block: 9,
+                offset: 1,
+            },
+            Tid {
+                block: 0,
+                offset: 0,
+            },
+            Tid {
+                block: 0,
+                offset: 200,
+            },
+        ] {
+            assert_eq!(fd(tid), DirtyResult::Invisible);
+        }
     }
 
     #[test]

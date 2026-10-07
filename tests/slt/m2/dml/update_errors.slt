@@ -81,16 +81,14 @@ SELECT a, b FROM upd_x_t
 ----
 1 x
 
-# UPDATE ... FROM / DELETE ... USING は M2 の範囲外（PostgreSQL では成功するので yuzhu だけで確かめる）
+# UPDATE ... FROM / DELETE ... USING は M4 で実装済み（空の表との結合なので 0 行）
 statement ok
 CREATE TABLE upd_x_u (a int)
 
-onlyif yuzhu
-statement error (0A000)
+statement ok
 UPDATE upd_x_t SET a = upd_x_u.a FROM upd_x_u
 
-onlyif yuzhu
-statement error (0A000)
+statement ok
 DELETE FROM upd_x_t USING upd_x_u WHERE upd_x_t.a = upd_x_u.a
 
 statement ok

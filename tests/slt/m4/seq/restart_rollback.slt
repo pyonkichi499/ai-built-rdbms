@@ -1,0 +1,95 @@
+# ALTER SEQUENCE .. RESTART と TRUNCATE .. RESTART IDENTITY はトランザクショナル（ROLLBACK で戻る）
+
+statement ok
+CREATE TABLE sq_rr_t (id serial PRIMARY KEY, v text)
+
+statement ok
+INSERT INTO sq_rr_t (v) VALUES ('a'), ('b'), ('c')
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE sq_rr_t RESTART IDENTITY
+
+statement ok
+ROLLBACK
+
+# 表のデータが残るなら id も巻き戻らない（一意違反にならない）
+statement ok
+INSERT INTO sq_rr_t (v) VALUES ('d')
+
+query IT
+SELECT id, v FROM sq_rr_t ORDER BY id
+----
+1 a
+2 b
+3 c
+4 d
+
+# COMMIT した TRUNCATE .. RESTART IDENTITY は戻らない
+statement ok
+TRUNCATE sq_rr_t RESTART IDENTITY
+
+statement ok
+INSERT INTO sq_rr_t (v) VALUES ('e')
+
+query IT
+SELECT id, v FROM sq_rr_t
+----
+1 e
+
+statement ok
+CREATE SEQUENCE sq_rr_s START 100
+
+query I
+SELECT nextval('sq_rr_s')
+----
+100
+
+statement ok
+BEGIN
+
+statement ok
+ALTER SEQUENCE sq_rr_s RESTART WITH 500
+
+query I
+SELECT nextval('sq_rr_s')
+----
+500
+
+statement ok
+ROLLBACK
+
+query I
+SELECT nextval('sq_rr_s')
+----
+101
+
+statement ok
+BEGIN
+
+statement ok
+ALTER SEQUENCE sq_rr_s INCREMENT BY 10
+
+statement ok
+ROLLBACK
+
+query I
+SELECT nextval('sq_rr_s')
+----
+102
+
+statement ok
+ALTER SEQUENCE sq_rr_s RESTART WITH 500
+
+query I
+SELECT nextval('sq_rr_s')
+----
+500
+
+statement ok
+DROP TABLE sq_rr_t
+
+statement ok
+DROP SEQUENCE sq_rr_s

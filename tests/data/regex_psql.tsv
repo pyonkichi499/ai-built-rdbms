@@ -1,0 +1,2728 @@
+^(foo.*)$		foo	t
+^(foo.*)$		foobar	t
+^(foo.*)$		xfoo	f
+^(foo.)$		foox	t
+^(foo.)$		foo	f
+^(foo.)$		fooxy	f
+^(Foo\\.Bar)$		Foo.Bar	t
+^(Foo\\.Bar)$		FooxBar	f
+^(t\\$)$		t$	t
+^(t\\$)$		t	f
+^((x|y))$		x	t
+^((x|y))$		y	t
+^((x|y))$		xy	f
+^([a-c].*)$		apple	t
+^([a-c].*)$		dog	f
+^(a+b)$		aaab	t
+^(a+b)$		b	f
+^pg_		pg_catalog	t
+^pg_		xpg_	f
+^pg_toast		pg_toast_1	t
+^pg_toast		public	f
+^(.*)$			t
+^(.*)$		anything	t
+^(tbl_[0-9]+)$		tbl_42	t
+^(tbl_[0-9]+)$		tbl_x	f
+^(a\\|b)$		a|b	t
+^(a\\|b)$		a	f
+^(\\(x\\))$		(x)	t
+^(\\[x\\])$		[x]	t
+^(a\\*b)$		a*b	t
+^(a\\?b)$		a?b	t
+^(a\\+b)$		a+b	t
+^(a\\{2\\})$		a{2}	t
+^(a\\^b)$		a^b	t
+^(Foo)$		foo	f
+^(foo)$		FOO	f
+^(foo)$	i	FOO	t
+^(pub.*)$		public	t
+^(public)$		public	t
+a$		a\n	f
+a.b		a\nb	t
+(?n)^b		a\nb	t
+(?n)a.b		a\nb	f
+(?w)^b		a\nb	t
+(?p)^b		a\nb	f
+(?n)a$		a\nb	t
+(?w)a$		a\nb	t
+(?w)a.b		a\nb	t
+(?n)\\Ab		a\nb	f
+(?n)a\\Z		a\nb	f
+(?n)[^a]		\n	f
+(?p)[^a]		\n	f
+(?w)[^a]		\n	t
+(?n)\\D		\n	t
+(?n)[\\D]		\n	t
+(?n)\\W		\n	t
+(?n)[[:space:]]		\n	t
+é		é	t
+.		é	t
+\\w		é	f
+~*			t
+é	i	É	f
+(?i)a		A	t
+a	i	A	t
+(?c)a	i	A	f
+(?ic)a		A	f
+(?ci)a		A	t
+(?x) a b 		ab	t
+(?x) a\\ b		a b	t
+(?x)a # c\n b		ab	t
+(?x)a[#]b		a#b	t
+(?x)a[ ]b		a b	t
+(?x)a *b		aab	t
+(?x)a* ?		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x)a*? 		a	t
+(?x)a{2} ?		aa	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?xt)a b		a b	t
+(?tx)a b		a b	f
+(?q)a.b		a.b	t
+(?q)a.b		axb	f
+***=a.b		a.b	t
+***=a.b		axb	f
+***:a.b		axb	t
+***?		a	ERR:2201B:invalid regular expression: invalid regexp (reg version 0.8)
+***x		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?#x)a		a	t
+a(?#c)*		a	t
+(?z)		a	ERR:2201B:invalid regular expression: invalid embedded option
+(?i		a	ERR:2201B:invalid regular expression: invalid embedded option
+(?i:a)		a	ERR:2201B:invalid regular expression: invalid embedded option
+a(?i)		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?i)(?i)a		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?=a)		a	t
+(?<=a)		a	t
+(?<n>a)		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(		a	ERR:2201B:invalid regular expression: parentheses () not balanced
+)		a	ERR:2201B:invalid regular expression: parentheses () not balanced
+a)		a	ERR:2201B:invalid regular expression: parentheses () not balanced
+(a		a	ERR:2201B:invalid regular expression: parentheses () not balanced
+[		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[]		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[a-		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[[:alpha:]		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[[.a		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+a{2		a	ERR:2201B:invalid regular expression: braces {} not balanced
+a{1,		a	ERR:2201B:invalid regular expression: braces {} not balanced
+a{1,2		a	ERR:2201B:invalid regular expression: braces {} not balanced
+{1}		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
++		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+?a		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+a**		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+a*+		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+a?*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+^*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+$*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+a|*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+a{1,2}{3}		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+a{1}*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+\\y*		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(*)		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?:)		a	t
+a||b		a	t
+(|a)		a	t
+()*		a	t
+a{0}		a	t
+a{0,0}		a	t
+a{1}{		a	f
+a{2,1}		a	ERR:2201B:invalid regular expression: invalid repetition count(s)
+a{256}		a	ERR:2201B:invalid regular expression: invalid repetition count(s)
+a{255}		a	f
+a{1,256}		a	ERR:2201B:invalid regular expression: invalid repetition count(s)
+a{99999999999}		a	ERR:2201B:invalid regular expression: invalid repetition count(s)
+a{,2}		a{,2}	t
+a{x}		a{x}	t
+a{		a{	t
+{		{	t
+a}		a}	t
+a{1x}		a	ERR:2201B:invalid regular expression: invalid repetition count(s)
+a{1,x}		a	ERR:2201B:invalid regular expression: invalid repetition count(s)
+a{ 1}		a	f
+^{1}		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+$+		a	ERR:2201B:invalid regular expression: quantifier operand invalid
+x|^		a	t
+^^a		a	t
+a$$		a	t
+\\1		a	ERR:2201B:invalid regular expression: invalid backreference number
+\\9		a	ERR:2201B:invalid regular expression: invalid backreference number
+\\8		a	ERR:2201B:invalid regular expression: invalid backreference number
+\\89		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+(a)\\2		a	ERR:2201B:invalid regular expression: invalid backreference number
+\\x41		A	t
+\\x4		A	f
+\\x		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\xg		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+A		A	t
+\\u041		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\U00000041		A	t
+\\U0041		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\0		A	f
+\\012		\n	t
+\\0123		\n3	t
+\\101		A	t
+\\10		A	f
+\\18		A	f
+\\cA		A	f
+\\ca		A	f
+\\c		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\c1		A	f
+\\B		\\	t
+\\e		a	f
+\\a		a	f
+\\b		a	f
+\\f		a	f
+\\v		a	f
+\\h		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\q		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\_		_	t
+\\é		é	t
+\\ 		 	t
+\\-		-	t
+\\z		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\x{41}		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\xFFFFFFFF		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\x110000		A	f
+\\x00041		A	t
+\\U7fffffff		A	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+\\xD800		A	f
+[\\m]		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+[\\y]		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+[\\A]		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+[\\1]		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+[\\b]		a	f
+[\\q]		a	ERR:2201B:invalid regular expression: invalid escape \\ sequence
+[\\x41]		A	t
+[\\101]		A	t
+[\\0]		a	f
+[\\cA]		a	f
+[A]		A	t
+[a\\-z]		-	t
+[\\]]		]	t
+[a-\\x7a]		b	t
+[--a]		-	t
+[--a]		a	t
+[a--]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-a]		a	t
+[%--]		-	t
+[[.a.]-c]		b	t
+[[:alpha:]-z]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-[:alpha:]]		a	ERR:2201B:invalid regular expression: invalid character range
+[[.-.]]		-	t
+[[=a=]]		a	t
+[[=ab=]]		a	ERR:2201B:invalid regular expression: invalid collating element
+[[.ab.]]		a	ERR:2201B:invalid regular expression: invalid collating element
+[]a]		]	t
+[^]a]		b	t
+[[:word:]]		_	t
+[[:ascii:]]		a	t
+[[:Alpha:]]		a	ERR:2201B:invalid regular expression: invalid character class
+[\\d-z]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-\\d]		a	ERR:2201B:invalid regular expression: invalid character range
+[\\w-z]		a	ERR:2201B:invalid regular expression: invalid character range
+[z-a]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-c-e]		a	ERR:2201B:invalid regular expression: invalid character range
+[--]		-	t
+[a-]		-	t
+[-a]		-	t
+[^-a]		b	t
+[--+]		a	ERR:2201B:invalid regular expression: invalid character range
+[,--]		-	t
+[a-b-c]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-c-]		-	t
+[a-c--]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-c-a]		a	ERR:2201B:invalid regular expression: invalid character range
+[b--]		a	ERR:2201B:invalid regular expression: invalid character range
+[[.-.]-c]		b	t
+[[.hyphen.]]		-	t
+[[.space.]]		 	t
+[[.NUL.]]		a	f
+[[.HYPHEN.]]		a	ERR:2201B:invalid regular expression: invalid collating element
+[[.hyphen-minus.]]		-	t
+[[.tilde.]]		~	t
+[[.DEL.]]		a	f
+[[.zero.]]		0	t
+[[.solidus.]]		/	t
+[[.period.]]		.	t
+[[.underscore.]]		_	t
+[[.tab.]]		\n	f
+[[.newline.]]		\n	t
+[[.foo.]]		a	ERR:2201B:invalid regular expression: invalid collating element
+[[..]]		a	ERR:2201B:invalid regular expression: invalid collating element
+[[::]]		a	ERR:2201B:invalid regular expression: invalid character class
+[[:foo:]]		a	ERR:2201B:invalid regular expression: invalid character class
+[a-[=c=]]		a	ERR:2201B:invalid regular expression: invalid character range
+[[=a=]-c]		b	ERR:2201B:invalid regular expression: invalid character range
+[[:digit:]-]		-	t
+[[:digit:]-a]		a	ERR:2201B:invalid regular expression: invalid character range
+[\\d-]		-	t
+[\\d-a]		a	ERR:2201B:invalid regular expression: invalid character range
+[[]		[	t
+[a[]		[	t
+[[a]		a	t
+[[:]		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[[:a:]		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[[.]		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[[.].]]		]	t
+[[.[.]]		[	t
+[[=]		a	ERR:2201B:invalid regular expression: brackets [] not balanced
+[a-\\]]		a	ERR:2201B:invalid regular expression: invalid character range
+[a-^]		a	ERR:2201B:invalid regular expression: invalid character range
+[^^]		a	t
+[^^]		^	f
+[\\^]		^	t
+[\\D]		a	t
+[\\D]		1	f
+[\\D]		D	t
+[a-c\\D]		x	t
+[a-c\\D]		5	f
+[^\\D]		a	f
+[^\\D]		1	t
+[\\S]		 	f
+[\\W]		!	t
+[[:<:]]a		a	t
+a[[:>:]]		a	t
+\\mfoo\\M		a foo b	t
+\\mfoo\\M		afoob	f
+\\yfoo\\y		(foo)	t
+\\yfoo\\y		xfoo	f
+\\Yoo		foo	t
+\\Y			t
+\\y			f
+\\m			f
+\\M			f
+\\Y		-	t
+\\y		-	f
+\\y		a	t
+\\Y		a	f
+\\Afoo		foo	t
+foo\\Z		foo\n	f
+a^b		ab	f
+a$b		ab	f
+\\d+		ab12	t
+[[:upper:]]		aBc	t
+[[:upper:]]	i	abc	t
+[^a-c]	i	B	f
+[a-c]+	i	XBX	t
+^[a-c]{2,3}$		abc	t
+^[a-c]{2,3}$		abcd	f
+^(a|aa)+$		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!	f
+^(a+)+$		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!	f
+(a*)*b		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	f
+.		é	t
+.			f
+^.$		日	t
+^..$		日本	t
+\\w		_	t
+\\s		a b	t
+[[:space:]]		\n	t
+[[:blank:]]		a b	t
+[[:punct:]]		a!	t
+[[:print:]]		\n	f
+[[:graph:]]		 	f
+[[:cntrl:]]		a	f
+[[:xdigit:]]		g	f
+[[:alnum:]]		é	f
+[[:alpha:]]		é	f
+[[:lower:]]	i	A	t
+x{2}\\n*\\s		Ab\n2_	f
+x{2}\\n*\\s		^^ .1	f
+x{2}\\n*\\s		éa\n	f
+x{2}\\n*\\s		A	f
+(?p)(?:\\.*\\.*?\\d{2,})\\e{1,2}		caA	f
+(?p)(?:\\.*\\.*?\\d{2,})\\e{1,2}			f
+(?p)(?:\\.*\\.*?\\d{2,})\\e{1,2}		AbA	f
+(?p)(?:\\.*\\.*?\\d{2,})\\e{1,2}		a_xxa1	f
+[abc]?B{0}|\\Yé		aAA 	t
+[abc]?B{0}|\\Yé		_^ bA	t
+[abc]?B{0}|\\Yé		a	t
+[abc]?B{0}|\\Yé			t
+	i	-	t
+	i	$ac(	t
+	i	AA( 	t
+	i	éé	t
+$(?:){1,2}(?:\\S(\\w{2})+?)		2$	f
+$(?:){1,2}(?:\\S(\\w{2})+?)			f
+$(?:){1,2}(?:\\S(\\w{2})+?)		--xA^	f
+$(?:){1,2}(?:\\S(\\w{2})+?)		.x	f
+\\e\\D?		 a^.	f
+\\e\\D?		\n$	f
+\\e\\D?		B\t$A$(	f
+\\e\\D?			f
+(?i)\\x41+		\t.	f
+(?i)\\x41+		a	t
+(?i)\\x41+		b	f
+(?i)\\x41+		\nB_(	f
+(?c)[^a-c]{2,}|\\Y(?:[[:>:]][^a-c]{0}\\m)+	i	a \n(-a	t
+(?c)[^a-c]{2,}|\\Y(?:[[:>:]][^a-c]{0}\\m)+	i	é\t	t
+(?c)[^a-c]{2,}|\\Y(?:[[:>:]][^a-c]{0}\\m)+	i	Aé( 	t
+(?c)[^a-c]{2,}|\\Y(?:[[:>:]][^a-c]{0}\\m)+	i	AxA	t
+(?q)		_b.	t
+(?q)		.$1A-(	t
+(?q)		A^éA	t
+(?q)		aéc	t
+(?c)\\.\\.		- (c	f
+(?c)\\.\\.			f
+(?c)\\.\\.		$1$$.	f
+(?c)\\.\\.		A^A\n	f
+(?x)		$é1	t
+(?x)		B	t
+(?x)		a-_	t
+(?x)		ééBx	t
+c{1,2}([^[:space:]]??[a\\-z]{1,3}?)\\\\		$a_aA	f
+c{1,2}([^[:space:]]??[a\\-z]{1,3}?)\\\\		Ab.aa 	f
+c{1,2}([^[:space:]]??[a\\-z]{1,3}?)\\\\		-^a_b	f
+c{1,2}([^[:space:]]??[a\\-z]{1,3}?)\\\\		-c2a	f
+(?i)			t
+(?i)		$A.	t
+(?i)		(c	t
+(?i)		AAé	t
+(?w)	i	ééa	t
+(?w)	i	A	t
+(?w)	i		t
+(?w)	i		t
+\\D	i	c1(-a	t
+\\D	i	ac	t
+\\D	i	\na	t
+\\D	i	\t^\t2ac	t
+(?c)|$\\.[^a-c]		_c	t
+(?c)|$\\.[^a-c]		bcA_1a	t
+(?c)|$\\.[^a-c]		1(A AB	t
+(?c)|$\\.[^a-c]		Ax\n.	t
+(?q)A{2,}[^\\w]		(xA	f
+(?q)A{2,}[^\\w]		Acxa\na	f
+(?q)A{2,}[^\\w]		cccx^	f
+(?q)A{2,}[^\\w]		(x	f
+(){1,2}\\$?[a\\-z]?		1A2\t	t
+(){1,2}\\$?[a\\-z]?		\t$	t
+(){1,2}\\$?[a\\-z]?		$aA	t
+(){1,2}\\$?[a\\-z]?		2(1-^_	t
+(?c)\\Y		\n	t
+(?c)\\Y			t
+(?c)\\Y		\nxb\nax	t
+(?c)\\Y		_B	t
+(?s)		Ax2B1a	t
+(?s)		abx	t
+(?s)		B^	t
+(?s)		2A	t
+|[[.hyphen.]]?[[:digit:]_]	i	11(11é	t
+|[[.hyphen.]]?[[:digit:]_]	i	x\ncAA	t
+|[[.hyphen.]]?[[:digit:]_]	i	\t	t
+|[[.hyphen.]]?[[:digit:]_]	i		t
+(?x)(?:[^\\w]{0}|\\.*?[[=a=]]{2,})??[[:>:]]		2\t\t	t
+(?x)(?:[^\\w]{0}|\\.*?[[=a=]]{2,})??[[:>:]]		B1^BAé	t
+(?x)(?:[^\\w]{0}|\\.*?[[=a=]]{2,})??[[:>:]]		a1xB	t
+(?x)(?:[^\\w]{0}|\\.*?[[=a=]]{2,})??[[:>:]]		ba-b	t
+\\t{0,}(\\t{1,2}){2}		A	f
+\\t{0,}(\\t{1,2}){2}			f
+\\t{0,}(\\t{1,2}){2}			f
+\\t{0,}(\\t{1,2}){2}			f
+(?q)[]a](?:){0,}()?		x.	f
+(?q)[]a](?:){0,}()?		é$^2	f
+(?q)[]a](?:){0,}()?		a	f
+(?q)[]a](?:){0,}()?		x	f
+(?p)[[:<:]]\\D*[\\D]{0}|([\\D]-?)	i		f
+(?p)[[:<:]]\\D*[\\D]{0}|([\\D]-?)	i	 \té(é	t
+(?p)[[:<:]]\\D*[\\D]{0}|([\\D]-?)	i	aA	t
+(?p)[[:<:]]\\D*[\\D]{0}|([\\D]-?)	i	\té  x	t
+(?x)			t
+(?x)		2éb	t
+(?x)		bx\nBA	t
+(?x)		  	t
+(?n)([\\D]*?(2?|)\\m)*? *?		$A	t
+(?n)([\\D]*?(2?|)\\m)*? *?		_a\n	t
+(?n)([\\D]*?(2?|)\\m)*? *?			t
+(?n)([\\D]*?(2?|)\\m)*? *?		a-B.$	t
+		aac	t
+			t
+		21($	t
+		ax\né	t
+(?q)[[:<:]][a-c1]{2}b{1,3}?			f
+(?q)[[:<:]][a-c1]{2}b{1,3}?		B.\t$	f
+(?q)[[:<:]][a-c1]{2}b{1,3}?		1A1	f
+(?q)[[:<:]][a-c1]{2}b{1,3}?		_ $	f
+(?w)|\\t{0}\\n{0,}\\${0,}		c	t
+(?w)|\\t{0}\\n{0,}\\${0,}			t
+(?w)|\\t{0}\\n{0,}\\${0,}		\n\n\taA	t
+(?w)|\\t{0}\\n{0,}\\${0,}			t
+[^a-c]{2}[[:>:]]		c	f
+[^a-c]{2}[[:>:]]		x\n\n	f
+[^a-c]{2}[[:>:]]		 \n^	f
+[^a-c]{2}[[:>:]]			f
+(?p)		A\n-	t
+(?p)		^a	t
+(?p)		\ncB(_	t
+(?p)		1AB^_	t
+(?:){0,}[^[:space:]][\\d-]{1,3}?		\tA12-	t
+(?:){0,}[^[:space:]][\\d-]{1,3}?		c$x	f
+(?:){0,}[^[:space:]][\\d-]{1,3}?			f
+(?:){0,}[^[:space:]][\\d-]{1,3}?		_ \t2cA	f
+(?i) 		(	f
+(?i) 			f
+(?i) 		AA Aa\n	t
+(?i) 		^a.A	f
+(?i)		.A\t	t
+(?i)			t
+(?i)		AAb	t
+(?i)		a\n\na	t
+(?s)\\M([^a-c]{1,2}([^[:space:]]{0}\\S{2,}\\W{0})+(\\Z\\e??)*?){2,}		(x^A	f
+(?s)\\M([^a-c]{1,2}([^[:space:]]{0}\\S{2,}\\W{0})+(\\Z\\e??)*?){2,}		._-_	f
+(?s)\\M([^a-c]{1,2}([^[:space:]]{0}\\S{2,}\\W{0})+(\\Z\\e??)*?){2,}		-.$A	f
+(?s)\\M([^a-c]{1,2}([^[:space:]]{0}\\S{2,}\\W{0})+(\\Z\\e??)*?){2,}		$.	f
+(?p)((\\(\\m\\A)??\\e{2}\\n*){2}		BA	f
+(?p)((\\(\\m\\A)??\\e{2}\\n*){2}		1aax-	f
+(?p)((\\(\\m\\A)??\\e{2}\\n*){2}		\nA aa	f
+(?p)((\\(\\m\\A)??\\e{2}\\n*){2}		a.(x	f
+(?p)|[]a]{1,3}?c{0,}([a-c1]{1,2})			t
+(?p)|[]a]{1,3}?c{0,}([a-c1]{1,2})			t
+(?p)|[]a]{1,3}?c{0,}([a-c1]{1,2})		b _	t
+(?p)|[]a]{1,3}?c{0,}([a-c1]{1,2})		_A	t
+(c+)	i	Ab	f
+(c+)	i		f
+(c+)	i	Ac	t
+(c+)	i	(A	f
+(?c)((?:[^[:space:]][^a-c]{1,2}\\A)(?:\\101{1,2}){0,}(\\D+)+?)?		\tB$\tb(	t
+(?c)((?:[^[:space:]][^a-c]{1,2}\\A)(?:\\101{1,2}){0,}(\\D+)+?)?		c-\tb	t
+(?c)((?:[^[:space:]][^a-c]{1,2}\\A)(?:\\101{1,2}){0,}(\\D+)+?)?		A-(-AA	t
+(?c)((?:[^[:space:]][^a-c]{1,2}\\A)(?:\\101{1,2}){0,}(\\D+)+?)?		-a	t
+(?s)\\W{1,3}?$		BB éA	f
+(?s)\\W{1,3}?$		^é-Ax-	t
+(?s)\\W{1,3}?$		\n	t
+(?s)\\W{1,3}?$			f
+(?i)	i	_a-^1	t
+(?i)	i	A\t	t
+(?i)	i	2	t
+(?i)	i		t
+(?c)[^a-c]		A\n\n($^	t
+(?c)[^a-c]		AcbA	t
+(?c)[^a-c]		\t	t
+(?c)[^a-c]		_A\ta1b	t
+(?c)\\\\1{2,}|\\e{0,}1{0,}		abx2	t
+(?c)\\\\1{2,}|\\e{0,}1{0,}		1	t
+(?c)\\\\1{2,}|\\e{0,}1{0,}		^	t
+(?c)\\\\1{2,}|\\e{0,}1{0,}		  A	t
+(?q)[[:alpha:]]?b*|			f
+(?q)[[:alpha:]]?b*|		(	f
+(?q)[[:alpha:]]?b*|		b.	f
+(?q)[[:alpha:]]?b*|		xb 	f
+A\\\\	i	c(1	f
+A\\\\	i	Aa-é$	f
+A\\\\	i	AxABa	f
+A\\\\	i		f
+(?s)(?:[\\d-]|\\x41)+\\A		A1-A	f
+(?s)(?:[\\d-]|\\x41)+\\A		\t-	f
+(?s)(?:[\\d-]|\\x41)+\\A		c_2Aa	f
+(?s)(?:[\\d-]|\\x41)+\\A		a(_	f
+(?p)(?:$|)*|		$_$A(	t
+(?p)(?:$|)*|		$c.	t
+(?p)(?:$|)*|		A	t
+(?p)(?:$|)*|		-b_2	t
+(?x)a*?A{1,3}?		\tBxax 	f
+(?x)a*?A{1,3}?		 AAx\t.	t
+(?x)a*?A{1,3}?		\n12	f
+(?x)a*?A{1,3}?		a\n	f
+(?n)\\S		.$A_cA	t
+(?n)\\S		A1x1B	t
+(?n)\\S			f
+(?n)\\S		1a	t
+(?c)[abc]{1,3}?\\Y\\s{1,2}|1+$\\x41+		Ac A 	f
+(?c)[abc]{1,3}?\\Y\\s{1,2}|1+$\\x41+		AAxB\tb	f
+(?c)[abc]{1,3}?\\Y\\s{1,2}|1+$\\x41+		xA	f
+(?c)[abc]{1,3}?\\Y\\s{1,2}|1+$\\x41+		(.aA	f
+(?n)\\({2,}\\d??|\\^{2,}([[.hyphen.]]+(|2\\y2{2}){1,3}?\\M)\\S{1,3}?		-\na	f
+(?n)\\({2,}\\d??|\\^{2,}([[.hyphen.]]+(|2\\y2{2}){1,3}?\\M)\\S{1,3}?		A	f
+(?n)\\({2,}\\d??|\\^{2,}([[.hyphen.]]+(|2\\y2{2}){1,3}?\\M)\\S{1,3}?		céx A	f
+(?n)\\({2,}\\d??|\\^{2,}([[.hyphen.]]+(|2\\y2{2}){1,3}?\\M)\\S{1,3}?		2a	f
+(?p)b{2}\\\\+?	i	 .b.a\t	f
+(?p)b{2}\\\\+?	i	.AAA	f
+(?p)b{2}\\\\+?	i	cA^	f
+(?p)b{2}\\\\+?	i	(._2b2	f
+\\d{0}\\m	i	.	f
+\\d{0}\\m	i	b(AB\t^	t
+\\d{0}\\m	i	-	f
+\\d{0}\\m	i	a	t
+(?i)\\A\\Y\\n|		x2BAA$	t
+(?i)\\A\\Y\\n|			t
+(?i)\\A\\Y\\n|		(A	t
+(?i)\\A\\Y\\n|		2\t	t
+(?n)			t
+(?n)			t
+(?n)			t
+(?n)			t
+(?s)^\\x41[a\\-z]+?		xa\t\n.	f
+(?s)^\\x41[a\\-z]+?		A_	f
+(?s)^\\x41[a\\-z]+?		AA\n 	f
+(?s)^\\x41[a\\-z]+?			f
+x*x		^A1A(	f
+x*x		$.	f
+x*x			f
+x*x		a.$	f
+(?p)|(c{1,2})*		2	t
+(?p)|(c{1,2})*		xc	t
+(?p)|(c{1,2})*		2A1	t
+(?p)|(c{1,2})*		(-aAAé	t
+(?p)		BA\tc\nc	t
+(?p)		A\naé$	t
+(?p)			t
+(?p)		A2^	t
+			t
+		A-a.	t
+		^	t
+		-x -	t
+(?p)b		2-béA2	t
+(?p)b		(	f
+(?p)b		(x(\té1	f
+(?p)b		\n$	f
+		 - Aé	t
+		\n	t
+		bb$	t
+		A$1	t
+(?c)[]a](1{1,3}?\\A)(){0,}		^2A\t	f
+(?c)[]a](1{1,3}?\\A)(){0,}		\n$.Aa	f
+(?c)[]a](1{1,3}?\\A)(){0,}		-.1aB	f
+(?c)[]a](1{1,3}?\\A)(){0,}		A1-AA	f
+(?:(A\\101{1,3}?^)?)??|\\e{1,2}		aax\t^	t
+(?:(A\\101{1,3}?^)?)??|\\e{1,2}		\na_\t -	t
+(?:(A\\101{1,3}?^)?)??|\\e{1,2}		\t_11A	t
+(?:(A\\101{1,3}?^)?)??|\\e{1,2}		1-Aé.	t
+[[.hyphen.]]{2,}|		\n(2x2^	t
+[[.hyphen.]]{2,}|		x^ A	t
+[[.hyphen.]]{2,}|			t
+[[.hyphen.]]{2,}|		Ax_c	t
+(?n)		\tcA	t
+(?n)		ca	t
+(?n)		.^^($	t
+(?n)		(x	t
+|[[:digit:]_]*		_\ta$	t
+|[[:digit:]_]*		(_cc	t
+|[[:digit:]_]*		-^aa1a	t
+|[[:digit:]_]*		b$	t
+\\e??|(\\t{1,3}?\\Y\\t?)\\wb??		1b	t
+\\e??|(\\t{1,3}?\\Y\\t?)\\wb??		bA\n-^.	t
+\\e??|(\\t{1,3}?\\Y\\t?)\\wb??		$Aa\nB	t
+\\e??|(\\t{1,3}?\\Y\\t?)\\wb??		$ 21.A	t
+.+		B	t
+.+		-(B\t	t
+.+		x	t
+.+			f
+(?s)[[.hyphen.]]B+[\\d-]		bbA.^c	f
+(?s)[[.hyphen.]]B+[\\d-]		é^(b	f
+(?s)[[.hyphen.]]B+[\\d-]		Aé2\t\t-	f
+(?s)[[.hyphen.]]B+[\\d-]		b\t(A2	f
+((?:){1,2}é{2,}.{0}|x*1$)|		. _c^.	t
+((?:){1,2}é{2,}.{0}|x*1$)|		1\néé	t
+((?:){1,2}é{2,}.{0}|x*1$)|		$c2(_B	t
+((?:){1,2}é{2,}.{0}|x*1$)|		a é	t
+(?p)[[=a=]]*|\\Y\\x41+		(aA	t
+(?p)[[=a=]]*|\\Y\\x41+		_2($ 	t
+(?p)[[=a=]]*|\\Y\\x41+		.aA	t
+(?p)[[=a=]]*|\\Y\\x41+		A^B	t
+\\\\??		\nxxa	t
+\\\\??		x	t
+\\\\??		xA.\n 1	t
+\\\\??		x_	t
+(?p)\\Ab{2}-		- A	f
+(?p)\\Ab{2}-		-	f
+(?p)\\Ab{2}-		 Aé_	f
+(?p)\\Ab{2}-		__\tA$ 	f
+|[[:alpha:]]{0}\\s??a+?		c2\t	t
+|[[:alpha:]]{0}\\s??a+?			t
+|[[:alpha:]]{0}\\s??a+?		B(	t
+|[[:alpha:]]{0}\\s??a+?			t
+(?x)-{1,3}?x{0,}	i		f
+(?x)-{1,3}?x{0,}	i	b2A	f
+(?x)-{1,3}?x{0,}	i		f
+(?x)-{1,3}?x{0,}	i	(\nxx2	f
+(?s)[^a-c]{0,}\\y		ca1Bb1	t
+(?s)[^a-c]{0,}\\y		ax	t
+(?s)[^a-c]{0,}\\y		^b_2	t
+(?s)[^a-c]{0,}\\y		_\n2-aA	t
+(?x)		\n	t
+(?x)		-b	t
+(?x)		xA-.	t
+(?x)			t
+(?i)\\A\\S*?\\b|\\${0,}		$$	t
+(?i)\\A\\S*?\\b|\\${0,}		A\n 	t
+(?i)\\A\\S*?\\b|\\${0,}		A2aA$	t
+(?i)\\A\\S*?\\b|\\${0,}		1	t
+[^[:space:]]+[[=a=]]+?		aa$éA2	t
+[^[:space:]]+[[=a=]]+?		A\n	f
+[^[:space:]]+[[=a=]]+?		A_\n	f
+[^[:space:]]+[[=a=]]+?		A-(.	f
+(?n)[[=a=]]??(?:(|)?2\\w|\\W{2}\\m\\s*)|		1Axc	t
+(?n)[[=a=]]??(?:(|)?2\\w|\\W{2}\\m\\s*)|		xA	t
+(?n)[[=a=]]??(?:(|)?2\\w|\\W{2}\\m\\s*)|		$b\tA\n1	t
+(?n)[[=a=]]??(?:(|)?2\\w|\\W{2}\\m\\s*)|		aAcB	t
+			t
+		1c-	t
+		1-	t
+		éx	t
+(?s)(|([[:alpha:]]{0,}2{1,2}){2}\\\\[\\d-]?)??é\\x41{1,2}|[[:<:]](\\$(\\$[a\\-z]?\\A|){0,}\\S*?){0,}(|[a\\-z]{1,3}?)*?	i	-^b-	t
+(?s)(|([[:alpha:]]{0,}2{1,2}){2}\\\\[\\d-]?)??é\\x41{1,2}|[[:<:]](\\$(\\$[a\\-z]?\\A|){0,}\\S*?){0,}(|[a\\-z]{1,3}?)*?	i	.	f
+(?s)(|([[:alpha:]]{0,}2{1,2}){2}\\\\[\\d-]?)??é\\x41{1,2}|[[:<:]](\\$(\\$[a\\-z]?\\A|){0,}\\S*?){0,}(|[a\\-z]{1,3}?)*?	i	éx	t
+(?s)(|([[:alpha:]]{0,}2{1,2}){2}\\\\[\\d-]?)??é\\x41{1,2}|[[:<:]](\\$(\\$[a\\-z]?\\A|){0,}\\S*?){0,}(|[a\\-z]{1,3}?)*?	i	^a Ab	t
+(?w)[[:>:]][[:alpha:]]{2,}		bcaA\n	f
+(?w)[[:>:]][[:alpha:]]{2,}		_ (A.-	f
+(?w)[[:>:]][[:alpha:]]{2,}		xbé\n	f
+(?w)[[:>:]][[:alpha:]]{2,}			f
+[]a]+?\\W?[[:>:]]	i	A	t
+[]a]+?\\W?[[:>:]]	i		f
+[]a]+?\\W?[[:>:]]	i	A	t
+[]a]+?\\W?[[:>:]]	i	AéA(	t
+(?c)	i	c1^\tb2	t
+(?c)	i	c	t
+(?c)	i	éaB(Ab	t
+(?c)	i	 ^_c	t
+\\A\\W{1,2}|([[:alpha:]]{2}\\w*)		_	f
+\\A\\W{1,2}|([[:alpha:]]{2}\\w*)		.\t_1	t
+\\A\\W{1,2}|([[:alpha:]]{2}\\w*)		é(	t
+\\A\\W{1,2}|([[:alpha:]]{2}\\w*)		b.bxB	t
+		.c	t
+		 1(_	t
+		A_	t
+		\nB	t
+(?n)			t
+(?n)		c(.	t
+(?n)		Ba	t
+(?n)			t
+		\nbx1$	t
+		.A	t
+		xA	t
+		$Bé	t
+\\^?( {1,2}x+?(\\Y\\x41+?|b{1,2}){2}|([[:<:]]\\Y\\e)?[^a-c]{0,}\\Y){0}\\M		B	t
+\\^?( {1,2}x+?(\\Y\\x41+?|b{1,2}){2}|([[:<:]]\\Y\\e)?[^a-c]{0,}\\Y){0}\\M		cé(a$	t
+\\^?( {1,2}x+?(\\Y\\x41+?|b{1,2}){2}|([[:<:]]\\Y\\e)?[^a-c]{0,}\\Y){0}\\M		Bx	t
+\\^?( {1,2}x+?(\\Y\\x41+?|b{1,2}){2}|([[:<:]]\\Y\\e)?[^a-c]{0,}\\Y){0}\\M		éx\t$	t
+(?n)\\S{1,2}	i	1acAA$	t
+(?n)\\S{1,2}	i		f
+(?n)\\S{1,2}	i	Acc\n.	t
+(?n)\\S{1,2}	i		f
+(?c)		((a1-\n	t
+(?c)			t
+(?c)		-AA$$	t
+(?c)		.a_-	t
+(?i)		cxABx\n	t
+(?i)		 a\n	t
+(?i)		éa-\t	t
+(?i)		(céAA\n	t
+(?c)		Aa	t
+(?c)		2(Ac	t
+(?c)		b\n(	t
+(?c)		b^_Aé	t
+(?s)\\s{0}_+?\\D{1,3}?	i	AA(	f
+(?s)\\s{0}_+?\\D{1,3}?	i	a1x 	f
+(?s)\\s{0}_+?\\D{1,3}?	i	^Aa^aB	f
+(?s)\\s{0}_+?\\D{1,3}?	i		f
+\\wB{2,}((\\D??1)??\\W{0}(?:|\\D?\\${2}\\D{2}){2})??	i		f
+\\wB{2,}((\\D??1)??\\W{0}(?:|\\D?\\${2}\\D{2}){2})??	i	 ^2(A	f
+\\wB{2,}((\\D??1)??\\W{0}(?:|\\D?\\${2}\\D{2}){2})??	i	xxB	f
+\\wB{2,}((\\D??1)??\\W{0}(?:|\\D?\\${2}\\D{2}){2})??	i	x	f
+(?p)		AA\tAB	t
+(?p)		a$	t
+(?p)		\n	t
+(?p)		éx^ 	t
+(?w)\\n{2,}[[:<:]](?:[[=a=]][^\\w]+){0}		- -2é1	f
+(?w)\\n{2,}[[:<:]](?:[[=a=]][^\\w]+){0}		A_	f
+(?w)\\n{2,}[[:<:]](?:[[=a=]][^\\w]+){0}		x$ax.	f
+(?w)\\n{2,}[[:<:]](?:[[=a=]][^\\w]+){0}		.ccba	f
+\\.{0,}		aA^c1	t
+\\.{0,}		aB(_A\t	t
+\\.{0,}			t
+\\.{0,}		éaéx	t
+(?p)-??[^a-c]		-A	t
+(?p)-??[^a-c]		A.A	t
+(?p)-??[^a-c]			f
+(?p)-??[^a-c]		a1a\n	t
+[\\d-]{1,2}|	i		t
+[\\d-]{1,2}|	i	1xéxc	t
+[\\d-]{1,2}|	i	-A.^AA	t
+[\\d-]{1,2}|	i	 \n	t
+(?s)[]a]{1,3}?\\M(?:\\w\\\\{0}){2}		^a1	f
+(?s)[]a]{1,3}?\\M(?:\\w\\\\{0}){2}			f
+(?s)[]a]{1,3}?\\M(?:\\w\\\\{0}){2}		a2A	f
+(?s)[]a]{1,3}?\\M(?:\\w\\\\{0}){2}		\n_A	f
+(?p)\\D+?	i	\naB	t
+(?p)\\D+?	i	A.	t
+(?p)\\D+?	i	_Aé(\tc	t
+(?p)\\D+?	i	B_A	t
+(?x)[^\\w]{2,}\\w{1,2}|(\\y([[:alpha:]]*1??)??)?		^	t
+(?x)[^\\w]{2,}\\w{1,2}|(\\y([[:alpha:]]*1??)??)?		$\t	t
+(?x)[^\\w]{2,}\\w{1,2}|(\\y([[:alpha:]]*1??)??)?		.1	t
+(?x)[^\\w]{2,}\\w{1,2}|(\\y([[:alpha:]]*1??)??)?		aa(	t
+(?c)\\m\\^		cA	f
+(?c)\\m\\^		c2	f
+(?c)\\m\\^			f
+(?c)\\m\\^		\t(.Béc	f
+(?s)^(\\e{2,}([a-c1]+?\\D{0,}\\x41{2}|\\W\\^[abc]))		-Aé2.	f
+(?s)^(\\e{2,}([a-c1]+?\\D{0,}\\x41{2}|\\W\\^[abc]))		BaéA1c	f
+(?s)^(\\e{2,}([a-c1]+?\\D{0,}\\x41{2}|\\W\\^[abc]))		$é	f
+(?s)^(\\e{2,}([a-c1]+?\\D{0,}\\x41{2}|\\W\\^[abc]))		c\tA\t2	f
+(?c)	i	 -	t
+(?c)	i	2(B$x	t
+(?c)	i	é	t
+(?c)	i	.-b	t
+(?c)		_xA(	t
+(?c)		_	t
+(?c)		-	t
+(?c)		-x^	t
+\\M		_é_cA	t
+\\M		\n-\t\t	f
+\\M		A	t
+\\M		\n.A^A	t
+(?p)[[.hyphen.]]*?([a\\-z]?\\W{2}\\D)[a-c1]			f
+(?p)[[.hyphen.]]*?([a\\-z]?\\W{2}\\D)[a-c1]			f
+(?p)[[.hyphen.]]*?([a\\-z]?\\W{2}\\D)[a-c1]		AAbéA\t	f
+(?p)[[.hyphen.]]*?([a\\-z]?\\W{2}\\D)[a-c1]		2A2é	f
+(?n)[\\D]{2}		\n(xBb	t
+(?n)[\\D]{2}		é.	t
+(?n)[\\D]{2}		_^	t
+(?n)[\\D]{2}		\tA___	t
+(?p)[^\\w]?\\D*?|\\t{1,3}?	i	a.(b12	t
+(?p)[^\\w]?\\D*?|\\t{1,3}?	i	2a.	t
+(?p)[^\\w]?\\D*?|\\t{1,3}?	i	éxa\na	t
+(?p)[^\\w]?\\D*?|\\t{1,3}?	i	$Aé	t
+(?x)(?:)??[^a-c]{1,3}?\\d{2}			f
+(?x)(?:)??[^a-c]{1,3}?\\d{2}		(2\n	f
+(?x)(?:)??[^a-c]{1,3}?\\d{2}			f
+(?x)(?:)??[^a-c]{1,3}?\\d{2}		a.b-B.	f
+(?p)			t
+(?p)		\t\t	t
+(?p)		a$AB	t
+(?p)		-(a\n1b	t
+(?w)-|			t
+(?w)-|		\t_A(B	t
+(?w)-|		$ba	t
+(?w)-|		.(é	t
+([\\d-]{1,3}?[abc]{1,2}|\\\\{2,}){1,2}\\M		.(a	f
+([\\d-]{1,3}?[abc]{1,2}|\\\\{2,}){1,2}\\M		\n.Ac\t	f
+([\\d-]{1,3}?[abc]{1,2}|\\\\{2,}){1,2}\\M		A2\n-(	f
+([\\d-]{1,3}?[abc]{1,2}|\\\\{2,}){1,2}\\M		a2	f
+(?i)		éAaa	t
+(?i)		2	t
+(?i)		-	t
+(?i)			t
+[[:<:]][a-c1]*?$		b.é.$	f
+[[:<:]][a-c1]*?$		_c	f
+[[:<:]][a-c1]*?$		\n_A	f
+[[:<:]][a-c1]*?$		a(	f
+(?n)\\t??		é(é	t
+(?n)\\t??		\tc	t
+(?n)\\t??		a\n_\téc	t
+(?n)\\t??		21a	t
+(?x)\\x41+?	i	\tB\t-ca	t
+(?x)\\x41+?	i	xc\t A	t
+(?x)\\x41+?	i	$$A	t
+(?x)\\x41+?	i	.-_	f
+(?q)c\\y[[:>:]]		Bc\n	f
+(?q)c\\y[[:>:]]		\n2A_a\t	f
+(?q)c\\y[[:>:]]		_ (x\t	f
+(?q)c\\y[[:>:]]		$$ 	f
+(?x)	i	 1-	t
+(?x)	i	c	t
+(?x)	i	$c2_A	t
+(?x)	i	A 1	t
+^b{2}	i		f
+^b{2}	i	b_\né.	f
+^b{2}	i	$b$	f
+^b{2}	i	21	f
+\\y-?\\M		A2 (	t
+\\y-?\\M		c$1A	t
+\\y-?\\M		x\n1_	t
+\\y-?\\M			f
+[abc]??\\\\+|[^[:space:]]{1,2}x??\\D*?		BaAc	t
+[abc]??\\\\+|[^[:space:]]{1,2}x??\\D*?			f
+[abc]??\\\\+|[^[:space:]]{1,2}x??\\D*?			f
+[abc]??\\\\+|[^[:space:]]{1,2}x??\\D*?			f
+(?n)[a-c1](\\Y\\S*^|)+		(\n_é(	f
+(?n)[a-c1](\\Y\\S*^|)+			f
+(?n)[a-c1](\\Y\\S*^|)+		xABcb	t
+(?n)[a-c1](\\Y\\S*^|)+		acA	t
+(?x)$		a	t
+(?x)$			t
+(?x)$		 	t
+(?x)$		\t(ba-	t
+(-Bb){0,}		B\t2-AA	t
+(-Bb){0,}		 .aBa	t
+(-Bb){0,}		AaxB$^	t
+(-Bb){0,}			t
+[\\D]*[\\D]{1,2}			f
+[\\D]*[\\D]{1,2}		A aaa	t
+[\\D]*[\\D]{1,2}		aB-.	t
+[\\D]*[\\D]{1,2}		2c_	t
+		éab.	t
+		\n_	t
+		^.BA\t\n	t
+		^(x	t
+(?w)|[\\D]{0,}\\S{1,3}?\\A		éB(1	t
+(?w)|[\\D]{0,}\\S{1,3}?\\A		\tAxxA	t
+(?w)|[\\D]{0,}\\S{1,3}?\\A		(Bé$	t
+(?w)|[\\D]{0,}\\S{1,3}?\\A		a 	t
+(?q)		xb\n$\t_	t
+(?q)		c	t
+(?q)		$^	t
+(?q)		x	t
+		.aé1	t
+		-cA\n	t
+		\t^A.	t
+		xBA	t
+(?w)[[:<:]]		éB^Aa	t
+(?w)[[:<:]]		\t 1A	t
+(?w)[[:<:]]		$Acbc	t
+(?w)[[:<:]]		.a	t
+(?x).{0}		2(	t
+(?x).{0}		é	t
+(?x).{0}		Ax$	t
+(?x).{0}		_ ^-	t
+(?x)[]a]*?[\\d-]??[abc]		\txA^	f
+(?x)[]a]*?[\\d-]??[abc]			f
+(?x)[]a]*?[\\d-]??[abc]		a \tbb	t
+(?x)[]a]*?[\\d-]??[abc]		^	f
+(?:)*x{2,}		BA(1 	f
+(?:)*x{2,}		.AA	f
+(?:)*x{2,}			f
+(?:)*x{2,}		é$é$	f
+(?x)([[.hyphen.]]{2,}){1,2}\\m\\\\*		c\na	f
+(?x)([[.hyphen.]]{2,}){1,2}\\m\\\\*		c(b^	f
+(?x)([[.hyphen.]]{2,}){1,2}\\m\\\\*		2a.1.-	f
+(?x)([[.hyphen.]]{2,}){1,2}\\m\\\\*		c .	f
+(?w)\\m\\^{1,3}?		a	f
+(?w)\\m\\^{1,3}?		$xaa$\t	f
+(?w)\\m\\^{1,3}?		BA	f
+(?w)\\m\\^{1,3}?		aB_	f
+(?p)[]a]+?\\$|[^a-c]{1,2}A	i	^	f
+(?p)[]a]+?\\$|[^a-c]{1,2}A	i	\nac-^A	t
+(?p)[]a]+?\\$|[^a-c]{1,2}A	i	$1	f
+(?p)[]a]+?\\$|[^a-c]{1,2}A	i	$B(	f
+\\s+| \\101{2}[\\d-]{1,2}		^aab	f
+\\s+| \\101{2}[\\d-]{1,2}		A\n_aA	t
+\\s+| \\101{2}[\\d-]{1,2}			f
+\\s+| \\101{2}[\\d-]{1,2}			f
+(?w)(()*){2,}	i	c(^a	t
+(?w)(()*){2,}	i	$	t
+(?w)(()*){2,}	i	A	t
+(?w)(()*){2,}	i	A	t
+[[=a=]]{1,2}		-c2.cB	f
+[[=a=]]{1,2}		_a	t
+[[=a=]]{1,2}			f
+[[=a=]]{1,2}		a	t
+(?p)[a\\-z]{0,}			t
+(?p)[a\\-z]{0,}		\tBA	t
+(?p)[a\\-z]{0,}		\n.A	t
+(?p)[a\\-z]{0,}		1A^-(	t
+\\e		(Acxac	f
+\\e		bx__A	f
+\\e		\n\nA-1	f
+\\e		^\t	f
+(?n)\\n{2,}		a	f
+(?n)\\n{2,}		cA$B	f
+(?n)\\n{2,}			f
+(?n)\\n{2,}		2b2	f
+(?x)[[=a=]]{1,3}?|[a\\-z]?c		A_c c$	t
+(?x)[[=a=]]{1,3}?|[a\\-z]?c		1- 2bA	f
+(?x)[[=a=]]{1,3}?|[a\\-z]?c			f
+(?x)[[=a=]]{1,3}?|[a\\-z]?c		c-2cbA	t
+[]a]*		\t_	t
+[]a]*		$.1cAA	t
+[]a]*			t
+[]a]*		AéaaAx	t
+(?x).|[[:digit:]_]{1,3}?(?:(\\s)*?)		1a	t
+(?x).|[[:digit:]_]{1,3}?(?:(\\s)*?)		éAA1é	t
+(?x).|[[:digit:]_]{1,3}?(?:(\\s)*?)		2x	t
+(?x).|[[:digit:]_]{1,3}?(?:(\\s)*?)		A2	t
+(?p)[\\d-]		a$AA	f
+(?p)[\\d-]		^AB\n	f
+(?p)[\\d-]		.2A	t
+(?p)[\\d-]			f
+		\nca_	t
+			t
+		A$	t
+		Aé_.$	t
+(?w)([]a]*a_)+	i		f
+(?w)([]a]*a_)+	i	$-a2c2	f
+(?w)([]a]*a_)+	i	 1A\n	f
+(?w)([]a]*a_)+	i	aAA$	f
+|A\\e{1,2}2{1,2}	i	AA^2A\t	t
+|A\\e{1,2}2{1,2}	i	aAB \t_	t
+|A\\e{1,2}2{1,2}	i	é1	t
+|A\\e{1,2}2{1,2}	i	BA1	t
+|[abc]??b{0}\\d*		$	t
+|[abc]??b{0}\\d*		c	t
+|[abc]??b{0}\\d*			t
+|[abc]??b{0}\\d*		( A	t
+\\x41??([[:alpha:]]+\\Z\\x41{2})+?		_-2_(é	f
+\\x41??([[:alpha:]]+\\Z\\x41{2})+?		A$béx_	f
+\\x41??([[:alpha:]]+\\Z\\x41{2})+?		\t\ta-a\t	f
+\\x41??([[:alpha:]]+\\Z\\x41{2})+?		a	f
+(?s)A\\^*?$		\n	f
+(?s)A\\^*?$		é2	f
+(?s)A\\^*?$		^	f
+(?s)A\\^*?$		x	f
+(?w)(?:)\\y(cA{2,}){0,}		1_	t
+(?w)(?:)\\y(cA{2,}){0,}		-_	t
+(?w)(?:)\\y(cA{2,}){0,}		.1xaA	t
+(?w)(?:)\\y(cA{2,}){0,}		a(	t
+(?s)A{0,}\\d+?			f
+(?s)A{0,}\\d+?		_	f
+(?s)A{0,}\\d+?		_	f
+(?s)A{0,}\\d+?		é\tA	f
+(?p)\\y[[:<:]]			f
+(?p)\\y[[:<:]]		A^1a.a	t
+(?p)\\y[[:<:]]		^^éA	t
+(?p)\\y[[:<:]]		x-c^2.	t
+|\\Y		A2Axa	t
+|\\Y		$cb	t
+|\\Y		 2_ A-	t
+|\\Y		A12^	t
+(?w)[^a-c]		abAA	t
+(?w)[^a-c]		(b 2a	t
+(?w)[^a-c]		\t\n	t
+(?w)[^a-c]		-	t
+\\w[]a]{1,2}[abc]{2}		1$	f
+\\w[]a]{1,2}[abc]{2}		A\t_A	f
+\\w[]a]{1,2}[abc]{2}		-._	f
+\\w[]a]{1,2}[abc]{2}		1éA	f
+(?x) {1,3}?B+?			ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x) {1,3}?B+?			ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x) {1,3}?B+?		.x$	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x) {1,3}?B+?		aéAA	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?w)[abc]??\\e{0}\\y|\\.{0,}\\w(?:\\b|)?		x$(A_	t
+(?w)[abc]??\\e{0}\\y|\\.{0,}\\w(?:\\b|)?		^-^\n	f
+(?w)[abc]??\\e{0}\\y|\\.{0,}\\w(?:\\b|)?		(\n\n.A	t
+(?w)[abc]??\\e{0}\\y|\\.{0,}\\w(?:\\b|)?		^\t(	f
+(?c)	i	abaa	t
+(?c)	i	(é	t
+(?c)	i	$(\tx	t
+(?c)	i	aB$^A	t
+[[:alpha:]]			f
+[[:alpha:]]		\n	f
+[[:alpha:]]		\n1	f
+[[:alpha:]]		_	f
+([\\D]*\\Z|b? {2})*?|		$\t^\n	t
+([\\D]*\\Z|b? {2})*?|			t
+([\\D]*\\Z|b? {2})*?|			t
+([\\D]*\\Z|b? {2})*?|			t
+(?x)\\Z\\D{1,2}		1A1b1	f
+(?x)\\Z\\D{1,2}		(\nA-	f
+(?x)\\Z\\D{1,2}			f
+(?x)\\Z\\D{1,2}		\tA-.a_	f
+\\D|[^a-c]+\\t?\\.{2}	i	A\nAa	t
+\\D|[^a-c]+\\t?\\.{2}	i	baAaab	t
+\\D|[^a-c]+\\t?\\.{2}	i	ca$	t
+\\D|[^a-c]+\\t?\\.{2}	i	é\n	t
+\\A	i	a_	t
+\\A	i	_a	t
+\\A	i	Aa _2A	t
+\\A	i	(2	t
+(?p)|\\n(?:){2,}	i	$_	t
+(?p)|\\n(?:){2,}	i		t
+(?p)|\\n(?:){2,}	i		t
+(?p)|\\n(?:){2,}	i	B	t
+(?n)[[:>:]]|(?:)\\t?		b--c\t	t
+(?n)[[:>:]]|(?:)\\t?		2(	t
+(?n)[[:>:]]|(?:)\\t?		AB_A^	t
+(?n)[[:>:]]|(?:)\\t?		^	t
+[^a-c]{1,2}\\D{0}|		c.xb	t
+[^a-c]{1,2}\\D{0}|		b	t
+[^a-c]{1,2}\\D{0}|		a$-^	t
+[^a-c]{1,2}\\D{0}|			t
+(?i)\\x41		\tAA	t
+(?i)\\x41		\tax_\nb	t
+(?i)\\x41		Abxb	t
+(?i)\\x41		$(.a	t
+(?p)\\w*			t
+(?p)\\w*		éc\t.c	t
+(?p)\\w*		 \nxAcc	t
+(?p)\\w*			t
+()[abc]{1,2}(-{0,}\\A)		aaa	f
+()[abc]{1,2}(-{0,}\\A)		^_(	f
+()[abc]{1,2}(-{0,}\\A)		^ \t	f
+()[abc]{1,2}(-{0,}\\A)		 .1A	f
+(?c)A(|^\\D-{2}){0}		xx12AA	t
+(?c)A(|^\\D-{2}){0}		$\t _	f
+(?c)A(|^\\D-{2}){0}		$é\n	f
+(?c)A(|^\\D-{2}){0}			f
+(?q)[^[:space:]]*?A{1,2}		_2Bx1	f
+(?q)[^[:space:]]*?A{1,2}		Aa-é	f
+(?q)[^[:space:]]*?A{1,2}			f
+(?q)[^[:space:]]*?A{1,2}		b	f
+(?p)$[\\d-]{0}[[:digit:]_]{1,3}?		2A	f
+(?p)$[\\d-]{0}[[:digit:]_]{1,3}?		-(c\n	f
+(?p)$[\\d-]{0}[[:digit:]_]{1,3}?			f
+(?p)$[\\d-]{0}[[:digit:]_]{1,3}?		cB	f
+(?p)[a\\-z]*?		2	t
+(?p)[a\\-z]*?			t
+(?p)[a\\-z]*?		c	t
+(?p)[a\\-z]*?		 -(éAA	t
+\\Z_|^		$12x-A	t
+\\Z_|^		é-	t
+\\Z_|^			t
+\\Z_|^		A_^aA.	t
+\\^?2*?		a\t1	t
+\\^?2*?			t
+\\^?2*?		(\nab	t
+\\^?2*?		^a	t
+(?:(\\.{2}[[:>:]]|)*\\A)\\${1,3}?[[=a=]]??		bbA.aé	f
+(?:(\\.{2}[[:>:]]|)*\\A)\\${1,3}?[[=a=]]??		AcA\tc	f
+(?:(\\.{2}[[:>:]]|)*\\A)\\${1,3}?[[=a=]]??		cA\t	f
+(?:(\\.{2}[[:>:]]|)*\\A)\\${1,3}?[[=a=]]??		é$^Ab	f
+(?q)		c^x2B	t
+(?q)		.\n_x	t
+(?q)		\n	t
+(?q)		a.1aA^	t
+(?s)\\m\\D*[^[:space:]]{0,}	i	2	t
+(?s)\\m\\D*[^[:space:]]{0,}	i	A\n1$x-	t
+(?s)\\m\\D*[^[:space:]]{0,}	i	 x$-a$	t
+(?s)\\m\\D*[^[:space:]]{0,}	i	xBAA	t
+(?s)([[:digit:]_]+[^\\w]+[[:alpha:]]{0,}){1,2}a+?b?|\\.+\\w{0}		_Ac	f
+(?s)([[:digit:]_]+[^\\w]+[[:alpha:]]{0,}){1,2}a+?b?|\\.+\\w{0}		$a_-cA	f
+(?s)([[:digit:]_]+[^\\w]+[[:alpha:]]{0,}){1,2}a+?b?|\\.+\\w{0}		aé1$^b	f
+(?s)([[:digit:]_]+[^\\w]+[[:alpha:]]{0,}){1,2}a+?b?|\\.+\\w{0}		B\t	f
+\\([\\d-]\\b+?	i	2.$a	f
+\\([\\d-]\\b+?	i	B^$A\t 	f
+\\([\\d-]\\b+?	i	A	f
+\\([\\d-]\\b+?	i	.	f
+(?s)(_{2}\\n+$)			f
+(?s)(_{2}\\n+$)		Aa	f
+(?s)(_{2}\\n+$)			f
+(?s)(_{2}\\n+$)			f
+(?q)()		c	f
+(?q)()		^b \n	f
+(?q)()		$1Ax	f
+(?q)()		x-\t	f
+(?p)		A aa	t
+(?p)		11\nAx\n	t
+(?p)		$b	t
+(?p)		\té	t
+(?w)\\.|		(2	t
+(?w)\\.|		x	t
+(?w)\\.|			t
+(?w)\\.|		\t	t
+(?p)^(\\.??|)*?[\\d-]|	i	-2a-c	t
+(?p)^(\\.??|)*?[\\d-]|	i	a(a	t
+(?p)^(\\.??|)*?[\\d-]|	i		t
+(?p)^(\\.??|)*?[\\d-]|	i	a	t
+(?s)(?:b{0}\\S?|\\AA) {0}\\n{0}		.Aé-	t
+(?s)(?:b{0}\\S?|\\AA) {0}\\n{0}		$Ab	t
+(?s)(?:b{0}\\S?|\\AA) {0}\\n{0}		-x^A	t
+(?s)(?:b{0}\\S?|\\AA) {0}\\n{0}			t
+			t
+		bA1_-\t	t
+		\tc(_	t
+		A\n	t
+(?x)		A	t
+(?x)		2 Aa	t
+(?x)		(B-a_$	t
+(?x)		Bacéc	t
+		$A^1ba	t
+			t
+		bAx	t
+		2A.	t
+\\t\\B{1,3}?|\\e{2}			f
+\\t\\B{1,3}?|\\e{2}		1^2-a	f
+\\t\\B{1,3}?|\\e{2}		é1é2xé	f
+\\t\\B{1,3}?|\\e{2}		.1a1-	f
+(?p)\\M\\\\{2,}2+| {0}		é \nA	t
+(?p)\\M\\\\{2,}2+| {0}		cb $(	t
+(?p)\\M\\\\{2,}2+| {0}		A_1xa	t
+(?p)\\M\\\\{2,}2+| {0}		1_	t
+B+?[[:<:]]|\\$+(\\S{0,}c*\\B*?)\\W{2}		b.	f
+B+?[[:<:]]|\\$+(\\S{0,}c*\\B*?)\\W{2}		é.Aa(	f
+B+?[[:<:]]|\\$+(\\S{0,}c*\\B*?)\\W{2}		Abaa	f
+B+?[[:<:]]|\\$+(\\S{0,}c*\\B*?)\\W{2}		$bx	f
+(?i)		1ABaA	t
+(?i)		1	t
+(?i)		\n 	t
+(?i)			t
+(?x)		$A ( \t	t
+(?x)		AAaAx	t
+(?x)		x	t
+(?x)			t
+(?i)		^ BA1	t
+(?i)		Aax	t
+(?i)			t
+(?i)		_éa$^	t
+(?w)((?:\\101*x*?\\.+)b+\\t){0,}|		a.b_aA	t
+(?w)((?:\\101*x*?\\.+)b+\\t){0,}|		.-(	t
+(?w)((?:\\101*x*?\\.+)b+\\t){0,}|		\t	t
+(?w)((?:\\101*x*?\\.+)b+\\t){0,}|		x$	t
+(?i)|\\w(\\M(?:[^[:space:]]{1,2}){1,3}?^)*		\n\n	t
+(?i)|\\w(\\M(?:[^[:space:]]{1,2}){1,3}?^)*		_	t
+(?i)|\\w(\\M(?:[^[:space:]]{1,2}){1,3}?^)*		$B-	t
+(?i)|\\w(\\M(?:[^[:space:]]{1,2}){1,3}?^)*		a	t
+\\W*$([]a]*){1,2}		Bb-c	t
+\\W*$([]a]*){1,2}		$$b	t
+\\W*$([]a]*){1,2}		a\t_1	t
+\\W*$([]a]*){1,2}		1	t
+[[:<:]]\\({1,2}$		\t	f
+[[:<:]]\\({1,2}$		a\t_a2	f
+[[:<:]]\\({1,2}$		Ab	f
+[[:<:]]\\({1,2}$		B 1	f
+(?n)(?:\\b_?(1??\\w{1,2}\\s{1,2}){1,3}?)??		\tAA1aB	t
+(?n)(?:\\b_?(1??\\w{1,2}\\s{1,2}){1,3}?)??			t
+(?n)(?:\\b_?(1??\\w{1,2}\\s{1,2}){1,3}?)??		\tc\t	t
+(?n)(?:\\b_?(1??\\w{1,2}\\s{1,2}){1,3}?)??		cA	t
+(?p)\\t\\W{2,}\\y|[[:<:]][[:>:]]()		 b 2é	f
+(?p)\\t\\W{2,}\\y|[[:<:]][[:>:]]()		xaé.	f
+(?p)\\t\\W{2,}\\y|[[:<:]][[:>:]]()		$	f
+(?p)\\t\\W{2,}\\y|[[:<:]][[:>:]]()			f
+(?i)		é^\t_	t
+(?i)		cBABb	t
+(?i)		\t_\nbB	t
+(?i)		\n_a	t
+(?s)\\.{1,2}		_é\nx\n	f
+(?s)\\.{1,2}		c$1A	f
+(?s)\\.{1,2}		(	f
+(?s)\\.{1,2}		\n$B$	f
+(?p)c{1,3}?		2\n2\ta	f
+(?p)c{1,3}?		cA-	t
+(?p)c{1,3}?		-(	f
+(?p)c{1,3}?		éa^b	f
+(?p)()*?	i	a	t
+(?p)()*?	i	caxc	t
+(?p)()*?	i	\nA2A	t
+(?p)()*?	i	1	t
+(?p)\\^{1,3}?\\d[[:alpha:]]?		_éA.	f
+(?p)\\^{1,3}?\\d[[:alpha:]]?		\nc(Ac(	f
+(?p)\\^{1,3}?\\d[[:alpha:]]?		22B-\t	f
+(?p)\\^{1,3}?\\d[[:alpha:]]?		\n$ ABa	f
+(A){0}(\\Y1{1,3}?x)			f
+(A){0}(\\Y1{1,3}?x)		A	f
+(A){0}(\\Y1{1,3}?x)		bAc	f
+(A){0}(\\Y1{1,3}?x)		2aAé	f
+(?q)	i	A\tA\ta	t
+(?q)	i	-xx(A	t
+(?q)	i	$2B1	t
+(?q)	i	-cA	t
+(?w)\\101*|(?:-){2,} {1,2}		bé$b 	t
+(?w)\\101*|(?:-){2,} {1,2}		A\n	t
+(?w)\\101*|(?:-){2,} {1,2}		2	t
+(?w)\\101*|(?:-){2,} {1,2}		(aB\t	t
+(?p)	i	aa2 $	t
+(?p)	i	A	t
+(?p)	i		t
+(?p)	i		t
+(?i)[[:<:]]	i	$_  (	t
+(?i)[[:<:]]	i	x.x.A	t
+(?i)[[:<:]]	i	éB1\n\n^	t
+(?i)[[:<:]]	i		f
+[\\d-]?\\\\	i	acaA 	f
+[\\d-]?\\\\	i	é.AaA$	f
+[\\d-]?\\\\	i		f
+[\\d-]?\\\\	i	bbBAA	f
+(?s)	i	_c\n	t
+(?s)	i	b$\t(A	t
+(?s)	i	A-1b	t
+(?s)	i	xb$	t
+(?n)|[^a-c](\\Bc??)	i	\tB2$A	t
+(?n)|[^a-c](\\Bc??)	i		t
+(?n)|[^a-c](\\Bc??)	i	(xA\n_1	t
+(?n)|[^a-c](\\Bc??)	i	_Bcc$(	t
+(?i)		é\nxa	t
+(?i)		.	t
+(?i)		$x	t
+(?i)		A	t
+(?q)[[=a=]]*?-\\$		a\n	f
+(?q)[[=a=]]*?-\\$		cA-	f
+(?q)[[=a=]]*?-\\$		éab2	f
+(?q)[[=a=]]*?-\\$		b.AAa	f
+(\\Y|[^[:space:]]+\\.) {1,2}[a\\-z]{0,}		1$ac	f
+(\\Y|[^[:space:]]+\\.) {1,2}[a\\-z]{0,}		\n1	f
+(\\Y|[^[:space:]]+\\.) {1,2}[a\\-z]{0,}		b $$xc	f
+(\\Y|[^[:space:]]+\\.) {1,2}[a\\-z]{0,}		b2A.-1	f
+(?s)		a(.	t
+(?s)		2éA\nA	t
+(?s)			t
+(?s)			t
+\\S{2,}[[:alpha:]]??		1\taaéA	t
+\\S{2,}[[:alpha:]]??		\n(a é	t
+\\S{2,}[[:alpha:]]??		_x^	t
+\\S{2,}[[:alpha:]]??			f
+(?x)é{1,3}?		\nb2(_	f
+(?x)é{1,3}?		c$1A$c	f
+(?x)é{1,3}?			f
+(?x)é{1,3}?		B\n2	f
+(?c)c		B1	f
+(?c)c		a_B	f
+(?c)c		A	f
+(?c)c		^	f
+(?x)2{1,3}?\\e??|(|[\\D])+?1	i	-a$$Ax	f
+(?x)2{1,3}?\\e??|(|[\\D])+?1	i	1(\n$A	t
+(?x)2{1,3}?\\e??|(|[\\D])+?1	i	.21.	t
+(?x)2{1,3}?\\e??|(|[\\D])+?1	i	a2$cA-	t
+(?s)		2b	t
+(?s)		^(\n$xA	t
+(?s)		A A	t
+(?s)		_(c	t
+|c*		2	t
+|c*		2	t
+|c*		cA(.	t
+|c*		B\n^	t
+			t
+		A	t
+		x_	t
+		-\na	t
+(?n)b+?		11	f
+(?n)b+?		$-1	f
+(?n)b+?		2	f
+(?n)b+?		A	f
+x{0}	i	 _1(	t
+x{0}	i	_AA$c	t
+x{0}	i	A	t
+x{0}	i	\nc\n-c	t
+		b\t\nA	t
+		$ bA	t
+		é.^ 1$	t
+		a2AAé	t
+(?s)\\B+?(|\\M(\\y1+?\\m)){0}[^[:space:]]			f
+(?s)\\B+?(|\\M(\\y1+?\\m)){0}[^[:space:]]		$	f
+(?s)\\B+?(|\\M(\\y1+?\\m)){0}[^[:space:]]		^bB	f
+(?s)\\B+?(|\\M(\\y1+?\\m)){0}[^[:space:]]		é\né	f
+(){2,}			t
+(){2,}		b_A	t
+(){2,}		-x	t
+(){2,}		AbAA	t
+|(){2}(?:)		.AA(ca	t
+|(){2}(?:)		1.xé2	t
+|(){2}(?:)		AB	t
+|(){2}(?:)			t
+(?s)		__ 	t
+(?s)		^x  	t
+(?s)		a c é 	t
+(?s)		c-2caa	t
+(?q)\\101+?2|		A.^A^^	f
+(?q)\\101+?2|		2AA  a	f
+(?q)\\101+?2|			f
+(?q)\\101+?2|			f
+\\A		\t2-$	t
+\\A			t
+\\A			t
+\\A		-x	t
+(?c)|\\y[[:digit:]_]			t
+(?c)|\\y[[:digit:]_]		A A	t
+(?c)|\\y[[:digit:]_]		^(a	t
+(?c)|\\y[[:digit:]_]		éc-a2-	t
+(?p)\\A[^\\w]			f
+(?p)\\A[^\\w]		._a\t1^	t
+(?p)\\A[^\\w]			f
+(?p)\\A[^\\w]		AAabAa	f
+(?q)			t
+(?q)			t
+(?q)			t
+(?q)		2	t
+\\x41?\\s[[=a=]]??|[[:alpha:]]([]a]*){0}		2	f
+\\x41?\\s[[=a=]]??|[[:alpha:]]([]a]*){0}			f
+\\x41?\\s[[=a=]]??|[[:alpha:]]([]a]*){0}		a\t. 2	t
+\\x41?\\s[[=a=]]??|[[:alpha:]]([]a]*){0}		\t\n.A(	t
+(?q)[^a-c]??			f
+(?q)[^a-c]??		.	f
+(?q)[^a-c]??		b2	f
+(?q)[^a-c]??		a(B(	f
+(?w)		1	t
+(?w)		\tb$a\t 	t
+(?w)		A 	t
+(?w)		(	t
+(?w)[]a]\\.+?\\n{1,2}		\n$c\t\t^	f
+(?w)[]a]\\.+?\\n{1,2}			f
+(?w)[]a]\\.+?\\n{1,2}		A(b	f
+(?w)[]a]\\.+?\\n{1,2}		éxAébB	f
+		_\n	t
+		-A1	t
+		2B	t
+		\t2A-a1	t
+(?x)\\x41(\\101{1,2}){1,2}		$	f
+(?x)\\x41(\\101{1,2}){1,2}		a\n	f
+(?x)\\x41(\\101{1,2}){1,2}		(b	f
+(?x)\\x41(\\101{1,2}){1,2}		x.Bx-	f
+(?w)(1*?\\\\)*b\\s*?		a_AA	f
+(?w)(1*?\\\\)*b\\s*?		A2$	f
+(?w)(1*?\\\\)*b\\s*?		\tBé$ 	f
+(?w)(1*?\\\\)*b\\s*?		(	f
+(?c)	i	.c_.	t
+(?c)	i	\n	t
+(?c)	i	$x	t
+(?c)	i	\n^	t
+([abc])+?		_A^_	f
+([abc])+?		$(((	f
+([abc])+?			f
+([abc])+?		.é_^2	f
+(?q)[[:alpha:]]*\\M		c^\n\n	f
+(?q)[[:alpha:]]*\\M		 	f
+(?q)[[:alpha:]]*\\M		 Aé	f
+(?q)[[:alpha:]]*\\M		c$c	f
+[^[:space:]]*?(|){1,3}?-		.a$	f
+[^[:space:]]*?(|){1,3}?-		x2x	f
+[^[:space:]]*?(|){1,3}?-			f
+[^[:space:]]*?(|){1,3}?-		aa2-	t
+(?q)\\x41+?\\W{2,}		aBA	f
+(?q)\\x41+?\\W{2,}		c_(a.é	f
+(?q)\\x41+?\\W{2,}		Aa2(	f
+(?q)\\x41+?\\W{2,}		A	f
+(?q)\\B*?[[.hyphen.]]{0,}(\\M(){2})+|-c	i	^	f
+(?q)\\B*?[[.hyphen.]]{0,}(\\M(){2})+|-c	i	xcA	f
+(?q)\\B*?[[.hyphen.]]{0,}(\\M(){2})+|-c	i	é^B	f
+(?q)\\B*?[[.hyphen.]]{0,}(\\M(){2})+|-c	i	\tAA2x-	f
+(?s) ?|		A\nc.^	t
+(?s) ?|		1 _2	t
+(?s) ?|		$cx\né	t
+(?s) ?|		- x-b2	t
+(?w)c*?()+()		1Acc	t
+(?w)c*?()+()		^\n2\t	t
+(?w)c*?()+()		$	t
+(?w)c*?()+()		a_	t
+(?n)	i	_c1-é(	t
+(?n)	i	1aA	t
+(?n)	i	1	t
+(?n)	i	A$1a	t
+(?s)[^\\w]		12Bé$\n	t
+(?s)[^\\w]		AAx-	t
+(?s)[^\\w]		2BA1B2	f
+(?s)[^\\w]			f
+(?s)b+\\n*?|c??\\x41	i	A_ca	t
+(?s)b+\\n*?|c??\\x41	i	\n\nca\nA	t
+(?s)b+\\n*?|c??\\x41	i	bA\t	t
+(?s)b+\\n*?|c??\\x41	i	B1A\t(.	t
+\\^()+?(Bb{1,2}-{1,2}|(?:\\.+?[[:<:]])??\\y)		b- 	f
+\\^()+?(Bb{1,2}-{1,2}|(?:\\.+?[[:<:]])??\\y)		a$-	f
+\\^()+?(Bb{1,2}-{1,2}|(?:\\.+?[[:<:]])??\\y)		-$A(	f
+\\^()+?(Bb{1,2}-{1,2}|(?:\\.+?[[:<:]])??\\y)		A_Ac	f
+(?s)[\\d-]+		\t$	f
+(?s)[\\d-]+		-Ba$a	t
+(?s)[\\d-]+		_	f
+(?s)[\\d-]+		a	f
+(?c)[a\\-z]\\x41+?\\n{2}		a_2^	f
+(?c)[a\\-z]\\x41+?\\n{2}		_(\t-	f
+(?c)[a\\-z]\\x41+?\\n{2}		(.	f
+(?c)[a\\-z]\\x41+?\\n{2}			f
+		b  .A	t
+		2(	t
+			t
+		2a	t
+(?i)|		céébaA	t
+(?i)|		.A-$(	t
+(?i)|		éb( 	t
+(?i)|		Aa	t
+(?i)[]a]{0,}|(1*c{2,} ?)*?			t
+(?i)[]a]{0,}|(1*c{2,} ?)*?		aAéB	t
+(?i)[]a]{0,}|(1*c{2,} ?)*?		\n \t$$é	t
+(?i)[]a]{0,}|(1*c{2,} ?)*?		a	t
+(?w)^|\\101{0}	i	ébA	t
+(?w)^|\\101{0}	i	Bé	t
+(?w)^|\\101{0}	i	a.A	t
+(?w)^|\\101{0}	i	(2	t
+(?x)		^ 2BA	t
+(?x)		\n\n	t
+(?x)		$^B	t
+(?x)		c.(..	t
+(?s)\\M[^[:space:]]+A{1,3}?		b$xB	f
+(?s)\\M[^[:space:]]+A{1,3}?		\t	f
+(?s)\\M[^[:space:]]+A{1,3}?		B.aa	f
+(?s)\\M[^[:space:]]+A{1,3}?			f
+(?q)c{0,}|		xAa	f
+(?q)c{0,}|			f
+(?q)c{0,}|		éb	f
+(?q)c{0,}|		A\n\t\t	f
+(?n)^[]a]{2,}\\A|		B1	t
+(?n)^[]a]{2,}\\A|		c$\n 	t
+(?n)^[]a]{2,}\\A|		$. .2	t
+(?n)^[]a]{2,}\\A|		-a^_^_	t
+\\m\\.??c*?		2B	t
+\\m\\.??c*?		A2	t
+\\m\\.??c*?		aba	t
+\\m\\.??c*?		 ^A	t
+(?n)		_BB^a	t
+(?n)		c$.b_A	t
+(?n)		(-	t
+(?n)		2A	t
+(?s)B*[[=a=]]??		-2A1 a	t
+(?s)B*[[=a=]]??		$a	t
+(?s)B*[[=a=]]??		$c	t
+(?s)B*[[=a=]]??		(a$\ta	t
+(?n)((?:)+?\\\\{0,})()			t
+(?n)((?:)+?\\\\{0,})()		2 é(_	t
+(?n)((?:)+?\\\\{0,})()		12 $A	t
+(?n)((?:)+?\\\\{0,})()		$AA A	t
+(?q)\\A1{2,}\\y		x^	f
+(?q)\\A1{2,}\\y		$-	f
+(?q)\\A1{2,}\\y			f
+(?q)\\A1{2,}\\y			f
+(?i)			t
+(?i)			t
+(?i)		_b$^	t
+(?i)		AaxA	t
+(?s)([\\d-]{1,3}?[a\\-z]+?(\\.*?)+?)?			t
+(?s)([\\d-]{1,3}?[a\\-z]+?(\\.*?)+?)?		-A\tAA^	t
+(?s)([\\d-]{1,3}?[a\\-z]+?(\\.*?)+?)?		céB^$	t
+(?s)([\\d-]{1,3}?[a\\-z]+?(\\.*?)+?)?		1B^A^\n	t
+			t
+		\nc^AA	t
+			t
+		aéB\n2\t	t
+(?p)		$éA 	t
+(?p)		A1$-b	t
+(?p)		\t1AbB	t
+(?p)			t
+(?n)	i	c	t
+(?n)	i	^	t
+(?n)	i	\n	t
+(?n)	i	A.A	t
+(?c)		.B\n	t
+(?c)		1\nbAba	t
+(?c)		B	t
+(?c)		.c\n$	t
+(?p)|(?:(){1,2}_*)?[[.hyphen.]]{0,}		_A(.	t
+(?p)|(?:(){1,2}_*)?[[.hyphen.]]{0,}		$AbB	t
+(?p)|(?:(){1,2}_*)?[[.hyphen.]]{0,}		(\tA	t
+(?p)|(?:(){1,2}_*)?[[.hyphen.]]{0,}		cé	t
+(?x)(){1,2}(é\\A)*[\\d-]{1,2}		aa(1	t
+(?x)(){1,2}(é\\A)*[\\d-]{1,2}		\t	f
+(?x)(){1,2}(é\\A)*[\\d-]{1,2}		-b 	t
+(?x)(){1,2}(é\\A)*[\\d-]{1,2}			f
+(?c)(){1,3}?		a2b_x$	t
+(?c)(){1,3}?			t
+(?c)(){1,3}?		A-..AA	t
+(?c)(){1,3}?		$cc1	t
+(?c)\\Y		B^	t
+(?c)\\Y		Ba.A_	t
+(?c)\\Y		b^1BA-	t
+(?c)\\Y		axx\ta	t
+x			f
+x		$\tBa^	f
+x			f
+x		b	f
+(?x) {1,3}?\\n((2*?[abc]+?){2}|)??		é2\nAa_	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x) {1,3}?\\n((2*?[abc]+?){2}|)??			ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x) {1,3}?\\n((2*?[abc]+?){2}|)??		1_$(c	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x) {1,3}?\\n((2*?[abc]+?){2}|)??		$A$a	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?n)a		A1éAa	t
+(?n)a		céx	f
+(?n)a			f
+(?n)a		x11ab\t	t
+\\m\\B		1$cx	f
+\\m\\B		é Aa	f
+\\m\\B		1-a.a	f
+\\m\\B		Aéc-\n	f
+(?w)(?:(?:\\m\\\\+?)){2,}|		-\t(béA	t
+(?w)(?:(?:\\m\\\\+?)){2,}|		AbBAc	t
+(?w)(?:(?:\\m\\\\+?)){2,}|		éx$ aA	t
+(?w)(?:(?:\\m\\\\+?)){2,}|		c..Bé	t
+(?w)\\d[^\\w]{0}\\x41		éBaa	f
+(?w)\\d[^\\w]{0}\\x41		A._.B	f
+(?w)\\d[^\\w]{0}\\x41		ca	f
+(?w)\\d[^\\w]{0}\\x41		22	f
+[]a]?\\\\+?\\$|\\Y\\\\{2,}\\x41	i	B(	f
+[]a]?\\\\+?\\$|\\Y\\\\{2,}\\x41	i	\ta_\t1$	f
+[]a]?\\\\+?\\$|\\Y\\\\{2,}\\x41	i	 	f
+[]a]?\\\\+?\\$|\\Y\\\\{2,}\\x41	i	\n	f
+(?s)()*x[\\D]+		$2a	f
+(?s)()*x[\\D]+		ca(ba-	f
+(?s)()*x[\\D]+		aa 1A	f
+(?s)()*x[\\D]+		$aBAA^	f
+\\S?			t
+\\S?		\n2 2\n	t
+\\S?			t
+\\S?		a(-Aé	t
+(?x)\\D{0}[\\D]??		a\taB	t
+(?x)\\D{0}[\\D]??		1	t
+(?x)\\D{0}[\\D]??		-A$Ac	t
+(?x)\\D{0}[\\D]??		b._A-$	t
+(?i)\\Y\\D|(?:|\\s{2,}[^[:space:]]*){2}[[:>:]]\\e{1,3}?		\nB$a	t
+(?i)\\Y\\D|(?:|\\s{2,}[^[:space:]]*){2}[[:>:]]\\e{1,3}?		2cB	t
+(?i)\\Y\\D|(?:|\\s{2,}[^[:space:]]*){2}[[:>:]]\\e{1,3}?			f
+(?i)\\Y\\D|(?:|\\s{2,}[^[:space:]]*){2}[[:>:]]\\e{1,3}?		cx.2aB	t
+(?p)A*?	i	A(	t
+(?p)A*?	i	a(\n-A	t
+(?p)A*?	i	$ac-	t
+(?p)A*?	i	A_aAb	t
+(?:2{2}\\d(|B*\\m)?|\\({1,2}([\\d-]{2}\\^{0,}\\^{2})*){2,}\\\\{0,}1		xaA2x-	f
+(?:2{2}\\d(|B*\\m)?|\\({1,2}([\\d-]{2}\\^{0,}\\^{2})*){2,}\\\\{0,}1		b	f
+(?:2{2}\\d(|B*\\m)?|\\({1,2}([\\d-]{2}\\^{0,}\\^{2})*){2,}\\\\{0,}1			f
+(?:2{2}\\d(|B*\\m)?|\\({1,2}([\\d-]{2}\\^{0,}\\^{2})*){2,}\\\\{0,}1		é	f
+(?q)(?:[a-c1]*[[=a=]]){0,}|.\\m[[:digit:]_]{2}	i	aaA\nb(	f
+(?q)(?:[a-c1]*[[=a=]]){0,}|.\\m[[:digit:]_]{2}	i		f
+(?q)(?:[a-c1]*[[=a=]]){0,}|.\\m[[:digit:]_]{2}	i	ca_A	f
+(?q)(?:[a-c1]*[[=a=]]){0,}|.\\m[[:digit:]_]{2}	i	Baa	f
+(?c)\\D[\\d-]{0}[a-c1]{1,2}			f
+(?c)\\D[\\d-]{0}[a-c1]{1,2}		a2ax_	f
+(?c)\\D[\\d-]{0}[a-c1]{1,2}			f
+(?c)\\D[\\d-]{0}[a-c1]{1,2}		éA2	f
+(?x)\\s{1,3}?(){1,2}()+?			f
+(?x)\\s{1,3}?(){1,2}()+?		2-b	f
+(?x)\\s{1,3}?(){1,2}()+?		aéb.	f
+(?x)\\s{1,3}?(){1,2}()+?		x-b	f
+(?q)a*?\\Z	i	a^.. 	f
+(?q)a*?\\Z	i	\n.	f
+(?q)a*?\\Z	i	 b(2	f
+(?q)a*?\\Z	i		f
+(?s)x{0,}a\\s		xB	f
+(?s)x{0,}a\\s		x\t..	f
+(?s)x{0,}a\\s		xA	f
+(?s)x{0,}a\\s		BbaAa	f
+(?n)		b(\nA$	t
+(?n)		__é^b	t
+(?n)		\n\nc	t
+(?n)		^.b	t
+\\x41*?		$$A	t
+\\x41*?		AA	t
+\\x41*?		cxa_c	t
+\\x41*?		_cA1	t
+(?x)[[:alpha:]]?1+?		Ab(	f
+(?x)[[:alpha:]]?1+?		(éA_	f
+(?x)[[:alpha:]]?1+?		a Ac	f
+(?x)[[:alpha:]]?1+?		a^ - 	f
+(?w)\\$?[abc]{1,2}		\n1A^A	f
+(?w)\\$?[abc]{1,2}			f
+(?w)\\$?[abc]{1,2}		2((2\t	f
+(?w)\\$?[abc]{1,2}		a\t$x.\t	t
+\\Y		$A 	t
+\\Y		A(a^	t
+\\Y		($\t\n\nA	t
+\\Y			t
+(?w)(\\s{1,2})+?\\M(([]a]B*)??|[^\\w])+		B(-(2	f
+(?w)(\\s{1,2})+?\\M(([]a]B*)??|[^\\w])+		aA.Ba	f
+(?w)(\\s{1,2})+?\\M(([]a]B*)??|[^\\w])+		cA	f
+(?w)(\\s{1,2})+?\\M(([]a]B*)??|[^\\w])+			f
+(?w)B+		\t^	f
+(?w)B+		\n	f
+(?w)B+			f
+(?w)B+		-AA^cb	f
+\\A[\\d-]*		A\n	t
+\\A[\\d-]*		é a	t
+\\A[\\d-]*		AB-1éA	t
+\\A[\\d-]*		A\n^éAA	t
+(?w)[]a]+[[.hyphen.]]			f
+(?w)[]a]+[[.hyphen.]]		(^	f
+(?w)[]a]+[[.hyphen.]]		^$^a	f
+(?w)[]a]+[[.hyphen.]]		(a	f
+(?w)		A2	t
+(?w)		-.1a\n	t
+(?w)			t
+(?w)			t
+b{0,}\\x41*[^\\w]+		(_	t
+b{0,}\\x41*[^\\w]+		B	f
+b{0,}\\x41*[^\\w]+		^\na	t
+b{0,}\\x41*[^\\w]+		^	t
+(?q)([abc]*)\\Z\\b|x+?		\n	f
+(?q)([abc]*)\\Z\\b|x+?		1AA	f
+(?q)([abc]*)\\Z\\b|x+?			f
+(?q)([abc]*)\\Z\\b|x+?			f
+(?x)(\\B*?|)B??		(	t
+(?x)(\\B*?|)B??		BA-1	t
+(?x)(\\B*?|)B??		xA  	t
+(?x)(\\B*?|)B??		é_-B^^	t
+	i	\nxa	t
+	i	-^a2xb	t
+	i	ab	t
+	i	\t-	t
+(?n)((?:|[[:digit:]_]{2,}\\s{0}){1,3}?é+?\\x41??)?[a\\-z]{1,2}		2-.\t-	t
+(?n)((?:|[[:digit:]_]{2,}\\s{0}){1,3}?é+?\\x41??)?[a\\-z]{1,2}		1A1B1	f
+(?n)((?:|[[:digit:]_]{2,}\\s{0}){1,3}?é+?\\x41??)?[a\\-z]{1,2}		-\tA_a	t
+(?n)((?:|[[:digit:]_]{2,}\\s{0}){1,3}?é+?\\x41??)?[a\\-z]{1,2}		\ta2	t
+(?s)\\B\\S		^(2b (	f
+(?s)\\B\\S		\t\n2	f
+(?s)\\B\\S		2aax	f
+(?s)\\B\\S		a^^B1$	f
+(?i) ??\\s*(|(?:|1??\\w+2)*)		^^\t	t
+(?i) ??\\s*(|(?:|1??\\w+2)*)		B- \tB	t
+(?i) ??\\s*(|(?:|1??\\w+2)*)			t
+(?i) ??\\s*(|(?:|1??\\w+2)*)		BA\t1	t
+		- 1c	t
+		._\t-\t\t	t
+		x	t
+		\t1$1c	t
+(?q)()2??		Abé	f
+(?q)()2??			f
+(?q)()2??		c-..	f
+(?q)()2??		_2	f
+()??		Ba^A-é	t
+()??		a_x1b	t
+()??		BA._	t
+()??		aB.	t
+(?w)(?:\\W+\\M)		\téa.	f
+(?w)(?:\\W+\\M)		\t	f
+(?w)(?:\\W+\\M)		aa\t2a	f
+(?w)(?:\\W+\\M)		1-( Ab	f
+(?i)[abc]??		a^é 	t
+(?i)[abc]??		1	t
+(?i)[abc]??		éAac-a	t
+(?i)[abc]??			t
+(?s)$|[a\\-z]*?	i	(b-	t
+(?s)$|[a\\-z]*?	i	ABéé	t
+(?s)$|[a\\-z]*?	i	_	t
+(?s)$|[a\\-z]*?	i	 1AAé-	t
+(?c)(\\y {0,}\\m)??[^a-c](\\Z){0}|		 Aé	t
+(?c)(\\y {0,}\\m)??[^a-c](\\Z){0}|		_-	t
+(?c)(\\y {0,}\\m)??[^a-c](\\Z){0}|		cc 	t
+(?c)(\\y {0,}\\m)??[^a-c](\\Z){0}|		_c 	t
+(?n)(?:| {0}){1,3}?(?:(\\e\\A[^\\w]|)+[[:alpha:]]{1,3}?|){2,}[a-c1]	i	-_A	t
+(?n)(?:| {0}){1,3}?(?:(\\e\\A[^\\w]|)+[[:alpha:]]{1,3}?|){2,}[a-c1]	i	A-aA\t	t
+(?n)(?:| {0}){1,3}?(?:(\\e\\A[^\\w]|)+[[:alpha:]]{1,3}?|){2,}[a-c1]	i	AAB	t
+(?n)(?:| {0}){1,3}?(?:(\\e\\A[^\\w]|)+[[:alpha:]]{1,3}?|){2,}[a-c1]	i	$	f
+(?c)\\s*		_Aa 	t
+(?c)\\s*		$(	t
+(?c)\\s*			t
+(?c)\\s*		2\naA	t
+(?s)[[=a=]]*?		\t\n	t
+(?s)[[=a=]]*?		b\tB ( 	t
+(?s)[[=a=]]*?		b^(_Bé	t
+(?s)[[=a=]]*?		AcA(AB	t
+(?w)		\ta	t
+(?w)			t
+(?w)		aéa	t
+(?w)		2	t
+(?q)	i	b\n\t1	t
+(?q)	i	c. _\n	t
+(?q)	i	Aé	t
+(?q)	i	A	t
+[[:>:]](é{2,}\\D??[\\d-]??)*\\$+?		Aa(	f
+[[:>:]](é{2,}\\D??[\\d-]??)*\\$+?		BA\t	f
+[[:>:]](é{2,}\\D??[\\d-]??)*\\$+?		xb2	f
+[[:>:]](é{2,}\\D??[\\d-]??)*\\$+?		1	f
+(?n)[a\\-z]{0}\\s{1,2}	i	\nb	t
+(?n)[a\\-z]{0}\\s{1,2}	i	A-Aa\té	t
+(?n)[a\\-z]{0}\\s{1,2}	i	A-1	f
+(?n)[a\\-z]{0}\\s{1,2}	i	$	f
+(\\^\\M\\S*?)[^[:space:]]*?	i	xxA\n$	f
+(\\^\\M\\S*?)[^[:space:]]*?	i	é	f
+(\\^\\M\\S*?)[^[:space:]]*?	i	_aA-1	f
+(\\^\\M\\S*?)[^[:space:]]*?	i	A B\n	f
+(?q)(\\M\\\\{1,2}^)*[[=a=]]*?|\\B{1,3}?(\\e??)		$	f
+(?q)(\\M\\\\{1,2}^)*[[=a=]]*?|\\B{1,3}?(\\e??)		.AAx\n	f
+(?q)(\\M\\\\{1,2}^)*[[=a=]]*?|\\B{1,3}?(\\e??)		.	f
+(?q)(\\M\\\\{1,2}^)*[[=a=]]*?|\\B{1,3}?(\\e??)		b\n.A-b	f
+|^c??		.	t
+|^c??		\t.a\nxc	t
+|^c??		-1(A	t
+|^c??		-	t
+\\t\\D?		a^ é1(	f
+\\t\\D?		ab	f
+\\t\\D?			f
+\\t\\D?		2	f
+(?w)B{0,} *.	i	^$_	t
+(?w)B{0,} *.	i	aax	t
+(?w)B{0,} *.	i		f
+(?w)B{0,} *.	i	A2	t
+\\b		A\t	f
+\\b		$AcBA	f
+\\b			f
+\\b		.	f
+(?i)([a-c1])+?a|\\s*?			t
+(?i)([a-c1])+?a|\\s*?		 é-	t
+(?i)([a-c1])+?a|\\s*?		(A\t	t
+(?i)([a-c1])+?a|\\s*?		x\tB	t
+\\S|\\A	i	c^	t
+\\S|\\A	i	a^b-éA	t
+\\S|\\A	i	\né	t
+\\S|\\A	i	a	t
+(?p)\\W(\\Z)??		A.aAa1	t
+(?p)\\W(\\Z)??			f
+(?p)\\W(\\Z)??			f
+(?p)\\W(\\Z)??		xbx	f
+(?c)\\t*?|(?:[[:>:]](?:\\e+[[:digit:]_]?[[:<:]]){0,}){0,}[\\d-]*(\\A|[[:<:]]\\b?? *)		.	t
+(?c)\\t*?|(?:[[:>:]](?:\\e+[[:digit:]_]?[[:<:]]){0,}){0,}[\\d-]*(\\A|[[:<:]]\\b?? *)		-\tx^((	t
+(?c)\\t*?|(?:[[:>:]](?:\\e+[[:digit:]_]?[[:<:]]){0,}){0,}[\\d-]*(\\A|[[:<:]]\\b?? *)		1^ c\nx	t
+(?c)\\t*?|(?:[[:>:]](?:\\e+[[:digit:]_]?[[:<:]]){0,}){0,}[\\d-]*(\\A|[[:<:]]\\b?? *)		Ac1\ta	t
+(?c)$		Aéa	t
+(?c)$		é	t
+(?c)$		a1x a\t	t
+(?c)$		aé(xé2	t
+		\nx^A^	t
+		2	t
+		A2aaA	t
+		écx	t
+|\\M^(?:c?c*?)+?		Aé 	t
+|\\M^(?:c?c*?)+?		2	t
+|\\M^(?:c?c*?)+?		^.1.x(	t
+|\\M^(?:c?c*?)+?		1é^x(	t
+(?s).{0,}			t
+(?s).{0,}		 	t
+(?s).{0,}			t
+(?s).{0,}		-1a	t
+(?n)[[:>:]]\\w*?| {0}		ab	t
+(?n)[[:>:]]\\w*?| {0}		B^cA_	t
+(?n)[[:>:]]\\w*?| {0}		A$1\t	t
+(?n)[[:>:]]\\w*?| {0}		1a\t.^B	t
+(?q)	i	ac	t
+(?q)	i		t
+(?q)	i	ééB^b	t
+(?q)	i	AA	t
+(?q)\\101_?		 	f
+(?q)\\101_?		._A$B	f
+(?q)\\101_?		x^	f
+(?q)\\101_?		^	f
+(?c)(?:(\\n|)(?:[abc]*[[:digit:]_]*?){1,3}?)+\\x41{0,}[[:alpha:]]|\\D		A	t
+(?c)(?:(\\n|)(?:[abc]*[[:digit:]_]*?){1,3}?)+\\x41{0,}[[:alpha:]]|\\D		Ba\n1	t
+(?c)(?:(\\n|)(?:[abc]*[[:digit:]_]*?){1,3}?)+\\x41{0,}[[:alpha:]]|\\D		xAA A	t
+(?c)(?:(\\n|)(?:[abc]*[[:digit:]_]*?){1,3}?)+\\x41{0,}[[:alpha:]]|\\D		A	t
+(?x)\\y2{0,}	i	1b1A	t
+(?x)\\y2{0,}	i		f
+(?x)\\y2{0,}	i	-2$1$	t
+(?x)\\y2{0,}	i		f
+\\b\\B{0}|		_\tA	t
+\\b\\B{0}|			t
+\\b\\B{0}|			t
+\\b\\B{0}|			t
+(?i)[a\\-z]+		((Bba1	t
+(?i)[a\\-z]+		\nb	f
+(?i)[a\\-z]+		$	f
+(?i)[a\\-z]+		x^$2	f
+(?n)\\b??	i	BcaA	t
+(?n)\\b??	i	 a2 \na	t
+(?n)\\b??	i	c ^ 1	t
+(?n)\\b??	i	^ébxa	t
+(?w)2\\s+\\Y		$	f
+(?w)2\\s+\\Y		1(	f
+(?w)2\\s+\\Y			f
+(?w)2\\s+\\Y			f
+(?n)\\d*\\A		(	t
+(?n)\\d*\\A		$ $	t
+(?n)\\d*\\A		aA(	t
+(?n)\\d*\\A		1-	t
+(?q)	i	éxAA1	t
+(?q)	i	a A2	t
+(?q)	i	c\nb$	t
+(?q)	i		t
+[^\\w]+?^|\\y\\n*	i	A\nc^c.	t
+[^\\w]+?^|\\y\\n*	i	(	f
+[^\\w]+?^|\\y\\n*	i		f
+[^\\w]+?^|\\y\\n*	i	1A1a	t
+(?w)[]a]{2,}()			f
+(?w)[]a]{2,}()		\n_ 	f
+(?w)[]a]{2,}()		A\tcA	f
+(?w)[]a]{2,}()		-$	f
+(?i)|\\^{1,2}[a\\-z]+?		1(A	t
+(?i)|\\^{1,2}[a\\-z]+?		-x$a1b	t
+(?i)|\\^{1,2}[a\\-z]+?		2cééB^	t
+(?i)|\\^{1,2}[a\\-z]+?		- \t(1	t
+(?c)		\tAAca^	t
+(?c)		^éA$^a	t
+(?c)		 2c	t
+(?c)		a	t
+\\d*?		Bcba	t
+\\d*?			t
+\\d*?			t
+\\d*?		Acc$A	t
+		1.a	t
+		b2_\n	t
+		x_..	t
+			t
+(?i)-*?((\\Y|[]a][\\d-]{1,3}?\\Z)*(\\101+\\s|)+(){2,}|\\b?){0,}(([[.hyphen.]]?|\\(*?$[[.hyphen.]]{2,}){0,}\\e+?\\Z){2}		ba\t(_	f
+(?i)-*?((\\Y|[]a][\\d-]{1,3}?\\Z)*(\\101+\\s|)+(){2,}|\\b?){0,}(([[.hyphen.]]?|\\(*?$[[.hyphen.]]{2,}){0,}\\e+?\\Z){2}			f
+(?i)-*?((\\Y|[]a][\\d-]{1,3}?\\Z)*(\\101+\\s|)+(){2,}|\\b?){0,}(([[.hyphen.]]?|\\(*?$[[.hyphen.]]{2,}){0,}\\e+?\\Z){2}		aB.	f
+(?i)-*?((\\Y|[]a][\\d-]{1,3}?\\Z)*(\\101+\\s|)+(){2,}|\\b?){0,}(([[.hyphen.]]?|\\(*?$[[.hyphen.]]{2,}){0,}\\e+?\\Z){2}		A	f
+(){2,}		B(^\n^1	t
+(){2,}		_	t
+(){2,}		 _.c\té	t
+(){2,}		$^	t
+\\d+?	i	2Bx-	t
+\\d+?	i	_AA é	f
+\\d+?	i	\n2$a	t
+\\d+?	i		f
+([[:>:]]-??a*|[[:alpha:]]{2}é^){0,}$\\y		-	f
+([[:>:]]-??a*|[[:alpha:]]{2}é^){0,}$\\y		A Aa	t
+([[:>:]]-??a*|[[:alpha:]]{2}é^){0,}$\\y		A\tx1	t
+([[:>:]]-??a*|[[:alpha:]]{2}é^){0,}$\\y		ac1	t
+(?:(?:[\\d-]{1,3}?)??\\d){2}		éAa	f
+(?:(?:[\\d-]{1,3}?)??\\d){2}		\nB	f
+(?:(?:[\\d-]{1,3}?)??\\d){2}		bx\t.	f
+(?:(?:[\\d-]{1,3}?)??\\d){2}			f
+(?w)[[:digit:]_]{1,3}?\\t[a-c1]|\\^(|)+[]a]		c$1	f
+(?w)[[:digit:]_]{1,3}?\\t[a-c1]|\\^(|)+[]a]		x	f
+(?w)[[:digit:]_]{1,3}?\\t[a-c1]|\\^(|)+[]a]		b-b A^	f
+(?w)[[:digit:]_]{1,3}?\\t[a-c1]|\\^(|)+[]a]			f
+b		\n(.	f
+b		cA$\n	f
+b		cAc	f
+b			f
+é??(\\((\\d?)\\A)+?		\t$c$_b	f
+é??(\\((\\d?)\\A)+?		B	f
+é??(\\((\\d?)\\A)+?		(AA_ c	f
+é??(\\((\\d?)\\A)+?		2^AA	f
+(?c)\\d|		_\nB1	t
+(?c)\\d|		x A	t
+(?c)\\d|		^.	t
+(?c)\\d|		$_	t
+(?i)2*?\\n{1,3}?		b^	f
+(?i)2*?\\n{1,3}?		..	f
+(?i)2*?\\n{1,3}?		A	f
+(?i)2*?\\n{1,3}?			f
+(?:)c+		(Bé_é	f
+(?:)c+		\tx c\t	t
+(?:)c+		_a	f
+(?:)c+		b^(.a^	f
+(?q)_?		 xa\nc$	f
+(?q)_?		 	f
+(?q)_?		é	f
+(?q)_?		a-^	f
+(?p)(?:|(?:b{2,}){0,}[[:>:]])*?		.	t
+(?p)(?:|(?:b{2,}){0,}[[:>:]])*?		_a\n	t
+(?p)(?:|(?:b{2,}){0,}[[:>:]])*?		 _aaé	t
+(?p)(?:|(?:b{2,}){0,}[[:>:]])*?		a\n\té	t
+			t
+		x\t(x	t
+		a\t 	t
+		( 	t
+(?w)\\W{1,3}?[[=a=]]	i	-\n_$(	f
+(?w)\\W{1,3}?[[=a=]]	i	A_é^	f
+(?w)\\W{1,3}?[[=a=]]	i	\n--a	t
+(?w)\\W{1,3}?[[=a=]]	i	^A$ca	t
+(?n)		(-2a.	t
+(?n)		$Bx.A	t
+(?n)			t
+(?n)		$$2	t
+(?w)\\W+?\\A(?:a+\\d{1,2})*|^[[.hyphen.]]+?	i	1b	f
+(?w)\\W+?\\A(?:a+\\d{1,2})*|^[[.hyphen.]]+?	i		f
+(?w)\\W+?\\A(?:a+\\d{1,2})*|^[[.hyphen.]]+?	i	bBé	f
+(?w)\\W+?\\A(?:a+\\d{1,2})*|^[[.hyphen.]]+?	i	.	f
+(?x)|			t
+(?x)|		Ab	t
+(?x)|		\n	t
+(?x)|		é^.	t
+(?w)		Acc2	t
+(?w)		AA1A(	t
+(?w)		1	t
+(?w)			t
+[^a-c]{1,3}?[abc]*?|\\B+?[a\\-z]+[]a]{2}		b	f
+[^a-c]{1,3}?[abc]*?|\\B+?[a\\-z]+[]a]{2}		BA	t
+[^a-c]{1,3}?[abc]*?|\\B+?[a\\-z]+[]a]{2}		_Aa$	t
+[^a-c]{1,3}?[abc]*?|\\B+?[a\\-z]+[]a]{2}		\t2B-\tx	t
+(?c)		\nc.^bb	t
+(?c)		\t(B_c^	t
+(?c)			t
+(?c)		a$ 2_.	t
+			t
+		a_(	t
+		 2.	t
+		éAé.A	t
+(?c).		.A cx	t
+(?c).		1\t2-.	t
+(?c).			f
+(?c).		(Aa	t
+(?s)[\\D]{0,}a*?			t
+(?s)[\\D]{0,}a*?			t
+(?s)[\\D]{0,}a*?		((	t
+(?s)[\\D]{0,}a*?		c. \t	t
+b??_{0}		1 a	t
+b??_{0}			t
+b??_{0}		-__\tB	t
+b??_{0}		x	t
+(?i)((\\([[.hyphen.]]\\t{2})|)\\Y(\\D?(?:\\${2}\\s+?)?)?		11-B$_	t
+(?i)((\\([[.hyphen.]]\\t{2})|)\\Y(\\D?(?:\\${2}\\s+?)?)?		a	f
+(?i)((\\([[.hyphen.]]\\t{2})|)\\Y(\\D?(?:\\${2}\\s+?)?)?		(\nA_	t
+(?i)((\\([[.hyphen.]]\\t{2})|)\\Y(\\D?(?:\\${2}\\s+?)?)?		é	t
+[[:>:]]\\A((|[[:<:]]\\n*)*\\Z|\\^{0}[[=a=]]B{2,})	i		f
+[[:>:]]\\A((|[[:<:]]\\n*)*\\Z|\\^{0}[[=a=]]B{2,})	i	c^.-\t	f
+[[:>:]]\\A((|[[:<:]]\\n*)*\\Z|\\^{0}[[=a=]]B{2,})	i	c2--A2	f
+[[:>:]]\\A((|[[:<:]]\\n*)*\\Z|\\^{0}[[=a=]]B{2,})	i	xA	f
+(?s)[[:digit:]_]+?\\\\	i	1-c^\n	f
+(?s)[[:digit:]_]+?\\\\	i		f
+(?s)[[:digit:]_]+?\\\\	i	B_	f
+(?s)[[:digit:]_]+?\\\\	i	a	f
+(?s)|1+?1{2}(\\n+?\\m[\\d-]{0})		1	t
+(?s)|1+?1{2}(\\n+?\\m[\\d-]{0})			t
+(?s)|1+?1{2}(\\n+?\\m[\\d-]{0})		$2__	t
+(?s)|1+?1{2}(\\n+?\\m[\\d-]{0})			t
+(?w)\\m\\${0,}	i	aA	t
+(?w)\\m\\${0,}	i	A\t(é	t
+(?w)\\m\\${0,}	i		f
+(?w)\\m\\${0,}	i	aB21^	t
+-{2,}[^a-c]{1,2}([a-c1]\\B+){0,}		\nAa^b$	f
+-{2,}[^a-c]{1,2}([a-c1]\\B+){0,}		$(-	f
+-{2,}[^a-c]{1,2}([a-c1]\\B+){0,}		__^A	f
+-{2,}[^a-c]{1,2}([a-c1]\\B+){0,}			f
+(?n)[[:>:]]		-	f
+(?n)[[:>:]]		xb-2	t
+(?n)[[:>:]]		 .	f
+(?n)[[:>:]]		éa2	t
+(?p) ()*?[]a]		éA	f
+(?p) ()*?[]a]		(AA	f
+(?p) ()*?[]a]		1^	f
+(?p) ()*?[]a]		2c-\n	f
+(?n)\\(		AAA	f
+(?n)\\(			f
+(?n)\\(			f
+(?n)\\(		-c$	f
+(?n)a{0,}[[:<:]]\\s{0}		A2	t
+(?n)a{0,}[[:<:]]\\s{0}		c A -	t
+(?n)a{0,}[[:<:]]\\s{0}		aa2	t
+(?n)a{0,}[[:<:]]\\s{0}		1A	t
+(?x).{0} ?(?:\\w1{0}\\w+?)*|(b*?(?:\\w{1,3}?)*[a-c1]??){1,3}?\\D??		é-^-\t	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x).{0} ?(?:\\w1{0}\\w+?)*|(b*?(?:\\w{1,3}?)*[a-c1]??){1,3}?\\D??		Ac$	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x).{0} ?(?:\\w1{0}\\w+?)*|(b*?(?:\\w{1,3}?)*[a-c1]??){1,3}?\\D??		\t	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x).{0} ?(?:\\w1{0}\\w+?)*|(b*?(?:\\w{1,3}?)*[a-c1]??){1,3}?\\D??		 	ERR:2201B:invalid regular expression: quantifier operand invalid
+(?x)	i		t
+(?x)	i		t
+(?x)	i	a1\tbA	t
+(?x)	i	b\tx1A	t
+(?q)A{2,}((B*?\\nB?){2}\\m(c?\\B{1,3}?[[=a=]]){0})*?a{2}			f
+(?q)A{2,}((B*?\\nB?){2}\\m(c?\\B{1,3}?[[=a=]]){0})*?a{2}		A 1-.	f
+(?q)A{2,}((B*?\\nB?){2}\\m(c?\\B{1,3}?[[=a=]]){0})*?a{2}		A2a$	f
+(?q)A{2,}((B*?\\nB?){2}\\m(c?\\B{1,3}?[[=a=]]){0})*?a{2}		\tbB2\t	f
+(?s)\\W{1,2}A{0,}\\101{2}		 	f
+(?s)\\W{1,2}A{0,}\\101{2}		_B\nA	f
+(?s)\\W{1,2}A{0,}\\101{2}		aAé$é 	f
+(?s)\\W{1,2}A{0,}\\101{2}		Ac_A.a	f
+\\A(\\\\[^\\w]{0,}[^[:space:]]+){1,3}?\\x41+	i	..béB	f
+\\A(\\\\[^\\w]{0,}[^[:space:]]+){1,3}?\\x41+	i	cAA2-c	f
+\\A(\\\\[^\\w]{0,}[^[:space:]]+){1,3}?\\x41+	i	Ab_c  	f
+\\A(\\\\[^\\w]{0,}[^[:space:]]+){1,3}?\\x41+	i	a(^	f
+(?x)\\$*\\y		c2A	t
+(?x)\\$*\\y			f
+(?x)\\$*\\y		^	f
+(?x)\\$*\\y		B\n	t
+(?s)1{1,2}		 -	f
+(?s)1{1,2}			f
+(?s)1{1,2}		_Acx.	f
+(?s)1{1,2}		cB1a($	t
+(?w)		.	t
+(?w)		^	t
+(?w)		^acc	t
+(?w)			t
+(?s)		A	t
+(?s)		(11	t
+(?s)		^A^A	t
+(?s)		a$cca	t
+(?q)(){2}()??\\b+|\\t(?:([^[:space:]]{0}){2}){2,}		-	f
+(?q)(){2}()??\\b+|\\t(?:([^[:space:]]{0}){2}){2,}		^B_Bé	f
+(?q)(){2}()??\\b+|\\t(?:([^[:space:]]{0}){2}){2,}		A-baa	f
+(?q)(){2}()??\\b+|\\t(?:([^[:space:]]{0}){2}){2,}		1	f
+(?c)(x*[a\\-z]{0,}|\\m){2}[[:digit:]_]*|b?[[:alpha:]]		^_ABb	t
+(?c)(x*[a\\-z]{0,}|\\m){2}[[:digit:]_]*|b?[[:alpha:]]			t
+(?c)(x*[a\\-z]{0,}|\\m){2}[[:digit:]_]*|b?[[:alpha:]]			t
+(?c)(x*[a\\-z]{0,}|\\m){2}[[:digit:]_]*|b?[[:alpha:]]		^cAba	t
+(?x)\\((?:(\\^+|)(\\ma{1,3}?[abc]*?){1,2})??(.{0}(\\^*A{1,2}){1,2}.{1,2}|[[:alpha:]]{0}é{2,}(x+?\\\\{2,})*?){0,}		_bA\n\n(	t
+(?x)\\((?:(\\^+|)(\\ma{1,3}?[abc]*?){1,2})??(.{0}(\\^*A{1,2}){1,2}.{1,2}|[[:alpha:]]{0}é{2,}(x+?\\\\{2,})*?){0,}		($1	t
+(?x)\\((?:(\\^+|)(\\ma{1,3}?[abc]*?){1,2})??(.{0}(\\^*A{1,2}){1,2}.{1,2}|[[:alpha:]]{0}é{2,}(x+?\\\\{2,})*?){0,}		é.\nA	f
+(?x)\\((?:(\\^+|)(\\ma{1,3}?[abc]*?){1,2})??(.{0}(\\^*A{1,2}){1,2}.{1,2}|[[:alpha:]]{0}é{2,}(x+?\\\\{2,})*?){0,}		éA_A	f
+|\\D{2,}[[.hyphen.]][^a-c]{2}			t
+|\\D{2,}[[.hyphen.]][^a-c]{2}		A^12\tA	t
+|\\D{2,}[[.hyphen.]][^a-c]{2}		 -c\t	t
+|\\D{2,}[[.hyphen.]][^a-c]{2}		_.2	t
+.[[:digit:]_]{0}			f
+.[[:digit:]_]{0}		\tA\tx.	t
+.[[:digit:]_]{0}		aéa-(	t
+.[[:digit:]_]{0}		1xaB A	t
+(?c)|		AAb\tA	t
+(?c)|			t
+(?c)|		.-aé	t
+(?c)|		2-(A	t
+(?c)(?:)		.\nA1	t
+(?c)(?:)		(^	t
+(?c)(?:)		 _	t
+(?c)(?:)			t
+[[:>:]]B??		(A	t
+[[:>:]]B??		$	f
+[[:>:]]B??		bA2	t
+[[:>:]]B??			f
+(?p)_{2,}[[.hyphen.]]{2}[^a-c]{0}		_-	f
+(?p)_{2,}[[.hyphen.]]{2}[^a-c]{0}			f
+(?p)_{2,}[[.hyphen.]]{2}[^a-c]{0}		b1B22.	f
+(?p)_{2,}[[.hyphen.]]{2}[^a-c]{0}		BbxA	f
+(?n)	i		t
+(?n)	i	.\tba	t
+(?n)	i	\n-^  \t	t
+(?n)	i	xb^Aa\n	t
+(?w)\\s{1,3}?[[=a=]]{1,2}((\\y\\101|\\$+?2+\\m)*\\S{0}\\m|([a\\-z]+)*[abc](?:a{1,3}?|^){1,2})+?		A(-	f
+(?w)\\s{1,3}?[[=a=]]{1,2}((\\y\\101|\\$+?2+\\m)*\\S{0}\\m|([a\\-z]+)*[abc](?:a{1,3}?|^){1,2})+?		 	f
+(?w)\\s{1,3}?[[=a=]]{1,2}((\\y\\101|\\$+?2+\\m)*\\S{0}\\m|([a\\-z]+)*[abc](?:a{1,3}?|^){1,2})+?		2xb	f
+(?w)\\s{1,3}?[[=a=]]{1,2}((\\y\\101|\\$+?2+\\m)*\\S{0}\\m|([a\\-z]+)*[abc](?:a{1,3}?|^){1,2})+?		2$c	f
+(?w)b*\\Y2		ca2	t
+(?w)b*\\Y2		b.aé	f
+(?w)b*\\Y2			f
+(?w)b*\\Y2		éa^b1	f
+(?p)		é(acb	t
+(?p)		c.\ta\t 	t
+(?p)		x((	t
+(?p)			t
+(?w)\\^{0}B??\\101*		^ \naA	t
+(?w)\\^{0}B??\\101*		$cé$	t
+(?w)\\^{0}B??\\101*		\nc1aa	t
+(?w)\\^{0}B??\\101*		_b_	t
+|\\e{0,}_{2,}		$\tA1	t
+|\\e{0,}_{2,}		a_c$aa	t
+|\\e{0,}_{2,}		\tb2\n	t
+|\\e{0,}_{2,}		2_é	t
+([^a-c]{0,}\\$+([a-c1]??[a-c1]+?)??)*?(|\\D{2}2{2}A)+		A 	t
+([^a-c]{0,}\\$+([a-c1]??[a-c1]+?)??)*?(|\\D{2}2{2}A)+		A $xA	t
+([^a-c]{0,}\\$+([a-c1]??[a-c1]+?)??)*?(|\\D{2}2{2}A)+		.	t
+([^a-c]{0,}\\$+([a-c1]??[a-c1]+?)??)*?(|\\D{2}2{2}A)+			t
+(?i)			t
+(?i)		1AA^.	t
+(?i)		2(c	t
+(?i)		xé	t
+(?s)(b{0,}(\\D|[^[:space:]]{2,}){1,3}?){2}		A$	t
+(?s)(b{0,}(\\D|[^[:space:]]{2,}){1,3}?){2}			f
+(?s)(b{0,}(\\D|[^[:space:]]{2,}){1,3}?){2}		A^\t2	t
+(?s)(b{0,}(\\D|[^[:space:]]{2,}){1,3}?){2}		$a A2\n	t
+\\Z([abc]+?\\s){1,2}		BA2éc	f
+\\Z([abc]+?\\s){1,2}		é	f
+\\Z([abc]+?\\s){1,2}		 xBBAa	f
+\\Z([abc]+?\\s){1,2}			f
+(?s)(x*?\\S+?|[[:>:]])		._$	t
+(?s)(x*?\\S+?|[[:>:]])		a	t
+(?s)(x*?\\S+?|[[:>:]])		_^.\n	t
+(?s)(x*?\\S+?|[[:>:]])		(a	t
+[[:>:]]((\\({1,3}?)(a{1,2})|\\S{0,}B){0,}[a\\-z]|()*		.a.	t
+[[:>:]]((\\({1,3}?)(a{1,2})|\\S{0,}B){0,}[a\\-z]|()*			t
+[[:>:]]((\\({1,3}?)(a{1,2})|\\S{0,}B){0,}[a\\-z]|()*		^ A_b	t
+[[:>:]]((\\({1,3}?)(a{1,2})|\\S{0,}B){0,}[a\\-z]|()*		béé	t
+(?q)($c?|(\\S{2,}\\Y){1,2}\\e*?)?		2cAAé\t	f
+(?q)($c?|(\\S{2,}\\Y){1,2}\\e*?)?		aA	f
+(?q)($c?|(\\S{2,}\\Y){1,2}\\e*?)?		$é	f
+(?q)($c?|(\\S{2,}\\Y){1,2}\\e*?)?		$	f
+(?p)([]a][\\d-]+){2}\\Mx*?|()[[=a=]]+?		.	f
+(?p)([]a][\\d-]+){2}\\Mx*?|()[[=a=]]+?		b	f
+(?p)([]a][\\d-]+){2}\\Mx*?|()[[=a=]]+?		^.^b	f
+(?p)([]a][\\d-]+){2}\\Mx*?|()[[=a=]]+?		A^	f
+\\x41+?\\^??		(_éé	f
+\\x41+?\\^??		_1-	f
+\\x41+?\\^??		A1	t
+\\x41+?\\^??		^a\n$	f
+(?x)\\$*?\\s+(?:(\\Y\\y)-??)		A	f
+(?x)\\$*?\\s+(?:(\\Y\\y)-??)		.	f
+(?x)\\$*?\\s+(?:(\\Y\\y)-??)		x_	f
+(?x)\\$*?\\s+(?:(\\Y\\y)-??)			f
+\\w{0}\\101\\M|b{2}			f
+\\w{0}\\101\\M|b{2}		ax.2	f
+\\w{0}\\101\\M|b{2}		 b1	f
+\\w{0}\\101\\M|b{2}		^	f
+\\x41?		((\t A.	t
+\\x41?		.A	t
+\\x41?		\n	t
+\\x41?		A_A2_	t
+(?w)(\\s*)*1		(xA\t2a	f
+(?w)(\\s*)*1		Aéé-	f
+(?w)(\\s*)*1		cA1	t
+(?w)(\\s*)*1		  b(.a	f
+(?i)		1. 	t
+(?i)		A\n-	t
+(?i)		_^	t
+(?i)		. _c\n.	t
+		c	t
+		ac-^.	t
+		-(A	t
+		aaa	t
+(?i)(?:\\A)		\t	t
+(?i)(?:\\A)		é_A	t
+(?i)(?:\\A)		\n\n1	t
+(?i)(?:\\A)		cA2b	t
+(?:)		^x.xA^	t
+(?:)		x$	t
+(?:)		A\nb	t
+(?:)		(a.$B	t
+[a-c1]	i		f
+[a-c1]	i	-_bA\t	t
+[a-c1]	i	a^BA_	t
+[a-c1]	i		f
+(?p)\\101{0,}	i	A	t
+(?p)\\101{0,}	i		t
+(?p)\\101{0,}	i	. 	t
+(?p)\\101{0,}	i	aA	t
+(?s)		a-_ab	t
+(?s)		1Ab	t
+(?s)		(	t
+(?s)		\n	t
+(?w)_?a?[[.hyphen.]]+?		\tAA^^^	f
+(?w)_?a?[[.hyphen.]]+?		a. B	f
+(?w)_?a?[[.hyphen.]]+?		a2	f
+(?w)_?a?[[.hyphen.]]+?		aB1caé	f
+(?s)[]a]{2}		_x2^(A	f
+(?s)[]a]{2}		a_b.	f
+(?s)[]a]{2}		axa	f
+(?s)[]a]{2}		acA AA	f
+(?q).{2}$\\s|\\.?\\Z		.	f
+(?q).{2}$\\s|\\.?\\Z		 (	f
+(?q).{2}$\\s|\\.?\\Z		 	f
+(?q).{2}$\\s|\\.?\\Z		^A_	f
+\\m-[^[:space:]]*|[[:<:]][]a]*		éb	t
+\\m-[^[:space:]]*|[[:<:]][]a]*		A--	t
+\\m-[^[:space:]]*|[[:<:]][]a]*		(1	t
+\\m-[^[:space:]]*|[[:<:]][]a]*		éc	t
+[^\\w]{0}\\\\??		\n	t
+[^\\w]{0}\\\\??		a	t
+[^\\w]{0}\\\\??		-B2	t
+[^\\w]{0}\\\\??		(a\t	t
+(?w)A{1,3}?\\d{2}\\n+|$		xcA-A	t
+(?w)A{1,3}?\\d{2}\\n+|$		 a^	t
+(?w)A{1,3}?\\d{2}\\n+|$		 é	t
+(?w)A{1,3}?\\d{2}\\n+|$		x\tc	t
+(?s)	i	$x\tAa	t
+(?s)	i	-	t
+(?s)	i	é	t
+(?s)	i	.1--	t
+[a-c1]{2,}		 \t éa(	f
+[a-c1]{2,}		2	f
+[a-c1]{2,}			f
+[a-c1]{2,}		Bbaé	t
+(?i)		1aA	t
+(?i)		22-	t
+(?i)		1_A_	t
+(?i)		-AAB	t
+\\101[\\D]*			f
+\\101[\\D]*		\néxb	f
+\\101[\\D]*		_AA-A	t
+\\101[\\D]*		ba_22\t	f
+(?x)([\\d-]{1,3}?){0,}\\s??	i	cx 	t
+(?x)([\\d-]{1,3}?){0,}\\s??	i	.	t
+(?x)([\\d-]{1,3}?){0,}\\s??	i	x_	t
+(?x)([\\d-]{1,3}?){0,}\\s??	i	_é\n^A_	t
+(?i)		b\nB$\t	t
+(?i)		 c	t
+(?i)		ba(	t
+(?i)		AA	t
+(?n)	i	A$b	t
+(?n)	i	cAABa	t
+(?n)	i	(($	t
+(?n)	i	xcA	t
+		A .1b	t
+		\t\nAaé	t
+		cA-é	t
+		a1a	t
+|[]a]		a11	t
+|[]a]		\tc	t
+|[]a]			t
+|[]a]		éé(x\n	t
+		_	t
+			t
+		 éaB	t
+		A^	t
+(?c)|		(\t^	t
+(?c)|		c	t
+(?c)|		\n$x a\n	t
+(?c)|		  _é$(	t
+(?n)|\\m(|[[.hyphen.]]?)*\\m		A1	t
+(?n)|\\m(|[[.hyphen.]]?)*\\m			t
+(?n)|\\m(|[[.hyphen.]]?)*\\m		\n	t
+(?n)|\\m(|[[.hyphen.]]?)*\\m		B-a2	t
+(?c)a\\e\\b*|[[:<:]]		-Ba(	t
+(?c)a\\e\\b*|[[:<:]]		_Aaxx	t
+(?c)a\\e\\b*|[[:<:]]		-A.a$(	t
+(?c)a\\e\\b*|[[:<:]]		(-	f
+(?p) {0}\\w{1,2}		A.B	t
+(?p) {0}\\w{1,2}		 x	t
+(?p) {0}\\w{1,2}		2	t
+(?p) {0}\\w{1,2}		b(x2	t
+(\\A)(){1,3}?\\m		B\n	t
+(\\A)(){1,3}?\\m		a	t
+(\\A)(){1,3}?\\m		é	f
+(\\A)(){1,3}?\\m			f
+		((11B	t
+		acA	t
+			t
+		B$\t_	t
+		\nxé	t
+		A-a	t
+		A	t
+		\nB aA	t
+(?x)	i	._a	t
+(?x)	i	A	t
+(?x)	i		t
+(?x)	i	^\n\nA.	t
+\\S*\\(	i	^	f
+\\S*\\(	i	é_x$c	f
+\\S*\\(	i	A(cc. 	t
+\\S*\\(	i		f
+(?q)([a-c1]{2}é(){1,3}?)?-{1,2}	i		f
+(?q)([a-c1]{2}é(){1,3}?)?-{1,2}	i	a	f
+(?q)([a-c1]{2}é(){1,3}?)?-{1,2}	i	Ac1	f
+(?q)([a-c1]{2}é(){1,3}?)?-{1,2}	i	a	f
+\\b?b[[:<:]]|		$-	t
+\\b?b[[:<:]]|		éA2aA-	t
+\\b?b[[:<:]]|		A1AaA(	t
+\\b?b[[:<:]]|			t
+(?x)		_é	t
+(?x)		a .	t
+(?x)		(	t
+(?x)		AA(	t
+(?i)[abc]{0}b+		b-	t
+(?i)[abc]{0}b+		(\nA	f
+(?i)[abc]{0}b+		A\t\t^	f
+(?i)[abc]{0}b+		-cx(a	f
+(?w)	i	$Baxxx	t
+(?w)	i	\t_Ab\tA	t
+(?w)	i	$xb\né2	t
+(?w)	i	^	t
+(?c)			t
+(?c)		1a2$	t
+(?c)		aA	t
+(?c)		Bé2-\n	t
+(?p)\\t		b^a.\n	f
+(?p)\\t		Bé	f
+(?p)\\t		AA.é\tA	t
+(?p)\\t		AéA	f
+[^a-c]+		 A	t
+[^a-c]+		a$ é^	t
+[^a-c]+		é-BA\n	t
+[^a-c]+		-x^x	t
+		_($$2-	t
+		A	t
+		cA_	t
+		a1_1	t
+(?w)	i	.\nA$A-	t
+(?w)	i		t
+(?w)	i		t
+(?w)	i	x^^AA	t
+(?c)c?\\B{2,}		A^-$1	f
+(?c)c?\\B{2,}		b-é2	f
+(?c)c?\\B{2,}		.b12(A	f
+(?c)c?\\B{2,}		^\n	f
+(?q)\\b{2,}[a\\-z]{2,}|\\.??[[:alpha:]]{2}[^a-c]+			f
+(?q)\\b{2,}[a\\-z]{2,}|\\.??[[:alpha:]]{2}[^a-c]+		\nBx$ 	f
+(?q)\\b{2,}[a\\-z]{2,}|\\.??[[:alpha:]]{2}[^a-c]+			f
+(?q)\\b{2,}[a\\-z]{2,}|\\.??[[:alpha:]]{2}[^a-c]+		B\t	f
+(?q)		\tABx	t
+(?q)		é^cbA(	t
+(?q)			t
+(?q)		c\ncA	t
+(?i)[[.hyphen.]]{0}\\W$|\\\\*?()[abc]*	i	ax^	t
+(?i)[[.hyphen.]]{0}\\W$|\\\\*?()[abc]*	i	-B\naA	t
+(?i)[[.hyphen.]]{0}\\W$|\\\\*?()[abc]*	i	A	t
+(?i)[[.hyphen.]]{0}\\W$|\\\\*?()[abc]*	i	B-	t
+	i	x\n	t
+	i	A	t
+	i		t
+	i	\nB\nb^	t
+(?p)[[.hyphen.]]{0,}	i	-	t
+(?p)[[.hyphen.]]{0,}	i	écé	t
+(?p)[[.hyphen.]]{0,}	i	2\t(^^A	t
+(?p)[[.hyphen.]]{0,}	i	x2	t
+(?w)(?:\\B){2,}[\\D]??$|		 __^A	t
+(?w)(?:\\B){2,}[\\D]??$|		a2x	t
+(?w)(?:\\B){2,}[\\D]??$|		1	t
+(?w)(?:\\B){2,}[\\D]??$|		_	t
+(?s)		a.a	t
+(?s)		$B 1$$	t
+(?s)		é	t
+(?s)		^\tc  a	t
+(?i)		xa	t
+(?i)		^Ax\n1	t
+(?i)		\n\tBAéA	t
+(?i)		a(aA	t
+a{0}	i	AAB	t
+a{0}	i	.	t
+a{0}	i	$_\nB.c	t
+a{0}	i	Bc	t
+(?i)|(-{0,}){0}((A+)+|^(\\m\\y){0,})?	i	\t2éB^B	t
+(?i)|(-{0,}){0}((A+)+|^(\\m\\y){0,})?	i	AAcaA^	t
+(?i)|(-{0,}){0}((A+)+|^(\\m\\y){0,})?	i	\nb	t
+(?i)|(-{0,}){0}((A+)+|^(\\m\\y){0,})?	i	A	t
+(?p)		\tc	t
+(?p)		2_-	t
+(?p)		B\nx^	t
+(?p)			t
+(?n)\\x41\\\\{1,2}\\s??		(	f
+(?n)\\x41\\\\{1,2}\\s??		$1Aa	f
+(?n)\\x41\\\\{1,2}\\s??			f
+(?n)\\x41\\\\{1,2}\\s??		A-A	f
+[^[:space:]]		1a( 	t
+[^[:space:]]		A	t
+[^[:space:]]		1(B	t
+[^[:space:]]			f
+|((){1,2})??B{0,}[[:digit:]_]*?			t
+|((){1,2})??B{0,}[[:digit:]_]*?		\n	t
+|((){1,2})??B{0,}[[:digit:]_]*?		aa.Ab	t
+|((){1,2})??B{0,}[[:digit:]_]*?			t
+(?s)\\^[[:>:]]A{2}			f
+(?s)\\^[[:>:]]A{2}			f
+(?s)\\^[[:>:]]A{2}		A^_é	f
+(?s)\\^[[:>:]]A{2}		éA	f
+\\x41{0}		(AA	t
+\\x41{0}		xb	t
+\\x41{0}		B(A	t
+\\x41{0}			t
+(?x)\\.*(?:|)+-{1,2}	i	A_	f
+(?x)\\.*(?:|)+-{1,2}	i	\nBac	f
+(?x)\\.*(?:|)+-{1,2}	i	2	f
+(?x)\\.*(?:|)+-{1,2}	i	1	f
+(?i)	i	$	t
+(?i)	i	\n	t
+(?i)	i	(A	t
+(?i)	i	_A b	t
+[[.hyphen.]]{0}1*?|		._é	t
+[[.hyphen.]]{0}1*?|		ax	t
+[[.hyphen.]]{0}1*?|		.éa^A1	t
+[[.hyphen.]]{0}1*?|		\t(_	t
+[[:alpha:]]{0,}\\^*?(\\t??(\\x41*x{2}[[:>:]]|\\S{1,3}?[^\\w]?)([\\D]{0}){0,}){1,2}		1x	t
+[[:alpha:]]{0,}\\^*?(\\t??(\\x41*x{2}[[:>:]]|\\S{1,3}?[^\\w]?)([\\D]{0}){0,}){1,2}		$2$_\tA	t
+[[:alpha:]]{0,}\\^*?(\\t??(\\x41*x{2}[[:>:]]|\\S{1,3}?[^\\w]?)([\\D]{0}){0,}){1,2}		(2ac_	t
+[[:alpha:]]{0,}\\^*?(\\t??(\\x41*x{2}[[:>:]]|\\S{1,3}?[^\\w]?)([\\D]{0}){0,}){1,2}		b$	t
+\\wa		$(A-xb	f
+\\wa		^ A\n.a	f
+\\wa		((	f
+\\wa		a2\t	f
+|[\\d-].{2}		1B1Ax-	t
+|[\\d-].{2}		ac-x	t
+|[\\d-].{2}		a-	t
+|[\\d-].{2}			t
+2|[a\\-z]{0,}(){1,2}[[:<:]]		ab_	t
+2|[a\\-z]{0,}(){1,2}[[:<:]]		\na$$$	t
+2|[a\\-z]{0,}(){1,2}[[:<:]]		c\t	t
+2|[a\\-z]{0,}(){1,2}[[:<:]]		a2	t
+(?w)[\\D]([abc]+)?\\y		c	t
+(?w)[\\D]([abc]+)?\\y			f
+(?w)[\\D]([abc]+)?\\y			f
+(?w)[\\D]([abc]+)?\\y		A AAb	t
+\\D+?|		.A A.	t
+\\D+?|			t
+\\D+?|			t
+\\D+?|		\nAAA(	t
+|\\B		é a2^c	t
+|\\B		aéx	t
+|\\B		.xx1.(	t
+|\\B		\t-aAbx	t
+(?s)é{1,2}	i	A	f
+(?s)é{1,2}	i		f
+(?s)é{1,2}	i		f
+(?s)é{1,2}	i	A1_AAA	f
+\\^\\D{1,2}^		 (bA	f
+\\^\\D{1,2}^		1A	f
+\\^\\D{1,2}^		.x$_ 	f
+\\^\\D{1,2}^		A$\n^	f
+(?c)		_\naxb^	t
+(?c)		bAAé	t
+(?c)		x$_	t
+(?c)		c$--A	t
+(?p)^		Aa	t
+(?p)^		axaéac	t
+(?p)^		xaA.$	t
+(?p)^			t
+(?c)\\Z\\e		.	f
+(?c)\\Z\\e		c^	f
+(?c)\\Z\\e		A$	f
+(?c)\\Z\\e		(.^	f
+(?x)\\d{1,3}?[[:alpha:]]?A+		A$$\n	f
+(?x)\\d{1,3}?[[:alpha:]]?A+		$	f
+(?x)\\d{1,3}?[[:alpha:]]?A+		$c._x\t	f
+(?x)\\d{1,3}?[[:alpha:]]?A+		A(($ba	f
+\\.??(\\M(\\^?é{0}[^a-c]+?){1,3}?){1,2}		\n1\t\n	t
+\\.??(\\M(\\^?é{0}[^a-c]+?){1,3}?){1,2}		1_A-	t
+\\.??(\\M(\\^?é{0}[^a-c]+?){1,3}?){1,2}		^x -aA	t
+\\.??(\\M(\\^?é{0}[^a-c]+?){1,3}?){1,2}		(.a_é 	t
+(?s)[[:digit:]_]?(?:.?){0,}|\\e[abc]		x(A	t
+(?s)[[:digit:]_]?(?:.?){0,}|\\e[abc]			t
+(?s)[[:digit:]_]?(?:.?){0,}|\\e[abc]		\t\té	t
+(?s)[[:digit:]_]?(?:.?){0,}|\\e[abc]		éa	t
+(?q)[\\D]{0,}[\\d-]*?[]a]|1{2}		ab1A	f
+(?q)[\\D]{0,}[\\d-]*?[]a]|1{2}		xA2A	f
+(?q)[\\D]{0,}[\\d-]*?[]a]|1{2}		x	f
+(?q)[\\D]{0,}[\\d-]*?[]a]|1{2}		A\n	f
+(?n)[[:digit:]_]*?[a-c1]		11a	t
+(?n)[[:digit:]_]*?[a-c1]		 \n$	f
+(?n)[[:digit:]_]*?[a-c1]		b1 	t
+(?n)[[:digit:]_]*?[a-c1]		.(a$	t
+(?c)		1b	t
+(?c)		éa^é_	t
+(?c)		-é\t\nc	t
+(?c)		B$\n2Bb	t
+(?q)\\M[[=a=]]+		$2	f
+(?q)\\M[[=a=]]+		_a	f
+(?q)\\M[[=a=]]+		c^^2  	f
+(?q)\\M[[=a=]]+		\n-c	f
+(?w)		_\t\n	t
+(?w)		AbB\t^c	t
+(?w)		 2	t
+(?w)		AbA	t
+(?s)\\s{1,3}?		a\tA	t
+(?s)\\s{1,3}?			f
+(?s)\\s{1,3}?		$x	f
+(?s)\\s{1,3}?		B( 	t
+(?n)		^a(a2a	t
+(?n)		(_^é	t
+(?n)		a2 ^	t
+(?n)		21c.AB	t
+(b)		A.	f
+(b)		x$	f
+(b)		cxA.b2	t
+(b)		B\t	f
+\\d[abc]?a{0}		^b.	f
+\\d[abc]?a{0}		c\t	f
+\\d[abc]?a{0}		bAc1	t
+\\d[abc]?a{0}		^A	f
+(?n)\\$		\t\nc.	f
+(?n)\\$		aa	f
+(?n)\\$		Aa	f
+(?n)\\$		BéA2	f
+(?c)		(A	t
+(?c)		\n^	t
+(?c)		aé_2B	t
+(?c)		B	t
+(?w)[[.hyphen.]]*?	i	A\t$	t
+(?w)[[.hyphen.]]*?	i	1ca$	t
+(?w)[[.hyphen.]]*?	i	.2AA2^	t
+(?w)[[.hyphen.]]*?	i	1.b	t
+[\\D]??|		2.^\n	t
+[\\D]??|		($^_	t
+[\\D]??|		b	t
+[\\D]??|		x\tA_11	t
+(?n)a.*?		cBx1$	f
+(?n)a.*?		Axé	f
+(?n)a.*?		-	f
+(?n)a.*?		1A(b	f
+\\w\\e+([[=a=]]+?){0,}		b	f
+\\w\\e+([[=a=]]+?){0,}		1x	f
+\\w\\e+([[=a=]]+?){0,}		 Ba	f
+\\w\\e+([[=a=]]+?){0,}		B	f
+(?s)	i	-	t
+(?s)	i	é	t
+(?s)	i	-c	t
+(?s)	i	1	t
+(?p)_*?\\({0}[^\\w]	i	b(\t	t
+(?p)_*?\\({0}[^\\w]	i	b$^B	t
+(?p)_*?\\({0}[^\\w]	i	a1\t\téa	t
+(?p)_*?\\({0}[^\\w]	i	1\té- 	t
+(?n)[[:digit:]_]??\\\\{1,2}\\x41{1,2}		AA	f
+(?n)[[:digit:]_]??\\\\{1,2}\\x41{1,2}		é1	f
+(?n)[[:digit:]_]??\\\\{1,2}\\x41{1,2}		 c^2a^	f
+(?n)[[:digit:]_]??\\\\{1,2}\\x41{1,2}		\tAx(bb	f
+\\$*|()??((?:é{2}c)){1,3}?			t
+\\$*|()??((?:é{2}c)){1,3}?		A	t
+\\$*|()??((?:é{2}c)){1,3}?		c	t
+\\$*|()??((?:é{2}c)){1,3}?		 _2\t	t
+|[abc]{2}B{0}	i	b$	t
+|[abc]{2}B{0}	i	a\na 	t
+|[abc]{2}B{0}	i	2aA-	t
+|[abc]{2}B{0}	i	_(bc	t
+(?w)(()\\w{1,3}?)*(-{2,}\\([[.hyphen.]]{1,3}?)^		a\nc\t	f
+(?w)(()\\w{1,3}?)*(-{2,}\\([[.hyphen.]]{1,3}?)^		2	f
+(?w)(()\\w{1,3}?)*(-{2,}\\([[.hyphen.]]{1,3}?)^			f
+(?w)(()\\w{1,3}?)*(-{2,}\\([[.hyphen.]]{1,3}?)^		$AA.	f
+(?i)2{2,}$|		2	t
+(?i)2{2,}$|		\t$Ab^$	t
+(?i)2{2,}$|		\téaaA	t
+(?i)2{2,}$|		c	t
+\\M\\S{2,}\\y		^é a\n1	f
+\\M\\S{2,}\\y		xAA	f
+\\M\\S{2,}\\y		 c	f
+\\M\\S{2,}\\y		A\t( \n	f
+(?c)\\B+	i	A_A.\tA	f
+(?c)\\B+	i	ab-	f
+(?c)\\B+	i		f
+(?c)\\B+	i	a\nBé	f
+\\d{0,}\\101?(\\({1,2}\\W|\\y\\t*?)+	i	$2\nca	t
+\\d{0,}\\101?(\\({1,2}\\W|\\y\\t*?)+	i		f
+\\d{0,}\\101?(\\({1,2}\\W|\\y\\t*?)+	i	aéac	t
+\\d{0,}\\101?(\\({1,2}\\W|\\y\\t*?)+	i	._.	t
+(?w)A{2,}\\B{2}		a$	f
+(?w)A{2,}\\B{2}		éAacx$	f
+(?w)A{2,}\\B{2}		AbA	f
+(?w)A{2,}\\B{2}		\nx	f
+(?w)		-_2A	t
+(?w)		cba	t
+(?w)		..é	t
+(?w)		^	t
+(?w)c??		B-a	t
+(?w)c??		\t	t
+(?w)c??		xB 1A	t
+(?w)c??		é1A( \n	t
+(?c)[[=a=]]|\\Y	i	a	t
+(?c)[[=a=]]|\\Y	i	$A\t(b^	t
+(?c)[[=a=]]|\\Y	i	aa	t
+(?c)[[=a=]]|\\Y	i	$	t
+(?p)[[.hyphen.]]{1,2}\\W{1,3}?\\B??	i	B$x	f
+(?p)[[.hyphen.]]{1,2}\\W{1,3}?\\B??	i	AAé$ -	f
+(?p)[[.hyphen.]]{1,2}\\W{1,3}?\\B??	i	$x	f
+(?p)[[.hyphen.]]{1,2}\\W{1,3}?\\B??	i	1\n^^	f
+\\y\\101{1,2}	i	 _	f
+\\y\\101{1,2}	i	^(a	t
+\\y\\101{1,2}	i		f
+\\y\\101{1,2}	i	Bb-Bc^	f
+(?i)c?(|(\\d??\\m)+)+?	i	(-a$ax	t
+(?i)c?(|(\\d??\\m)+)+?	i	 _B	t
+(?i)c?(|(\\d??\\m)+)+?	i	(_é	t
+(?i)c?(|(\\d??\\m)+)+?	i	A.A	t
+(?w)(c{0,}|)	i		t
+(?w)(c{0,}|)	i		t
+(?w)(c{0,}|)	i	2A(2	t
+(?w)(c{0,}|)	i	ac(	t
+\\S{0}\\Y|\\t*[\\D]{1,2}		B\n1-	t
+\\S{0}\\Y|\\t*[\\D]{1,2}		$_c-B^	t
+\\S{0}\\Y|\\t*[\\D]{1,2}		\n2Aa\n	t
+\\S{0}\\Y|\\t*[\\D]{1,2}		_xA	t
+(?i)([[:<:]]2{2}(?:2\\$|\\b{1,3}?1??){1,3}?){1,2}|\\M			f
+(?i)([[:<:]]2{2}(?:2\\$|\\b{1,3}?1??){1,3}?){1,2}|\\M			f
+(?i)([[:<:]]2{2}(?:2\\$|\\b{1,3}?1??){1,3}?){1,2}|\\M		B2	t
+(?i)([[:<:]]2{2}(?:2\\$|\\b{1,3}?1??){1,3}?){1,2}|\\M		2A A	t
+(?n)1+?\\yx{1,3}?|\\t{1,3}?c{1,2}		xé^.	f
+(?n)1+?\\yx{1,3}?|\\t{1,3}?c{1,2}		-.$A	f
+(?n)1+?\\yx{1,3}?|\\t{1,3}?c{1,2}		 aA	f
+(?n)1+?\\yx{1,3}?|\\t{1,3}?c{1,2}			f
+(?x)\\M\\B		A(1B	f
+(?x)\\M\\B		2Béb	f
+(?x)\\M\\B		a2^2^	f
+(?x)\\M\\B		éA\n\t-	f
+(?w)((-{0}){2,}|\\M[^a-c]){0}		aAb.A\t	t
+(?w)((-{0}){2,}|\\M[^a-c]){0}		b\tb	t
+(?w)((-{0}){2,}|\\M[^a-c]){0}		A-Ab	t
+(?w)((-{0}){2,}|\\M[^a-c]){0}		a2	t
+			t
+		-AAA\tB	t
+			t
+		BaA\n$b	t
+(?i)2{0}(?:)\\m		xBBa	t
+(?i)2{0}(?:)\\m			f
+(?i)2{0}(?:)\\m		A1 .x	t
+(?i)2{0}(?:)\\m		A1	t
+		_x^\nB1	t
+		A	t
+		a2	t
+			t
+(?s)\\d\\$(1{1,3}?[[:digit:]_]{0,}|[[:<:]]\\B{2,}[[=a=]]{0})		A	f
+(?s)\\d\\$(1{1,3}?[[:digit:]_]{0,}|[[:<:]]\\B{2,}[[=a=]]{0})		A	f
+(?s)\\d\\$(1{1,3}?[[:digit:]_]{0,}|[[:<:]]\\B{2,}[[=a=]]{0})		AB(	f
+(?s)\\d\\$(1{1,3}?[[:digit:]_]{0,}|[[:<:]]\\B{2,}[[=a=]]{0})		.A^	f
+(?s)-{1,3}?		^	f
+(?s)-{1,3}?			f
+(?s)-{1,3}?		1b^xA	f
+(?s)-{1,3}?			f
+\\d|x*?(?:[[:digit:]_]\\s*?\\b|){2,}\\\\	i	($ \tA	f
+\\d|x*?(?:[[:digit:]_]\\s*?\\b|){2,}\\\\	i	\nBx	f
+\\d|x*?(?:[[:digit:]_]\\s*?\\b|){2,}\\\\	i	 \té_AA	f
+\\d|x*?(?:[[:digit:]_]\\s*?\\b|){2,}\\\\	i	AA(	f
+(?c)\\t(?:\\$?[^[:space:]]{1,2}|)?|(\\d{2,}){1,2}		(.bb(a	f
+(?c)\\t(?:\\$?[^[:space:]]{1,2}|)?|(\\d{2,}){1,2}			f
+(?c)\\t(?:\\$?[^[:space:]]{1,2}|)?|(\\d{2,}){1,2}		é2( 	f
+(?c)\\t(?:\\$?[^[:space:]]{1,2}|)?|(\\d{2,}){1,2}			f
+\\W??		b\n-a	t
+\\W??			t
+\\W??		\t	t
+\\W??		1	t
+(?p)(|)+\\m\\101{0,}			f
+(?p)(|)+\\m\\101{0,}		A^A\n_	t
+(?p)(|)+\\m\\101{0,}		1-$\nA	t
+(?p)(|)+\\m\\101{0,}			f
+(?q).{0,}|[[:<:]]			f
+(?q).{0,}|[[:<:]]		2A^	f
+(?q).{0,}|[[:<:]]		B\t	f
+(?q).{0,}|[[:<:]]			f
+(?s)\\s+(\\w.{2}1{1,2})?\\B{2}		-A_é	f
+(?s)\\s+(\\w.{2}1{1,2})?\\B{2}		B(aA$\t	f
+(?s)\\s+(\\w.{2}1{1,2})?\\B{2}			f
+(?s)\\s+(\\w.{2}1{1,2})?\\B{2}		c1\t$Ax	f
+(?q)[a\\-z]{1,2}		\t	f
+(?q)[a\\-z]{1,2}		 é.^_	f
+(?q)[a\\-z]{1,2}		2_	f
+(?q)[a\\-z]{1,2}		.__A	f
+(\\t+?(?:\\^+?){0}\\Z){1,2}|		é\n	t
+(\\t+?(?:\\^+?){0}\\Z){1,2}|		AA	t
+(\\t+?(?:\\^+?){0}\\Z){1,2}|		a(	t
+(\\t+?(?:\\^+?){0}\\Z){1,2}|			t
+(?w)\\Y((B{1,2}){1,2}[a-c1]{0})			f
+(?w)\\Y((B{1,2}){1,2}[a-c1]{0})		^	f
+(?w)\\Y((B{1,2}){1,2}[a-c1]{0})		b	f
+(?w)\\Y((B{1,2}){1,2}[a-c1]{0})		.Aa 	f
+(?p)[]a]{2,}|\\S{2,}\\m\\D		AaA	f
+(?p)[]a]{2,}|\\S{2,}\\m\\D		^\t	f
+(?p)[]a]{2,}|\\S{2,}\\m\\D		a	f
+(?p)[]a]{2,}|\\S{2,}\\m\\D		éc (	f
+\\b??()[\\D]	i	x	t
+\\b??()[\\D]	i	éA	t
+\\b??()[\\D]	i	-1_	t
+\\b??()[\\D]	i		f
+\\({2,}^_*		bacA1b	f
+\\({2,}^_*		_(	f
+\\({2,}^_*		a	f
+\\({2,}^_*		é-AA	f
+(?w)			t
+(?w)		Bx	t
+(?w)		-	t
+(?w)			t
+|		a_(	t
+|		c\t^	t
+|		a\n_a2b	t
+|		_	t
+|1+(b?[]a]{0}x{0,})a{0,}		1(	t
+|1+(b?[]a]{0}x{0,})a{0,}		aAaéa	t
+|1+(b?[]a]{0}x{0,})a{0,}		x\n	t
+|1+(b?[]a]{0}x{0,})a{0,}		a\na	t
+(?w)	i	^éa^	t
+(?w)	i	A	t
+(?w)	i	 $2bb^	t
+(?w)	i	1 	t
+(é2{2}\\(|[\\d-]{1,3}?[\\D]*){0}[\\d-]+?	i	\n_c	f
+(é2{2}\\(|[\\d-]{1,3}?[\\D]*){0}[\\d-]+?	i	-\t	t
+(é2{2}\\(|[\\d-]{1,3}?[\\D]*){0}[\\d-]+?	i	A2éA$	t
+(é2{2}\\(|[\\d-]{1,3}?[\\D]*){0}[\\d-]+?	i	a__b	f
+[[:digit:]_]{1,3}?|x+?\\e?	i	2\n_AB	t
+[[:digit:]_]{1,3}?|x+?\\e?	i	 Aaa2	t
+[[:digit:]_]{1,3}?|x+?\\e?	i		f
+[[:digit:]_]{1,3}?|x+?\\e?	i		f
+\\\\{2}		2-.$\n	f
+\\\\{2}		(\nA	f
+\\\\{2}		$AB21B	f
+\\\\{2}		a	f
+(?s)[a-c1]{1,2}|a{2}[^a-c]\\y			f
+(?s)[a-c1]{1,2}|a{2}[^a-c]\\y			f
+(?s)[a-c1]{1,2}|a{2}[^a-c]\\y		Aé(aB.	t
+(?s)[a-c1]{1,2}|a{2}[^a-c]\\y		A^	f
+(?x)		^ aé\n	t
+(?x)		cAA2	t
+(?x)		A(A1	t
+(?x)		$\t._	t
+\\A		a_	t
+\\A		1A$	t
+\\A		c1A ax	t
+\\A		A.\ncA	t
+(?q)é{1,3}?(\\b|\\e+){0,}(?:b{2})*|\\W{2,}\\d*?		Acxc\t	f
+(?q)é{1,3}?(\\b|\\e+){0,}(?:b{2})*|\\W{2,}\\d*?		-	f
+(?q)é{1,3}?(\\b|\\e+){0,}(?:b{2})*|\\W{2,}\\d*?			f
+(?q)é{1,3}?(\\b|\\e+){0,}(?:b{2})*|\\W{2,}\\d*?		$x1_	f
+(?s)[^[:space:]]*|		A.a\na	t
+(?s)[^[:space:]]*|		^	t
+(?s)[^[:space:]]*|		\na	t
+(?s)[^[:space:]]*|		x1	t
+|[\\D]{1,2}			t
+|[\\D]{1,2}		-A\t($	t
+|[\\D]{1,2}		.	t
+|[\\D]{1,2}		a\tABb	t
+			t
+		 _$(a	t
+		aBé$	t
+		B	t
+$|		2$-Ax.	t
+$|		1\t2é- 	t
+$|		a^A_a	t
+$|			t
+(?s)[[:>:]]\\e{0,}[\\d-]{1,3}?		x\né.A$	f
+(?s)[[:>:]]\\e{0,}[\\d-]{1,3}?		_\nAbé_	f
+(?s)[[:>:]]\\e{0,}[\\d-]{1,3}?		a1ab	f
+(?s)[[:>:]]\\e{0,}[\\d-]{1,3}?		a	f
+(?q)\\$|		(a	f
+(?q)\\$|		_A	f
+(?q)\\$|		A_a-	f
+(?q)\\$|			f
+[[:>:]]		A2	t
+[[:>:]]		\n$2é	t
+[[:>:]]		A((	t
+[[:>:]]		\tA\n	t
+(\\B{0}[[=a=]]?|\\y[^a-c]{0,}[^[:space:]]{1,3}?)		A-	t
+(\\B{0}[[=a=]]?|\\y[^a-c]{0,}[^[:space:]]{1,3}?)		$2\n	t
+(\\B{0}[[=a=]]?|\\y[^a-c]{0,}[^[:space:]]{1,3}?)		 	t
+(\\B{0}[[=a=]]?|\\y[^a-c]{0,}[^[:space:]]{1,3}?)		c	t
+cA{0}		\téa- 	f
+cA{0}		é_2aa	f
+cA{0}		(bbxa	f
+cA{0}		c.cA	t
+(?p)[^a-c]?(){2,}\\W{0}		$^	t
+(?p)[^a-c]?(){2,}\\W{0}		^\tB1A	t
+(?p)[^a-c]?(){2,}\\W{0}		A(.1	t
+(?p)[^a-c]?(){2,}\\W{0}		a^c1	t
+(?i)2??é?		1^é-B-	t
+(?i)2??é?		Aa	t
+(?i)2??é?		b x	t
+(?i)2??é?		1\n$^	t
+(?q)[[.hyphen.]]?\\w*?\\y		\nBéa	f
+(?q)[[.hyphen.]]?\\w*?\\y		2xb	f
+(?q)[[.hyphen.]]?\\w*?\\y		aB	f
+(?q)[[.hyphen.]]?\\w*?\\y		.1^	f
+(?x)(?:[^[:space:]]{1,3}?\\d{0}[[:digit:]_]{0})+	i	ab	t
+(?x)(?:[^[:space:]]{1,3}?\\d{0}[[:digit:]_]{0})+	i	AaA \n	t
+(?x)(?:[^[:space:]]{1,3}?\\d{0}[[:digit:]_]{0})+	i	 	f
+(?x)(?:[^[:space:]]{1,3}?\\d{0}[[:digit:]_]{0})+	i	-	t
+(?n) {0,}c*?\\$??		.a1a	t
+(?n) {0,}c*?\\$??		(ax 	t
+(?n) {0,}c*?\\$??		(aA$b	t
+(?n) {0,}c*?\\$??		c	t
+[[.hyphen.]][^a-c]+(?:\\B{1,3}?[[:alpha:]]{1,2}|[[:digit:]_]+?[[:<:]])|[abc](?:[[:<:]]){2}		B(	f
+[[.hyphen.]][^a-c]+(?:\\B{1,3}?[[:alpha:]]{1,2}|[[:digit:]_]+?[[:<:]])|[abc](?:[[:<:]]){2}		_a	f
+[[.hyphen.]][^a-c]+(?:\\B{1,3}?[[:alpha:]]{1,2}|[[:digit:]_]+?[[:<:]])|[abc](?:[[:<:]]){2}		a\né\n	f
+[[.hyphen.]][^a-c]+(?:\\B{1,3}?[[:alpha:]]{1,2}|[[:digit:]_]+?[[:<:]])|[abc](?:[[:<:]]){2}		B2\taAB	f

@@ -224,6 +224,23 @@ impl Numeric {
         Self::finish(ln_var(a, rscale)?)
     }
 
+    /// `numeric_exp`.
+    pub fn exp(&self) -> Result<Self, NumericError> {
+        match self {
+            Self::NaN => Ok(Self::NaN),
+            Self::PosInf => Ok(Self::PosInf),
+            Self::NegInf => Ok(Self::zero()),
+            Self::Finite(f) => {
+                let a = &f.0;
+                let val = self.to_string().parse::<f64>().unwrap_or(f64::INFINITY);
+                let est = (val * std::f64::consts::LOG10_E)
+                    .clamp(-f64::from(MAX_RESULT_SCALE), f64::from(MAX_RESULT_SCALE));
+                let rscale = clamp_rscale(MIN_SIG_DIGITS - est as i32, &[a.dscale]);
+                Self::finish(exp_var(a, val, rscale)?)
+            }
+        }
+    }
+
     /// `numeric_log(base, x)`; `log10(x)` is `log(10, x)`.
     pub fn log(&self, x: &Self) -> Result<Self, NumericError> {
         if self.is_nan() || x.is_nan() {
@@ -246,9 +263,86 @@ impl Numeric {
     }
 }
 
+const MAX_RESULT_SCALE: i32 = 2000;
+
+/// `exp_var`: e^x rounded to `rscale` places (Taylor series after halving the argument).
+fn exp_var(x: &Var, val: f64, rscale: i32) -> Result<Var, NumericError> {
+    if val.abs() >= f64::from(MAX_RESULT_SCALE * 3) {
+        if val > 0.0 {
+            return Err(NumericError::overflow());
+        }
+        return Ok(Var::zero(rscale));
+    }
+    let dweight = (val * std::f64::consts::LOG10_E) as i32;
+    let mut x = x.clone();
+    let mut ndiv2 = 0;
+    let mut v = val;
+    if v.abs() > 0.01 {
+        ndiv2 = 1;
+        v /= 2.0;
+        while v.abs() > 0.01 {
+            ndiv2 += 1;
+            v /= 2.0;
+        }
+        let local = x.dscale + ndiv2;
+        x = var::div(&x, &small(1u128 << ndiv2), local, true)?;
+    }
+    let sig_digits = 1 + dweight + rscale + (f64::from(ndiv2) * std::f64::consts::LOG10_2) as i32;
+    let sig_digits = sig_digits.max(0) + 8;
+    let local = sig_digits - 1;
+    let mut result = var::add(&small(1), &x);
+    let mut elem = mul_round(&x, &x, local);
+    let mut ni: u128 = 2;
+    elem = var::div(&elem, &small(ni), local, true)?;
+    while !elem.is_zero() {
+        result = var::add(&result, &elem);
+        elem = mul_round(&elem, &x, local);
+        ni += 1;
+        elem = var::div(&elem, &small(ni), local, true)?;
+    }
+    for _ in 0..ndiv2 {
+        let local = (sig_digits - result.weight * 2 * DEC_DIGITS).max(0);
+        result = mul_round(&result, &result, local);
+    }
+    var::round_var(&mut result, rscale);
+    Ok(result)
+}
 fn sqrt_negative() -> NumericError {
     NumericError::new(
         sqlstate::INVALID_ARGUMENT_FOR_POWER_FUNCTION,
         "cannot take square root of a negative number",
     )
+}
+
+#[cfg(test)]
+mod exp_tests {
+    use crate::Numeric;
+
+    fn exp(s: &str) -> String {
+        Numeric::parse(s).unwrap().exp().unwrap().to_string()
+    }
+
+    /// 値は PostgreSQL 17 の `exp(numeric)`。
+    #[test]
+    fn exp_matches_postgres() {
+        assert_eq!(exp("1"), "2.7182818284590452");
+        assert_eq!(exp("0"), "1.0000000000000000");
+        assert_eq!(exp("-1"), "0.3678794411714423");
+        assert_eq!(exp("0.5"), "1.6487212707001281");
+        assert_eq!(exp("100"), "26881171418161354484126255515800135873611119");
+        assert_eq!(
+            exp("-100.5"),
+            "0.00000000000000000000000000000000000000000002256340135917036"
+        );
+        assert_eq!(exp("10.123456789"), "24920.767949009910");
+        assert_eq!(exp("NaN"), "NaN");
+        assert_eq!(exp("Infinity"), "Infinity");
+        assert_eq!(exp("-Infinity"), "0");
+    }
+
+    #[test]
+    fn exp_overflow_is_an_error() {
+        let e = Numeric::parse("1000000").unwrap().exp().unwrap_err();
+        assert_eq!(e.to_string(), "value overflows numeric format");
+    }
 }

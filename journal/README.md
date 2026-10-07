@@ -1,7 +1,7 @@
 # journal/ 入口
 
 yuzhu（PostgreSQL ワイヤプロトコル互換 RDBMS を AI エージェント群でゼロから作るプロジェクト）の作業日誌。
-作成日: 2026-10-04。時刻はすべて **UTC**（JST は括弧で補足するだけ。git の +0900 と +0000 の混在による読み違いを防ぐため）。
+作成日: 2026-10-04。時刻はすべて **JST（UTC+9）**（git の +0900 と +0000 の混在による読み違いを防ぐため）。
 
 ## 1. 目的と使い方
 
@@ -16,7 +16,7 @@ yuzhu（PostgreSQL ワイヤプロトコル互換 RDBMS を AI エージェン�
 | ファイル | 1 行要旨 |
 |---|---|
 | `README.md` | この入口。索引、更新手順、書き方の規則、用語集、spec の読書ガイド |
-| `timeline.md` | UTC 統一の年表（コミット、Workflow、ユーザー介入、成果物） |
+| `timeline.md` | JST 統一の年表（コミット、Workflow、ユーザー介入、成果物） |
 | `decisions.md` | 設計判断（D）と仮決め（Q、M2-Q）の台帳。ディスク形式★、スコープ変更、規約への例外 |
 | `workflows.md` | Workflow 台帳（計画と実績、クリティカルパス、担当別コスト、初回通過率） |
 | `setbacks.md` | 手戻り、誤報告、衝突、ドキュメントの鮮度ずれ、外れた前提 |
@@ -24,19 +24,19 @@ yuzhu（PostgreSQL ワイヤプロトコル互換 RDBMS を AI エージェン�
 | `retrospective.md` | KPT と運用知見（プロンプト、分割粒度、テスト先行の効果） |
 | `snapshots.md` | 再開用スナップショットと M2 進捗マップ |
 
-種別と最終更新（`tools/journal-readme.sh` が生成。最終更新はファイルの mtime で、UTC）:
+種別と最終更新（`tools/journal-readme.sh` が生成。最終更新はファイルの mtime で、JST）:
 
 <!-- AUTO:index BEGIN -->
 | ファイル | 種別 | 最終更新 |
 |---|---|---|
-| `journal/README.md` | 手書き中心 | 2026-10-05 07:32 UTC |
-| `journal/timeline.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
-| `journal/decisions.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
-| `journal/workflows.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
-| `journal/setbacks.md` | 自動 + 手書き | 2026-10-05 13:29 UTC |
-| `journal/metrics.md` | 自動 + 手書き | 2026-10-04 15:33 UTC |
-| `journal/retrospective.md` | 手書き中心 | 2026-10-04 15:20 UTC |
-| `journal/snapshots.md` | 手書き中心 | 2026-10-05 13:29 UTC |
+| `journal/README.md` | 手書き中心 | 2026-10-07 17:15 JST |
+| `journal/timeline.md` | 自動 + 手書き | 2026-10-07 21:45 JST |
+| `journal/decisions.md` | 自動 + 手書き | 2026-10-07 21:45 JST |
+| `journal/workflows.md` | 自動 + 手書き | 2026-10-07 21:45 JST |
+| `journal/setbacks.md` | 自動 + 手書き | 2026-10-07 21:45 JST |
+| `journal/metrics.md` | 自動 + 手書き | 2026-10-07 21:45 JST |
+| `journal/retrospective.md` | 手書き中心 | 2026-10-07 17:14 JST |
+| `journal/snapshots.md` | 手書き中心 | 2026-10-07 21:45 JST |
 <!-- AUTO:index END -->
 
 ## 3. 更新手順
@@ -61,7 +61,7 @@ M2 実装 Workflow（wf_0cc0a7be）完了時の手順（2026-10-04 検証時に�
 - 手書きの追記は**日付見出し**（`## 2026-10-04` など）で積む。過去の記述は上書きしない。`PROGRESS.md` が最新 1 枚で上書きされる弱点を補うため。
 - 判断には **Q-番号 / D-番号 / コミット hash / wf ID** を必ず付ける（例: `M2-Q2`、`m2.md D2`、`88d1bc0`、`wf_fabaf03d`）。
 - **推測と事実を分ける**。推測には「推測:」を付け、不明なことは「不明」と書く。数字には出所（コマンド、ファイル）を添える。
-- 時刻は UTC。JST を書くときは括弧書き。
+- 時刻は JST。JST を書くときは括弧書き。
 
 ## 5. 用語集
 
@@ -103,6 +103,7 @@ M2 実装 Workflow（wf_0cc0a7be）完了時の手順（2026-10-04 検証時に�
 | `spec/design/m2-changes.md` | 11 | 1112 |
 | `spec/design/m2.md` | 2250 | 218394 |
 | `spec/design/m3.md` | 1776 | 150876 |
+| `spec/design/m4-changes.md` | 59 | 23186 |
 | `spec/research/m2-buffer-io.md` | 794 | 67761 |
 | `spec/research/m2-catalog.md` | 446 | 48734 |
 | `spec/research/m2-dml-exec.md` | 471 | 48927 |

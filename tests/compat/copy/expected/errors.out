@@ -1,0 +1,34 @@
+psql:<stdin>:5: ERROR:  missing data for column "c"
+CONTEXT:  COPY compat_e1, line 1: "1	x"
+ count 
+-------
+     0
+(1 row)
+
+psql:<stdin>:9: ERROR:  extra data after last expected column
+CONTEXT:  COPY compat_e1, line 1: "1	x	5	extra"
+psql:<stdin>:12: ERROR:  invalid input syntax for type integer: "abc"
+CONTEXT:  COPY compat_e1, line 1, column a: "abc"
+psql:<stdin>:15: ERROR:  null value in column "a" of relation "compat_e1" violates not-null constraint
+DETAIL:  Failing row contains (null, x, 5).
+CONTEXT:  COPY compat_e1, line 1: "\N	x	5"
+psql:<stdin>:18: ERROR:  new row for relation "compat_e1" violates check constraint "compat_e1_c_check"
+DETAIL:  Failing row contains (5, x, -1).
+CONTEXT:  COPY compat_e1, line 1: "5	x	-1"
+psql:<stdin>:21: ERROR:  value "99999999999" is out of range for type integer
+CONTEXT:  COPY compat_e1, line 1, column c: "99999999999"
+ count 
+-------
+     0
+(1 row)
+
+psql:<stdin>:23: ERROR:  column "nosuch" of relation "compat_e1" does not exist
+psql:<stdin>:25: ERROR:  column "a" specified more than once
+psql:<stdin>:27: ERROR:  relation "nosuch_table" does not exist
+psql:<stdin>:29: ERROR:  COPY format "foo" not recognized
+LINE 1: copy compat_e1 from stdin with (format foo);
+                                        ^
+psql:<stdin>:31: ERROR:  COPY delimiter must be a single one-byte character
+psql:<stdin>:33: ERROR:  option "null_x" not recognized
+LINE 1: copy compat_e1 from stdin with (null_x 'a');
+                                        ^

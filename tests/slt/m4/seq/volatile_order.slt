@@ -1,0 +1,37 @@
+# 整列キーでない揮発性の select 項目は Sort の後に評価される（走査順ではなく出力順に nextval が進む）
+
+statement ok
+CREATE SEQUENCE sq_vo_s
+
+statement ok
+CREATE TABLE sq_vo_r (a int)
+
+statement ok
+INSERT INTO sq_vo_r VALUES (1), (2), (3)
+
+query I
+SELECT nextval('sq_vo_s') FROM sq_vo_r ORDER BY a DESC
+----
+1
+2
+3
+
+query II
+SELECT a, nextval('sq_vo_s') FROM sq_vo_r ORDER BY a DESC
+----
+3 4
+2 5
+1 6
+
+query II
+SELECT a, nextval('sq_vo_s') + a FROM sq_vo_r ORDER BY a
+----
+1 8
+2 10
+3 12
+
+statement ok
+DROP TABLE sq_vo_r
+
+statement ok
+DROP SEQUENCE sq_vo_s

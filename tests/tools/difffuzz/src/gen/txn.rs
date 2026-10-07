@@ -6,24 +6,89 @@ use super::{error_stmt, make_table, select_all, Ctx, Ty};
 
 const TYS: [Ty; 4] = [Ty::Int4, Ty::Int8, Ty::Text, Ty::Bool];
 
-const ISO: [&str; 4] = ["READ COMMITTED", "READ UNCOMMITTED", "READ COMMITTED", "READ UNCOMMITTED"];
+const ISO: [&str; 4] = [
+    "READ COMMITTED",
+    "READ UNCOMMITTED",
+    "READ COMMITTED",
+    "READ UNCOMMITTED",
+];
 const MODES: [&str; 4] = ["READ ONLY", "READ WRITE", "DEFERRABLE", "NOT DEFERRABLE"];
 
 /// (名前, 有効な値の候補, 無効な値の候補)
 const PARAMS: [(&str, &[&str], &[&str]); 14] = [
-    ("statement_timeout", &["0", "'5s'", "'100s'", "1000", "'1min'"], &["'abc'", "-5", "'1x'"]),
+    (
+        "statement_timeout",
+        &["0", "'5s'", "'100s'", "1000", "'1min'"],
+        &["'abc'", "-5", "'1x'"],
+    ),
     ("lock_timeout", &["0", "'2s'", "5000"], &["'zz'"]),
-    ("idle_in_transaction_session_timeout", &["0", "'10s'"], &["'q'"]),
-    ("application_name", &["'fz app'", "''", "'a''b'", "fzname"], &[]),
-    ("search_path", &["public", "'public, pg_catalog'", "pg_catalog", "DEFAULT"], &[]),
-    ("client_min_messages", &["notice", "warning", "error", "debug1"], &["'loud'"]),
-    ("extra_float_digits", &["0", "1", "3", "-3", "'2'"], &["4", "-16", "'x'"]),
-    ("DateStyle", &["'ISO, DMY'", "'ISO, MDY'", "'SQL, DMY'", "'German'", "'Postgres, MDY'"], &["'Foo'"]),
-    ("standard_conforming_strings", &["on", "off", "true", "'false'"], &["'maybe'"]),
-    ("default_transaction_isolation", &["'read committed'", "'serializable'", "'repeatable read'", "'read uncommitted'"], &["'chaos'"]),
-    ("default_transaction_read_only", &["on", "off", "true"], &["'perhaps'"]),
+    (
+        "idle_in_transaction_session_timeout",
+        &["0", "'10s'"],
+        &["'q'"],
+    ),
+    (
+        "application_name",
+        &["'fz app'", "''", "'a''b'", "fzname"],
+        &[],
+    ),
+    (
+        "search_path",
+        &["public", "'public, pg_catalog'", "pg_catalog", "DEFAULT"],
+        &[],
+    ),
+    (
+        "client_min_messages",
+        &["notice", "warning", "error", "debug1"],
+        &["'loud'"],
+    ),
+    (
+        "extra_float_digits",
+        &["0", "1", "3", "-3", "'2'"],
+        &["4", "-16", "'x'"],
+    ),
+    (
+        "DateStyle",
+        &[
+            "'ISO, DMY'",
+            "'ISO, MDY'",
+            "'SQL, DMY'",
+            "'German'",
+            "'Postgres, MDY'",
+        ],
+        &["'Foo'"],
+    ),
+    (
+        "standard_conforming_strings",
+        &["on", "off", "true", "'false'"],
+        &["'maybe'"],
+    ),
+    (
+        "default_transaction_isolation",
+        &[
+            "'read committed'",
+            "'serializable'",
+            "'repeatable read'",
+            "'read uncommitted'",
+        ],
+        &["'chaos'"],
+    ),
+    (
+        "default_transaction_read_only",
+        &["on", "off", "true"],
+        &["'perhaps'"],
+    ),
     ("transaction_read_only", &["on", "off"], &["'x'"]),
-    ("IntervalStyle", &["'postgres'", "'iso_8601'", "'sql_standard'", "'postgres_verbose'"], &[]),
+    (
+        "IntervalStyle",
+        &[
+            "'postgres'",
+            "'iso_8601'",
+            "'sql_standard'",
+            "'postgres_verbose'",
+        ],
+        &[],
+    ),
     ("bytea_output", &["'hex'", "'escape'"], &["'raw'"]),
 ];
 
@@ -49,7 +114,16 @@ const SHOWS: [&str; 18] = [
 ];
 
 fn chain_opt(ctx: &mut Ctx) -> &'static str {
-    *ctx.rng.pick(&["", "", " TRANSACTION", " WORK", " AND CHAIN", " AND NO CHAIN", " TRANSACTION AND CHAIN", " WORK AND NO CHAIN"])
+    ctx.rng.pick(&[
+        "",
+        "",
+        " TRANSACTION",
+        " WORK",
+        " AND CHAIN",
+        " AND NO CHAIN",
+        " TRANSACTION AND CHAIN",
+        " WORK AND NO CHAIN",
+    ])
 }
 
 fn txn_modes(ctx: &mut Ctx) -> String {
@@ -65,7 +139,13 @@ fn txn_modes(ctx: &mut Ctx) -> String {
 }
 
 fn begin(ctx: &mut Ctx) {
-    let kw = *ctx.rng.pick(&["BEGIN", "BEGIN", "START TRANSACTION", "BEGIN TRANSACTION", "BEGIN WORK"]);
+    let kw = *ctx.rng.pick(&[
+        "BEGIN",
+        "BEGIN",
+        "START TRANSACTION",
+        "BEGIN TRANSACTION",
+        "BEGIN WORK",
+    ]);
     let m = txn_modes(ctx);
     if m.is_empty() {
         ctx.push(format!("{kw};"));
@@ -77,7 +157,11 @@ fn begin(ctx: &mut Ctx) {
 fn set_param(ctx: &mut Ctx) {
     let (name, ok, bad) = *ctx.rng.pick(&PARAMS);
     let scope = *ctx.rng.pick(&["", "", "SESSION ", "LOCAL "]);
-    let v = if !bad.is_empty() && scope != "LOCAL " && ctx.rng.chance(15) { *ctx.rng.pick(bad) } else { *ctx.rng.pick(ok) };
+    let v = if !bad.is_empty() && scope != "LOCAL " && ctx.rng.chance(15) {
+        *ctx.rng.pick(bad)
+    } else {
+        *ctx.rng.pick(ok)
+    };
     let sep = *ctx.rng.pick(&["=", "TO"]);
     ctx.push(format!("SET {scope}{name} {sep} {v};"));
 }
@@ -96,12 +180,20 @@ fn setting_stmt(ctx: &mut Ctx) {
         3 => ctx.push("RESET ALL;"),
         4 => {
             let m = txn_modes(ctx);
-            let m = if m.is_empty() { "READ ONLY".to_string() } else { m };
+            let m = if m.is_empty() {
+                "READ ONLY".to_string()
+            } else {
+                m
+            };
             ctx.push(format!("SET TRANSACTION {m};"));
         }
         5 => {
             let m = txn_modes(ctx);
-            let m = if m.is_empty() { "READ WRITE".to_string() } else { m };
+            let m = if m.is_empty() {
+                "READ WRITE".to_string()
+            } else {
+                m
+            };
             ctx.push(format!("SET SESSION CHARACTERISTICS AS TRANSACTION {m};"));
         }
         6 => ctx.push_pick(&[
@@ -109,7 +201,6 @@ fn setting_stmt(ctx: &mut Ctx) {
             "SET TIME ZONE 'Asia/Tokyo';",
             "SET TIME ZONE LOCAL;",
             "SET LOCAL TIME ZONE 'America/New_York';",
-            
             "SET TIME ZONE 9;",
             "RESET TIME ZONE;",
         ]),
@@ -117,14 +208,14 @@ fn setting_stmt(ctx: &mut Ctx) {
             let (n, ok, _) = *ctx.rng.pick(&PARAMS);
             let v = ctx.rng.pick(ok).trim_matches('\'').to_string();
             let local = if ctx.rng.chance(40) { "true" } else { "false" };
-            let _ = (v, local); ctx.push(format!("SHOW {n};"));
+            let _ = (v, local);
+            ctx.push(format!("SHOW {n};"));
         }
         8 => {
             let (n, _, _) = *ctx.rng.pick(&PARAMS);
             ctx.push(format!("SHOW {n};"));
         }
         _ => ctx.push_pick(&[
-            
             "SELECT set_config('fz.x', 'v1', false);",
             "SELECT set_config('fz.x', 'v2', true);",
             "SELECT current_setting('fz.x');",
@@ -162,12 +253,11 @@ fn setting_stmt(ctx: &mut Ctx) {
             "SET NAMES 'UTF8';",
             "RESET client_min_messages;",
             "SET LOCAL statement_timeout TO DEFAULT;",
-            "SET SESSION statement_timeout = 7;",
+            "SET SESSION statement_timeout = 7000;",
             "SET nosuch = 1;",
             "SET LOCAL nosuch.thing = 'x';",
             "SET my.custom = 'v';",
             "SHOW my.custom;",
-            
             "RESET nosuch;",
             "SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ ONLY;",
         ]),
@@ -209,7 +299,11 @@ pub fn scenario(ctx: &mut Ctx) {
                     ctx.push(format!("SAVEPOINT sp{sp};"));
                     continue;
                 }
-                let n = if sp == 0 { 1 } else { ctx.rng.range(1, sp as i64) };
+                let n = if sp == 0 {
+                    1
+                } else {
+                    ctx.rng.range(1, sp as i64)
+                };
                 let s = match ctx.rng.below(4) {
                     0 => format!("ROLLBACK TO SAVEPOINT sp{n};"),
                     1 => format!("ROLLBACK TO sp{n};"),
@@ -222,10 +316,7 @@ pub fn scenario(ctx: &mut Ctx) {
                 let t = ctx.tables[ti].clone();
                 ctx.push(select_all(&t));
             }
-            7 => ctx.push_pick(&[
-                "SELECT 1;",
-                "SELECT 1 WHERE false;",
-            ]),
+            7 => ctx.push_pick(&["SELECT 1;", "SELECT 1 WHERE false;"]),
             8 => setting_stmt(ctx),
             9 => timeout_stmt(ctx),
             10 => {
@@ -239,7 +330,6 @@ pub fn scenario(ctx: &mut Ctx) {
                     "BEGIN READ ONLY, READ WRITE;",
                     "SELECT 1/0;",
                     "SELECT * FROM nosuch_tbl;",
-                    
                     "BEGIN; BEGIN;",
                     "SAVEPOINT a; SAVEPOINT a; ROLLBACK TO a;",
                     "COMMIT; COMMIT;",

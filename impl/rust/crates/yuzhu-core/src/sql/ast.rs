@@ -67,6 +67,24 @@ pub enum Statement {
     Explain(Explain),
     /// `CHECKPOINT` (M2).
     Checkpoint(Checkpoint),
+    /// `CREATE [UNIQUE] INDEX ...` (M4).
+    CreateIndex(CreateIndex),
+    /// `DROP INDEX ...` (M4).
+    DropIndex(DropIndex),
+    /// `ALTER TABLE ...` (M4).
+    AlterTable(AlterTable),
+    /// `TRUNCATE ...` (M4).
+    Truncate(Truncate),
+    /// `VACUUM` / `ANALYZE` (M4).
+    Vacuum(Vacuum),
+    /// `CREATE SEQUENCE ...` (M4).
+    CreateSequence(CreateSequence),
+    /// `ALTER SEQUENCE ...` (M4).
+    AlterSequence(AlterSequence),
+    /// `DROP SEQUENCE ...` (M4).
+    DropSequence(DropSequence),
+    /// `COPY ...` (M4).
+    Copy(Copy),
 }
 
 impl Statement {
@@ -84,6 +102,15 @@ impl Statement {
             Statement::Show(s) => s.span,
             Statement::Explain(s) => s.span,
             Statement::Checkpoint(s) => s.span,
+            Statement::CreateIndex(s) => s.span,
+            Statement::DropIndex(s) => s.span,
+            Statement::AlterTable(s) => s.span,
+            Statement::Truncate(s) => s.span,
+            Statement::Vacuum(s) => s.span,
+            Statement::CreateSequence(s) => s.span,
+            Statement::AlterSequence(s) => s.span,
+            Statement::DropSequence(s) => s.span,
+            Statement::Copy(s) => s.span,
         }
     }
 }
@@ -97,7 +124,47 @@ pub struct CreateTable {
     pub if_not_exists: bool,
     /// Columns and table constraints in source order.
     pub elements: Vec<TableElement>,
+    /// `WITH (name = value, ...)` (M4). Validated by the DDL layer.
+    pub options: Vec<RelOption>,
     pub span: Span,
+}
+
+/// One `name [= value]` of a `WITH (...)` list (storage parameters).
+/// `value` is the literal text: a string literal without quotes, a
+/// number with its sign, or a word as written (lower-cased if unquoted).
+/// `None` means no value was given (treated as `true`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelOption {
+    /// `toast` in `toast.autovacuum_enabled`.
+    pub namespace: Option<Ident>,
+    pub name: Ident,
+    pub value: Option<String>,
+    /// From the first name part to the end of the value.
+    pub span: Span,
+}
+
+/// Parameters shared by `PRIMARY KEY` / `UNIQUE` constraints (M4). The
+/// analyzer rejects the unsupported ones with `0A000`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct IndexParams {
+    /// `INCLUDE (cols)`.
+    pub include: Vec<Ident>,
+    /// `NULLS NOT DISTINCT` (UNIQUE only).
+    pub nulls_not_distinct: bool,
+    /// `WITH (...)`.
+    pub options: Vec<RelOption>,
+    /// `USING INDEX TABLESPACE name`.
+    pub tablespace: Option<Ident>,
+    /// `PRIMARY KEY | UNIQUE USING INDEX name` (ALTER TABLE ADD).
+    pub using_index: Option<Ident>,
+}
+
+/// The key of a table-level `PRIMARY KEY (cols)` / `UNIQUE (cols)`.
+/// `columns` is empty for the `USING INDEX name` form.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyConstraint {
+    pub columns: Vec<Ident>,
+    pub params: IndexParams,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +189,8 @@ pub struct ColumnDefinition {
 pub struct SourceExpr {
     pub expr: Expr,
     pub text: String,
+    /// `CHECK (...) NO INHERIT`（CHECK 以外では常に false）。
+    pub no_inherit: bool,
 }
 
 /// `[CONSTRAINT name] kind`.
@@ -129,6 +198,10 @@ pub struct SourceExpr {
 pub struct ColumnConstraint {
     pub name: Option<Ident>,
     pub kind: ColumnConstraintKind,
+    /// `DEFERRABLE` or `INITIALLY DEFERRED` was written (M4). Only kept
+    /// for the kinds that may be deferrable (PRIMARY KEY, UNIQUE,
+    /// REFERENCES); the analyzer rejects it with `0A000`.
+    pub deferrable: bool,
     pub span: Span,
 }
 
@@ -138,10 +211,16 @@ pub enum ColumnConstraintKind {
     Null,
     Default(SourceExpr),
     Check(SourceExpr),
-    /// Not supported in M1 (0A000).
-    PrimaryKey,
-    /// Not supported in M1 (0A000).
-    Unique,
+    /// `PRIMARY KEY [WITH (...)] [USING INDEX TABLESPACE t]` (M4).
+    PrimaryKey(IndexParams),
+    /// `UNIQUE [NULLS [NOT] DISTINCT] [WITH (...)] [USING INDEX TABLESPACE t]` (M4).
+    Unique(IndexParams),
+    /// `GENERATED {ALWAYS | BY DEFAULT} AS IDENTITY [(sequence options)]` (M4).
+    /// `GENERATED ... AS (expr) STORED` stays `0A000` in the parser.
+    Identity {
+        when: GeneratedWhen,
+        options: Vec<SeqOption>,
+    },
     /// `REFERENCES table [(column)]`. Not supported in M1 (0A000).
     References {
         table: ObjectName,
@@ -154,16 +233,19 @@ pub enum ColumnConstraintKind {
 pub struct TableConstraint {
     pub name: Option<Ident>,
     pub kind: TableConstraintKind,
+    /// `DEFERRABLE` or `INITIALLY DEFERRED` was written (M4). Only kept
+    /// for PRIMARY KEY, UNIQUE and FOREIGN KEY.
+    pub deferrable: bool,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableConstraintKind {
     Check(SourceExpr),
-    /// Not supported in M1 (0A000).
-    PrimaryKey(Vec<Ident>),
-    /// Not supported in M1 (0A000).
-    Unique(Vec<Ident>),
+    /// `PRIMARY KEY (cols) [INCLUDE ...] [WITH ...]` (M4).
+    PrimaryKey(KeyConstraint),
+    /// `UNIQUE [NULLS [NOT] DISTINCT] (cols) [INCLUDE ...] [WITH ...]` (M4).
+    Unique(KeyConstraint),
     /// Not supported in M1 (0A000).
     ForeignKey {
         columns: Vec<Ident>,
@@ -220,10 +302,19 @@ pub struct Insert {
     pub table: ObjectName,
     pub alias: Option<Ident>,
     pub columns: Vec<Ident>,
+    /// `OVERRIDING {SYSTEM | USER} VALUE` (M4). Cannot be combined with
+    /// `DEFAULT VALUES`.
+    pub overriding: Option<OverridingKind>,
     pub source: InsertSource,
     /// Not supported in M1 (0A000) when non-empty.
     pub returning: Vec<SelectItem>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverridingKind {
+    System,
+    User,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -275,11 +366,34 @@ pub struct Delete {
 /// A full query: body plus ORDER BY / LIMIT / OFFSET.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
+    /// Leading `WITH` (M4). Parenthesized subqueries carry their own.
+    pub with: Option<With>,
     pub body: QueryBody,
     pub order_by: Vec<OrderByItem>,
     /// `LIMIT n` / `FETCH FIRST n ROWS ONLY`. `LIMIT ALL` gives `None`.
     pub limit: Option<Expr>,
     pub offset: Option<Expr>,
+    pub span: Span,
+}
+
+/// `WITH [RECURSIVE] cte, ...` (M4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct With {
+    pub recursive: bool,
+    pub ctes: Vec<Cte>,
+    pub span: Span,
+}
+
+/// `name [(columns)] AS [[NOT] MATERIALIZED] (query)` (M4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cte {
+    pub name: Ident,
+    /// Column aliases `x(a, b)`; empty = none.
+    pub columns: Vec<Ident>,
+    /// `MATERIALIZED` = `Some(true)`, `NOT MATERIALIZED` = `Some(false)`.
+    pub materialized: Option<bool>,
+    pub query: Box<Query>,
+    /// From the name to the closing parenthesis.
     pub span: Span,
 }
 
@@ -353,6 +467,14 @@ pub enum SelectItem {
 pub enum TableRef {
     Table {
         name: ObjectName,
+        alias: Option<TableAlias>,
+        span: Span,
+    },
+    /// `generate_series(1, 3) AS g(x)` (M4). `args` may be empty. With no
+    /// alias the analyzer uses the function name.
+    Function {
+        name: ObjectName,
+        args: Vec<Expr>,
         alias: Option<TableAlias>,
         span: Span,
     },
@@ -545,13 +667,282 @@ pub struct Checkpoint {
     pub span: Span,
 }
 
-/// `EXPLAIN [ANALYZE] [VERBOSE] statement` (M4).
+/// `EXPLAIN [ANALYZE] [VERBOSE] statement` or
+/// `EXPLAIN (option [value], ...) statement` (M4).
+///
+/// The legacy form becomes the options `analyze` / `verbose` without a
+/// value. Values are checked by the analyzer, not the parser.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Explain {
-    pub analyze: bool,
-    pub verbose: bool,
+    pub options: Vec<ExplainOption>,
     pub statement: Box<Statement>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplainOption {
+    /// The name as lexed (unquoted names are lower case).
+    pub name: String,
+    pub value: Option<ExplainValue>,
+    /// Position of the name (used for error positions).
+    pub name_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExplainValue {
+    /// A word (`true`, `off`, `json`, ...) or a quoted string.
+    Word(String),
+    Integer(i64),
+    /// A decimal or an integer that does not fit `i64`: never a valid Boolean.
+    Other(String),
+}
+
+// ----- M4 DDL: indexes, ALTER TABLE, TRUNCATE, VACUUM ----------------------
+
+/// `CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] [name] ON [ONLY] table
+/// [USING method] (elems) [INCLUDE (cols)] [NULLS [NOT] DISTINCT]
+/// [WITH (...)] [TABLESPACE t] [WHERE expr]`.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateIndex {
+    pub name: Option<Ident>,
+    pub table: ObjectName,
+    pub unique: bool,
+    pub if_not_exists: bool,
+    pub concurrently: bool,
+    pub method: Option<Ident>,
+    pub columns: Vec<IndexElem>,
+    pub include: Vec<Ident>,
+    pub nulls_not_distinct: bool,
+    pub options: Vec<RelOption>,
+    pub tablespace: Option<Ident>,
+    pub where_clause: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexElem {
+    pub kind: IndexElemKind,
+    pub collation: Option<ObjectName>,
+    pub opclass: Option<ObjectName>,
+    pub direction: Option<SortDirection>,
+    pub nulls: Option<NullsOrder>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexElemKind {
+    Column(Ident),
+    /// A function call or a parenthesized expression (rejected by the analyzer).
+    Expr(Expr),
+}
+
+/// `DROP INDEX [CONCURRENTLY] [IF EXISTS] name [, ...] [CASCADE | RESTRICT]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropIndex {
+    pub names: Vec<ObjectName>,
+    pub if_exists: bool,
+    pub concurrently: bool,
+    pub cascade: bool,
+    pub span: Span,
+}
+
+/// `ALTER TABLE [IF EXISTS] [ONLY] name action`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterTable {
+    pub name: ObjectName,
+    pub if_exists: bool,
+    pub only: bool,
+    pub action: AlterTableAction,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterTableAction {
+    /// `ADD [CONSTRAINT n] PRIMARY KEY | UNIQUE | CHECK | FOREIGN KEY ...`.
+    AddConstraint(TableConstraint),
+    /// `OWNER TO role`.
+    OwnerTo(RoleSpec),
+    /// Valid PostgreSQL syntax that is not supported (the analyzer gives
+    /// `0A000 ALTER TABLE ... {what} is not supported yet`). The rest of the
+    /// statement is skipped unparsed.
+    Other { what: String, span: Span },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RoleSpec {
+    Name(Ident),
+    CurrentUser,
+    CurrentRole,
+    SessionUser,
+    /// `PUBLIC`.
+    Public,
+}
+
+/// `TRUNCATE [TABLE] [ONLY] name [*] [, ...] [RESTART | CONTINUE IDENTITY] [CASCADE | RESTRICT]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Truncate {
+    pub tables: Vec<ObjectName>,
+    pub restart_identity: bool,
+    pub cascade: bool,
+    /// `ONLY` was written for some table.
+    pub only: bool,
+    pub span: Span,
+}
+
+/// `VACUUM [(options) | legacy options] [tables]` (`vacuum = true`) or
+/// `ANALYZE [(options) | VERBOSE] [tables]` (`vacuum = false`).
+/// Legacy keywords become options without a value (`full`, `freeze`,
+/// `verbose`, `analyze`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Vacuum {
+    pub vacuum: bool,
+    pub options: Vec<VacuumOption>,
+    pub targets: Vec<VacuumTarget>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VacuumOption {
+    pub name: Ident,
+    /// Word, string content or signed number text.
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VacuumTarget {
+    pub name: ObjectName,
+    pub columns: Vec<Ident>,
+}
+
+// ----- M4 sequences -----------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateSequence {
+    pub name: ObjectName,
+    pub if_not_exists: bool,
+    pub persistence: SeqPersistence,
+    pub options: Vec<SeqOption>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeqPersistence {
+    Permanent,
+    Temporary,
+    Unlogged,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterSequence {
+    pub name: ObjectName,
+    pub if_exists: bool,
+    pub action: AlterSequenceAction,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterSequenceAction {
+    Options(Vec<SeqOption>),
+    OwnerTo(RoleSpec),
+    /// The analyzer rejects the next two with `0A000`.
+    RenameTo(Ident),
+    SetSchema(Ident),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropSequence {
+    pub names: Vec<ObjectName>,
+    pub if_exists: bool,
+    pub cascade: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeqOption {
+    pub kind: SeqOptionKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SeqOptionKind {
+    As(TypeName),
+    Increment(SeqNumber),
+    /// `None` = `NO MINVALUE`.
+    MinValue(Option<SeqNumber>),
+    MaxValue(Option<SeqNumber>),
+    Start(SeqNumber),
+    /// `RESTART [[WITH] n]`.
+    Restart(Option<SeqNumber>),
+    Cache(SeqNumber),
+    /// `CYCLE` = true, `NO CYCLE` = false.
+    Cycle(bool),
+    /// `OWNED BY NONE` is the one-part name `none`.
+    OwnedBy(ObjectName),
+    SequenceName(ObjectName),
+}
+
+/// A sign (only `-` is kept) and digits (possibly with a decimal point) as
+/// text, like PostgreSQL's `NumericOnly`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeqNumber {
+    pub text: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratedWhen {
+    Always,
+    ByDefault,
+}
+
+// ----- M4 COPY ----------------------------------------------------------------
+
+/// `COPY table [(cols)] FROM|TO source [WITH] options [WHERE expr]`.
+/// Legacy options are normalized to `CopyOption`s (`BINARY` -> `format
+/// binary`, `CSV` -> `format csv`, ...). `COPY (query) TO` is rejected by
+/// the parser with `0A000`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Copy {
+    pub table: ObjectName,
+    pub columns: Vec<Ident>,
+    pub direction: CopyDirection,
+    pub source: CopySource,
+    pub options: Vec<CopyOption>,
+    pub where_clause: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyDirection {
+    From,
+    To,
+}
+
+/// For `TO`, `Stdin` means STDOUT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopySource {
+    Stdin,
+    File(String),
+    Program(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyOption {
+    pub name: String,
+    pub value: Option<CopyOptionValue>,
+    pub name_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CopyOptionValue {
+    /// Unquoted word (`true`, `csv`, ...).
+    Word(String),
+    /// Quoted string.
+    String(String),
+    Integer(i64),
+    List(Vec<String>),
+    Star,
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +972,21 @@ pub enum SessionValueKind {
     User,
     CurrentCatalog,
     CurrentSchema,
+    /// `CURRENT_DATE` (M4).
+    CurrentDate,
+    /// `CURRENT_TIMESTAMP [(p)]` (M4). `precision` is -1 when not given;
+    /// values above 6 are clamped to 6.
+    CurrentTimestamp {
+        precision: i32,
+    },
+    /// `LOCALTIMESTAMP [(p)]` (M4). `precision` as for `CurrentTimestamp`.
+    LocalTimestamp {
+        precision: i32,
+    },
+    /// 関数 `now()`（`CURRENT_TIMESTAMP` と同じ値。逆変換では `now()` と書く）。
+    Now,
+    /// 関数 `transaction_timestamp()`。
+    TransactionTimestamp,
 }
 
 impl SessionValueKind {
@@ -592,6 +998,11 @@ impl SessionValueKind {
             SessionValueKind::CurrentRole => "current_role",
             SessionValueKind::CurrentCatalog => "current_catalog",
             SessionValueKind::CurrentSchema => "current_schema",
+            SessionValueKind::CurrentDate => "current_date",
+            SessionValueKind::CurrentTimestamp { .. } => "current_timestamp",
+            SessionValueKind::LocalTimestamp { .. } => "localtimestamp",
+            SessionValueKind::Now => "now",
+            SessionValueKind::TransactionTimestamp => "transaction_timestamp",
         }
     }
 }
@@ -622,6 +1033,13 @@ pub struct WhenClause {
     pub span: Span,
 }
 
+/// `ANY` (and `SOME`) or `ALL` in `x op ANY|ALL (subquery)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantifier {
+    Any,
+    All,
+}
+
 /// Expressions. `COALESCE` and `NULLIF` are dedicated nodes because they
 /// are keywords in PostgreSQL's grammar (not ordinary function calls);
 /// `GREATEST`/`LEAST` are `MinMax` nodes for the same reason.
@@ -644,6 +1062,8 @@ pub enum Expr {
     /// Infix operator, e.g. `"+"`, `"="`, `"<>"`, `"||"`.
     BinaryOp {
         op: String,
+        /// `OPERATOR(schema.op)`; `None` for an ordinary operator.
+        op_schema: Option<Ident>,
         left: Box<Expr>,
         right: Box<Expr>,
         span: Span,
@@ -651,6 +1071,7 @@ pub enum Expr {
     /// Prefix operator, e.g. `"-"`, `"+"`.
     UnaryOp {
         op: String,
+        op_schema: Option<Ident>,
         expr: Box<Expr>,
         span: Span,
     },
@@ -702,6 +1123,10 @@ pub enum Expr {
         distinct: bool,
         /// `f(*)`, e.g. `count(*)` (`args` is empty).
         star: bool,
+        /// `FILTER (WHERE cond)` (M4).
+        filter: Option<Box<Expr>>,
+        /// `agg(args ORDER BY ...)`。
+        order_by: Vec<OrderByItem>,
         span: Span,
     },
     /// `CASE [operand] WHEN ... THEN ... [ELSE ...] END`.
@@ -732,6 +1157,31 @@ pub enum Expr {
         expr: Box<Expr>,
         query: Box<Query>,
         negated: bool,
+        span: Span,
+    },
+    /// `x op ANY|SOME|ALL (subquery)` (M4). `op` is the operator spelling
+    /// (`=`, `<>`, `~~` for LIKE, `!~~` for NOT LIKE, `~~*`, `!~~*`);
+    /// `span.start` is the operator token (`NOT` for NOT LIKE).
+    QuantifiedSubquery {
+        expr: Box<Expr>,
+        op: String,
+        op_schema: Option<Ident>,
+        quantifier: Quantifier,
+        query: Box<Query>,
+        span: Span,
+    },
+    /// `expr COLLATE name` (M4). `span.start` is the `COLLATE` token.
+    Collate {
+        expr: Box<Expr>,
+        collation: ObjectName,
+        span: Span,
+    },
+    /// Row constructor `(a, b)` (2+ items) or `ROW(...)` (`explicit`, any
+    /// number of items). `span.start` is `(` or `ROW`. The analyzer accepts
+    /// it only as the left side of IN / ANY / ALL subqueries.
+    Row {
+        items: Vec<Expr>,
+        explicit: bool,
         span: Span,
     },
     /// `[NOT] EXISTS (SELECT ...)` (M4; NOT is a separate `Not` node).
@@ -801,6 +1251,9 @@ impl Expr {
             | Expr::Between { span, .. }
             | Expr::InList { span, .. }
             | Expr::InSubquery { span, .. }
+            | Expr::QuantifiedSubquery { span, .. }
+            | Expr::Collate { span, .. }
+            | Expr::Row { span, .. }
             | Expr::Exists { span, .. }
             | Expr::Subquery { span, .. }
             | Expr::Like { span, .. }

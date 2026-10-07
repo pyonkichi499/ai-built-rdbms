@@ -116,15 +116,26 @@ SELECT count(*) FILTER (WHERE count(*) > 1) FROM ag_t
 statement error aggregate function calls cannot be nested
 SELECT sum(count(*)) FROM ag_t
 
+# string_agg と集約内の ORDER BY（M4 統合で実装。NULL は飛ばす）
+query T
+SELECT string_agg(c, ',' ORDER BY a, c) FROM ag_t
+----
+x,y,x
+
+query T
+SELECT string_agg(c, ',' ORDER BY a DESC, c) FROM ag_t
+----
+x,y,x
+
 # KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
 skipif yuzhu
 statement ok
-SELECT string_agg(c, ',') FROM ag_t
+SELECT array_agg(c) FROM ag_t
 
 # KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
 onlyif yuzhu
 statement error (0A000)
-SELECT string_agg(c, ',') FROM ag_t
+SELECT array_agg(c) FROM ag_t
 
 # KNOWN-DIFF: KD-7 未対応の集約・構文は yuzhu で 0A000（PostgreSQL は成功する）
 skipif yuzhu

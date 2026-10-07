@@ -328,6 +328,26 @@ impl BufferPool {
     /// must hold no page latch (§6.3 item 10).
     pub fn extend(self: &Arc<Self>, rel: RelFileLocator, fork: ForkNumber) -> Result<PinnedBuffer> {
         track::assert_no_latches_for_extend(self.id);
+        self.extend_inner(rel, fork)
+    }
+
+    /// B+Tree variant of [`extend`](Self::extend): the caller may hold page
+    /// latches (a split allocates the new page while latching the old one).
+    /// The extension lock never waits for a page latch (eviction writes use
+    /// `try_read`), so this cannot deadlock (`06-btree.md` §4.3).
+    pub fn extend_tree(
+        self: &Arc<Self>,
+        rel: RelFileLocator,
+        fork: ForkNumber,
+    ) -> Result<PinnedBuffer> {
+        self.extend_inner(rel, fork)
+    }
+
+    fn extend_inner(
+        self: &Arc<Self>,
+        rel: RelFileLocator,
+        fork: ForkNumber,
+    ) -> Result<PinnedBuffer> {
         let ext = self.ext_lock(rel, fork)?;
         let _ext = lock(&ext)?;
         let n = self.smgr.nblocks(rel, fork)?;
@@ -572,6 +592,29 @@ impl PinnedBuffer {
             return Err(self.pool.poisoned_latch());
         };
         Ok(PageReadGuard { pin: self, latch })
+    }
+
+    /// Shared latch for B+Tree pages: no ascending-block-order debug check
+    /// (the tree order is the caller's duty); double latches still panic.
+    pub fn read_tree(&self) -> Result<PageReadGuard<'_>> {
+        let frame = self.pool.frame(self.frame);
+        track::latch_acquired_tree(self.pool.id, self.frame, self.tag, LatchMode::Read);
+        let Ok(latch) = frame.content.read() else {
+            track::latch_released(self.pool.id, self.frame);
+            return Err(self.pool.poisoned_latch());
+        };
+        Ok(PageReadGuard { pin: self, latch })
+    }
+
+    /// Exclusive latch for B+Tree pages (see [`read_tree`](Self::read_tree)).
+    pub fn write_tree(&self) -> Result<PageWriteGuard<'_>> {
+        let frame = self.pool.frame(self.frame);
+        track::latch_acquired_tree(self.pool.id, self.frame, self.tag, LatchMode::Write);
+        let Ok(latch) = frame.content.write() else {
+            track::latch_released(self.pool.id, self.frame);
+            return Err(self.pool.poisoned_latch());
+        };
+        Ok(self.write_guard(latch))
     }
 
     /// Exclusive latch. A poisoned latch is a `Severity::Panic` error.

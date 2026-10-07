@@ -7,6 +7,15 @@
 pub mod dml;
 pub mod expr;
 pub mod expr_extra;
+pub mod m4;
+pub mod m4_agg;
+pub mod m4_ddl;
+pub mod m4_index;
+pub mod m4_join;
+pub mod m4_setop;
+pub mod m4_subq;
+#[cfg(test)]
+mod m4_tests;
 pub mod query;
 pub mod query_extra;
 pub mod query_r3;
@@ -17,7 +26,12 @@ pub mod values;
 
 use crate::rng::Rng;
 
-pub const DOMAINS: [&str; 5] = ["expr", "types", "query", "dml", "txn"];
+/// M1〜M3 の領域（M5 の機能で `0A000` になる文を含む。`--skip-unsupported-legacy` の対象）。
+pub const LEGACY_DOMAINS: [&str; 5] = ["expr", "types", "query", "dml", "txn"];
+
+pub const DOMAINS: [&str; 11] = [
+    "expr", "types", "query", "dml", "txn", "join", "agg", "subquery", "setop", "index", "ddl",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
@@ -98,7 +112,10 @@ impl Table {
     }
 
     pub fn positions(&self) -> String {
-        (1..=self.cols.len()).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+        (1..=self.cols.len())
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -108,6 +125,10 @@ pub struct Ctx {
     pub prefix: String,
     pub tables: Vec<Table>,
     pub stmts: Vec<String>,
+    /// M4 領域の読み取り文（添字 -> 全出力列を ORDER BY で並べているか）。多重集合比較と評価順エラーの別扱いの対象。
+    pub q: std::collections::BTreeMap<usize, bool>,
+    /// (基準の文の添字, 変種の文の添字)。同じサーバ上で結果が同じであることを確かめる（プラン変種・索引の有無）。
+    pub pairs: Vec<(usize, usize)>,
     next_table: usize,
 }
 
@@ -118,12 +139,22 @@ impl Ctx {
             prefix: format!("fz_{seed}_{case}_"),
             tables: Vec::new(),
             stmts: Vec::new(),
+            q: Default::default(),
+            pairs: Vec::new(),
             next_table: 0,
         }
     }
 
     pub fn push(&mut self, s: impl Into<String>) {
         self.stmts.push(s.into());
+    }
+
+    /// 読み取り文を積んで添字を返す。`ordered` は全出力列を ORDER BY で並べているとき true。
+    pub fn push_q(&mut self, s: impl Into<String>, ordered: bool) -> usize {
+        self.stmts.push(s.into());
+        let i = self.stmts.len() - 1;
+        self.q.insert(i, ordered);
+        i
     }
 
     pub fn push_pick(&mut self, opts: &[&str]) {
@@ -154,7 +185,17 @@ pub fn generate(domain: &str, ctx: &mut Ctx) -> Result<(), String> {
         "query" => { query::scenario(ctx); query::drop_known_missing(ctx) }
         "dml" => dml::scenario(ctx),
         "txn" => txn::scenario(ctx),
-        d => return Err(format!("unknown domain: {d} (expr, types, query, dml, txn, all)")),
+        "join" => m4_join::scenario(ctx),
+        "agg" => m4_agg::scenario(ctx),
+        "subquery" => m4_subq::scenario(ctx),
+        "setop" => m4_setop::scenario(ctx),
+        "index" => m4_index::scenario(ctx),
+        "ddl" => m4_ddl::scenario(ctx),
+        d => {
+            return Err(format!(
+                "unknown domain: {d} (expr, types, query, dml, txn, join, agg, subquery, setop, index, ddl, all)"
+            ))
+        }
     }
     Ok(())
 }
@@ -164,7 +205,13 @@ pub fn random_columns(ctx: &mut Ctx, n: usize, tys: &[Ty], constraints: bool) ->
     let mut cols = Vec::new();
     for i in 0..n {
         let ty = *ctx.rng.pick(tys);
-        let mut c = Col { name: format!("c{i}"), ty, not_null: false, default: None, check: None };
+        let mut c = Col {
+            name: format!("c{i}"),
+            ty,
+            not_null: false,
+            default: None,
+            check: None,
+        };
         if constraints {
             c.not_null = ctx.rng.chance(25);
             if ctx.rng.chance(30) {
@@ -261,11 +308,27 @@ pub fn error_stmt(ctx: &mut Ctx) -> String {
         let c = ctx.rng.pick(&t.cols).clone();
         return match ctx.rng.below(7) {
             0 => format!("SELECT nosuchcol FROM {};", t.name),
-            1 => format!("INSERT INTO {} VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);", t.name),
-            2 => format!("INSERT INTO {} ({}) VALUES (DEFAULT, DEFAULT);", t.name, c.name),
+            1 => format!(
+                "INSERT INTO {} VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);",
+                t.name
+            ),
+            2 => format!(
+                "INSERT INTO {} ({}) VALUES (DEFAULT, DEFAULT);",
+                t.name, c.name
+            ),
             3 => format!("UPDATE {} SET nosuchcol = 1;", t.name),
-            4 => format!("SELECT {} + {} FROM {};", c.name, c.name, t.name.replace("_t", "_x")),
-            5 => format!("DELETE FROM {} WHERE {} = 'zz_{}';", t.name, c.name, ctx.rng.below(9)),
+            4 => format!(
+                "SELECT {} + {} FROM {};",
+                c.name,
+                c.name,
+                t.name.replace("_t", "_x")
+            ),
+            5 => format!(
+                "DELETE FROM {} WHERE {} = 'zz_{}';",
+                t.name,
+                c.name,
+                ctx.rng.below(9)
+            ),
             _ => format!("CREATE TABLE {} (a integer);", t.name),
         };
     }

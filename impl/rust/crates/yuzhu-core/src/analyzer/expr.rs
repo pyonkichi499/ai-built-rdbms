@@ -2,44 +2,43 @@
 //! names (`FigureColname`).
 
 use super::Analyzer;
-use super::bound::{BoolTestKind, BoundExpr, BoundExprKind};
+use super::bound::{BoundExpr, BoundExprKind};
 use super::coerce::{CoercionContext, resolve_unknown, tname};
-use super::scope::{ExprKind, Scope};
+use super::cte::CteScope;
+use super::scope::{ParseExprKind, ScopeStack};
 use crate::error::{Error, Result, Span, sqlstate};
+use crate::expr::{BoolTestKind, Var};
 use crate::sql::ast::{BoolTestValue, Expr, Literal, SessionValueKind, WhenClause};
 use crate::types::{Datum, SqlType, oid};
 
 /// Where an expression is analyzed.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ExprCtx<'s> {
-    pub(super) scope: &'s Scope,
-    pub(super) kind: ExprKind,
+    pub(super) scopes: &'s ScopeStack,
+    pub(super) kind: ParseExprKind,
+    /// 副問い合わせ・CTE 参照の解析に使う CTE スコープ（N3）。持たない文脈（DEFAULT・CHECK）は `None`。
+    #[allow(dead_code)]
+    pub(super) ctes: Option<&'s CteScope<'s>>,
 }
 
 impl<'s> ExprCtx<'s> {
-    pub(super) fn new(scope: &'s Scope, kind: ExprKind) -> Self {
-        ExprCtx { scope, kind }
+    pub(super) fn new(scopes: &'s ScopeStack, kind: ParseExprKind) -> Self {
+        ExprCtx {
+            scopes,
+            kind,
+            ctes: None,
+        }
+    }
+
+    #[must_use]
+    pub(super) fn with_ctes(self, ctes: &'s CteScope<'s>) -> Self {
+        ExprCtx {
+            ctes: Some(ctes),
+            ..self
+        }
     }
 }
 
-/// Aggregate function names (M4). Calls to them are rejected with 0A000
-/// rather than "function does not exist".
-const AGGREGATES: &[&str] = &[
-    "count",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "bool_and",
-    "bool_or",
-    "every",
-    "string_agg",
-    "array_agg",
-    "stddev",
-    "variance",
-];
-
-/// Parses an integer literal (decimal, PG16 `0x`/`0o`/`0b` prefixes and
 /// `_` separators, optional sign). `None` if it does not fit in int8.
 pub(super) fn parse_int_literal(s: &str) -> Option<i64> {
     let (neg, body) = match s.strip_prefix('-') {
@@ -76,213 +75,25 @@ fn bool_expr(kind: BoundExprKind, span: Span) -> BoundExpr {
     BoundExpr::new(kind, SqlType::BOOL, span)
 }
 
-/// Does the expression reference any input column?
+/// レベル 0 の `Var`（同じスコープの列）を含むか。LIMIT・OFFSET の検査と IN リストの分類に使う
+/// （PostgreSQL の `contain_vars_of_level(.., 0)`）。
 pub(super) fn contains_column_ref(e: &BoundExpr) -> bool {
-    let mut found = false;
-    visit(e, &mut |x| {
-        if matches!(x.kind, BoundExprKind::ColumnRef { .. }) {
-            found = true;
-        }
-    });
-    found
+    e.columns().iter().any(|v| v.levels_up == 0)
 }
 
-/// The column referenced when the expression references exactly one distinct
-/// column (PostgreSQL names a CHECK `<table>_<col>_check` only then;
-/// otherwise `<table>_check`).
+/// 式が参照するレベル 0・`rte = 0` の列がちょうど 1 種類のとき、その列の位置
+/// （PostgreSQL は CHECK を、列がちょうど 1 つのときだけ `<table>_<col>_check` と名づける。
+/// それ以外は `<table>_check`）。
 pub(super) fn sole_column_ref(e: &BoundExpr) -> Option<usize> {
-    let mut cols: Vec<usize> = Vec::new();
-    visit(e, &mut |x| {
-        if let BoundExprKind::ColumnRef { index } = x.kind
-            && !cols.contains(&index)
-        {
-            cols.push(index);
-        }
-    });
-    if let [only] = cols[..] {
-        Some(only)
-    } else {
-        None
-    }
-}
-
-/// Pre-order traversal.
-pub(super) fn visit(e: &BoundExpr, f: &mut dyn FnMut(&BoundExpr)) {
-    f(e);
-    match &e.kind {
-        BoundExprKind::Literal(_)
-        | BoundExprKind::ColumnRef { .. }
-        | BoundExprKind::SessionValue(_) => {}
-        BoundExprKind::Operator { args, .. }
-        | BoundExprKind::Function { args, .. }
-        | BoundExprKind::And(args)
-        | BoundExprKind::Or(args)
-        | BoundExprKind::Coalesce(args)
-        | BoundExprKind::MinMax { args, .. } => {
-            for a in args {
-                visit(a, f);
-            }
-        }
-        BoundExprKind::Cast { expr, .. }
-        | BoundExprKind::CoerceTypmod { expr, .. }
-        | BoundExprKind::Not(expr)
-        | BoundExprKind::IsNull(expr)
-        | BoundExprKind::IsNotNull(expr)
-        | BoundExprKind::BoolTest { expr, .. } => visit(expr, f),
-        BoundExprKind::Case { arms, else_result } => {
-            for (c, r) in arms {
-                visit(c, f);
-                visit(r, f);
-            }
-            if let Some(e) = else_result {
-                visit(e, f);
-            }
-        }
-        BoundExprKind::NullIf { left, right, .. }
-        | BoundExprKind::DistinctFrom { left, right, .. } => {
-            visit(left, f);
-            visit(right, f);
-        }
-        BoundExprKind::Like {
-            expr,
-            pattern,
-            escape,
-            ..
-        } => {
-            visit(expr, f);
-            visit(pattern, f);
-            if let Some(e) = escape {
-                visit(e, f);
-            }
-        }
-        BoundExprKind::InList { expr, list, .. } => {
-            visit(expr, f);
-            for a in list {
-                visit(a, f);
-            }
+    let mut cols: Vec<Var> = Vec::new();
+    for v in e.columns() {
+        if !cols.contains(&v) {
+            cols.push(v);
         }
     }
-}
-
-/// Structural equality ignoring source spans (PostgreSQL's `equal()` on
-/// analyzed expressions), used to match ORDER BY expressions to targets.
-#[allow(clippy::many_single_char_names, clippy::too_many_lines)]
-pub(super) fn same_expr(a: &BoundExpr, b: &BoundExpr) -> bool {
-    use BoundExprKind as K;
-    if a.ty != b.ty {
-        return false;
-    }
-    let all = |x: &[BoundExpr], y: &[BoundExpr]| {
-        x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same_expr(p, q))
-    };
-    let opt = |x: &Option<Box<BoundExpr>>, y: &Option<Box<BoundExpr>>| match (x, y) {
-        (None, None) => true,
-        (Some(p), Some(q)) => same_expr(p, q),
-        _ => false,
-    };
-    match (&a.kind, &b.kind) {
-        (K::Literal(x), K::Literal(y)) => match (x, y) {
-            (Datum::Float4(p), Datum::Float4(q)) => p.to_bits() == q.to_bits(),
-            (Datum::Float8(p), Datum::Float8(q)) => p.to_bits() == q.to_bits(),
-            _ => x == y,
-        },
-        (K::ColumnRef { index: x }, K::ColumnRef { index: y }) => x == y,
-        (K::Operator { op: o1, args: a1 }, K::Operator { op: o2, args: a2 }) => {
-            o1.oid == o2.oid && all(a1, a2)
-        }
-        (K::Function { func: f1, args: a1 }, K::Function { func: f2, args: a2 }) => {
-            f1.oid == f2.oid && all(a1, a2)
-        }
-        (
-            K::Cast {
-                expr: e1,
-                method: m1,
-            },
-            K::Cast {
-                expr: e2,
-                method: m2,
-            },
-        ) => std::mem::discriminant(m1) == std::mem::discriminant(m2) && same_expr(e1, e2),
-        (
-            K::CoerceTypmod {
-                expr: e1,
-                explicit: x1,
-            },
-            K::CoerceTypmod {
-                expr: e2,
-                explicit: x2,
-            },
-        ) => x1 == x2 && same_expr(e1, e2),
-        (K::And(x), K::And(y)) | (K::Or(x), K::Or(y)) | (K::Coalesce(x), K::Coalesce(y)) => {
-            all(x, y)
-        }
-        (K::Not(x), K::Not(y))
-        | (K::IsNull(x), K::IsNull(y))
-        | (K::IsNotNull(x), K::IsNotNull(y)) => same_expr(x, y),
-        (K::BoolTest { expr: e1, test: t1 }, K::BoolTest { expr: e2, test: t2 }) => {
-            t1 == t2 && same_expr(e1, e2)
-        }
-        (
-            K::Case {
-                arms: r1,
-                else_result: e1,
-            },
-            K::Case {
-                arms: r2,
-                else_result: e2,
-            },
-        ) => {
-            r1.len() == r2.len()
-                && r1
-                    .iter()
-                    .zip(r2)
-                    .all(|((c1, v1), (c2, v2))| same_expr(c1, c2) && same_expr(v1, v2))
-                && opt(e1, e2)
-        }
-        (
-            K::NullIf {
-                left: l1,
-                right: r1,
-                ..
-            },
-            K::NullIf {
-                left: l2,
-                right: r2,
-                ..
-            },
-        ) => same_expr(l1, l2) && same_expr(r1, r2),
-        (
-            K::Like {
-                expr: e1,
-                pattern: p1,
-                escape: s1,
-                negated: n1,
-                case_insensitive: c1,
-            },
-            K::Like {
-                expr: e2,
-                pattern: p2,
-                escape: s2,
-                negated: n2,
-                case_insensitive: c2,
-            },
-        ) => n1 == n2 && c1 == c2 && same_expr(e1, e2) && same_expr(p1, p2) && opt(s1, s2),
-        (
-            K::InList {
-                expr: e1,
-                list: l1,
-                negated: n1,
-                ..
-            },
-            K::InList {
-                expr: e2,
-                list: l2,
-                negated: n2,
-                ..
-            },
-        ) => n1 == n2 && same_expr(e1, e2) && all(l1, l2),
-        (K::SessionValue(x), K::SessionValue(y)) => x == y,
-        _ => false,
+    match cols[..] {
+        [v] if v.levels_up == 0 && v.rte.0 == 0 && !v.is_system() => Some(usize::from(v.col)),
+        _ => None,
     }
 }
 
@@ -330,6 +141,9 @@ fn figure_colname_internal(e: &Expr) -> (Option<String>, u8) {
         ),
         Expr::NullIf { .. } => (Some("nullif".to_owned()), 2),
         Expr::Exists { .. } => (Some("exists".to_owned()), 2),
+        Expr::Subquery { query, .. } => (Some(super::sublink::subquery_colname(query)), 2),
+        Expr::Collate { expr, .. } => figure_colname_internal(expr),
+        Expr::Row { .. } => (Some("row".to_owned()), 2),
         Expr::SessionValue { kind, .. } => {
             let n = match kind {
                 SessionValueKind::User => "user",
@@ -342,6 +156,38 @@ fn figure_colname_internal(e: &Expr) -> (Option<String>, u8) {
 }
 
 impl Analyzer<'_> {
+    /// 列参照の名前の部品（`a`、`t.a`、`s.t.a`、`db.s.t.a`）。4 部は先頭がデータベース名で、現在の
+    /// データベースなら 3 部として続ける。違えば `0A000`、5 部以上は `42601`。
+    fn column_ref_parts<'p>(
+        &self,
+        parts: &'p [crate::sql::ast::Ident],
+        span: Span,
+    ) -> Result<&'p [crate::sql::ast::Ident]> {
+        let shown = || {
+            parts
+                .iter()
+                .map(|p| p.value.as_str())
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        match parts.len() {
+            0..=3 => Ok(parts),
+            4 if parts[0].value == self.catalog.current_database() => Ok(&parts[1..]),
+            4 => Err(Error::not_supported(format!(
+                "cross-database references are not implemented: {}",
+                shown()
+            ))
+            .with_span(span)),
+            _ => Err(Error::syntax_at(
+                span,
+                format!(
+                    "improper qualified name (too many dotted names): {}",
+                    shown()
+                ),
+            )),
+        }
+    }
+
     /// Resolves a comparison operator for two operands and returns it with
     /// the operands coerced to its argument types.
     fn resolve_cmp_op(
@@ -378,18 +224,14 @@ impl Analyzer<'_> {
         match e {
             Expr::Literal { value, span } => transform_literal(value, *span),
             Expr::Column { parts, span } => {
-                if cx.kind == ExprKind::ColumnDefault {
+                if cx.kind == ParseExprKind::ColumnDefault {
                     return Err(Error::not_supported(
                         "cannot use column reference in DEFAULT expression",
                     )
                     .with_span(*span));
                 }
-                let (index, col) = cx.scope.resolve_column(parts, *span)?;
-                Ok(BoundExpr::new(
-                    BoundExprKind::ColumnRef { index },
-                    col.ty,
-                    *span,
-                ))
+                let parts = self.column_ref_parts(parts, *span)?;
+                cx.scopes.resolve_column(parts, *span)
             }
             Expr::Parameter { index, span } => Err(Error::new(
                 sqlstate::UNDEFINED_PARAMETER,
@@ -398,17 +240,23 @@ impl Analyzer<'_> {
             .with_span(*span)),
             Expr::BinaryOp {
                 op,
+                op_schema,
                 left,
                 right,
                 span,
             } => {
                 let l = self.transform_expr(left, cx)?;
                 let r = self.transform_expr(right, cx)?;
-                self.make_op(op, Some(l), r, *span)
+                self.qualified_operator(op_schema.as_ref(), op, Some(l), r, *span)
             }
-            Expr::UnaryOp { op, expr, span } => {
+            Expr::UnaryOp {
+                op,
+                op_schema,
+                expr,
+                span,
+            } => {
                 let a = self.transform_expr(expr, cx)?;
-                self.make_op(op, None, a, *span)
+                self.qualified_operator(op_schema.as_ref(), op, None, a, *span)
             }
             Expr::And { span, .. } | Expr::Or { span, .. } => {
                 let is_and = matches!(e, Expr::And { .. });
@@ -485,6 +333,27 @@ impl Analyzer<'_> {
             } => {
                 let l = self.transform_expr(left, cx)?;
                 let r = self.transform_expr(right, cx)?;
+                // PG の transformAExprDistinct: NULL 定数との比較は NullTest に畳む。
+                let is_null_const =
+                    |e: &BoundExpr| matches!(&e.kind, BoundExprKind::Literal(Datum::Null));
+                let other = if is_null_const(&r) {
+                    Some(l.clone())
+                } else if is_null_const(&l) {
+                    Some(r.clone())
+                } else {
+                    None
+                };
+                if let Some(other) = other {
+                    let a = Box::new(resolve_unknown(other));
+                    return Ok(bool_expr(
+                        if *negated {
+                            BoundExprKind::IsNull(a)
+                        } else {
+                            BoundExprKind::IsNotNull(a)
+                        },
+                        *span,
+                    ));
+                }
                 let (eq_op, l, r) = self.resolve_cmp_op("=", l, r, *span)?;
                 Ok(bool_expr(
                     BoundExprKind::DistinctFrom {
@@ -538,18 +407,11 @@ impl Analyzer<'_> {
                 self.coerce_explicit(a, target, *span)
             }
             Expr::Function {
-                name,
-                args,
-                distinct,
-                star,
-                span,
+                name, args, span, ..
             } => {
                 let fname = &name.name().value;
-                if *star || *distinct || AGGREGATES.contains(&fname.as_str()) {
-                    return Err(
-                        Error::not_supported("aggregate functions are not supported yet")
-                            .with_span(*span),
-                    );
+                if let Some(agg) = self.analyze_agg_call(e, cx)? {
+                    return Ok(agg);
                 }
                 if let Some(schema) = name.schema()
                     && schema.value != "pg_catalog"
@@ -576,30 +438,9 @@ impl Analyzer<'_> {
                     )
                     .with_span(*span));
                 }
-                // numeric is not supported yet; pg_sleep takes float8, so a
-                // decimal literal argument is bound as float8 directly.
                 let args = args
                     .iter()
-                    .map(|a| match a {
-                        Expr::Literal {
-                            value: Literal::Decimal(s),
-                            span,
-                        } if fname == "pg_sleep" => {
-                            let v: f64 = s.parse().map_err(|_| {
-                                Error::new(
-                                    sqlstate::INVALID_TEXT_REPRESENTATION,
-                                    "invalid float8 literal",
-                                )
-                                .with_span(*span)
-                            })?;
-                            Ok(BoundExpr::new(
-                                BoundExprKind::Literal(Datum::Float8(v)),
-                                SqlType::FLOAT8,
-                                *span,
-                            ))
-                        }
-                        _ => self.transform_expr(a, cx),
-                    })
+                    .map(|a| self.transform_expr(a, cx))
                     .collect::<Result<Vec<_>>>()?;
                 self.make_func_call(fname, args, *span)
             }
@@ -645,16 +486,28 @@ impl Analyzer<'_> {
                 negated,
                 span,
             } => self.transform_in(expr, list, *negated, *span, cx),
+            Expr::Collate {
+                expr,
+                collation,
+                span,
+            } => {
+                let a = self.transform_expr(expr, cx)?;
+                self.collate(a, collation, *span)
+            }
+            Expr::Row { span, .. } => {
+                Err(Error::not_supported("row constructors is not supported yet").with_span(*span))
+            }
             Expr::InSubquery { span, .. }
+            | Expr::QuantifiedSubquery { span, .. }
             | Expr::Exists { span, .. }
             | Expr::Subquery { span, .. } => {
-                if cx.kind == ExprKind::ColumnDefault {
+                if cx.kind == ParseExprKind::ColumnDefault {
                     return Err(
                         Error::not_supported("cannot use subquery in DEFAULT expression")
                             .with_span(*span),
                     );
                 }
-                Err(Error::not_supported("subqueries are not supported yet").with_span(*span))
+                self.analyze_sublink(e, cx)
             }
             Expr::Like {
                 expr,
@@ -753,7 +606,7 @@ impl Analyzer<'_> {
             }
             Expr::SessionValue { kind, span } => Ok(BoundExpr::new(
                 BoundExprKind::SessionValue(*kind),
-                SqlType::NAME,
+                session_value_type(*kind),
                 *span,
             )),
             Expr::Default { span } => Err(Error::syntax_at(
@@ -911,18 +764,37 @@ impl Analyzer<'_> {
     }
 }
 
-/// Flattens nested AND (or OR) nodes into their operands.
+/// Flattens a left-nested AND (or OR) chain into its operands. Like PostgreSQL's `makeAndExpr` /
+/// `makeOrExpr`, only the left operand is flattened: `a AND (b AND c)` keeps its nested node
+/// (visible in `pg_get_constraintdef`).
 fn collect_bool_operands<'e>(e: &'e Expr, is_and: bool, out: &mut Vec<&'e Expr>) {
     match e {
         Expr::And { left, right, .. } if is_and => {
             collect_bool_operands(left, is_and, out);
-            collect_bool_operands(right, is_and, out);
+            out.push(right);
         }
         Expr::Or { left, right, .. } if !is_and => {
             collect_bool_operands(left, is_and, out);
-            collect_bool_operands(right, is_and, out);
+            out.push(right);
         }
         other => out.push(other),
+    }
+}
+
+/// Type of a SQL value function (09 §6.4). A negative precision means no typmod; values above 6
+/// are clamped to 6.
+fn session_value_type(kind: SessionValueKind) -> SqlType {
+    let typmod = |p: i32| if p < 0 { -1 } else { p.min(6) };
+    match kind {
+        SessionValueKind::CurrentDate => SqlType::DATE,
+        SessionValueKind::CurrentTimestamp { precision } => {
+            SqlType::new(oid::TIMESTAMPTZ, typmod(precision))
+        }
+        SessionValueKind::Now | SessionValueKind::TransactionTimestamp => SqlType::TIMESTAMPTZ,
+        SessionValueKind::LocalTimestamp { precision } => {
+            SqlType::new(oid::TIMESTAMP, typmod(precision))
+        }
+        _ => SqlType::NAME,
     }
 }
 

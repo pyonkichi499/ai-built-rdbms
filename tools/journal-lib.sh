@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # journal-lib.sh: tools/journal-*.sh が共通で使う関数群（source して使う）。
 #   source "$(dirname "${BASH_SOURCE[0]}")/journal-lib.sh"
-# 時刻はすべて UTC。書き込み先は journal/ 配下に限定する。
+# 時刻はすべて JST。書き込み先は journal/ 配下に限定する。
 #
 # 環境変数:
 #   JOURNAL_DRY_RUN=1  replace_block が差分を標準出力に出すだけで書かない
 #                      （journal-all.sh --dry-run が export する想定）
 
 set -euo pipefail
-export TZ=UTC
+export TZ=Asia/Tokyo
 
 _JOURNAL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -5,9 +5,16 @@
 
 use crate::error::{Error, Result, sqlstate};
 use crate::storage::{
-    MAX_HEAP_ATTRIBUTE_NUMBER, MAX_HEAP_TUPLE_SIZE, SIZE_OF_HEAP_TUPLE_HEADER, TupleDesc, WriteCtx,
+    AttrDesc, MAX_HEAP_ATTRIBUTE_NUMBER, MAX_HEAP_TUPLE_SIZE, SIZE_OF_HEAP_TUPLE_HEADER, TupleDesc,
+    WriteCtx,
 };
 use crate::txn::{CommandId, Xid};
+use crate::types::bpchar::{decode_bpchar, encode_bpchar};
+use crate::types::datetime::{
+    decode_date, decode_timestamp, decode_timestamptz, encode_date, encode_timestamp,
+    encode_timestamptz,
+};
+use crate::types::numeric::{decode_numeric, encode_numeric};
 use crate::types::{Datum, Row, Tid, oid};
 
 pub const HEAP_HASNULL: u16 = 0x0001;
@@ -70,6 +77,11 @@ enum Kind {
     Text,
     OidVector,
     Numeric,
+    BpChar,
+    Date,
+    Timestamp,
+    TimestampTz,
+    Int2Vector,
     /// Types that exist only for always-NULL columns.
     NullOnly,
 }
@@ -83,7 +95,7 @@ fn kind_of(type_oid: u32) -> Result<Kind> {
         oid::INT8 => Kind::Int8,
         oid::FLOAT4 => Kind::Float4,
         oid::FLOAT8 => Kind::Float8,
-        oid::OID | oid::REGPROC => Kind::Oid,
+        oid::OID | oid::REGPROC | oid::REGCLASS | oid::REGTYPE | oid::REGNAMESPACE => Kind::Oid,
         oid::XID => Kind::Xid,
         oid::CID => Kind::Cid,
         oid::TID => Kind::Tid,
@@ -91,12 +103,15 @@ fn kind_of(type_oid: u32) -> Result<Kind> {
         oid::TEXT | oid::VARCHAR | oid::PG_NODE_TREE | oid::UNKNOWN => Kind::Text,
         oid::OIDVECTOR => Kind::OidVector,
         oid::NUMERIC => Kind::Numeric,
+        oid::BPCHAR => Kind::BpChar,
+        oid::DATE => Kind::Date,
+        oid::TIMESTAMP => Kind::Timestamp,
+        oid::TIMESTAMPTZ => Kind::TimestampTz,
+        oid::INT2VECTOR | oid::INT2_ARRAY => Kind::Int2Vector,
         oid::ACLITEM
-        | oid::TIMESTAMPTZ
         | oid::ANYARRAY
         | oid::ACLITEM_ARRAY
         | oid::TEXT_ARRAY
-        | oid::INT2_ARRAY
         | oid::OID_ARRAY
         | oid::CHAR_ARRAY => Kind::NullOnly,
         other => {
@@ -166,81 +181,7 @@ fn form_tuple_with(
             continue;
         }
         bits[i / 8] |= 1 << (i % 8);
-        let kind = kind_of(attr.type_oid)?;
-        let align = attr.align as usize;
-        let pad_to = |buf: &mut Vec<u8>, a: usize| {
-            let n = align_up(buf.len(), a);
-            buf.resize(n, 0);
-        };
-        match (kind, d) {
-            (Kind::NullOnly, _) => {
-                return Err(Error::not_supported(format!(
-                    "type with OID {} is not supported yet",
-                    attr.type_oid
-                )));
-            }
-            (Kind::Bool, Datum::Bool(v)) => buf.push(u8::from(*v)),
-            (Kind::Char, Datum::Char(v)) => buf.push(*v),
-            (Kind::Int2, Datum::Int2(v)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-            (Kind::Int4, Datum::Int4(v)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-            (Kind::Int8, Datum::Int8(v)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-            (Kind::Float4, Datum::Float4(v)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&v.to_bits().to_le_bytes());
-            }
-            (Kind::Float8, Datum::Float8(v)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&v.to_bits().to_le_bytes());
-            }
-            (Kind::Oid, Datum::Oid(v))
-            | (Kind::Xid, Datum::Xid(v))
-            | (Kind::Cid, Datum::Cid(v)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-            (Kind::Tid, Datum::Tid(t)) => {
-                pad_to(&mut buf, align);
-                buf.extend_from_slice(&t.block.to_le_bytes());
-                buf.extend_from_slice(&t.offset.to_le_bytes());
-            }
-            (Kind::Name, Datum::Text(s)) => {
-                if s.len() > 63 {
-                    return Err(Error::internal(format!(
-                        "name value is {} bytes; at most 63 are allowed",
-                        s.len()
-                    )));
-                }
-                let start = buf.len();
-                buf.resize(start + 64, 0);
-                buf[start..start + s.len()].copy_from_slice(s.as_bytes());
-            }
-            (Kind::Text, Datum::Text(s)) => {
-                has_var = true;
-                write_varlena(&mut buf, s.as_bytes(), align, compress);
-            }
-            (Kind::Numeric, Datum::Numeric(n)) => {
-                has_var = true;
-                write_varlena(&mut buf, &n.to_binary(), align, compress);
-            }
-            (Kind::OidVector, Datum::OidVector(v)) => {
-                has_var = true;
-                let mut data = Vec::with_capacity(v.len() * 4);
-                for x in v {
-                    data.extend_from_slice(&x.to_le_bytes());
-                }
-                write_varlena(&mut buf, &data, align, compress);
-            }
-            _ => return Err(type_mismatch(attr.type_oid, d)),
-        }
+        has_var |= encode_attr_with(&mut buf, attr, d, compress)?;
         if buf.len() > 4 * MAX_HEAP_TUPLE_SIZE {
             // Stop early on absurdly large rows.
             break;
@@ -404,6 +345,7 @@ fn corrupt(msg: impl Into<String>) -> Error {
 }
 
 /// Cursor over the column area of a tuple.
+#[derive(Debug)]
 struct Reader<'a> {
     bytes: &'a [u8],
     off: usize,
@@ -480,34 +422,146 @@ fn utf8(b: &[u8]) -> Result<String> {
     String::from_utf8(b.to_vec()).map_err(|_| corrupt("text value is not valid UTF-8"))
 }
 
-/// Decodes a tuple. Damaged data gives `XX001`.
-pub fn deform_tuple(desc: &TupleDesc, bytes: &[u8]) -> Result<Row> {
-    let hdr = TupleHeader::read(bytes)?;
-    let natts = usize::from(hdr.infomask2 & HEAP_NATTS_MASK);
-    if natts > desc.attrs.len() {
-        return Err(corrupt(format!(
-            "tuple has {natts} columns but the descriptor has {}",
-            desc.attrs.len()
-        )));
+/// Encodes one non-NULL value in its on-disk form (alignment padding and
+/// varlena header included) and appends it to `buf`. `buf.len()` is the offset
+/// from the start of the tuple (the alignment base). Returns `true` for a
+/// variable-length (varlena) column, so the caller can set `HEAP_HASVARWIDTH`
+/// (or the index tuple's var-width flag). `Datum::Null` is an internal error.
+pub fn encode_attr(buf: &mut Vec<u8>, attr: &AttrDesc, d: &Datum) -> Result<bool> {
+    encode_attr_with(buf, attr, d, false)
+}
+
+#[allow(clippy::too_many_lines)]
+fn encode_attr_with(buf: &mut Vec<u8>, attr: &AttrDesc, d: &Datum, compress: bool) -> Result<bool> {
+    if d.is_null() {
+        return Err(Error::internal("encode_attr called with a NULL datum"));
     }
-    let has_null = hdr.infomask & HEAP_HASNULL != 0;
-    let mut r = Reader {
-        bytes,
-        off: usize::from(hdr.hoff),
+    let kind = kind_of(attr.type_oid)?;
+    let align = attr.align as usize;
+    let pad_to = |buf: &mut Vec<u8>, a: usize| {
+        let n = align_up(buf.len(), a);
+        buf.resize(n, 0);
     };
-    let mut row: Row = Vec::with_capacity(desc.attrs.len());
-    for (i, attr) in desc.attrs.iter().enumerate() {
-        if i >= natts {
-            row.push(Datum::Null);
-            continue;
+    let mut payload = Vec::new();
+    match (kind, d) {
+        (Kind::NullOnly, _) => {
+            return Err(Error::not_supported(format!(
+                "type with OID {} is not supported yet",
+                attr.type_oid
+            )));
         }
-        if has_null && bytes[SIZE_OF_HEAP_TUPLE_HEADER + i / 8] & (1 << (i % 8)) == 0 {
-            row.push(Datum::Null);
-            continue;
+        (Kind::Bool, Datum::Bool(v)) => buf.push(u8::from(*v)),
+        (Kind::Char, Datum::Char(v)) => buf.push(*v),
+        (Kind::Int2, Datum::Int2(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&v.to_le_bytes());
         }
+        (Kind::Int4, Datum::Int4(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        (Kind::Int8, Datum::Int8(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        (Kind::Float4, Datum::Float4(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        (Kind::Float8, Datum::Float8(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+        (Kind::Oid, Datum::Oid(v)) | (Kind::Xid, Datum::Xid(v)) | (Kind::Cid, Datum::Cid(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+        (Kind::Tid, Datum::Tid(t)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&t.block.to_le_bytes());
+            buf.extend_from_slice(&t.offset.to_le_bytes());
+        }
+        (Kind::Date, Datum::Date(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&encode_date(*v));
+        }
+        (Kind::Timestamp, Datum::Timestamp(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&encode_timestamp(*v));
+        }
+        (Kind::TimestampTz, Datum::TimestampTz(v)) => {
+            pad_to(buf, align);
+            buf.extend_from_slice(&encode_timestamptz(*v));
+        }
+        (Kind::Name, Datum::Text(s)) => {
+            if s.len() > 63 {
+                return Err(Error::internal(format!(
+                    "name value is {} bytes; at most 63 are allowed",
+                    s.len()
+                )));
+            }
+            let start = buf.len();
+            buf.resize(start + 64, 0);
+            buf[start..start + s.len()].copy_from_slice(s.as_bytes());
+        }
+        (Kind::Text, Datum::Text(s)) => {
+            write_varlena(buf, s.as_bytes(), align, compress);
+            return Ok(true);
+        }
+        (Kind::BpChar, Datum::BpChar(s)) => {
+            encode_bpchar(s, &mut payload);
+            write_varlena(buf, &payload, align, compress);
+            return Ok(true);
+        }
+        (Kind::Numeric, Datum::Numeric(n)) => {
+            encode_numeric(n, &mut payload);
+            write_varlena(buf, &payload, align, compress);
+            return Ok(true);
+        }
+        (Kind::OidVector, Datum::OidVector(v)) => {
+            for x in v {
+                payload.extend_from_slice(&x.to_le_bytes());
+            }
+            write_varlena(buf, &payload, align, compress);
+            return Ok(true);
+        }
+        (Kind::Int2Vector, Datum::Int2Vector(v)) => {
+            for x in v {
+                payload.extend_from_slice(&x.to_le_bytes());
+            }
+            write_varlena(buf, &payload, align, compress);
+            return Ok(true);
+        }
+        _ => return Err(type_mismatch(attr.type_oid, d)),
+    }
+    Ok(false)
+}
+
+/// Read cursor over the column area of a tuple (heap or index tuple).
+/// `bytes` is the whole tuple and `start` is where the data begins.
+#[derive(Debug)]
+pub struct ColumnCursor<'a> {
+    r: Reader<'a>,
+}
+
+impl<'a> ColumnCursor<'a> {
+    pub fn new(bytes: &'a [u8], start: usize) -> ColumnCursor<'a> {
+        ColumnCursor {
+            r: Reader { bytes, off: start },
+        }
+    }
+
+    /// Offset of the next unread byte.
+    pub fn offset(&self) -> usize {
+        self.r.off
+    }
+
+    /// Reads the next (non-NULL) column. Damaged data gives `XX001`.
+    pub fn read_attr(&mut self, attr: &AttrDesc) -> Result<Datum> {
+        let r = &mut self.r;
         let a = attr.align as usize;
         let kind = kind_of(attr.type_oid).map_err(|e| corrupt(e.message.clone()))?;
-        let d = match kind {
+        Ok(match kind {
             Kind::NullOnly => return Err(corrupt("value stored in a NULL-only column")),
             Kind::Bool => Datum::Bool(r.take(1)?[0] != 0),
             Kind::Char => Datum::Char(r.take(1)?[0]),
@@ -526,16 +580,17 @@ pub fn deform_tuple(desc: &TupleDesc, bytes: &[u8]) -> Result<Row> {
                     offset: u16::from_le_bytes([b[4], b[5]]),
                 })
             }
+            Kind::Date => Datum::Date(decode_date(&r.fixed::<4>(a)?)?),
+            Kind::Timestamp => Datum::Timestamp(decode_timestamp(&r.fixed::<8>(a)?)?),
+            Kind::TimestampTz => Datum::TimestampTz(decode_timestamptz(&r.fixed::<8>(a)?)?),
             Kind::Name => {
                 let b = r.take(64)?;
                 let end = b.iter().position(|&c| c == 0).unwrap_or(64);
                 Datum::Text(utf8(&b[..end])?)
             }
             Kind::Text => Datum::Text(utf8(&r.varlena(a)?)?),
-            Kind::Numeric => Datum::Numeric(
-                yuzhu_numeric::Numeric::from_binary(&r.varlena(a)?, -1)
-                    .map_err(|e| corrupt(e.to_string()))?,
-            ),
+            Kind::BpChar => Datum::BpChar(decode_bpchar(&r.varlena(a)?)?),
+            Kind::Numeric => Datum::Numeric(decode_numeric(&r.varlena(a)?)?),
             Kind::OidVector => {
                 let b = r.varlena(a)?;
                 if b.len() % 4 != 0 {
@@ -549,8 +604,46 @@ pub fn deform_tuple(desc: &TupleDesc, bytes: &[u8]) -> Result<Row> {
                         .collect(),
                 )
             }
-        };
-        row.push(d);
+            Kind::Int2Vector => {
+                let b = r.varlena(a)?;
+                if b.len() % 2 != 0 {
+                    return Err(corrupt("int2vector length is not a multiple of 2"));
+                }
+                Datum::Int2Vector(
+                    b.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| i16::from_le_bytes(*c))
+                        .collect(),
+                )
+            }
+        })
+    }
+}
+
+/// Decodes a tuple. Damaged data gives `XX001`.
+pub fn deform_tuple(desc: &TupleDesc, bytes: &[u8]) -> Result<Row> {
+    let hdr = TupleHeader::read(bytes)?;
+    let natts = usize::from(hdr.infomask2 & HEAP_NATTS_MASK);
+    if natts > desc.attrs.len() {
+        return Err(corrupt(format!(
+            "tuple has {natts} columns but the descriptor has {}",
+            desc.attrs.len()
+        )));
+    }
+    let has_null = hdr.infomask & HEAP_HASNULL != 0;
+    let mut cur = ColumnCursor::new(bytes, usize::from(hdr.hoff));
+    let mut row: Row = Vec::with_capacity(desc.attrs.len());
+    for (i, attr) in desc.attrs.iter().enumerate() {
+        if i >= natts {
+            row.push(Datum::Null);
+            continue;
+        }
+        if has_null && bytes[SIZE_OF_HEAP_TUPLE_HEADER + i / 8] & (1 << (i % 8)) == 0 {
+            row.push(Datum::Null);
+            continue;
+        }
+        row.push(cur.read_attr(attr)?);
     }
     Ok(row)
 }
@@ -884,5 +977,224 @@ mod tests {
             sqlstate::DATA_CORRUPTED
         );
         let _ = Align::Int;
+    }
+
+    // ----- M4 types (06 §4.4, 09 §3.5) ------------------------------------
+
+    use crate::types::numeric::parse_numeric;
+    use yuzhu_datetime::{Date, Timestamp, TimestampTz};
+
+    fn attr(type_oid: u32, align: Align) -> AttrDesc {
+        AttrDesc {
+            align,
+            ..AttrDesc::from_type(type_oid)
+        }
+    }
+
+    fn enc(prefix: usize, a: &AttrDesc, d: &Datum) -> (Vec<u8>, bool) {
+        let mut buf = vec![0xEE; prefix];
+        let var = encode_attr(&mut buf, a, d).unwrap();
+        (buf.split_off(prefix), var)
+    }
+
+    fn num(s: &str) -> Datum {
+        Datum::Numeric(parse_numeric(s, -1).unwrap())
+    }
+
+    #[test]
+    fn spec_byte_examples() {
+        let numa = attr(oid::NUMERIC, Align::Int);
+        let (b, var) = enc(0, &numa, &num("1.5"));
+        assert!(var);
+        assert_eq!(
+            b,
+            [0x1B, 2, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0x88, 0x13],
+            "numeric 1.5"
+        );
+        let (b, _) = enc(0, &numa, &num("-123.456"));
+        assert_eq!(b, [0x1B, 2, 0, 0, 0, 0, 0x40, 3, 0, 0x7B, 0, 0xD0, 0x11]);
+        let (b, _) = enc(0, &numa, &num("0"));
+        assert_eq!(b, [0x13, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let (b, _) = enc(0, &numa, &num("NaN"));
+        assert_eq!(b, [0x13, 0, 0, 0, 0, 0, 0xC0, 0, 0]);
+
+        let (b, _) = enc(
+            0,
+            &attr(oid::BPCHAR, Align::Int),
+            &Datum::BpChar("ab ".into()),
+        );
+        assert_eq!(b, [0x09, 0x61, 0x62, 0x20]);
+
+        let (b, var) = enc(0, &attr(oid::DATE, Align::Int), &Datum::Date(Date(8766)));
+        assert!(!var);
+        assert_eq!(b, [0x3E, 0x22, 0, 0]);
+
+        let ts = attr(oid::TIMESTAMP, Align::Double);
+        let (b, _) = enc(4, &ts, &Datum::Timestamp(Timestamp(1_500_000)));
+        assert_eq!(b, [0, 0, 0, 0, 0x60, 0xE3, 0x16, 0, 0, 0, 0, 0]);
+        let (b, _) = enc(
+            0,
+            &attr(oid::TIMESTAMPTZ, Align::Double),
+            &Datum::TimestampTz(TimestampTz(1_500_000)),
+        );
+        assert_eq!(b, [0x60, 0xE3, 0x16, 0, 0, 0, 0, 0]);
+
+        let (b, _) = enc(0, &attr(oid::REGCLASS, Align::Int), &Datum::Oid(16384));
+        assert_eq!(b, [0, 0x40, 0, 0]);
+
+        let (b, var) = enc(
+            0,
+            &attr(oid::INT2VECTOR, Align::Int),
+            &Datum::Int2Vector(vec![1, 2]),
+        );
+        assert!(var);
+        assert_eq!(b, [0x0B, 1, 0, 2, 0]);
+    }
+
+    #[test]
+    fn four_byte_header_for_long_numeric() {
+        // 127 digits is more than 126 payload bytes, so the header is 4 bytes and aligned.
+        let s = "9".repeat(300);
+        let a = attr(oid::NUMERIC, Align::Int);
+        let (b, _) = enc(1, &a, &num(&s));
+        assert_eq!(b[..3], [0, 0, 0], "padding to 4 bytes");
+        assert_eq!(b[3] & 3, 0, "4-byte header");
+        let mut cur = vec![0xEE];
+        encode_attr(&mut cur, &a, &num(&s)).unwrap();
+        let got = ColumnCursor::new(&cur, 1).read_attr(&a).unwrap();
+        assert_eq!(got, num(&s));
+    }
+
+    fn m4_desc() -> TupleDesc {
+        TupleDesc {
+            attrs: vec![
+                attr(oid::INT4, Align::Int),
+                attr(oid::NUMERIC, Align::Int),
+                attr(oid::BPCHAR, Align::Int),
+                attr(oid::DATE, Align::Int),
+                attr(oid::TIMESTAMP, Align::Double),
+                attr(oid::TIMESTAMPTZ, Align::Double),
+                attr(oid::INT2VECTOR, Align::Int),
+                attr(oid::REGCLASS, Align::Int),
+                attr(oid::REGTYPE, Align::Int),
+                attr(oid::INT2_ARRAY, Align::Int),
+            ],
+        }
+    }
+
+    #[test]
+    fn roundtrip_m4_types_with_nulls() {
+        let d = m4_desc();
+        let full = vec![
+            Datum::Int4(5),
+            num("-12345.6789"),
+            Datum::BpChar("ab   ".into()),
+            Datum::Date(Date(i32::MAX)),
+            Datum::Timestamp(Timestamp(i64::MIN)),
+            Datum::TimestampTz(TimestampTz(i64::MAX)),
+            Datum::Int2Vector(vec![1, -2, 3]),
+            Datum::Oid(1259),
+            Datum::Oid(23),
+            Datum::Int2Vector(vec![]),
+        ];
+        let mut rows = vec![full.clone()];
+        // NULL in every single position, and all NULL.
+        for i in 0..full.len() {
+            let mut r = full.clone();
+            r[i] = Datum::Null;
+            rows.push(r);
+        }
+        rows.push(vec![Datum::Null; full.len()]);
+        for numeric in [
+            "0",
+            "NaN",
+            "Infinity",
+            "-Infinity",
+            "1e-5",
+            "1e30",
+            "0.0010",
+        ] {
+            let mut r = full.clone();
+            r[1] = num(numeric);
+            rows.push(r);
+        }
+        let mut r = full.clone();
+        r[2] = Datum::BpChar("é ".into());
+        r[6] = Datum::Int2Vector((0..300).collect());
+        rows.push(r);
+        for row in rows {
+            let t = form_tuple(&d, &row, &w(), TupleFlags::default()).unwrap();
+            assert_eq!(deform_tuple(&d, &t).unwrap(), row);
+        }
+    }
+
+    #[test]
+    fn column_cursor_reads_sequence_and_tracks_offset() {
+        let d = m4_desc();
+        let row = vec![
+            Datum::Int4(1),
+            num("1.5"),
+            Datum::BpChar("x ".into()),
+            Datum::Date(Date(3)),
+            Datum::Timestamp(Timestamp(4)),
+            Datum::TimestampTz(TimestampTz(5)),
+            Datum::Int2Vector(vec![7]),
+            Datum::Oid(8),
+            Datum::Oid(9),
+            Datum::Int2Vector(vec![10, 11]),
+        ];
+        let mut buf = vec![0u8; 4];
+        let mut any_var = false;
+        for (a, v) in d.attrs.iter().zip(&row) {
+            any_var |= encode_attr(&mut buf, a, v).unwrap();
+        }
+        assert!(any_var);
+        let mut cur = ColumnCursor::new(&buf, 4);
+        assert_eq!(cur.offset(), 4);
+        for (a, v) in d.attrs.iter().zip(&row) {
+            assert_eq!(&cur.read_attr(a).unwrap(), v);
+        }
+        assert_eq!(cur.offset(), buf.len());
+    }
+
+    #[test]
+    fn encode_attr_rejects_null_and_wrong_variant() {
+        let mut buf = Vec::new();
+        let a = attr(oid::NUMERIC, Align::Int);
+        assert_eq!(
+            encode_attr(&mut buf, &a, &Datum::Null)
+                .unwrap_err()
+                .sqlstate,
+            sqlstate::INTERNAL_ERROR
+        );
+        assert!(encode_attr(&mut buf, &a, &Datum::Int4(1)).is_err());
+    }
+
+    #[test]
+    fn damaged_m4_columns_are_xx001() {
+        let code = |a: &AttrDesc, bytes: &[u8]| {
+            ColumnCursor::new(bytes, 0)
+                .read_attr(a)
+                .unwrap_err()
+                .sqlstate
+        };
+        // numeric: ndigits says 2 but no digits follow.
+        let n = attr(oid::NUMERIC, Align::Int);
+        assert_eq!(
+            code(&n, &[0x13, 2, 0, 0, 0, 0, 0, 0, 0]),
+            sqlstate::DATA_CORRUPTED
+        );
+        // bpchar: invalid UTF-8.
+        let b = attr(oid::BPCHAR, Align::Int);
+        assert_eq!(
+            code(&b, &[0x05, 0xFF, 0xFE, 0xFD]),
+            sqlstate::DATA_CORRUPTED
+        );
+        // int2vector: odd payload length.
+        let v = attr(oid::INT2VECTOR, Align::Int);
+        assert_eq!(code(&v, &[0x09, 1, 0, 2]), sqlstate::DATA_CORRUPTED);
+        // date: truncated.
+        let dt = attr(oid::DATE, Align::Int);
+        assert_eq!(code(&dt, &[1, 2]), sqlstate::DATA_CORRUPTED);
     }
 }

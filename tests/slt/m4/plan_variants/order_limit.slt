@@ -1,0 +1,843 @@
+# 生成物（tests/gen/plan_variants/order_limit.tpl から `slttools plan-variants expand` で作る。手で直さない）。
+# 同じ問い合わせを enable_* の設定を変えて流し、結果が同じことを確かめる。
+
+statement ok
+CREATE TABLE pv_ol_t (a int PRIMARY KEY, b int, c int)
+
+statement ok
+CREATE INDEX pv_ol_t_b ON pv_ol_t (b, a)
+
+statement ok
+INSERT INTO pv_ol_t SELECT g, g % 11, (g * 7) % 23 FROM generate_series(1, 150) g
+
+statement ok
+INSERT INTO pv_ol_t VALUES (151, NULL, 1), (152, NULL, 2)
+
+# profile: default
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 5
+----
+152
+151
+150
+149
+148
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5 OFFSET 7
+----
+8
+9
+10
+11
+12
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 4 OFFSET 150
+----
+2
+1
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b, a LIMIT 12
+----
+0	11
+0	22
+0	33
+0	44
+0	55
+0	66
+0	77
+0	88
+0	99
+0	110
+0	121
+0	132
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC, a DESC LIMIT 12
+----
+NULL	152
+NULL	151
+10	142
+10	131
+10	120
+10	109
+10	98
+10	87
+10	76
+10	65
+10	54
+10	43
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b NULLS FIRST, a LIMIT 6
+----
+NULL	151
+NULL	152
+0	11
+0	22
+0	33
+0	44
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC NULLS LAST, a LIMIT 6
+----
+10	10
+10	21
+10	32
+10	43
+10	54
+10	65
+
+query II
+SELECT b, a FROM pv_ol_t WHERE b = 3 ORDER BY a DESC LIMIT 3
+----
+3	146
+3	135
+3	124
+
+query II
+SELECT c, a FROM pv_ol_t ORDER BY c, a LIMIT 9
+----
+0	23
+0	46
+0	69
+0	92
+0	115
+0	138
+1	10
+1	33
+1	56
+
+query II
+SELECT c, a FROM pv_ol_t WHERE a > 100 ORDER BY c DESC, a LIMIT 9
+----
+22	105
+22	128
+21	118
+21	141
+20	108
+20	131
+19	121
+19	144
+18	111
+
+query I
+SELECT a FROM pv_ol_t WHERE b > 5 ORDER BY a LIMIT 3
+----
+6
+7
+8
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a OFFSET 148
+----
+149
+150
+151
+152
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 0
+----
+
+query II
+SELECT a, b FROM pv_ol_t ORDER BY a % 10, a LIMIT 7
+----
+10	10
+20	9
+30	8
+40	7
+50	6
+60	5
+70	4
+
+query I
+SELECT a FROM (SELECT a, b FROM pv_ol_t ORDER BY b, a LIMIT 20) s ORDER BY a DESC LIMIT 4
+----
+143
+132
+121
+110
+
+# profile: no_indexscan
+
+statement ok
+SET enable_indexscan = off
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 5
+----
+152
+151
+150
+149
+148
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5 OFFSET 7
+----
+8
+9
+10
+11
+12
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 4 OFFSET 150
+----
+2
+1
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b, a LIMIT 12
+----
+0	11
+0	22
+0	33
+0	44
+0	55
+0	66
+0	77
+0	88
+0	99
+0	110
+0	121
+0	132
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC, a DESC LIMIT 12
+----
+NULL	152
+NULL	151
+10	142
+10	131
+10	120
+10	109
+10	98
+10	87
+10	76
+10	65
+10	54
+10	43
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b NULLS FIRST, a LIMIT 6
+----
+NULL	151
+NULL	152
+0	11
+0	22
+0	33
+0	44
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC NULLS LAST, a LIMIT 6
+----
+10	10
+10	21
+10	32
+10	43
+10	54
+10	65
+
+query II
+SELECT b, a FROM pv_ol_t WHERE b = 3 ORDER BY a DESC LIMIT 3
+----
+3	146
+3	135
+3	124
+
+query II
+SELECT c, a FROM pv_ol_t ORDER BY c, a LIMIT 9
+----
+0	23
+0	46
+0	69
+0	92
+0	115
+0	138
+1	10
+1	33
+1	56
+
+query II
+SELECT c, a FROM pv_ol_t WHERE a > 100 ORDER BY c DESC, a LIMIT 9
+----
+22	105
+22	128
+21	118
+21	141
+20	108
+20	131
+19	121
+19	144
+18	111
+
+query I
+SELECT a FROM pv_ol_t WHERE b > 5 ORDER BY a LIMIT 3
+----
+6
+7
+8
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a OFFSET 148
+----
+149
+150
+151
+152
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 0
+----
+
+query II
+SELECT a, b FROM pv_ol_t ORDER BY a % 10, a LIMIT 7
+----
+10	10
+20	9
+30	8
+40	7
+50	6
+60	5
+70	4
+
+query I
+SELECT a FROM (SELECT a, b FROM pv_ol_t ORDER BY b, a LIMIT 20) s ORDER BY a DESC LIMIT 4
+----
+143
+132
+121
+110
+
+statement ok
+RESET enable_indexscan
+
+# profile: no_seqscan
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 5
+----
+152
+151
+150
+149
+148
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5 OFFSET 7
+----
+8
+9
+10
+11
+12
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 4 OFFSET 150
+----
+2
+1
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b, a LIMIT 12
+----
+0	11
+0	22
+0	33
+0	44
+0	55
+0	66
+0	77
+0	88
+0	99
+0	110
+0	121
+0	132
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC, a DESC LIMIT 12
+----
+NULL	152
+NULL	151
+10	142
+10	131
+10	120
+10	109
+10	98
+10	87
+10	76
+10	65
+10	54
+10	43
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b NULLS FIRST, a LIMIT 6
+----
+NULL	151
+NULL	152
+0	11
+0	22
+0	33
+0	44
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC NULLS LAST, a LIMIT 6
+----
+10	10
+10	21
+10	32
+10	43
+10	54
+10	65
+
+query II
+SELECT b, a FROM pv_ol_t WHERE b = 3 ORDER BY a DESC LIMIT 3
+----
+3	146
+3	135
+3	124
+
+query II
+SELECT c, a FROM pv_ol_t ORDER BY c, a LIMIT 9
+----
+0	23
+0	46
+0	69
+0	92
+0	115
+0	138
+1	10
+1	33
+1	56
+
+query II
+SELECT c, a FROM pv_ol_t WHERE a > 100 ORDER BY c DESC, a LIMIT 9
+----
+22	105
+22	128
+21	118
+21	141
+20	108
+20	131
+19	121
+19	144
+18	111
+
+query I
+SELECT a FROM pv_ol_t WHERE b > 5 ORDER BY a LIMIT 3
+----
+6
+7
+8
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a OFFSET 148
+----
+149
+150
+151
+152
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 0
+----
+
+query II
+SELECT a, b FROM pv_ol_t ORDER BY a % 10, a LIMIT 7
+----
+10	10
+20	9
+30	8
+40	7
+50	6
+60	5
+70	4
+
+query I
+SELECT a FROM (SELECT a, b FROM pv_ol_t ORDER BY b, a LIMIT 20) s ORDER BY a DESC LIMIT 4
+----
+143
+132
+121
+110
+
+statement ok
+RESET enable_seqscan
+
+# profile: no_sort
+
+statement ok
+SET enable_sort = off
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 5
+----
+152
+151
+150
+149
+148
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5 OFFSET 7
+----
+8
+9
+10
+11
+12
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 4 OFFSET 150
+----
+2
+1
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b, a LIMIT 12
+----
+0	11
+0	22
+0	33
+0	44
+0	55
+0	66
+0	77
+0	88
+0	99
+0	110
+0	121
+0	132
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC, a DESC LIMIT 12
+----
+NULL	152
+NULL	151
+10	142
+10	131
+10	120
+10	109
+10	98
+10	87
+10	76
+10	65
+10	54
+10	43
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b NULLS FIRST, a LIMIT 6
+----
+NULL	151
+NULL	152
+0	11
+0	22
+0	33
+0	44
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC NULLS LAST, a LIMIT 6
+----
+10	10
+10	21
+10	32
+10	43
+10	54
+10	65
+
+query II
+SELECT b, a FROM pv_ol_t WHERE b = 3 ORDER BY a DESC LIMIT 3
+----
+3	146
+3	135
+3	124
+
+query II
+SELECT c, a FROM pv_ol_t ORDER BY c, a LIMIT 9
+----
+0	23
+0	46
+0	69
+0	92
+0	115
+0	138
+1	10
+1	33
+1	56
+
+query II
+SELECT c, a FROM pv_ol_t WHERE a > 100 ORDER BY c DESC, a LIMIT 9
+----
+22	105
+22	128
+21	118
+21	141
+20	108
+20	131
+19	121
+19	144
+18	111
+
+query I
+SELECT a FROM pv_ol_t WHERE b > 5 ORDER BY a LIMIT 3
+----
+6
+7
+8
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a OFFSET 148
+----
+149
+150
+151
+152
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 0
+----
+
+query II
+SELECT a, b FROM pv_ol_t ORDER BY a % 10, a LIMIT 7
+----
+10	10
+20	9
+30	8
+40	7
+50	6
+60	5
+70	4
+
+query I
+SELECT a FROM (SELECT a, b FROM pv_ol_t ORDER BY b, a LIMIT 20) s ORDER BY a DESC LIMIT 4
+----
+143
+132
+121
+110
+
+statement ok
+RESET enable_sort
+
+# profile: combined
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_hashagg = off
+
+statement ok
+SET enable_indexscan = off
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5
+----
+1
+2
+3
+4
+5
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 5
+----
+152
+151
+150
+149
+148
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 5 OFFSET 7
+----
+8
+9
+10
+11
+12
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a DESC LIMIT 4 OFFSET 150
+----
+2
+1
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b, a LIMIT 12
+----
+0	11
+0	22
+0	33
+0	44
+0	55
+0	66
+0	77
+0	88
+0	99
+0	110
+0	121
+0	132
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC, a DESC LIMIT 12
+----
+NULL	152
+NULL	151
+10	142
+10	131
+10	120
+10	109
+10	98
+10	87
+10	76
+10	65
+10	54
+10	43
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b NULLS FIRST, a LIMIT 6
+----
+NULL	151
+NULL	152
+0	11
+0	22
+0	33
+0	44
+
+query II
+SELECT b, a FROM pv_ol_t ORDER BY b DESC NULLS LAST, a LIMIT 6
+----
+10	10
+10	21
+10	32
+10	43
+10	54
+10	65
+
+query II
+SELECT b, a FROM pv_ol_t WHERE b = 3 ORDER BY a DESC LIMIT 3
+----
+3	146
+3	135
+3	124
+
+query II
+SELECT c, a FROM pv_ol_t ORDER BY c, a LIMIT 9
+----
+0	23
+0	46
+0	69
+0	92
+0	115
+0	138
+1	10
+1	33
+1	56
+
+query II
+SELECT c, a FROM pv_ol_t WHERE a > 100 ORDER BY c DESC, a LIMIT 9
+----
+22	105
+22	128
+21	118
+21	141
+20	108
+20	131
+19	121
+19	144
+18	111
+
+query I
+SELECT a FROM pv_ol_t WHERE b > 5 ORDER BY a LIMIT 3
+----
+6
+7
+8
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a OFFSET 148
+----
+149
+150
+151
+152
+
+query I
+SELECT a FROM pv_ol_t ORDER BY a LIMIT 0
+----
+
+query II
+SELECT a, b FROM pv_ol_t ORDER BY a % 10, a LIMIT 7
+----
+10	10
+20	9
+30	8
+40	7
+50	6
+60	5
+70	4
+
+query I
+SELECT a FROM (SELECT a, b FROM pv_ol_t ORDER BY b, a LIMIT 20) s ORDER BY a DESC LIMIT 4
+----
+143
+132
+121
+110
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_hashagg
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+DROP TABLE pv_ol_t

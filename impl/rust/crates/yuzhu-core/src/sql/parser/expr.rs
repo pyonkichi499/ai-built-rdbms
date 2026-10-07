@@ -34,7 +34,7 @@
 use super::Parser;
 use crate::error::{Error, Result, Span, sqlstate};
 use crate::sql::ast::{
-    BoolTestValue, CastSyntax, Expr, Ident, Literal, ObjectName, Query, QueryBody,
+    BoolTestValue, CastSyntax, Expr, Ident, Literal, ObjectName, Quantifier, Query, QueryBody,
     SessionValueKind, TypeName, WhenClause,
 };
 use crate::sql::token::{KeywordCategory, TokenKind, keyword_category};
@@ -184,6 +184,7 @@ impl Parser<'_> {
                 }
                 "between" | "in" | "like" | "ilike" | "similar" if !restricted => Some(P_LIKE),
                 "collate" => Some(P_COLLATE),
+                "operator" if self.peek_nth(1).kind == TokenKind::LParen => Some(P_OP),
                 "at" if self.nth_is_kw(1, "time") || self.nth_is_kw(1, "local") => Some(P_AT),
                 _ => None,
             },
@@ -198,10 +199,14 @@ impl Parser<'_> {
         match &t.kind {
             TokenKind::Op(op) => {
                 self.advance();
+                if self.at_quantifier() {
+                    return self.parse_quantified(left, op.clone(), None, op_start);
+                }
                 let assoc = if p == P_CMP { Assoc::Non } else { Assoc::Left };
                 let right = Box::new(self.expr_bp(Ctx::new(p, assoc, restricted))?);
                 Ok(Expr::BinaryOp {
                     op: op.clone(),
+                    op_schema: None,
                     left,
                     right,
                     span: self.span_from(op_start),
@@ -246,7 +251,29 @@ impl Parser<'_> {
                     span: self.span_from(op_start),
                 })
             }
-            "collate" => Err(self.not_supported("COLLATE")),
+            "collate" => {
+                self.advance();
+                let collation = self.parse_object_name()?;
+                Ok(Expr::Collate {
+                    expr: left,
+                    collation,
+                    span: self.span_from(op_start),
+                })
+            }
+            "operator" => {
+                let (op_schema, op) = self.parse_qual_op()?;
+                if self.at_quantifier() {
+                    return self.parse_quantified(left, op, op_schema, op_start);
+                }
+                let right = Box::new(self.expr_bp(Ctx::new(P_OP, Assoc::Left, restricted))?);
+                Ok(Expr::BinaryOp {
+                    op,
+                    op_schema,
+                    left,
+                    right,
+                    span: self.span_from(op_start),
+                })
+            }
             "at" => Err(self.not_supported("AT TIME ZONE")),
             _ => {
                 let negated = self.eat_kw("not");
@@ -340,7 +367,34 @@ impl Parser<'_> {
                         span: self.span_from(op_start),
                     });
                 }
-                let list = self.parse_expr_list()?;
+                let mut list = self.parse_expr_list()?;
+                // `IN ((SELECT ..) UNION ..)`: the parenthesized subquery was
+                // the first operand of a larger query.
+                if list.len() == 1
+                    && matches!(list[0], Expr::Subquery { .. })
+                    && [
+                        "union",
+                        "intersect",
+                        "except",
+                        "order",
+                        "limit",
+                        "offset",
+                        "fetch",
+                    ]
+                    .iter()
+                    .any(|kw| self.is_kw(kw))
+                    && let Some(Expr::Subquery { query, span }) = list.pop()
+                {
+                    let body = Self::unwrap_query(*query);
+                    let query = Box::new(self.continue_query(body, span.start + 1)?);
+                    self.expect(&TokenKind::RParen)?;
+                    return Ok(Expr::InSubquery {
+                        expr: left,
+                        query,
+                        negated,
+                        span: self.span_from(op_start),
+                    });
+                }
                 self.expect(&TokenKind::RParen)?;
                 Ok(Expr::InList {
                     expr: left,
@@ -351,6 +405,15 @@ impl Parser<'_> {
             }
             "like" | "ilike" => {
                 self.advance();
+                if self.at_quantifier() {
+                    let op = match (negated, kw == "ilike") {
+                        (false, false) => "~~",
+                        (false, true) => "~~*",
+                        (true, false) => "!~~",
+                        (true, true) => "!~~*",
+                    };
+                    return self.parse_quantified(left, op.to_string(), None, op_start);
+                }
                 let pattern = Box::new(self.expr_bp(operand)?);
                 let escape = if self.eat_kw("escape") {
                     Some(Box::new(self.expr_bp(operand)?))
@@ -403,12 +466,14 @@ impl Parser<'_> {
                     }
                     return Ok(Expr::UnaryOp {
                         op: op.clone(),
+                        op_schema: None,
                         expr: Box::new(operand),
                         span,
                     });
                 }
                 Ok(Expr::UnaryOp {
                     op: op.clone(),
+                    op_schema: None,
                     expr: Box::new(operand),
                     span,
                 })
@@ -418,9 +483,16 @@ impl Parser<'_> {
                 let operand = self.expr_bp(Ctx::new(P_OP, Assoc::Left, ctx.restricted))?;
                 Ok(Expr::UnaryOp {
                     op: op.clone(),
+                    op_schema: None,
                     expr: Box::new(operand),
                     span: self.span_from(start),
                 })
+            }
+            TokenKind::Word {
+                value,
+                quoted: false,
+            } if value == "operator" && self.peek_nth(1).kind == TokenKind::LParen => {
+                self.parse_prefix_qual_op(ctx, start)
             }
             TokenKind::Word {
                 value,
@@ -435,6 +507,19 @@ impl Parser<'_> {
             }
             _ => self.parse_primary(ctx.restricted),
         }
+    }
+
+    /// Prefix `OPERATOR(schema.op) expr`.
+    #[inline(never)]
+    fn parse_prefix_qual_op(&mut self, ctx: Ctx, start: u32) -> Result<Expr> {
+        let (op_schema, op) = self.parse_qual_op()?;
+        let operand = self.expr_bp(Ctx::new(P_OP, Assoc::Left, ctx.restricted))?;
+        Ok(Expr::UnaryOp {
+            op,
+            op_schema,
+            expr: Box::new(operand),
+            span: self.span_from(start),
+        })
     }
 
     fn literal(&mut self, value: Literal) -> Expr {
@@ -503,8 +588,31 @@ impl Parser<'_> {
                 self.defaults.push(span);
                 return Ok(Expr::Default { span });
             }
-            "system_user" | "current_date" | "current_time" | "current_timestamp" | "localtime"
-            | "localtimestamp" => {
+            "current_date" => {
+                let span = self.advance().span;
+                return Ok(Expr::SessionValue {
+                    kind: SessionValueKind::CurrentDate,
+                    span,
+                });
+            }
+            "current_timestamp" | "localtimestamp" => {
+                self.advance();
+                let mut precision = -1;
+                if self.eat(&TokenKind::LParen) {
+                    precision = i32::try_from(self.parse_iconst()?.0.min(6)).unwrap_or(6);
+                    self.expect(&TokenKind::RParen)?;
+                }
+                let kind = if kw == "current_timestamp" {
+                    SessionValueKind::CurrentTimestamp { precision }
+                } else {
+                    SessionValueKind::LocalTimestamp { precision }
+                };
+                return Ok(Expr::SessionValue {
+                    kind,
+                    span: self.span_from(start),
+                });
+            }
+            "system_user" | "current_time" | "localtime" => {
                 return Err(self.not_supported(&kw.to_ascii_uppercase()));
             }
             "array"
@@ -563,11 +671,27 @@ impl Parser<'_> {
                         span: self.span_from(start),
                     });
                 }
+                "row" => {
+                    self.advance();
+                    self.expect(&TokenKind::LParen)?;
+                    let items = if self.peek_kind() == &TokenKind::RParen {
+                        Vec::new()
+                    } else {
+                        self.parse_expr_list()?
+                    };
+                    self.expect(&TokenKind::RParen)?;
+                    self.reject_indirection()?;
+                    return Ok(Expr::Row {
+                        items,
+                        explicit: true,
+                        span: self.span_from(start),
+                    });
+                }
                 "substring" => return self.parse_substring(),
                 "position" => return self.parse_position(),
                 "trim" => return self.parse_trim(),
                 "extract" => return self.parse_extract(),
-                "row" | "overlay" | "treat" | "normalize" | "grouping" | "merge_action" => {
+                "overlay" | "treat" | "normalize" | "grouping" | "merge_action" => {
                     return Err(self.not_supported(&kw.to_ascii_uppercase()));
                 }
                 _ if (kw.starts_with("xml") || kw.starts_with("json"))
@@ -590,6 +714,66 @@ impl Parser<'_> {
             }
             _ => self.parse_name_expr(),
         }
+    }
+
+    /// True at `ANY | SOME | ALL (`.
+    fn at_quantifier(&self) -> bool {
+        matches!(self.peek().keyword(), Some("any" | "some" | "all"))
+            && self.peek_nth(1).kind == TokenKind::LParen
+    }
+
+    /// `x op ANY|SOME|ALL (query)` after the operator; the cursor is at the
+    /// quantifier. The right side is always a parenthesized query.
+    fn parse_quantified(
+        &mut self,
+        left: Box<Expr>,
+        op: String,
+        op_schema: Option<Ident>,
+        op_start: u32,
+    ) -> Result<Expr> {
+        if !self.parens_then_query(1) {
+            return Err(self.not_supported("ANY/ALL with an array"));
+        }
+        let quantifier = if self.advance().is_kw("all") {
+            Quantifier::All
+        } else {
+            Quantifier::Any
+        };
+        self.advance();
+        let query = Box::new(self.parse_query()?);
+        self.expect(&TokenKind::RParen)?;
+        Ok(Expr::QuantifiedSubquery {
+            expr: left,
+            op,
+            op_schema,
+            quantifier,
+            query,
+            span: self.span_from(op_start),
+        })
+    }
+
+    /// `qual_Op`: `OPERATOR ( [schema .] op )`; the cursor is at `OPERATOR`.
+    /// Returns the schema (if any) and the operator spelling.
+    fn parse_qual_op(&mut self) -> Result<(Option<Ident>, String)> {
+        self.advance();
+        self.expect(&TokenKind::LParen)?;
+        let mut schemas = Vec::new();
+        let op = loop {
+            if let TokenKind::Op(op) = self.peek_kind().clone() {
+                self.advance();
+                break op;
+            }
+            schemas.push(self.parse_col_id()?);
+            self.expect(&TokenKind::Dot)?;
+        };
+        if schemas.len() > 1 {
+            return Err(Error::not_supported(
+                "OPERATOR with a database-qualified name is not supported yet",
+            )
+            .with_span(schemas[0].span));
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok((schemas.pop(), op))
     }
 
     /// Column reference, function call, or `name 'literal'` typed literal.
@@ -672,6 +856,7 @@ impl Parser<'_> {
         let mut args = Vec::new();
         let mut distinct = false;
         let mut star = false;
+        let mut order_by = Vec::new();
         if self.eat(&TokenKind::RParen) {
             // no arguments
         } else if self.is_op("*") && self.peek_nth(1).kind == TokenKind::RParen {
@@ -700,16 +885,30 @@ impl Parser<'_> {
                 }
             }
             if self.is_kw("order") {
-                return Err(self.not_supported("ORDER BY in aggregate calls"));
+                self.advance();
+                self.expect_kw("by")?;
+                loop {
+                    order_by.push(self.parse_order_by_item()?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
             }
             self.expect(&TokenKind::RParen)?;
         }
         if self.is_kw("within") && self.nth_is_kw(1, "group") {
             return Err(self.not_supported("WITHIN GROUP"));
         }
-        if self.is_kw("filter") && self.peek_nth(1).kind == TokenKind::LParen {
-            return Err(self.not_supported("FILTER"));
-        }
+        let filter = if self.is_kw("filter") && self.peek_nth(1).kind == TokenKind::LParen {
+            self.advance();
+            self.advance();
+            self.expect_kw("where")?;
+            let cond = self.parse_a_expr()?;
+            self.expect(&TokenKind::RParen)?;
+            Some(Box::new(cond))
+        } else {
+            None
+        };
         if self.is_kw("over") {
             return Err(self.not_supported("window functions"));
         }
@@ -732,6 +931,8 @@ impl Parser<'_> {
             args,
             distinct,
             star,
+            filter,
+            order_by,
             span: self.span_from(start),
         })
     }
@@ -752,7 +953,7 @@ impl Parser<'_> {
         self.advance();
         let inner = self.parse_a_expr()?;
         if self.peek_kind() == &TokenKind::Comma {
-            return Err(self.not_supported("row constructors"));
+            return self.finish_implicit_row(inner, start);
         }
         // `((SELECT ...) UNION ...)`: the parenthesized subquery was the
         // first operand of a larger query.
@@ -782,10 +983,27 @@ impl Parser<'_> {
         Ok(inner)
     }
 
+    /// The rest of `(a, b, ...)` after the first item (kept out of the
+    /// recursive path of `parse_paren_expr` to keep its stack frame small).
+    #[inline(never)]
+    fn finish_implicit_row(&mut self, first: Expr, start: u32) -> Result<Expr> {
+        let mut items = vec![first];
+        while self.eat(&TokenKind::Comma) {
+            items.push(self.parse_a_expr()?);
+        }
+        self.expect(&TokenKind::RParen)?;
+        self.reject_indirection()?;
+        Ok(Expr::Row {
+            items,
+            explicit: false,
+            span: self.span_from(start),
+        })
+    }
+
     /// A parenthesized query as a set-operation operand: its body if it has
     /// no ORDER BY / LIMIT / OFFSET, otherwise `QueryBody::Nested`.
     pub(super) fn unwrap_query(q: Query) -> QueryBody {
-        if q.order_by.is_empty() && q.limit.is_none() && q.offset.is_none() {
+        if q.with.is_none() && q.order_by.is_empty() && q.limit.is_none() && q.offset.is_none() {
             q.body
         } else {
             QueryBody::Nested(Box::new(q))
@@ -860,6 +1078,8 @@ impl Parser<'_> {
             args,
             distinct: false,
             star: false,
+            filter: None,
+            order_by: Vec::new(),
             span: self.span_from(name_span.start),
         }
     }

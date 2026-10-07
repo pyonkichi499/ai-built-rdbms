@@ -34,3 +34,6 @@ SHOW statement_timeout
 
 statement ok
 SET statement_timeout = 0
+
+statement ok
+RESET statement_timeout

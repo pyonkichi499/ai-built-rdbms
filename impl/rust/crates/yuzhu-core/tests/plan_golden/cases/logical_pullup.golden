@@ -1,0 +1,189 @@
+-- case derived
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select s.a from (select a, b + 1 as x from t where b > 1) s where s.x = 3
+-- build
+Project [#0:t.a]
+  Filter (#3:x = 3)
+    Project [#0:t.a #3 := (#1:t.b + 1)]
+      Filter (#1:t.b > 1)
+        Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a]
+  Filter ((#1:t.b + 1) = 3)
+    Filter (#1:t.b > 1)
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- outer_join
+(unchanged)
+-- pushdown
+Project [#0:t.a]
+  Filter (((#1:t.b + 1) = 3) AND (#1:t.b > 1))
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case derived_agg
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select s.a from (select a, count(*) as n from t group by a) s where s.n > 1
+-- build
+Project [#0:t.a]
+  Filter (#3:count > 1)
+    Project [#0:t.a #3:count]
+      Aggregate group=[#0:t.a] aggs=[#3 := count(*)]
+        Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a]
+  Filter (#3:count > 1)
+    Aggregate group=[#0:t.a] aggs=[#3 := count(*)]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case null_side_const_stays
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select t.a, s.k from t left join (select a, 1 as k from u) s on s.a = t.a
+-- build
+Project [#0:t.a #6:k]
+  Join Left on (#3:u.a = #0:t.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a #6 := 1]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a #6:k]
+  Join Left on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a #6 := 1]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a #6:k]
+  Join Left on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a #6 := 1]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case null_side_strict_expr
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select t.a, s.k from t left join (select a, d + 1 as k from u) s on s.a = t.a
+-- build
+Project [#0:t.a #6:k]
+  Join Left on (#3:u.a = #0:t.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a #6 := (#4:u.d + 1)]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a #6 := (#4:u.d + 1)]
+  Join Left on (#3:u.a = #0:t.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a #6 := (#4:u.d + 1)]
+  Join Left on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a #6 := (#4:u.d + 1)]
+  Join Left on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a #4:u.d]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case inline_cte
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+with x as (select a, b from t where b > 0) select x.a from x join u on x.a = u.a
+-- build
+Project [#0:t.a]
+  Join Inner on (#0:t.a = #3:u.a)
+    Project [#0:t.a #1:t.b]
+      Filter (#1:t.b > 0)
+        Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a]
+  Join Inner on (#0:t.a = #3:u.a)
+    Filter (#1:t.b > 0)
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Inner on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Filter (#1:t.b > 0)
+        Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]

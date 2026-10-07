@@ -38,6 +38,12 @@ pub mod sqlstate {
     pub const NUMERIC_VALUE_OUT_OF_RANGE: SqlState = SqlState("22003");
     pub const NULL_VALUE_NOT_ALLOWED: SqlState = SqlState("22004");
     pub const DIVISION_BY_ZERO: SqlState = SqlState("22012");
+    pub const SEQUENCE_GENERATOR_LIMIT_EXCEEDED: SqlState = SqlState("2200H");
+    pub const INVALID_REGULAR_EXPRESSION: SqlState = SqlState("2201B");
+    pub const BAD_COPY_FILE_FORMAT: SqlState = SqlState("22P04");
+    pub const INVALID_DATETIME_FORMAT: SqlState = SqlState("22007");
+    pub const DATETIME_FIELD_OVERFLOW: SqlState = SqlState("22008");
+    pub const INVALID_TIME_ZONE_DISPLACEMENT_VALUE: SqlState = SqlState("22009");
     pub const INVALID_ROW_COUNT_IN_LIMIT_CLAUSE: SqlState = SqlState("2201W");
     pub const INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE: SqlState = SqlState("2201X");
     pub const CHARACTER_NOT_IN_REPERTOIRE: SqlState = SqlState("22021");
@@ -62,6 +68,8 @@ pub mod sqlstate {
     // Class 28
     pub const INVALID_AUTHORIZATION_SPECIFICATION: SqlState = SqlState("28000");
     pub const INVALID_PASSWORD: SqlState = SqlState("28P01");
+    // Class 2B
+    pub const DEPENDENT_OBJECTS_STILL_EXIST: SqlState = SqlState("2BP01");
     // Class 3B
     pub const INVALID_SAVEPOINT_SPECIFICATION: SqlState = SqlState("3B001");
     // Class 3D
@@ -84,6 +92,9 @@ pub mod sqlstate {
     pub const DUPLICATE_TABLE: SqlState = SqlState("42P07");
     pub const DUPLICATE_COLUMN: SqlState = SqlState("42701");
     pub const DUPLICATE_OBJECT: SqlState = SqlState("42710");
+    pub const DUPLICATE_ALIAS: SqlState = SqlState("42712");
+    pub const RESERVED_NAME: SqlState = SqlState("42939");
+    pub const GENERATED_ALWAYS: SqlState = SqlState("428C9");
     pub const AMBIGUOUS_COLUMN: SqlState = SqlState("42702");
     pub const AMBIGUOUS_FUNCTION: SqlState = SqlState("42725");
     pub const DATATYPE_MISMATCH: SqlState = SqlState("42804");
@@ -98,6 +109,7 @@ pub mod sqlstate {
     pub const TOO_MANY_CONNECTIONS: SqlState = SqlState("53300");
     pub const DISK_FULL: SqlState = SqlState("53100");
     pub const PROGRAM_LIMIT_EXCEEDED: SqlState = SqlState("54000");
+    pub const STATEMENT_TOO_COMPLEX: SqlState = SqlState("54001");
     pub const TOO_MANY_COLUMNS: SqlState = SqlState("54011");
     // Class 55 / 57 / 58
     pub const OBJECT_NOT_IN_PREREQUISITE_STATE: SqlState = SqlState("55000");
@@ -187,6 +199,20 @@ pub struct Error {
     /// `Error::resolve_position` turns it into `position` (the session does
     /// this once per query, since only it knows the query text).
     pub cursor_byte: Option<u32>,
+    /// `s` `t` `c` `n` `W` フィールド（`m4/00-contracts.md` §14.4）。ほとんどのエラーは持たないので
+    /// 箱に入れて `Error` を小さく保つ（`Result` は再帰下降パーサのスタック消費に効く）。
+    /// 読むには `Error::schema()` などを使う。
+    pub diag: Option<Box<ErrorDiag>>,
+}
+
+/// `ErrorResponse` の `s`（schema）`t`（table）`c`（column）`n`（constraint）`W`（context）フィールド。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ErrorDiag {
+    pub schema: Option<String>,
+    pub table: Option<String>,
+    pub column: Option<String>,
+    pub constraint: Option<String>,
+    pub context: Option<String>,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -211,6 +237,7 @@ impl Error {
             hint: None,
             position: None,
             cursor_byte: None,
+            diag: None,
         }
     }
 
@@ -241,6 +268,65 @@ impl Error {
             self.cursor_byte = Some(span.start);
         }
         self
+    }
+
+    /// `s`（schema）と `t`（table）フィールドを付ける。
+    #[must_use]
+    pub fn with_table(mut self, schema: impl Into<String>, table: impl Into<String>) -> Self {
+        let d = self.diag_mut();
+        d.schema = Some(schema.into());
+        d.table = Some(table.into());
+        self
+    }
+
+    /// `c`（column）フィールドを付ける。
+    #[must_use]
+    pub fn with_column(mut self, column: impl Into<String>) -> Self {
+        self.diag_mut().column = Some(column.into());
+        self
+    }
+
+    /// `n`（constraint）フィールドを付ける。
+    #[must_use]
+    pub fn with_constraint(mut self, name: impl Into<String>) -> Self {
+        self.diag_mut().constraint = Some(name.into());
+        self
+    }
+
+    /// `W`（context）フィールドを付ける（`COPY t, line 3, column a: "x"` など）。
+    #[must_use]
+    pub fn with_context(mut self, ctx: impl Into<String>) -> Self {
+        self.diag_mut().context = Some(ctx.into());
+        self
+    }
+
+    fn diag_mut(&mut self) -> &mut ErrorDiag {
+        self.diag.get_or_insert_with(Box::default)
+    }
+
+    /// `s`（schema）フィールド。
+    pub fn schema(&self) -> Option<&str> {
+        self.diag.as_deref().and_then(|d| d.schema.as_deref())
+    }
+
+    /// `t`（table）フィールド。
+    pub fn table(&self) -> Option<&str> {
+        self.diag.as_deref().and_then(|d| d.table.as_deref())
+    }
+
+    /// `c`（column）フィールド。
+    pub fn column(&self) -> Option<&str> {
+        self.diag.as_deref().and_then(|d| d.column.as_deref())
+    }
+
+    /// `n`（constraint）フィールド。
+    pub fn constraint(&self) -> Option<&str> {
+        self.diag.as_deref().and_then(|d| d.constraint.as_deref())
+    }
+
+    /// `W`（context）フィールド。
+    pub fn context(&self) -> Option<&str> {
+        self.diag.as_deref().and_then(|d| d.context.as_deref())
     }
 
     #[must_use]
@@ -343,6 +429,41 @@ mod tests {
         assert_eq!(s.sqlstate, sqlstate::SYNTAX_ERROR);
         assert_eq!(s.position, Some(3));
         assert_eq!(Severity::Warning.as_str(), "WARNING");
+    }
+
+    #[test]
+    fn diagnostic_fields_and_m4_sqlstates() {
+        let e = Error::new(sqlstate::UNIQUE_VIOLATION, "dup")
+            .with_table("public", "t")
+            .with_column("a")
+            .with_constraint("t_pkey")
+            .with_context("COPY t, line 3");
+        assert_eq!(e.schema(), Some("public"));
+        assert_eq!(e.table(), Some("t"));
+        assert_eq!(e.column(), Some("a"));
+        assert_eq!(e.constraint(), Some("t_pkey"));
+        assert_eq!(e.context(), Some("COPY t, line 3"));
+        let plain = Error::internal("x");
+        assert!(plain.diag.is_none() && plain.schema().is_none());
+        // 診断フィールドを足しても Error は大きくならない（パーサのスタック消費のため）。
+        assert!(std::mem::size_of::<Error>() <= 128);
+
+        let codes = [
+            (sqlstate::SEQUENCE_GENERATOR_LIMIT_EXCEEDED, "2200H"),
+            (sqlstate::INVALID_REGULAR_EXPRESSION, "2201B"),
+            (sqlstate::BAD_COPY_FILE_FORMAT, "22P04"),
+            (sqlstate::DEPENDENT_OBJECTS_STILL_EXIST, "2BP01"),
+            (sqlstate::DUPLICATE_ALIAS, "42712"),
+            (sqlstate::GENERATED_ALWAYS, "428C9"),
+            (sqlstate::INVALID_DATETIME_FORMAT, "22007"),
+            (sqlstate::DATETIME_FIELD_OVERFLOW, "22008"),
+            (sqlstate::INVALID_TIME_ZONE_DISPLACEMENT_VALUE, "22009"),
+            (sqlstate::STATEMENT_TOO_COMPLEX, "54001"),
+            (sqlstate::RESERVED_NAME, "42939"),
+        ];
+        for (s, code) in codes {
+            assert_eq!(s.code(), code);
+        }
     }
 
     #[test]

@@ -1,0 +1,21 @@
+psql:<stdin>:4: ERROR:  invalid input syntax for type integer: "40,NULL"
+CONTEXT:  COPY compat_eo1, line 1, column a: "40,NULL"
+psql:<stdin>:7: ERROR:  invalid input syntax for type integer: "x"
+CONTEXT:  COPY compat_eo1, line 1, column a: "x"
+psql:<stdin>:10: ERROR:  extra data after last expected column
+CONTEXT:  COPY compat_eo1, line 1: "x	y	z"
+psql:<stdin>:15: ERROR:  duplicate key value violates unique constraint "compat_eo2_pkey"
+DETAIL:  Key (a)=(1) already exists.
+CONTEXT:  COPY compat_eo2, line 2
+psql:<stdin>:19: ERROR:  null value in column "a" of relation "compat_eo3" violates not-null constraint
+DETAIL:  Failing row contains (null, x).
+CONTEXT:  COPY compat_eo3, line 1: "\N	x"
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     0
+(1 row)

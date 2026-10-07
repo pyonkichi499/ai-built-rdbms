@@ -1,0 +1,491 @@
+-- case exists
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where exists (select 1 from u where u.a = t.a)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Exists}
+    ~ Project [#6 := 1]
+        Filter (#3:u.a = #0:t.a)
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+Project [#0:t.a]
+  Join Semi on (#3:u.a = #0:t.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case not_exists
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where not exists (select 1 from u where u.a = t.a)
+-- build
+Project [#0:t.a]
+  Filter (NOT {SubLink Exists})
+    ~ Project [#6 := 1]
+        Filter (#3:u.a = #0:t.a)
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+Project [#0:t.a]
+  Join Anti on (#3:u.a = #0:t.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a]
+  Join Anti on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Anti on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case in_correlated
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a in (select a from u where u.d = t.b)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Any test=(#0:t.a = out0)}
+    ~ Project [#3:u.a]
+        Filter (#4:u.d = #1:t.b)
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+Project [#0:t.a]
+  Join Semi on ((#4:u.d = #1:t.b) AND (#0:t.a = #3:u.a))
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a]
+  Join Semi on ((#1:t.b = #4:u.d) AND (#0:t.a = #3:u.a))
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Semi on ((#1:t.b = #4:u.d) AND (#0:t.a = #3:u.a))
+    Project [#0:t.a #1:t.b]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a #4:u.d]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case in_uncorrelated
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a in (select a from u)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Any test=(#0:t.a = out0)}
+    ~ Project [#3:u.a]
+        Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- subquery_pullup
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case in_limit
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a in (select a from u limit 5)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Any test=(#0:t.a = out0)}
+    ~ Limit limit=CAST(5 AS bigint)
+        Project [#3:u.a]
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Project [#0:t.a]
+  Filter {SubLink Any test=(#0:t.a = out0)}
+    ~ Limit limit=5
+        Project [#3:u.a]
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Limit limit=5
+      Project [#3:u.a]
+        Get u [#3:u.a #4:u.d #5:u.e]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Limit limit=5
+      Project [#3:u.a]
+        Get u [#3:u.a #4:u.d #5:u.e]
+-- case exists_uncorrelated_stays
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where exists (select 1 from u where u.d = 3)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Exists}
+    ~ Project [#6 := 1]
+        Filter (#4:u.d = 3)
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case or_stays
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where exists (select 1 from u where u.a = t.a) or a = 1
+-- build
+Project [#0:t.a]
+  Filter ({SubLink Exists} OR (#0:t.a = 1))
+    ~ Project [#6 := 1]
+        Filter (#3:u.a = #0:t.a)
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case not_in_stays
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a not in (select a from u)
+-- build
+Project [#0:t.a]
+  Filter (NOT {SubLink Any test=(#0:t.a = out0)})
+    ~ Project [#3:u.a]
+        Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case nested_exists
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where exists (select 1 from u where u.a = t.a and exists (select 1 from v where v.x = u.d))
+-- build
+Project [#0:t.a]
+  Filter {SubLink Exists}
+    ~ Project [#9 := 1]
+        Filter ((#3:u.a = #0:t.a) AND {SubLink Exists})
+          ~ Project [#8 := 1]
+              Filter (#6:v.x = #4:u.d)
+                Get v [#6:v.x #7:v.y]
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+Project [#0:t.a]
+  Join Semi on (#3:u.a = #0:t.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Join Semi on (#6:v.x = #4:u.d)
+      Get u [#3:u.a #4:u.d #5:u.e]
+      Get v [#6:v.x #7:v.y]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Join Semi on (#4:u.d = #6:v.x)
+      Get u [#3:u.a #4:u.d #5:u.e]
+      Get v [#6:v.x #7:v.y]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Semi on (#0:t.a = #3:u.a)
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Join Semi on (#4:u.d = #6:v.x)
+      Project [#3:u.a #4:u.d]
+        Get u [#3:u.a #4:u.d #5:u.e]
+      Project [#6:v.x]
+        Get v [#6:v.x #7:v.y]
+-- case join_on_exists
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select t.a from t join u on u.a = t.a and exists (select 1 from v where v.x = t.b)
+-- build
+Project [#0:t.a]
+  Join Inner on ((#3:u.a = #0:t.a) AND {SubLink Exists})
+    ~ Project [#8 := 1]
+        Filter (#6:v.x = #1:t.b)
+          Get v [#6:v.x #7:v.y]
+    Get t [#0:t.a #1:t.b #2:t.c]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+Project [#0:t.a]
+  Join Semi on (#6:v.x = #1:t.b)
+    Join Inner on (#3:u.a = #0:t.a)
+      Get t [#0:t.a #1:t.b #2:t.c]
+      Get u [#3:u.a #4:u.d #5:u.e]
+    Get v [#6:v.x #7:v.y]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+Project [#0:t.a]
+  Join Inner on (#3:u.a = #0:t.a)
+    Join Semi on (#6:v.x = #1:t.b)
+      Get t [#0:t.a #1:t.b #2:t.c]
+      Get v [#6:v.x #7:v.y]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- join_keys
+Project [#0:t.a]
+  Join Inner on (#0:t.a = #3:u.a)
+    Join Semi on (#1:t.b = #6:v.x)
+      Get t [#0:t.a #1:t.b #2:t.c]
+      Get v [#6:v.x #7:v.y]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- join_order
+(unchanged)
+-- prune
+Project [#0:t.a]
+  Join Inner on (#0:t.a = #3:u.a)
+    Join Semi on (#1:t.b = #6:v.x)
+      Project [#0:t.a #1:t.b]
+        Get t [#0:t.a #1:t.b #2:t.c]
+      Project [#6:v.x]
+        Get v [#6:v.x #7:v.y]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- case exists_with_group_by_stays
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where exists (select 1 from u where u.a = t.a group by u.d)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Exists}
+    ~ Project [#6 := 1]
+        Aggregate group=[#4:u.d] aggs=[]
+          Filter (#3:u.a = #0:t.a)
+            Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case delete_where_exists
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+delete from t where exists (select 1 from u where u.a = t.a)
+-- build
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Filter {SubLink Exists}
+      ~ Project [#7 := 1]
+          Filter (#4:u.a = #0:t.a)
+            Get u [#4:u.a #5:u.d #6:u.e]
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+-- const_fold
+(unchanged)
+-- sublink
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Join Semi on (#4:u.a = #0:t.a)
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+      Get u [#4:u.a #5:u.d #6:u.e]
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Join Semi on (#0:t.a = #4:u.a)
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+      Get u [#4:u.a #5:u.d #6:u.e]
+-- join_order
+(unchanged)
+-- prune
+Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+    Join Semi on (#0:t.a = #4:u.a)
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+      Project [#4:u.a]
+        Get u [#4:u.a #5:u.d #6:u.e]

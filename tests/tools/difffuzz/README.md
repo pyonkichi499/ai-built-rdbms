@@ -30,18 +30,21 @@ target/release/difffuzz --domain expr --seed 1 --cases 5000 \
 
 | オプション | 内容 |
 |---|---|
-| `--domain` | `expr` `types` `query` `dml` `txn` `all`（既定 all。case 番号で領域を順番に切り替える） |
+| `--domain` | `expr` `types` `query` `dml` `txn`（M1〜M3）、`join` `agg` `subquery` `setop` `index` `ddl`（M4）、`all`（既定 all。case 番号で領域を順番に切り替える） |
 | `--seed N` | シード（省略時は時刻から） |
 | `--cases N` / `--start N` | case 番号 `start .. start+N` を実行（既定 1000 件、start 0） |
 | `--case N` | その 1 ケースだけ再現（`--seed` と `--domain` は差分出力と同じ値を渡す） |
 | `--pg` / `--yuzhu` | libpq の接続文字列（環境変数 `DIFFFUZZ_PG` / `DIFFFUZZ_YUZHU` でも可。既定は PG 55432、yuzhu 55433） |
 | `--out FILE` | 差分を JSON Lines で追記（省略時は標準出力）。進捗と集計は標準エラー |
 | `--no-message` | エラーメッセージの差を無視（SQLSTATE の差だけ見る） |
+| `--skip-unsupported-legacy` | yuzhu が `0A000` を返した文を、M1〜M3 の領域（expr types query dml txn）だけ、PG のエラーの有無に関わらず数えるだけにする。M4 の領域の `0A000` は差分のまま（生成器が避けるはずの構文なので）。`done-check.sh` が使う |
 | `--skip-unsupported` | PG が成功し yuzhu が `0A000`（未対応）を返した文で、そのケースを打ち切って数えるだけにする |
+| `--ignore-trailing-space` | 行の各フィールドの末尾の空白を無視（M4 領域の読み取り文だけ。char(n) の詰め物の差を別扱いにして、ほかの差分を見るとき） |
+| `--exclude NEEDLE` | NEEDLE を含む文を両方のサーバへ流さない（何度でも指定可。既知の差が他の差分を隠すとき。`done-check.sh` は `known-excludes.txt` から読む） |
 | `--timeout-ms N` | 1 文あたりの待ち時間（既定 10000）。超えると `timeout` として差分になる |
 | `-v` | 全文と両者の結果を標準エラーに出す |
 
-`--domain all` のときの領域は `case % 5`（expr, types, query, dml, txn の順）で決まります。
+`--domain all` のときの領域は `case % 11`（expr, types, query, dml, txn, join, agg, subquery, setop, index, ddl の順）で決まります。
 
 ## 差分の再現
 
@@ -65,13 +68,56 @@ target/release/difffuzz --domain expr --seed 1 --cases 5000 \
 - エラーは `ERROR:  <SQLSTATE>: <メッセージ>` の先頭行のみ。`DETAIL` / `HINT` / `LOCATION` / `LINE` とキャレット、`NOTICE` / `WARNING` は比較しない。
 - 生成した文は 1 行で `;` 終わり、引用符・括弧が釣り合うようにしてあります（psql が文の終わりを見失うと待ちぼうけになるため）。
 
+## M4 の領域（join / agg / subquery / setop / index / ddl）
+
+11 §3.7.3 の表に対応します。表は `k` `a`（integer）を必ず持ち、ほかに `b`（bigint）`s`（text）`n`（numeric(6,2)）`c`（char(3)）`d`（date）`ts`（timestamp）`f`（boolean）を乱数で選びます
+（列名と型が 1 対 1 なので NATURAL / USING が使えます）。主キー（単一・複合・serial）と UNIQUE を持つ表も混ざります。浮動小数・interval・タイムゾーンは使いません。
+
+| 領域 | 生成するもの |
+|---|---|
+| `join` | INNER / LEFT / RIGHT / FULL（等値 + 残りの条件）/ CROSS、NATURAL・USING、2〜4 表の連鎖、派生表・`generate_series` との結合、WHERE の述語 |
+| `agg` | GROUP BY / HAVING、主キーへの関数従属（主キーだけで GROUP BY）、DISTINCT ON、`count` `sum` `avg` `min` `max` `bool_and` `bool_or`、FILTER、DISTINCT 引数、42803 のエラー |
+| `subquery` | IN / NOT IN / EXISTS / スカラー / ANY / ALL（NULL を含む表）、相関（2 段、UNION・INTERSECT の腕からの相関）、CTE（参照 0・1・2 回、MATERIALIZED）、派生表 |
+| `setop` | UNION / INTERSECT / EXCEPT（ALL の有無）、括弧による結合順、集約・定数の腕、int4/int8 の混在、副問い合わせ・CTE の中 |
+| `index` | PRIMARY KEY / UNIQUE / CREATE INDEX（単一・複合・DESC・NULLS FIRST）を持つ表への等値・範囲・IN・IS NULL・ORDER BY（LIMIT）・min/max、重複キーの INSERT（23505）、UPDATE / DELETE の後の全内容 |
+| `ddl` | CREATE / DROP INDEX、ALTER TABLE ADD PRIMARY KEY / UNIQUE、TRUNCATE（RESTART IDENTITY など）、serial、DROP TABLE の連鎖（IF EXISTS / CASCADE）と `pg_class` / `pg_index` の突き合わせ |
+
+生成しない構文は KD-1〜KD-27（`0A000` になるもの。LATERAL、再帰 CTE、`IS DISTINCT FROM`、FULL JOIN ON true、ウィンドウ関数、`ANY(array)` など）です。`gen/m4_tests.rs` が目印の文字列で確かめます。
+
+### 比較の規則（11 §3.7.2）
+
+M4 の読み取り文（`Ctx::push_q`）は次の規則で比べます（`src/compare.rs`）。
+
+- 行は多重集合として比べる。ORDER BY が全出力列のときだけ順序も比べる（LIMIT は全順序のときだけ生成）。
+- `-0` と `0`（`-0.00` など）の入れ替わりは許容する。
+- 評価順で出る出ないが変わりうるエラー（クラス 21・22 のエラーと行の結果、またはクラス 21・22 どうしでコードが違う）は `inconclusive` として数えるだけで、差分にしない。
+- 浮動小数の sum / avg は生成しない。
+
+### 同じサーバ上の変種の検査（11 §3.7.3 の (d)(e)）
+
+`pairs` に登録した 2 文は、PostgreSQL・yuzhu のそれぞれの中で結果が同じでなければなりません。差分の `kind` は `variant_pg` / `variant_yuzhu`、`paired` は基準にした文の添字です。
+
+- プラン変種: 同じ問い合わせを `SET enable_hashjoin / nestloop / indexscan / seqscan / hashagg / material / sort = off`（と組み合わせ）の下で流す。FULL JOIN を含む文は hashjoin を切らない（KD-2）。
+- 索引の有無: 同じデータの「索引・制約つきの表」と「何もない表」に同じ問い合わせを流す（`index` 領域）。
+
+### PostgreSQL 対 PostgreSQL の自己検査
+
+生成器自身の確認に、同じ PostgreSQL の別データベースを相手にして差分 0 を確かめます（テーブル名が衝突しないよう、別々のデータベースにします）。
+
+```sh
+psql "host=127.0.0.1 port=55432 user=postgres dbname=postgres" -c "CREATE DATABASE fz_a" -c "CREATE DATABASE fz_b"
+difffuzz --domain join --seed 1 --cases 300 \
+  --pg    "host=127.0.0.1 port=55432 user=postgres dbname=fz_a" \
+  --yuzhu "host=127.0.0.1 port=55432 user=postgres dbname=fz_b"
+```
+
 ## 後始末
 
 テーブル名は `fz_<seed>_<case>_t<n>`。シナリオの最後に両方のサーバで `ROLLBACK;` と `DROP TABLE IF EXISTS ...` を流します。
 
 ## 生成器の拡張
 
-`src/gen/` に領域ごとのモジュールがあります（`expr` `types` `query` `dml` `txn`、共通の部品は `mod.rs`、型ごとのリテラルは `values.rs`）。
+`src/gen/` に領域ごとのモジュールがあります（`expr` `types` `query` `dml` `txn`、M4 は `m4.rs`（共通）と `m4_join` `m4_agg` `m4_subq` `m4_setop` `m4_index` `m4_ddl`、共通の部品は `mod.rs`、型ごとのリテラルは `values.rs`）。
 
 1. `fn scenario(ctx: &mut Ctx)` を持つモジュールを作る（`ctx.rng` で乱数、`ctx.push(sql)` で文を積む）。
 2. `gen/mod.rs` の `DOMAINS` と `generate` に 1 行足す。

@@ -8,9 +8,10 @@
 
 use super::Analyzer;
 use super::bound::{BoundExpr, BoundExprKind};
+use crate::catalog::names::CatalogNames;
 use crate::catalog::{CastContext, CastMethod, builtin};
 use crate::error::{Error, Result, Span, sqlstate};
-use crate::types::{Datum, Oid, SqlType, io, oid, type_display_name};
+use crate::types::{Datum, Oid, SqlType, io, oid, sys, type_display_name, typmod::takes_typmod};
 
 /// PostgreSQL's `CoercionContext`. The order matters: a cast may be used
 /// when `context >= cast.context`.
@@ -81,7 +82,7 @@ impl Analyzer<'_> {
             return match c.method {
                 CastMethod::Binary => Pathway::Relabel,
                 CastMethod::InOut => Pathway::CoerceViaIo,
-                m @ CastMethod::Function(_) => Pathway::Cast(m),
+                m @ (CastMethod::Function(_) | CastMethod::Env(_)) => Pathway::Cast(m),
             };
         }
         // No pg_cast entry: automatic I/O conversion to string types in
@@ -135,6 +136,17 @@ impl Analyzer<'_> {
         )))
     }
 
+    /// Input function for an unknown literal. regclass / regtype resolve names through the catalog.
+    fn input_literal(&self, s: &str, ty: SqlType) -> Result<Datum> {
+        let names = CatalogNames(self.catalog);
+        match ty.oid {
+            oid::REGCLASS => sys::regclass_in(s, Some(&names)).map(Datum::Oid),
+            oid::REGTYPE => sys::regtype_in(s, Some(&names)).map(Datum::Oid),
+            oid::REGNAMESPACE => sys::regnamespace_in(s, Some(&names)).map(Datum::Oid),
+            _ => io::input_text(s, ty),
+        }
+    }
+
     /// PostgreSQL's `coerce_type` (no typmod). Unknown literals are
     /// converted right away with the target's input function, so invalid
     /// input is reported at analysis time (22P02), as in PostgreSQL.
@@ -153,8 +165,19 @@ impl Analyzer<'_> {
         }
         if src == oid::UNKNOWN {
             if let BoundExprKind::Literal(d) = &expr.kind {
+                if matches!(d, Datum::Text(_)) && !io::input_is_eager(target) {
+                    // date / timestamp / timestamptz depend on DateStyle, TimeZone and `now`:
+                    // the planner folds `Cast(InOut)` of a literal (09 §4.1).
+                    return Ok(Some(make_cast(
+                        expr,
+                        CastMethod::InOut,
+                        target,
+                        ctx != CoercionContext::Explicit,
+                    )));
+                }
                 let datum = match d {
-                    Datum::Text(s) => io::input_text(s, SqlType::of(target))
+                    Datum::Text(s) => self
+                        .input_literal(s, SqlType::of(target))
                         .map_err(|e| e.with_span(expr.span))?,
                     other => other.clone(),
                 };
@@ -165,15 +188,21 @@ impl Analyzer<'_> {
                 )));
             }
             if self.category(target) == 'S' {
-                return Ok(Some(make_cast(expr, CastMethod::InOut, target)));
+                return Ok(Some(make_cast(
+                    expr,
+                    CastMethod::InOut,
+                    target,
+                    ctx != CoercionContext::Explicit,
+                )));
             }
             return Ok(None);
         }
+        let implicit = ctx != CoercionContext::Explicit;
         Ok(match self.find_coercion_pathway(target, src, ctx) {
             Pathway::None => None,
-            Pathway::Relabel => Some(make_cast(expr, CastMethod::Binary, target)),
-            Pathway::Cast(m) => Some(make_cast(expr, m, target)),
-            Pathway::CoerceViaIo => Some(make_cast(expr, CastMethod::InOut, target)),
+            Pathway::Relabel => Some(make_cast(expr, CastMethod::Binary, target, implicit)),
+            Pathway::Cast(m) => Some(make_cast(expr, m, target, implicit)),
+            Pathway::CoerceViaIo => Some(make_cast(expr, CastMethod::InOut, target, implicit)),
         })
     }
 
@@ -376,12 +405,13 @@ pub(super) fn select_common_typmod(exprs: &[&BoundExpr], common: Oid) -> i32 {
     result.unwrap_or(-1)
 }
 
-fn make_cast(expr: BoundExpr, method: CastMethod, target: Oid) -> BoundExpr {
+fn make_cast(expr: BoundExpr, method: CastMethod, target: Oid, implicit: bool) -> BoundExpr {
     let span = expr.span;
     BoundExpr::new(
         BoundExprKind::Cast {
             expr: Box::new(expr),
             method,
+            implicit,
         },
         SqlType::of(target),
         span,
@@ -389,13 +419,10 @@ fn make_cast(expr: BoundExpr, method: CastMethod, target: Oid) -> BoundExpr {
 }
 
 /// PostgreSQL's `coerce_type_typmod`: applies the length coercion when the
-/// target has a typmod different from the expression's (varchar only in
-/// M1).
+/// target has a typmod different from the expression's (varchar, bpchar, numeric,
+/// timestamp, timestamptz).
 pub(super) fn coerce_typmod(expr: BoundExpr, target: SqlType, explicit: bool) -> BoundExpr {
-    if target.typmod < 0
-        || target.typmod == expr.ty.typmod
-        || !matches!(target.oid, oid::VARCHAR | oid::NUMERIC)
-    {
+    if target.typmod < 0 || target.typmod == expr.ty.typmod || !takes_typmod(target.oid) {
         return expr;
     }
     let span = expr.span;
@@ -419,6 +446,6 @@ pub(super) fn resolve_unknown(mut expr: BoundExpr) -> BoundExpr {
         expr.ty = SqlType::TEXT;
         expr
     } else {
-        make_cast(expr, CastMethod::InOut, oid::TEXT)
+        make_cast(expr, CastMethod::InOut, oid::TEXT, true)
     }
 }

@@ -30,6 +30,15 @@ pub mod oids {
     pub const PG_DATABASE: Oid = 1262;
     pub const PG_AUTHID: Oid = 1260;
     pub const PG_TABLESPACE: Oid = 1213;
+    pub const PG_INDEX: Oid = 2610;
+    pub const PG_DEPEND: Oid = 2608;
+    pub const PG_SEQUENCE: Oid = 2224;
+    pub const PG_LANGUAGE: Oid = 2612;
+    pub const PG_OPFAMILY: Oid = 2753;
+    pub const PG_OPCLASS: Oid = 2616;
+    pub const PG_AMOP: Oid = 2602;
+    pub const PG_AMPROC: Oid = 2603;
+    pub const PG_DESCRIPTION: Oid = 2609;
 
     /// `pg_catalog`.
     pub const NAMESPACE_PG_CATALOG: Oid = 11;
@@ -37,6 +46,8 @@ pub mod oids {
     pub const NAMESPACE_PG_TOAST: Oid = 99;
     /// `public`.
     pub const NAMESPACE_PUBLIC: Oid = 2200;
+    /// `information_schema`（中身は空。\dn などが所有者を引く）。
+    pub const NAMESPACE_INFORMATION_SCHEMA: Oid = 13217;
     /// The bootstrap superuser (`initdb -U`).
     pub const BOOTSTRAP_SUPERUSER: Oid = 10;
     /// `pg_database_owner`, the owner of `public`.
@@ -47,9 +58,10 @@ pub mod oids {
     /// `heap_tableam_handler` / `bthandler`.
     pub const HEAP_TABLEAM_HANDLER: Oid = 3;
     pub const BTHANDLER: Oid = 330;
-    /// The language OID of `internal` functions. `pg_language` does not
-    /// exist in M2, so this is the one reference that does not resolve.
-    pub const INTERNAL_LANGUAGE: Oid = 12;
+    /// `pg_language` の行（`internal` / `c` / `sql`）。
+    pub const LANGUAGE_INTERNAL: Oid = 12;
+    pub const LANGUAGE_C: Oid = 13;
+    pub const LANGUAGE_SQL: Oid = 14;
 }
 
 #[derive(Debug)]
@@ -346,6 +358,120 @@ static PG_CONSTRAINT_COLUMNS: &[CatalogColumn] = &[
 ];
 
 #[rustfmt::skip]
+static PG_INDEX_COLUMNS: &[CatalogColumn] = &[
+    col("indexrelid", 26, true),
+    col("indrelid", 26, true),
+    col("indnatts", 21, true),
+    col("indnkeyatts", 21, true),
+    col("indisunique", 16, true),
+    col("indnullsnotdistinct", 16, true),
+    col("indisprimary", 16, true),
+    col("indisexclusion", 16, true),
+    col("indimmediate", 16, true),
+    col("indisclustered", 16, true),
+    col("indisvalid", 16, true),
+    col("indcheckxmin", 16, true),
+    col("indisready", 16, true),
+    col("indislive", 16, true),
+    col("indisreplident", 16, true),
+    col("indkey", 22, true),
+    col("indcollation", 30, true),
+    col("indclass", 30, true),
+    col("indoption", 22, true),
+    col("indexprs", 194, false),
+    col("indpred", 194, false),
+];
+
+#[rustfmt::skip]
+static PG_DEPEND_COLUMNS: &[CatalogColumn] = &[
+    col("classid", 26, true),
+    col("objid", 26, true),
+    col("objsubid", 23, true),
+    col("refclassid", 26, true),
+    col("refobjid", 26, true),
+    col("refobjsubid", 23, true),
+    col("deptype", 18, true),
+];
+
+#[rustfmt::skip]
+static PG_SEQUENCE_COLUMNS: &[CatalogColumn] = &[
+    col("seqrelid", 26, true),
+    col("seqtypid", 26, true),
+    col("seqstart", 20, true),
+    col("seqincrement", 20, true),
+    col("seqmax", 20, true),
+    col("seqmin", 20, true),
+    col("seqcache", 20, true),
+    col("seqcycle", 16, true),
+];
+
+#[rustfmt::skip]
+static PG_LANGUAGE_COLUMNS: &[CatalogColumn] = &[
+    col("oid", 26, true),
+    col("lanname", 19, true),
+    col("lanowner", 26, true),
+    col("lanispl", 16, true),
+    col("lanpltrusted", 16, true),
+    col("lanplcallfoid", 26, true),
+    col("laninline", 26, true),
+    col("lanvalidator", 26, true),
+    col("lanacl", 1034, false),
+];
+
+#[rustfmt::skip]
+static PG_OPFAMILY_COLUMNS: &[CatalogColumn] = &[
+    col("oid", 26, true),
+    col("opfmethod", 26, true),
+    col("opfname", 19, true),
+    col("opfnamespace", 26, true),
+    col("opfowner", 26, true),
+];
+
+#[rustfmt::skip]
+static PG_OPCLASS_COLUMNS: &[CatalogColumn] = &[
+    col("oid", 26, true),
+    col("opcmethod", 26, true),
+    col("opcname", 19, true),
+    col("opcnamespace", 26, true),
+    col("opcowner", 26, true),
+    col("opcfamily", 26, true),
+    col("opcintype", 26, true),
+    col("opcdefault", 16, true),
+    col("opckeytype", 26, true),
+];
+
+#[rustfmt::skip]
+static PG_AMOP_COLUMNS: &[CatalogColumn] = &[
+    col("oid", 26, true),
+    col("amopfamily", 26, true),
+    col("amoplefttype", 26, true),
+    col("amoprighttype", 26, true),
+    col("amopstrategy", 21, true),
+    col("amoppurpose", 18, true),
+    col("amopopr", 26, true),
+    col("amopmethod", 26, true),
+    col("amopsortfamily", 26, true),
+];
+
+#[rustfmt::skip]
+static PG_AMPROC_COLUMNS: &[CatalogColumn] = &[
+    col("oid", 26, true),
+    col("amprocfamily", 26, true),
+    col("amproclefttype", 26, true),
+    col("amprocrighttype", 26, true),
+    col("amprocnum", 21, true),
+    col("amproc", 24, true),
+];
+
+#[rustfmt::skip]
+static PG_DESCRIPTION_COLUMNS: &[CatalogColumn] = &[
+    col("objoid", 26, true),
+    col("classoid", 26, true),
+    col("objsubid", 23, true),
+    col("description", 25, true),
+];
+
+#[rustfmt::skip]
 static PG_DATABASE_COLUMNS: &[CatalogColumn] = &[
     col("oid", 26, true),
     col("datname", 19, true),
@@ -392,7 +518,8 @@ static PG_TABLESPACE_COLUMNS: &[CatalogColumn] = &[
     col("spcoptions", 1009, false),
 ];
 
-/// The 13 catalogs (`m2.md` §6.8.1), shared ones last.
+/// The 22 catalogs (M2 の 13 個 + M4 の 9 個。`m2.md` §6.8.1、`m4/07-catalog-ddl.md` §3.1)。
+/// shared ones last.
 #[rustfmt::skip]
 pub static CATALOGS: &[CatalogDef] = &[
     CatalogDef { oid: oids::PG_CLASS, name: "pg_class", shared: false, mapped: true, rowtype_oid: 83, columns: PG_CLASS_COLUMNS },
@@ -405,6 +532,15 @@ pub static CATALOGS: &[CatalogDef] = &[
     CatalogDef { oid: oids::PG_AM, name: "pg_am", shared: false, mapped: false, rowtype_oid: 0, columns: PG_AM_COLUMNS },
     CatalogDef { oid: oids::PG_ATTRDEF, name: "pg_attrdef", shared: false, mapped: false, rowtype_oid: 0, columns: PG_ATTRDEF_COLUMNS },
     CatalogDef { oid: oids::PG_CONSTRAINT, name: "pg_constraint", shared: false, mapped: false, rowtype_oid: 0, columns: PG_CONSTRAINT_COLUMNS },
+    CatalogDef { oid: oids::PG_INDEX, name: "pg_index", shared: false, mapped: false, rowtype_oid: 0, columns: PG_INDEX_COLUMNS },
+    CatalogDef { oid: oids::PG_DEPEND, name: "pg_depend", shared: false, mapped: false, rowtype_oid: 0, columns: PG_DEPEND_COLUMNS },
+    CatalogDef { oid: oids::PG_SEQUENCE, name: "pg_sequence", shared: false, mapped: false, rowtype_oid: 0, columns: PG_SEQUENCE_COLUMNS },
+    CatalogDef { oid: oids::PG_LANGUAGE, name: "pg_language", shared: false, mapped: false, rowtype_oid: 0, columns: PG_LANGUAGE_COLUMNS },
+    CatalogDef { oid: oids::PG_OPFAMILY, name: "pg_opfamily", shared: false, mapped: false, rowtype_oid: 0, columns: PG_OPFAMILY_COLUMNS },
+    CatalogDef { oid: oids::PG_OPCLASS, name: "pg_opclass", shared: false, mapped: false, rowtype_oid: 0, columns: PG_OPCLASS_COLUMNS },
+    CatalogDef { oid: oids::PG_AMOP, name: "pg_amop", shared: false, mapped: false, rowtype_oid: 0, columns: PG_AMOP_COLUMNS },
+    CatalogDef { oid: oids::PG_AMPROC, name: "pg_amproc", shared: false, mapped: false, rowtype_oid: 0, columns: PG_AMPROC_COLUMNS },
+    CatalogDef { oid: oids::PG_DESCRIPTION, name: "pg_description", shared: false, mapped: false, rowtype_oid: 0, columns: PG_DESCRIPTION_COLUMNS },
     CatalogDef { oid: oids::PG_DATABASE, name: "pg_database", shared: true, mapped: true, rowtype_oid: 1248, columns: PG_DATABASE_COLUMNS },
     CatalogDef { oid: oids::PG_AUTHID, name: "pg_authid", shared: true, mapped: true, rowtype_oid: 2842, columns: PG_AUTHID_COLUMNS },
     CatalogDef { oid: oids::PG_TABLESPACE, name: "pg_tablespace", shared: true, mapped: true, rowtype_oid: 0, columns: PG_TABLESPACE_COLUMNS },
@@ -444,6 +580,7 @@ pub fn catalog_table_def(oid: Oid, db_oid: Oid) -> Option<Arc<TableDef>> {
             ty: SqlType::of(c.type_oid),
             not_null: c.not_null,
             default: None,
+            identity: None,
         })
         .collect();
     Some(Arc::new(TableDef {
@@ -455,6 +592,9 @@ pub fn catalog_table_def(oid: Oid, db_oid: Oid) -> Option<Arc<TableDef>> {
         locator: def.locator(db_oid),
         columns,
         checks: Vec::<CheckDef>::new(),
+        indexes: Vec::new(),
+        sequence: None,
+        identity_seqs: Vec::new(),
     }))
 }
 
@@ -468,7 +608,7 @@ mod tests {
 
     #[test]
     fn column_counts_match_postgresql_17() {
-        assert_eq!(CATALOGS.len(), 13);
+        assert_eq!(CATALOGS.len(), 22);
         assert_eq!(natts(oids::PG_CLASS), 33);
         assert_eq!(natts(oids::PG_ATTRIBUTE), 26);
         assert_eq!(natts(oids::PG_TYPE), 32);
@@ -482,6 +622,15 @@ mod tests {
         assert_eq!(natts(oids::PG_DATABASE), 18);
         assert_eq!(natts(oids::PG_AUTHID), 12);
         assert_eq!(natts(oids::PG_TABLESPACE), 5);
+        assert_eq!(natts(oids::PG_INDEX), 21);
+        assert_eq!(natts(oids::PG_DEPEND), 7);
+        assert_eq!(natts(oids::PG_SEQUENCE), 8);
+        assert_eq!(natts(oids::PG_LANGUAGE), 9);
+        assert_eq!(natts(oids::PG_OPFAMILY), 5);
+        assert_eq!(natts(oids::PG_OPCLASS), 9);
+        assert_eq!(natts(oids::PG_AMOP), 9);
+        assert_eq!(natts(oids::PG_AMPROC), 6);
+        assert_eq!(natts(oids::PG_DESCRIPTION), 4);
     }
 
     #[test]
@@ -561,7 +710,8 @@ mod tests {
         assert_eq!(catalog_def(oids::PG_AUTHID).unwrap().reltablespace(), 1664);
         assert_eq!(catalog_def(oids::PG_CLASS).unwrap().reltablespace(), 0);
         assert_eq!(catalog_by_name("pg_type").unwrap().oid, oids::PG_TYPE);
-        assert!(catalog_by_name("pg_index").is_none());
+        assert_eq!(catalog_by_name("pg_index").unwrap().oid, oids::PG_INDEX);
+        assert!(catalog_by_name("pg_nothing").is_none());
         assert!(catalog_def(1).is_none());
     }
 

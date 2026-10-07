@@ -70,7 +70,7 @@ impl std::fmt::Display for Lsn {
 
 // ----- rmgr とブロック参照のフラグ -------------------------------------------------
 
-/// リソースマネージャ ID（§3.5）。4 = Btree、5 = Seq は M4 で足す。
+/// リソースマネージャ ID（§3.5）。4 = Btree、5 = Seq は M4（`m4/00-contracts.md` §13.4）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum RmgrId {
@@ -78,6 +78,8 @@ pub enum RmgrId {
     Xact = 1,
     Smgr = 2,
     Heap = 3,
+    Btree = 4,
+    Seq = 5,
 }
 
 impl RmgrId {
@@ -88,6 +90,8 @@ impl RmgrId {
             1 => Some(RmgrId::Xact),
             2 => Some(RmgrId::Smgr),
             3 => Some(RmgrId::Heap),
+            4 => Some(RmgrId::Btree),
+            5 => Some(RmgrId::Seq),
             _ => None,
         }
     }
@@ -197,10 +201,17 @@ mod tests {
 
     #[test]
     fn rmgr_ids_round_trip_and_reject_unknown() {
-        for r in [RmgrId::Xlog, RmgrId::Xact, RmgrId::Smgr, RmgrId::Heap] {
+        for r in [
+            RmgrId::Xlog,
+            RmgrId::Xact,
+            RmgrId::Smgr,
+            RmgrId::Heap,
+            RmgrId::Btree,
+            RmgrId::Seq,
+        ] {
             assert_eq!(RmgrId::from_u8(r as u8), Some(r));
         }
-        assert_eq!(RmgrId::from_u8(4), None);
+        assert_eq!(RmgrId::from_u8(6), None);
         assert_eq!(RmgrId::from_u8(255), None);
     }
 

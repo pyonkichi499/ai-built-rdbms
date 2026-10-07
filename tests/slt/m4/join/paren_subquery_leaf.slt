@@ -1,0 +1,20 @@
+# 括弧つき結合の最初の項目が別名つきの括弧つき副問い合わせ
+
+query II
+SELECT * FROM ((SELECT 1 AS a) x0 JOIN (SELECT 2 AS b) y ON true)
+----
+1 2
+
+query III
+SELECT * FROM (((SELECT 1 AS a) x0 JOIN (SELECT 2 AS b) y ON true) JOIN (SELECT 3 AS c) z ON true)
+----
+1 2 3
+
+query I rowsort
+SELECT * FROM ((SELECT 1) UNION (SELECT 2)) t
+----
+1
+2
+
+statement error (42601)
+SELECT * FROM ((SELECT 1 AS a) x0)

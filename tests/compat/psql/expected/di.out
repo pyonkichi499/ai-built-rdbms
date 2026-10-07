@@ -1,0 +1,37 @@
+                    List of relations
+ Schema |      Name       | Type  |  Owner   |   Table   
+--------+-----------------+-------+----------+-----------
+ public | compat_i1_a     | index | postgres | compat_i1
+ public | compat_i1_ab    | index | postgres | compat_i1
+ public | compat_i1_bc    | index | postgres | compat_i1
+ public | compat_i1_c_key | index | postgres | compat_i1
+ public | compat_i1_pkey  | index | postgres | compat_i1
+ public | compat_i2_x     | index | postgres | compat_i2
+(6 rows)
+
+                    List of relations
+ Schema |      Name       | Type  |  Owner   |   Table   
+--------+-----------------+-------+----------+-----------
+ public | compat_i1_a     | index | postgres | compat_i1
+ public | compat_i1_ab    | index | postgres | compat_i1
+ public | compat_i1_bc    | index | postgres | compat_i1
+ public | compat_i1_c_key | index | postgres | compat_i1
+ public | compat_i1_pkey  | index | postgres | compat_i1
+(5 rows)
+
+                   List of relations
+ Schema |      Name      | Type  |  Owner   |   Table   
+--------+----------------+-------+----------+-----------
+ public | compat_i1_pkey | index | postgres | compat_i1
+(1 row)
+
+                  List of relations
+ Schema |    Name     | Type  |  Owner   |   Table   
+--------+-------------+-------+----------+-----------
+ public | compat_i2_x | index | postgres | compat_i2
+(1 row)
+
+          List of relations
+ Schema | Name | Type | Owner | Table 
+--------+------+------+-------+-------
+(0 rows)

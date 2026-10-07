@@ -22,6 +22,16 @@ pub struct DebugKnobs {
     pub redo_ignore_page_lsn: bool,
     /// C: 書き出し時に `page_lsn <= flushed` を検査して panic する（試験では常に true）。
     pub assert_wal_before_data: bool,
+    /// B1（任意。06-Q16）: B+Tree の分割の連鎖を 2 本の `BTREE_PAGES` に分ける（原子性を壊す）。
+    pub btree_split_in_two_records: bool,
+    /// B2: `IndexStore::insert` を N 回に 1 回、何もせずに成功させる（索引項目の取りこぼし。I13 が検出するべき）。0 で無効。
+    pub btree_lossy_insert_every: u64,
+    /// Q1: `SeqRun.wal_lsn` を自分が書いた分だけにする（PostgreSQL と同じ穴）。
+    pub seq_ignore_foreign_wal: bool,
+    /// Q1: `SEQ_LOG` の REDO が、ページの LSN が新しければ飛ばす。
+    pub seq_redo_skip_if_page_newer: bool,
+    /// Q1: チェックポイント後の最初の `nextval` で `force_log` を使わない。
+    pub seq_no_force_log: bool,
 }
 
 #[cfg(test)]
@@ -40,6 +50,11 @@ mod tests {
                 single_slot_control_file: false,
                 redo_ignore_page_lsn: false,
                 assert_wal_before_data: false,
+                btree_split_in_two_records: false,
+                btree_lossy_insert_every: 0,
+                seq_ignore_foreign_wal: false,
+                seq_redo_skip_if_page_newer: false,
+                seq_no_force_log: false,
             }
         );
     }

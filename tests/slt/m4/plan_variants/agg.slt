@@ -1,0 +1,1271 @@
+# 生成物（tests/gen/plan_variants/agg.tpl から `slttools plan-variants expand` で作る。手で直さない）。
+# 同じ問い合わせを enable_* の設定を変えて流し、結果が同じことを確かめる。
+
+statement ok
+CREATE TABLE pv_ag_t (a int PRIMARY KEY, g int, h int, v int)
+
+statement ok
+CREATE INDEX pv_ag_t_g ON pv_ag_t (g)
+
+statement ok
+CREATE TABLE pv_ag_e (a int, v int)
+
+statement ok
+INSERT INTO pv_ag_t SELECT i, i % 7, i % 3, (i * 37) % 101 FROM generate_series(1, 150) i
+
+statement ok
+INSERT INTO pv_ag_t VALUES (151, NULL, 1, NULL), (152, NULL, NULL, 5)
+
+# profile: default
+
+query III rowsort
+SELECT g, count(*), sum(v) FROM pv_ag_t GROUP BY g
+----
+0	21	1047
+1	22	1053
+2	22	1160
+3	22	1065
+4	21	1039
+5	21	1109
+6	21	1078
+NULL	2	5
+
+query III rowsort
+SELECT g, h, count(*) FROM pv_ag_t GROUP BY g, h
+----
+0	0	7
+0	1	7
+0	2	7
+1	0	7
+1	1	8
+1	2	7
+2	0	7
+2	1	7
+2	2	8
+3	0	8
+3	1	7
+3	2	7
+4	0	7
+4	1	7
+4	2	7
+5	0	7
+5	1	7
+5	2	7
+6	0	7
+6	1	7
+6	2	7
+NULL	1	1
+NULL	NULL	1
+
+query II rowsort
+SELECT g, count(*) FROM pv_ag_t GROUP BY g HAVING count(*) > 20
+----
+0	21
+1	22
+2	22
+3	22
+4	21
+5	21
+6	21
+
+query II rowsort
+SELECT g, max(v) FROM pv_ag_t WHERE a < 100 GROUP BY g HAVING min(v) < 10
+----
+0	96
+1	94
+2	100
+3	93
+4	99
+5	97
+6	98
+
+query I rowsort
+SELECT DISTINCT g FROM pv_ag_t
+----
+0
+1
+2
+3
+4
+5
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT g, h FROM pv_ag_t WHERE a < 60
+----
+0	0
+0	1
+0	2
+1	0
+1	1
+1	2
+2	0
+2	1
+2	2
+3	0
+3	1
+3	2
+4	0
+4	1
+4	2
+5	0
+5	1
+5	2
+6	0
+6	1
+6	2
+
+query I rowsort
+SELECT count(DISTINCT v) FROM pv_ag_t
+----
+101
+
+query II rowsort
+SELECT g, count(DISTINCT h) FROM pv_ag_t GROUP BY g
+----
+0	3
+1	3
+2	3
+3	3
+4	3
+5	3
+6	3
+NULL	1
+
+query II rowsort
+SELECT g, count(*) FILTER (WHERE v > 50) FROM pv_ag_t GROUP BY g
+----
+0	11
+1	10
+2	12
+3	10
+4	10
+5	11
+6	10
+NULL	0
+
+query III rowsort
+SELECT a, g, count(*) FROM pv_ag_t WHERE a < 6 GROUP BY a
+----
+1	1	1
+2	2	1
+3	3	1
+4	4	1
+5	5	1
+
+query IIII rowsort
+SELECT count(*), count(v), sum(v), max(v) FROM pv_ag_t
+----
+152	151	7556	100
+
+query IIII rowsort
+SELECT count(*), sum(v), min(v), max(v) FROM pv_ag_e
+----
+0	NULL	NULL	NULL
+
+query II rowsort
+SELECT a, sum(v) FROM pv_ag_e GROUP BY a
+----
+
+query R rowsort
+SELECT avg(v) FROM pv_ag_t WHERE g = 3
+----
+48.4090909090909091
+
+query II
+SELECT g, sum(v) FROM pv_ag_t GROUP BY g ORDER BY g
+----
+0	1047
+1	1053
+2	1160
+3	1065
+4	1039
+5	1109
+6	1078
+NULL	5
+
+query II
+SELECT g, count(*) FROM pv_ag_t WHERE g IS NOT NULL GROUP BY g HAVING sum(v) > 100 ORDER BY 2 DESC, 1
+----
+1	22
+2	22
+3	22
+0	21
+4	21
+5	21
+6	21
+
+query I rowsort
+SELECT g + h FROM pv_ag_t GROUP BY g + h
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+NULL
+
+query II rowsort
+SELECT h, count(*) FROM (SELECT g, h FROM pv_ag_t WHERE g = 1) s GROUP BY h
+----
+0	7
+1	8
+2	7
+
+# profile: no_hashagg
+
+statement ok
+SET enable_hashagg = off
+
+query III rowsort
+SELECT g, count(*), sum(v) FROM pv_ag_t GROUP BY g
+----
+0	21	1047
+1	22	1053
+2	22	1160
+3	22	1065
+4	21	1039
+5	21	1109
+6	21	1078
+NULL	2	5
+
+query III rowsort
+SELECT g, h, count(*) FROM pv_ag_t GROUP BY g, h
+----
+0	0	7
+0	1	7
+0	2	7
+1	0	7
+1	1	8
+1	2	7
+2	0	7
+2	1	7
+2	2	8
+3	0	8
+3	1	7
+3	2	7
+4	0	7
+4	1	7
+4	2	7
+5	0	7
+5	1	7
+5	2	7
+6	0	7
+6	1	7
+6	2	7
+NULL	1	1
+NULL	NULL	1
+
+query II rowsort
+SELECT g, count(*) FROM pv_ag_t GROUP BY g HAVING count(*) > 20
+----
+0	21
+1	22
+2	22
+3	22
+4	21
+5	21
+6	21
+
+query II rowsort
+SELECT g, max(v) FROM pv_ag_t WHERE a < 100 GROUP BY g HAVING min(v) < 10
+----
+0	96
+1	94
+2	100
+3	93
+4	99
+5	97
+6	98
+
+query I rowsort
+SELECT DISTINCT g FROM pv_ag_t
+----
+0
+1
+2
+3
+4
+5
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT g, h FROM pv_ag_t WHERE a < 60
+----
+0	0
+0	1
+0	2
+1	0
+1	1
+1	2
+2	0
+2	1
+2	2
+3	0
+3	1
+3	2
+4	0
+4	1
+4	2
+5	0
+5	1
+5	2
+6	0
+6	1
+6	2
+
+query I rowsort
+SELECT count(DISTINCT v) FROM pv_ag_t
+----
+101
+
+query II rowsort
+SELECT g, count(DISTINCT h) FROM pv_ag_t GROUP BY g
+----
+0	3
+1	3
+2	3
+3	3
+4	3
+5	3
+6	3
+NULL	1
+
+query II rowsort
+SELECT g, count(*) FILTER (WHERE v > 50) FROM pv_ag_t GROUP BY g
+----
+0	11
+1	10
+2	12
+3	10
+4	10
+5	11
+6	10
+NULL	0
+
+query III rowsort
+SELECT a, g, count(*) FROM pv_ag_t WHERE a < 6 GROUP BY a
+----
+1	1	1
+2	2	1
+3	3	1
+4	4	1
+5	5	1
+
+query IIII rowsort
+SELECT count(*), count(v), sum(v), max(v) FROM pv_ag_t
+----
+152	151	7556	100
+
+query IIII rowsort
+SELECT count(*), sum(v), min(v), max(v) FROM pv_ag_e
+----
+0	NULL	NULL	NULL
+
+query II rowsort
+SELECT a, sum(v) FROM pv_ag_e GROUP BY a
+----
+
+query R rowsort
+SELECT avg(v) FROM pv_ag_t WHERE g = 3
+----
+48.4090909090909091
+
+query II
+SELECT g, sum(v) FROM pv_ag_t GROUP BY g ORDER BY g
+----
+0	1047
+1	1053
+2	1160
+3	1065
+4	1039
+5	1109
+6	1078
+NULL	5
+
+query II
+SELECT g, count(*) FROM pv_ag_t WHERE g IS NOT NULL GROUP BY g HAVING sum(v) > 100 ORDER BY 2 DESC, 1
+----
+1	22
+2	22
+3	22
+0	21
+4	21
+5	21
+6	21
+
+query I rowsort
+SELECT g + h FROM pv_ag_t GROUP BY g + h
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+NULL
+
+query II rowsort
+SELECT h, count(*) FROM (SELECT g, h FROM pv_ag_t WHERE g = 1) s GROUP BY h
+----
+0	7
+1	8
+2	7
+
+statement ok
+RESET enable_hashagg
+
+# profile: no_sort
+
+statement ok
+SET enable_sort = off
+
+query III rowsort
+SELECT g, count(*), sum(v) FROM pv_ag_t GROUP BY g
+----
+0	21	1047
+1	22	1053
+2	22	1160
+3	22	1065
+4	21	1039
+5	21	1109
+6	21	1078
+NULL	2	5
+
+query III rowsort
+SELECT g, h, count(*) FROM pv_ag_t GROUP BY g, h
+----
+0	0	7
+0	1	7
+0	2	7
+1	0	7
+1	1	8
+1	2	7
+2	0	7
+2	1	7
+2	2	8
+3	0	8
+3	1	7
+3	2	7
+4	0	7
+4	1	7
+4	2	7
+5	0	7
+5	1	7
+5	2	7
+6	0	7
+6	1	7
+6	2	7
+NULL	1	1
+NULL	NULL	1
+
+query II rowsort
+SELECT g, count(*) FROM pv_ag_t GROUP BY g HAVING count(*) > 20
+----
+0	21
+1	22
+2	22
+3	22
+4	21
+5	21
+6	21
+
+query II rowsort
+SELECT g, max(v) FROM pv_ag_t WHERE a < 100 GROUP BY g HAVING min(v) < 10
+----
+0	96
+1	94
+2	100
+3	93
+4	99
+5	97
+6	98
+
+query I rowsort
+SELECT DISTINCT g FROM pv_ag_t
+----
+0
+1
+2
+3
+4
+5
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT g, h FROM pv_ag_t WHERE a < 60
+----
+0	0
+0	1
+0	2
+1	0
+1	1
+1	2
+2	0
+2	1
+2	2
+3	0
+3	1
+3	2
+4	0
+4	1
+4	2
+5	0
+5	1
+5	2
+6	0
+6	1
+6	2
+
+query I rowsort
+SELECT count(DISTINCT v) FROM pv_ag_t
+----
+101
+
+query II rowsort
+SELECT g, count(DISTINCT h) FROM pv_ag_t GROUP BY g
+----
+0	3
+1	3
+2	3
+3	3
+4	3
+5	3
+6	3
+NULL	1
+
+query II rowsort
+SELECT g, count(*) FILTER (WHERE v > 50) FROM pv_ag_t GROUP BY g
+----
+0	11
+1	10
+2	12
+3	10
+4	10
+5	11
+6	10
+NULL	0
+
+query III rowsort
+SELECT a, g, count(*) FROM pv_ag_t WHERE a < 6 GROUP BY a
+----
+1	1	1
+2	2	1
+3	3	1
+4	4	1
+5	5	1
+
+query IIII rowsort
+SELECT count(*), count(v), sum(v), max(v) FROM pv_ag_t
+----
+152	151	7556	100
+
+query IIII rowsort
+SELECT count(*), sum(v), min(v), max(v) FROM pv_ag_e
+----
+0	NULL	NULL	NULL
+
+query II rowsort
+SELECT a, sum(v) FROM pv_ag_e GROUP BY a
+----
+
+query R rowsort
+SELECT avg(v) FROM pv_ag_t WHERE g = 3
+----
+48.4090909090909091
+
+query II
+SELECT g, sum(v) FROM pv_ag_t GROUP BY g ORDER BY g
+----
+0	1047
+1	1053
+2	1160
+3	1065
+4	1039
+5	1109
+6	1078
+NULL	5
+
+query II
+SELECT g, count(*) FROM pv_ag_t WHERE g IS NOT NULL GROUP BY g HAVING sum(v) > 100 ORDER BY 2 DESC, 1
+----
+1	22
+2	22
+3	22
+0	21
+4	21
+5	21
+6	21
+
+query I rowsort
+SELECT g + h FROM pv_ag_t GROUP BY g + h
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+NULL
+
+query II rowsort
+SELECT h, count(*) FROM (SELECT g, h FROM pv_ag_t WHERE g = 1) s GROUP BY h
+----
+0	7
+1	8
+2	7
+
+statement ok
+RESET enable_sort
+
+# profile: no_indexscan
+
+statement ok
+SET enable_indexscan = off
+
+query III rowsort
+SELECT g, count(*), sum(v) FROM pv_ag_t GROUP BY g
+----
+0	21	1047
+1	22	1053
+2	22	1160
+3	22	1065
+4	21	1039
+5	21	1109
+6	21	1078
+NULL	2	5
+
+query III rowsort
+SELECT g, h, count(*) FROM pv_ag_t GROUP BY g, h
+----
+0	0	7
+0	1	7
+0	2	7
+1	0	7
+1	1	8
+1	2	7
+2	0	7
+2	1	7
+2	2	8
+3	0	8
+3	1	7
+3	2	7
+4	0	7
+4	1	7
+4	2	7
+5	0	7
+5	1	7
+5	2	7
+6	0	7
+6	1	7
+6	2	7
+NULL	1	1
+NULL	NULL	1
+
+query II rowsort
+SELECT g, count(*) FROM pv_ag_t GROUP BY g HAVING count(*) > 20
+----
+0	21
+1	22
+2	22
+3	22
+4	21
+5	21
+6	21
+
+query II rowsort
+SELECT g, max(v) FROM pv_ag_t WHERE a < 100 GROUP BY g HAVING min(v) < 10
+----
+0	96
+1	94
+2	100
+3	93
+4	99
+5	97
+6	98
+
+query I rowsort
+SELECT DISTINCT g FROM pv_ag_t
+----
+0
+1
+2
+3
+4
+5
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT g, h FROM pv_ag_t WHERE a < 60
+----
+0	0
+0	1
+0	2
+1	0
+1	1
+1	2
+2	0
+2	1
+2	2
+3	0
+3	1
+3	2
+4	0
+4	1
+4	2
+5	0
+5	1
+5	2
+6	0
+6	1
+6	2
+
+query I rowsort
+SELECT count(DISTINCT v) FROM pv_ag_t
+----
+101
+
+query II rowsort
+SELECT g, count(DISTINCT h) FROM pv_ag_t GROUP BY g
+----
+0	3
+1	3
+2	3
+3	3
+4	3
+5	3
+6	3
+NULL	1
+
+query II rowsort
+SELECT g, count(*) FILTER (WHERE v > 50) FROM pv_ag_t GROUP BY g
+----
+0	11
+1	10
+2	12
+3	10
+4	10
+5	11
+6	10
+NULL	0
+
+query III rowsort
+SELECT a, g, count(*) FROM pv_ag_t WHERE a < 6 GROUP BY a
+----
+1	1	1
+2	2	1
+3	3	1
+4	4	1
+5	5	1
+
+query IIII rowsort
+SELECT count(*), count(v), sum(v), max(v) FROM pv_ag_t
+----
+152	151	7556	100
+
+query IIII rowsort
+SELECT count(*), sum(v), min(v), max(v) FROM pv_ag_e
+----
+0	NULL	NULL	NULL
+
+query II rowsort
+SELECT a, sum(v) FROM pv_ag_e GROUP BY a
+----
+
+query R rowsort
+SELECT avg(v) FROM pv_ag_t WHERE g = 3
+----
+48.4090909090909091
+
+query II
+SELECT g, sum(v) FROM pv_ag_t GROUP BY g ORDER BY g
+----
+0	1047
+1	1053
+2	1160
+3	1065
+4	1039
+5	1109
+6	1078
+NULL	5
+
+query II
+SELECT g, count(*) FROM pv_ag_t WHERE g IS NOT NULL GROUP BY g HAVING sum(v) > 100 ORDER BY 2 DESC, 1
+----
+1	22
+2	22
+3	22
+0	21
+4	21
+5	21
+6	21
+
+query I rowsort
+SELECT g + h FROM pv_ag_t GROUP BY g + h
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+NULL
+
+query II rowsort
+SELECT h, count(*) FROM (SELECT g, h FROM pv_ag_t WHERE g = 1) s GROUP BY h
+----
+0	7
+1	8
+2	7
+
+statement ok
+RESET enable_indexscan
+
+# profile: no_seqscan
+
+statement ok
+SET enable_seqscan = off
+
+query III rowsort
+SELECT g, count(*), sum(v) FROM pv_ag_t GROUP BY g
+----
+0	21	1047
+1	22	1053
+2	22	1160
+3	22	1065
+4	21	1039
+5	21	1109
+6	21	1078
+NULL	2	5
+
+query III rowsort
+SELECT g, h, count(*) FROM pv_ag_t GROUP BY g, h
+----
+0	0	7
+0	1	7
+0	2	7
+1	0	7
+1	1	8
+1	2	7
+2	0	7
+2	1	7
+2	2	8
+3	0	8
+3	1	7
+3	2	7
+4	0	7
+4	1	7
+4	2	7
+5	0	7
+5	1	7
+5	2	7
+6	0	7
+6	1	7
+6	2	7
+NULL	1	1
+NULL	NULL	1
+
+query II rowsort
+SELECT g, count(*) FROM pv_ag_t GROUP BY g HAVING count(*) > 20
+----
+0	21
+1	22
+2	22
+3	22
+4	21
+5	21
+6	21
+
+query II rowsort
+SELECT g, max(v) FROM pv_ag_t WHERE a < 100 GROUP BY g HAVING min(v) < 10
+----
+0	96
+1	94
+2	100
+3	93
+4	99
+5	97
+6	98
+
+query I rowsort
+SELECT DISTINCT g FROM pv_ag_t
+----
+0
+1
+2
+3
+4
+5
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT g, h FROM pv_ag_t WHERE a < 60
+----
+0	0
+0	1
+0	2
+1	0
+1	1
+1	2
+2	0
+2	1
+2	2
+3	0
+3	1
+3	2
+4	0
+4	1
+4	2
+5	0
+5	1
+5	2
+6	0
+6	1
+6	2
+
+query I rowsort
+SELECT count(DISTINCT v) FROM pv_ag_t
+----
+101
+
+query II rowsort
+SELECT g, count(DISTINCT h) FROM pv_ag_t GROUP BY g
+----
+0	3
+1	3
+2	3
+3	3
+4	3
+5	3
+6	3
+NULL	1
+
+query II rowsort
+SELECT g, count(*) FILTER (WHERE v > 50) FROM pv_ag_t GROUP BY g
+----
+0	11
+1	10
+2	12
+3	10
+4	10
+5	11
+6	10
+NULL	0
+
+query III rowsort
+SELECT a, g, count(*) FROM pv_ag_t WHERE a < 6 GROUP BY a
+----
+1	1	1
+2	2	1
+3	3	1
+4	4	1
+5	5	1
+
+query IIII rowsort
+SELECT count(*), count(v), sum(v), max(v) FROM pv_ag_t
+----
+152	151	7556	100
+
+query IIII rowsort
+SELECT count(*), sum(v), min(v), max(v) FROM pv_ag_e
+----
+0	NULL	NULL	NULL
+
+query II rowsort
+SELECT a, sum(v) FROM pv_ag_e GROUP BY a
+----
+
+query R rowsort
+SELECT avg(v) FROM pv_ag_t WHERE g = 3
+----
+48.4090909090909091
+
+query II
+SELECT g, sum(v) FROM pv_ag_t GROUP BY g ORDER BY g
+----
+0	1047
+1	1053
+2	1160
+3	1065
+4	1039
+5	1109
+6	1078
+NULL	5
+
+query II
+SELECT g, count(*) FROM pv_ag_t WHERE g IS NOT NULL GROUP BY g HAVING sum(v) > 100 ORDER BY 2 DESC, 1
+----
+1	22
+2	22
+3	22
+0	21
+4	21
+5	21
+6	21
+
+query I rowsort
+SELECT g + h FROM pv_ag_t GROUP BY g + h
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+NULL
+
+query II rowsort
+SELECT h, count(*) FROM (SELECT g, h FROM pv_ag_t WHERE g = 1) s GROUP BY h
+----
+0	7
+1	8
+2	7
+
+statement ok
+RESET enable_seqscan
+
+# profile: combined
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_hashagg = off
+
+statement ok
+SET enable_indexscan = off
+
+query III rowsort
+SELECT g, count(*), sum(v) FROM pv_ag_t GROUP BY g
+----
+0	21	1047
+1	22	1053
+2	22	1160
+3	22	1065
+4	21	1039
+5	21	1109
+6	21	1078
+NULL	2	5
+
+query III rowsort
+SELECT g, h, count(*) FROM pv_ag_t GROUP BY g, h
+----
+0	0	7
+0	1	7
+0	2	7
+1	0	7
+1	1	8
+1	2	7
+2	0	7
+2	1	7
+2	2	8
+3	0	8
+3	1	7
+3	2	7
+4	0	7
+4	1	7
+4	2	7
+5	0	7
+5	1	7
+5	2	7
+6	0	7
+6	1	7
+6	2	7
+NULL	1	1
+NULL	NULL	1
+
+query II rowsort
+SELECT g, count(*) FROM pv_ag_t GROUP BY g HAVING count(*) > 20
+----
+0	21
+1	22
+2	22
+3	22
+4	21
+5	21
+6	21
+
+query II rowsort
+SELECT g, max(v) FROM pv_ag_t WHERE a < 100 GROUP BY g HAVING min(v) < 10
+----
+0	96
+1	94
+2	100
+3	93
+4	99
+5	97
+6	98
+
+query I rowsort
+SELECT DISTINCT g FROM pv_ag_t
+----
+0
+1
+2
+3
+4
+5
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT g, h FROM pv_ag_t WHERE a < 60
+----
+0	0
+0	1
+0	2
+1	0
+1	1
+1	2
+2	0
+2	1
+2	2
+3	0
+3	1
+3	2
+4	0
+4	1
+4	2
+5	0
+5	1
+5	2
+6	0
+6	1
+6	2
+
+query I rowsort
+SELECT count(DISTINCT v) FROM pv_ag_t
+----
+101
+
+query II rowsort
+SELECT g, count(DISTINCT h) FROM pv_ag_t GROUP BY g
+----
+0	3
+1	3
+2	3
+3	3
+4	3
+5	3
+6	3
+NULL	1
+
+query II rowsort
+SELECT g, count(*) FILTER (WHERE v > 50) FROM pv_ag_t GROUP BY g
+----
+0	11
+1	10
+2	12
+3	10
+4	10
+5	11
+6	10
+NULL	0
+
+query III rowsort
+SELECT a, g, count(*) FROM pv_ag_t WHERE a < 6 GROUP BY a
+----
+1	1	1
+2	2	1
+3	3	1
+4	4	1
+5	5	1
+
+query IIII rowsort
+SELECT count(*), count(v), sum(v), max(v) FROM pv_ag_t
+----
+152	151	7556	100
+
+query IIII rowsort
+SELECT count(*), sum(v), min(v), max(v) FROM pv_ag_e
+----
+0	NULL	NULL	NULL
+
+query II rowsort
+SELECT a, sum(v) FROM pv_ag_e GROUP BY a
+----
+
+query R rowsort
+SELECT avg(v) FROM pv_ag_t WHERE g = 3
+----
+48.4090909090909091
+
+query II
+SELECT g, sum(v) FROM pv_ag_t GROUP BY g ORDER BY g
+----
+0	1047
+1	1053
+2	1160
+3	1065
+4	1039
+5	1109
+6	1078
+NULL	5
+
+query II
+SELECT g, count(*) FROM pv_ag_t WHERE g IS NOT NULL GROUP BY g HAVING sum(v) > 100 ORDER BY 2 DESC, 1
+----
+1	22
+2	22
+3	22
+0	21
+4	21
+5	21
+6	21
+
+query I rowsort
+SELECT g + h FROM pv_ag_t GROUP BY g + h
+----
+0
+1
+2
+3
+4
+5
+6
+7
+8
+NULL
+
+query II rowsort
+SELECT h, count(*) FROM (SELECT g, h FROM pv_ag_t WHERE g = 1) s GROUP BY h
+----
+0	7
+1	8
+2	7
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_hashagg
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+DROP TABLE pv_ag_t
+
+statement ok
+DROP TABLE pv_ag_e

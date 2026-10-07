@@ -24,6 +24,7 @@ pub fn output_text(d: &Datum) -> Option<String> {
         Datum::OidVector(v) => v.iter().map(u32::to_string).collect::<Vec<_>>().join(" "),
         Datum::Void => String::new(),
         Datum::Int4Array(v) => int4_array_out(v),
+        Datum::Int2Vector(v) => v.iter().map(i16::to_string).collect::<Vec<_>>().join(" "),
         _ => return None,
     })
 }
@@ -51,6 +52,8 @@ pub fn input_text(s: &str, ty: SqlType) -> Result<Datum> {
         oid::OIDVECTOR => oidvector_in(s).map(Datum::OidVector),
         oid::VOID => Ok(Datum::Void),
         oid::INT4_ARRAY => int4_array_in(s).map(Datum::Int4Array),
+        oid::INT2VECTOR => int2vector_in(s).map(Datum::Int2Vector),
+        oid::INT2_ARRAY => int2_array_in(s).map(Datum::Int2Vector),
         oid::PG_NODE_TREE => Err(Error::new(
             sqlstate::FEATURE_NOT_SUPPORTED,
             "cannot accept a value of type pg_node_tree",
@@ -75,6 +78,8 @@ pub fn handles(type_oid: Oid) -> bool {
             | oid::PG_NODE_TREE
             | oid::VOID
             | oid::INT4_ARRAY
+            | oid::INT2VECTOR
+            | oid::INT2_ARRAY
     )
 }
 
@@ -366,6 +371,90 @@ fn uint32_in_subr(s: &str, type_oid: Oid) -> Result<(u32, usize)> {
         return Err(range_error(name, s));
     }
     Ok((low, r.end))
+}
+
+/// `int2vectorin`: whitespace-separated `smallint`s (an empty string is the empty vector).
+/// PostgreSQL 17 has no element-count limit here (checked against a real server).
+pub fn int2vector_in(s: &str) -> Result<Vec<i16>> {
+    s.split(|c: char| c.is_ascii() && is_space(c as u8))
+        .filter(|t| !t.is_empty())
+        .map(int2_element)
+        .collect()
+}
+
+fn int2_element(tok: &str) -> Result<i16> {
+    let v = super::io::int_in(tok, oid::INT2)?;
+    i16::try_from(v).map_err(|_| range_error("smallint", tok))
+}
+
+/// `int2[]` input (`{1,2,3}`; only one dimension, no NULL elements).
+pub fn int2_array_in(s: &str) -> Result<Vec<i16>> {
+    int4_array_in(s)?
+        .into_iter()
+        .map(|e| match e {
+            Some(v) => i16::try_from(v).map_err(|_| range_error("smallint", &v.to_string())),
+            None => Err(Error::new(
+                sqlstate::FEATURE_NOT_SUPPORTED,
+                "NULL elements in int2[] are not supported yet",
+            )),
+        })
+        .collect()
+}
+
+/// `array_out` for `int2[]`: `{1,2}` (the `int2vector` form is space separated).
+pub fn int2_array_out(v: &[i16]) -> String {
+    let items: Vec<String> = v.iter().map(i16::to_string).collect();
+    format!("{{{}}}", items.join(","))
+}
+
+/// `regclassin` / `regtypein` / `regprocin` for the part that does not need names: digits only are an
+/// OID as is (no existence check), `-` is 0. `None` means the caller must resolve a name.
+fn reg_oid_literal(s: &str, type_name: &'static str) -> Result<Option<Oid>> {
+    if s == "-" {
+        return Ok(Some(0));
+    }
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        return s
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| range_error(type_name, s));
+    }
+    Ok(None)
+}
+
+fn reg_names<'a>(
+    names: Option<&'a dyn super::OidNames>,
+    what: &str,
+) -> Result<&'a dyn super::OidNames> {
+    names.ok_or_else(|| {
+        Error::internal(format!(
+            "{what} input requires a name lookup (TypeEnv.names)"
+        ))
+    })
+}
+
+/// `regclassin`. `names` resolves relation names (`CatalogNames`).
+pub fn regclass_in(s: &str, names: Option<&dyn super::OidNames>) -> Result<Oid> {
+    match reg_oid_literal(s, "oid")? {
+        Some(o) => Ok(o),
+        None => reg_names(names, "regclass")?.class_oid(s),
+    }
+}
+
+/// `regtypein`. `names` resolves SQL type names (`CatalogNames`).
+pub fn regtype_in(s: &str, names: Option<&dyn super::OidNames>) -> Result<Oid> {
+    match reg_oid_literal(s, "oid")? {
+        Some(o) => Ok(o),
+        None => reg_names(names, "regtype")?.type_oid(s),
+    }
+}
+
+/// `regnamespacein`. `names` resolves schema names (`CatalogNames`).
+pub fn regnamespace_in(s: &str, names: Option<&dyn super::OidNames>) -> Result<Oid> {
+    match reg_oid_literal(s, "oid")? {
+        Some(o) => Ok(o),
+        None => reg_names(names, "regnamespace")?.namespace_oid(s),
+    }
 }
 
 /// `regprocin` for M2: a number, or `-` for 0. Names are not resolved at
@@ -687,5 +776,124 @@ mod tests {
     fn pg_node_tree_has_no_input() {
         let e = input_text("x", ty(oid::PG_NODE_TREE)).unwrap_err();
         assert_eq!(e.message, "cannot accept a value of type pg_node_tree");
+    }
+}
+
+#[cfg(test)]
+mod reg_tests {
+    use super::*;
+    use crate::types::OidNames;
+
+    #[derive(Debug)]
+    struct Names;
+
+    impl OidNames for Names {
+        fn class_oid(&self, name: &str) -> Result<Oid> {
+            match name {
+                "pg_class" => Ok(1259),
+                _ => Err(Error::new(
+                    sqlstate::UNDEFINED_TABLE,
+                    format!("relation \"{name}\" does not exist"),
+                )),
+            }
+        }
+        fn class_name(&self, _: Oid) -> Option<String> {
+            None
+        }
+        fn type_oid(&self, name: &str) -> Result<Oid> {
+            if name == "int4" {
+                Ok(23)
+            } else {
+                Err(Error::internal("no"))
+            }
+        }
+        fn type_name(&self, _: Oid) -> Option<String> {
+            None
+        }
+        fn proc_name(&self, _: Oid) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn regclass_literals() {
+        let n: &dyn OidNames = &Names;
+        assert_eq!(regclass_in("1259", Some(n)).unwrap(), 1259);
+        assert_eq!(regclass_in("99999999", None).unwrap(), 99_999_999);
+        assert_eq!(regclass_in("-", None).unwrap(), 0);
+        assert_eq!(regclass_in("0", None).unwrap(), 0);
+        assert_eq!(regclass_in("pg_class", Some(n)).unwrap(), 1259);
+        assert_eq!(
+            regclass_in("nosuch", Some(n)).unwrap_err().sqlstate.code(),
+            "42P01"
+        );
+        assert_eq!(
+            regclass_in("pg_class", None).unwrap_err().sqlstate.code(),
+            "XX000"
+        );
+        let e = regclass_in("99999999999", Some(n)).unwrap_err();
+        assert_eq!(e.sqlstate.code(), "22003");
+        assert_eq!(
+            e.message,
+            "value \"99999999999\" is out of range for type oid"
+        );
+        assert_eq!(regtype_in("23", None).unwrap(), 23);
+        assert_eq!(regtype_in("int4", Some(n)).unwrap(), 23);
+    }
+
+    #[test]
+    fn int2vector_and_int2_array() {
+        assert_eq!(int2vector_in("1 2 3").unwrap(), vec![1, 2, 3]);
+        assert_eq!(int2vector_in("").unwrap(), Vec::<i16>::new());
+        assert_eq!(int2vector_in(" 1  2 ").unwrap(), vec![1, 2]);
+        assert_eq!(int2vector_in("-5 +7").unwrap(), vec![-5, 7]);
+        let many = (1..=101)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(int2vector_in(&many).unwrap().len(), 101);
+        let e = int2vector_in("70000").unwrap_err();
+        assert_eq!(
+            (e.sqlstate.code(), e.message.as_str()),
+            ("22003", "value \"70000\" is out of range for type smallint")
+        );
+        let e = int2vector_in("1 x").unwrap_err();
+        assert_eq!(
+            (e.sqlstate.code(), e.message.as_str()),
+            ("22P02", "invalid input syntax for type smallint: \"x\"")
+        );
+        assert_eq!(int2vector_in("1,2").unwrap_err().sqlstate.code(), "22P02");
+        assert_eq!(int2_array_in("{1,2,3}").unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            int2_array_in("{70000}").unwrap_err().sqlstate.code(),
+            "22003"
+        );
+        assert_eq!(
+            int2_array_in("{1,NULL}").unwrap_err().sqlstate.code(),
+            "0A000"
+        );
+        assert_eq!(int2_array_out(&[1, 2]), "{1,2}");
+        assert_eq!(
+            output_text(&Datum::Int2Vector(vec![1, 2, 3])).as_deref(),
+            Some("1 2 3")
+        );
+        assert_eq!(
+            input_text("1 2", SqlType::INT2VECTOR).unwrap(),
+            Datum::Int2Vector(vec![1, 2])
+        );
+        assert_eq!(
+            input_text("{4,5}", SqlType::of(oid::INT2_ARRAY)).unwrap(),
+            Datum::Int2Vector(vec![4, 5])
+        );
+    }
+
+    #[test]
+    fn char_empty_string_is_nul() {
+        // relkind IN ('r','p','') の '' は "char" の 0 バイト（G-5）。
+        assert_eq!(
+            input_text("", SqlType::of(oid::CHAR)).unwrap(),
+            Datum::Char(0)
+        );
+        assert_eq!(output_text(&Datum::Char(0)).as_deref(), Some(""));
     }
 }

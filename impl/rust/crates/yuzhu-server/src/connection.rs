@@ -21,14 +21,23 @@ use crate::protocol::codec::{
     ProtocolError, read_message, read_startup_packet, set_client_latin1, write_message,
 };
 use crate::protocol::messages::{
-    BackendMessage, DEFAULT_MAX_MESSAGE_LEN, ErrorFields, FieldDescription, FrontendMessage,
-    StartupPacket,
+    BackendMessage, DEFAULT_MAX_MESSAGE_LEN, ErrorFields, ExtendedKind, FieldDescription,
+    FrontendMessage, StartupPacket,
 };
 use crate::shutdown::{Coordinator, Registration, ShutdownHandle, ShutdownMode};
 
 /// How often the accept loop looks for new connections, stop requests and
 /// a poisoned cluster.
+/// Connection thread stack (virtual; pages are committed on use). Debug builds
+/// have large frames, so the default 2 MB is not enough for deep queries.
+const CONNECTION_STACK_SIZE: usize = 64 << 20;
+/// Bytes `check_stack_depth` allows; the rest is headroom for unchecked frames.
+const CONNECTION_STACK_BUDGET: usize = 16 << 20;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Length of one wait for `CopyData` before the session is polled for a
+/// cancel request or `statement_timeout` (`m4/10` 5.8).
+const COPY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Why [`Server::run`] returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,8 +269,10 @@ impl Server {
         }
         let spawned = std::thread::Builder::new()
             .name(format!("conn-{pid}"))
+            .stack_size(CONNECTION_STACK_SIZE)
             .spawn(move || {
                 let _guard = guard;
+                yuzhu_core::sql::set_stack_budget(CONNECTION_STACK_BUDGET);
                 run_connection(stream, &shared, pid, &registration);
             });
         if let Err(e) = spawned {
@@ -439,6 +450,11 @@ fn write_core_error<W: Write>(w: &mut W, err: &Error, severity: &str) -> io::Res
             detail: err.detail.as_deref(),
             hint: err.hint.as_deref(),
             position: err.position,
+            context: err.context(),
+            schema: err.schema(),
+            table: err.table(),
+            column: err.column(),
+            constraint: err.constraint(),
         }),
     )
 }
@@ -648,6 +664,35 @@ fn build_startup_params(
     }))
 }
 
+/// After a `CopyData` / `CopyDone` / `CopyFail` was handled: sends
+/// `ReadyForQuery` unless the COPY continues (or the connection is closing
+/// after a FATAL), and flushes.
+fn finish_copy_message<W: Write>(w: &mut W, session: &Session) -> io::Result<()> {
+    if session.is_closing() {
+        w.flush()
+    } else if session.is_copying_in() {
+        // A follow-up `COPY` statement may have sent a new `G`.
+        w.flush()
+    } else {
+        ready_for_query(w, session)
+    }
+}
+
+/// The type byte a frontend message arrived with.
+fn frontend_tag(msg: &FrontendMessage) -> u8 {
+    match msg {
+        FrontendMessage::Query(_) => b'Q',
+        FrontendMessage::Terminate => b'X',
+        FrontendMessage::Sync => b'S',
+        FrontendMessage::Extended(kind) => kind.tag(),
+        FrontendMessage::CopyData(_) => b'd',
+        FrontendMessage::CopyDone => b'c',
+        FrontendMessage::CopyFail(_) => b'f',
+        FrontendMessage::Unknown(tag) => *tag,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn message_loop(
     reader: &mut BufReader<TcpStream>,
     writer: &mut BufWriter<TcpStream>,
@@ -662,10 +707,33 @@ fn message_loop(
             return terminated_by_administrator(writer);
         }
         set_client_latin1(session.client_encoding_is_latin1());
-        let idle_timeout = session.idle_timeout();
+        // During COPY FROM STDIN the connection is not idle: the session
+        // has no idle timeout, and the wait is cut into `COPY_POLL_INTERVAL`
+        // slices so that cancel / statement_timeout are noticed.
+        let copying = session.is_copying_in();
+        let idle_timeout = if copying {
+            None
+        } else {
+            session.idle_timeout()
+        };
+        let wait_timeout = if copying {
+            Some(COPY_POLL_INTERVAL)
+        } else {
+            idle_timeout
+        };
         let wait_started = Instant::now();
-        match wait_for_input(reader, idle_timeout, &mut applied_timeout) {
+        match wait_for_input(reader, wait_timeout, &mut applied_timeout) {
             Ok(Wait::Ready) => {}
+            Ok(Wait::TimedOut) if copying => {
+                session.copy_poll(&mut Sink::new(writer))?;
+                if session.is_closing() {
+                    return writer.flush();
+                }
+                if !session.is_copying_in() {
+                    ready_for_query(writer, session)?;
+                }
+                continue;
+            }
             Ok(Wait::TimedOut) => {
                 let err = session.idle_timeout_error();
                 tracing::info!(pid, sqlstate = err.sqlstate.0, "idle timeout");
@@ -720,6 +788,50 @@ fn message_loop(
             }
         };
         match msg {
+            FrontendMessage::Terminate => return Ok(()),
+            FrontendMessage::CopyData(data) if copying => {
+                session.copy_data(&data, &mut Sink::new(writer))?;
+                finish_copy_message(writer, session)?;
+                if session.is_closing() {
+                    return Ok(());
+                }
+            }
+            FrontendMessage::CopyDone if copying => {
+                session.copy_done(&mut Sink::new(writer))?;
+                finish_copy_message(writer, session)?;
+                if session.is_closing() {
+                    return Ok(());
+                }
+            }
+            FrontendMessage::CopyFail(message) if copying => {
+                tracing::debug!(pid, message = %message, "COPY failed by the client");
+                session.copy_fail(&message, &mut Sink::new(writer))?;
+                finish_copy_message(writer, session)?;
+            }
+            // Flush and Sync do nothing while a COPY waits for data.
+            FrontendMessage::Sync | FrontendMessage::Extended(ExtendedKind::Flush) if copying => {}
+            // Anything else ends the connection (PostgreSQL loses protocol
+            // synchronization too).
+            msg if copying => {
+                let tag = frontend_tag(&msg);
+                tracing::warn!(pid, tag, "unexpected message during COPY from stdin");
+                send_error(
+                    writer,
+                    "ERROR",
+                    "08P01",
+                    &format!("unexpected message type 0x{tag:02X} during COPY from stdin"),
+                )?;
+                return send_fatal(
+                    writer,
+                    "08P01",
+                    "terminating connection because protocol synchronization was lost",
+                );
+            }
+            // Outside COPY, stray CopyData / CopyDone / CopyFail are ignored
+            // (they follow an error that already ended the COPY).
+            FrontendMessage::CopyData(_)
+            | FrontendMessage::CopyDone
+            | FrontendMessage::CopyFail(_) => {}
             FrontendMessage::Query(sql) => {
                 tracing::debug!(pid, sql = %sql, "query");
                 session.execute_simple(&sql, &mut Sink::new(writer))?;
@@ -727,9 +839,10 @@ fn message_loop(
                     // A FATAL was sent (e.g. 57P01, PANIC escalation).
                     return writer.flush();
                 }
-                ready_for_query(writer, session)?;
+                if !session.is_copying_in() {
+                    ready_for_query(writer, session)?;
+                }
             }
-            FrontendMessage::Terminate => return Ok(()),
             FrontendMessage::Sync => ready_for_query(writer, session)?,
             FrontendMessage::Extended(kind) => {
                 tracing::debug!(pid, ?kind, "extended query message rejected");
@@ -910,9 +1023,21 @@ impl<W: Write> ResultSink for Sink<'_, W> {
                 message: &notice.message,
                 detail: notice.detail.as_deref(),
                 hint: notice.hint.as_deref(),
-                position: None,
+                ..ErrorFields::default()
             }),
         )
+    }
+
+    fn copy_in_response(&mut self, format: u8, column_formats: &[i16]) -> io::Result<()> {
+        write_message(
+            self.w,
+            &BackendMessage::CopyInResponse {
+                format,
+                column_formats,
+            },
+        )?;
+        // The client waits for `G` before it sends data.
+        self.w.flush()
     }
 
     fn parameter_status(&mut self, name: &str, value: &str) -> io::Result<()> {

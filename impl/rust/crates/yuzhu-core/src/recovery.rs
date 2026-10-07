@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use crate::control::{ControlFileHandle, DbState, FLAG_FULL_PAGE_WRITES};
 use crate::datadir;
 use crate::error::{Error, Result, Severity, sqlstate};
+use crate::storage::btree;
 use crate::storage::heap;
+use crate::storage::sequence;
 use crate::storage::smgr_wal;
 use crate::storage::stack::{StackConfig, StorageStack};
 use crate::storage::vfs::Vfs;
@@ -251,6 +253,9 @@ pub fn dispatch(ctx: &RedoCtx, rec: &DecodedRecord) -> Result<()> {
         RmgrId::Xact => xact_wal::redo(ctx, rec),
         RmgrId::Smgr => smgr_wal::redo(ctx, rec),
         RmgrId::Heap => heap::wal::redo(ctx, rec),
+        // 呼び先は B1 / Q1 が本実装に置き換える（P0-b のスタブは 0A000）。
+        RmgrId::Btree => btree::wal::redo(ctx, rec),
+        RmgrId::Seq => sequence::redo(ctx, rec),
     }
 }
 

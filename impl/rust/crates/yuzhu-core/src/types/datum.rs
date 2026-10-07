@@ -33,6 +33,16 @@ pub enum Datum {
     Int4Array(Vec<Option<i32>>),
     /// `void`（出力は空文字列）。
     Void,
+    /// `bpchar`（`char(n)`）。空白で埋めた後の文字列。比較・ハッシュは末尾の空白を無視する。
+    BpChar(String),
+    /// `date`。
+    Date(yuzhu_datetime::Date),
+    /// `timestamp`。
+    Timestamp(yuzhu_datetime::Timestamp),
+    /// `timestamptz`（UTC）。
+    TimestampTz(yuzhu_datetime::TimestampTz),
+    /// `int2vector`（1 次元の `int2[]` も同じ変種）。
+    Int2Vector(Vec<i16>),
 }
 
 /// A row of values, in column order.
@@ -92,6 +102,11 @@ impl Datum {
             Datum::OidVector(_) => 10,
             Datum::Int4Array(_) => 11,
             Datum::Void => 12,
+            Datum::BpChar(_) => 14,
+            Datum::Date(_) => 15,
+            Datum::Timestamp(_) => 16,
+            Datum::TimestampTz(_) => 17,
+            Datum::Int2Vector(_) => 18,
             Datum::Null => 4,
         }
     }
@@ -131,6 +146,15 @@ pub fn cmp_datum(a: &Datum, b: &Datum) -> Ordering {
         (Float4(x), Float4(y)) => cmp_f64(f64::from(*x), f64::from(*y)),
         (Float8(x), Float8(y)) => cmp_f64(*x, *y),
         (Datum::Numeric(x), Datum::Numeric(y)) => x.cmp(y),
+        // 末尾の空白だけを無視してバイト比較する（bpchar_ops）。
+        (Datum::BpChar(x), Datum::BpChar(y)) => x
+            .trim_end_matches(' ')
+            .as_bytes()
+            .cmp(y.trim_end_matches(' ').as_bytes()),
+        (Datum::Date(x), Datum::Date(y)) => x.cmp(y),
+        (Datum::Timestamp(x), Datum::Timestamp(y)) => x.cmp(y),
+        (Datum::TimestampTz(x), Datum::TimestampTz(y)) => x.cmp(y),
+        (Datum::Int2Vector(x), Datum::Int2Vector(y)) => x.cmp(y),
         _ => {
             if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
                 return x.cmp(&y);
@@ -211,6 +235,45 @@ mod tests {
             cmp_datum(&OidVector(vec![1, 2]), &OidVector(vec![1, 3])),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn m4_variants_order_and_rank() {
+        use yuzhu_datetime as dt;
+        // bpchar は末尾の空白を無視して比べる。
+        assert_eq!(
+            cmp_datum(&BpChar("ab  ".into()), &BpChar("ab".into())),
+            Ordering::Equal
+        );
+        assert_eq!(
+            cmp_datum(&BpChar("ab".into()), &BpChar("abc".into())),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_datum(&Date(dt::Date(1)), &Date(dt::Date(2))),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_datum(&Timestamp(dt::Timestamp(5)), &Timestamp(dt::Timestamp(5))),
+            Ordering::Equal
+        );
+        assert_eq!(
+            cmp_datum(
+                &TimestampTz(dt::TimestampTz(i64::MAX)),
+                &TimestampTz(dt::TimestampTz(0))
+            ),
+            Ordering::Greater
+        );
+        assert_eq!(
+            cmp_datum(&Int2Vector(vec![1, 2]), &Int2Vector(vec![1, 3])),
+            Ordering::Less
+        );
+        // 異なる変種どうしは変種の順位（バグの検出用）で決まり、panic しない。
+        assert_ne!(
+            cmp_datum(&Date(dt::Date(1)), &Timestamp(dt::Timestamp(1))),
+            Ordering::Equal
+        );
+        assert_eq!(Date(dt::Date(3)), Date(dt::Date(3)));
     }
 
     #[test]

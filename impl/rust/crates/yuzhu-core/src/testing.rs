@@ -7,12 +7,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bootstrap::{InitdbOptions, initdb};
+use crate::catalog::TableDef;
 use crate::debug_knobs::DebugKnobs;
 use crate::engine::{Cluster, ClusterOptions, DEFAULT_MAX_WAL_SIZE};
 use crate::error::{Error, Result};
 use crate::session::{ColumnDesc, Notice, ResultSink, Session, StartupParams};
-use crate::storage::DEFAULT_RELSEG_SIZE;
+use crate::storage::buffer::BufferPool;
 use crate::storage::vfs::{CrashMode, SimVfs, Vfs};
+use crate::storage::{DEFAULT_RELSEG_SIZE, IndexHandle};
+use crate::types::Oid;
 use crate::wal::{DEFAULT_WAL_SEGMENT_SIZE, MIN_WAL_SEGMENT_SIZE};
 
 /// Settings of a [`TestCluster`].
@@ -242,6 +245,116 @@ pub fn run_sql(session: &mut Session, sql: &str) -> QueryOutput {
     out
 }
 
+// ----- Helpers for the layer-1 crash tests (`m4/11` §3.6.3) ----------------------
+
+impl TestClusterOptions {
+    /// Sets the number of buffer frames (`shared_buffers`). The crash workloads pick their own
+    /// (6 uses 24, 7 uses 16, 8 uses 24).
+    #[must_use]
+    pub fn shared_buffers(mut self, frames: usize) -> Self {
+        self.nframes = frames;
+        self
+    }
+}
+
+/// The tables (`r`) and sequences (`S`) of `database` that live in `public` (namespace 2200),
+/// in OID order, as the committed catalog shows them. A table's `indexes` are its indexes.
+///
+/// # Errors
+///
+/// The connection or a catalog read fails.
+pub fn user_relation_defs(cluster: &Arc<Cluster>, database: &str) -> Result<Vec<TableDef>> {
+    let (db, _) = cluster.connect(database, "postgres")?;
+    let mut session = Session::new(
+        Arc::clone(cluster),
+        StartupParams {
+            user: "postgres".into(),
+            database: database.into(),
+            application_name: None,
+            options: Vec::new(),
+        },
+    )?;
+    let out = run_sql(
+        &mut session,
+        "SELECT oid FROM pg_class WHERE relnamespace = 2200 ORDER BY oid",
+    );
+    if let Some(e) = out.errors.first() {
+        return Err(e.clone());
+    }
+    let snap = cluster.txn_manager().snapshot(None, 0);
+    let mut defs = Vec::new();
+    for row in out.text_rows() {
+        let oid: Oid = row[0]
+            .parse()
+            .map_err(|_| Error::internal(format!("pg_class.oid is not a number: {:?}", row[0])))?;
+        if let Some(def) = db.catalog.load_table_def(&snap, oid)? {
+            defs.push(def);
+        }
+    }
+    Ok(defs)
+}
+
+/// Every index of the user tables of `database`, with the owning table's definition.
+///
+/// # Errors
+///
+/// See [`user_relation_defs`].
+pub fn user_index_handles(
+    cluster: &Arc<Cluster>,
+    database: &str,
+) -> Result<Vec<(IndexHandle, TableDef)>> {
+    let mut out = Vec::new();
+    for def in user_relation_defs(cluster, database)? {
+        for idx in &def.indexes {
+            out.push((IndexHandle::from_def(idx, &def), def.clone()));
+        }
+    }
+    Ok(out)
+}
+
+impl TestCluster {
+    /// The buffer pool (the structure checkers take `&Arc<BufferPool>`).
+    pub fn pool(&self) -> &Arc<BufferPool> {
+        &self.cluster.stack().pool
+    }
+
+    /// Buffers still pinned. Zero when no statement is running.
+    pub fn pinned_frames(&self) -> usize {
+        self.cluster.stack().pool.pinned_frames()
+    }
+
+    /// See [`user_relation_defs`].
+    ///
+    /// # Errors
+    ///
+    /// See [`user_relation_defs`].
+    pub fn relation_defs(&self, database: &str) -> Result<Vec<TableDef>> {
+        user_relation_defs(&self.cluster, database)
+    }
+
+    /// The handle of the index called `name` in `public`, looked up in the catalog.
+    ///
+    /// # Errors
+    ///
+    /// See [`user_relation_defs`].
+    pub fn index_handle(&self, database: &str, name: &str) -> Result<Option<IndexHandle>> {
+        Ok(user_index_handles(&self.cluster, database)?
+            .into_iter()
+            .map(|(h, _)| h)
+            .find(|h| h.name == name))
+    }
+
+    /// Opens a session on `database` and runs one Simple Query message.
+    ///
+    /// # Errors
+    ///
+    /// The session cannot start. Errors of the statements are in the output.
+    pub fn sql(&self, database: &str, sql: &str) -> Result<QueryOutput> {
+        let mut s = self.session(database)?;
+        Ok(run_sql(&mut s, sql))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +433,7 @@ mod persistence_tests {
             ty: SqlType::INT4,
             not_null: false,
             default: None,
+            identity: None,
         }];
         db.catalog
             .create_table(
@@ -334,6 +448,8 @@ mod persistence_tests {
                     checks: vec![],
                     attrdef_oids: vec![],
                     constraint_oids: vec![],
+                    indexes: vec![],
+                    extra_depends: vec![],
                 },
             )
             .unwrap();

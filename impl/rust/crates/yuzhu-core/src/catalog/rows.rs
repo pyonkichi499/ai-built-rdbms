@@ -9,7 +9,10 @@
 use std::collections::HashSet;
 
 use super::builtin::{self, BuiltinType, CastContext};
+use super::depend::NewDepend;
+use super::opclass;
 use super::schema::{self, CatalogDef, SYSTEM_COLUMNS, oids};
+use super::{ConstraintKind, IdentityKind, RelKind, SequenceParams};
 use crate::types::{Datum, Oid, Row, SqlType, oid};
 
 /// The OID of the first `pg_cast` row; the others follow in
@@ -100,9 +103,52 @@ pub struct ClassSpec<'a> {
     pub nchecks: i16,
     /// `relreplident`: `d` for user tables, `n` for catalogs.
     pub replident: char,
+    /// `relkind` と、それで決まる既定値（`relam`、`relfrozenxid`、`relminmxid`）。
+    pub kind: RelKind,
+    /// `relhasindex`。
+    pub has_index: bool,
+    pub relpages: i32,
+    pub reltuples: f32,
+}
+
+impl<'a> ClassSpec<'a> {
+    /// 表の既定値（`relpages = 0`、`reltuples = -1`、索引なし）。
+    pub fn table(oid: Oid, name: &'a str, namespace: Oid, owner: Oid, natts: i16) -> Self {
+        ClassSpec {
+            oid,
+            name,
+            namespace,
+            reltype: 0,
+            owner,
+            relfilenode: oid,
+            reltablespace: 0,
+            is_shared: false,
+            natts,
+            nchecks: 0,
+            replident: 'd',
+            kind: RelKind::Table,
+            has_index: false,
+            relpages: 0,
+            reltuples: -1.0,
+        }
+    }
+}
+
+/// `pg_class.relam`: 表は heap、索引は btree、シーケンスは 0。
+fn relam_of(kind: RelKind) -> Oid {
+    match kind {
+        RelKind::Table => oids::HEAP_TABLE_AM,
+        RelKind::Index => oids::BTREE_AM,
+        RelKind::Sequence => 0,
+    }
 }
 
 pub fn class_row(s: &ClassSpec<'_>) -> Row {
+    // 表だけが凍結 XID を持つ（索引・シーケンスは 0）。
+    let (frozen, minmxid) = match s.kind {
+        RelKind::Table => (FROZEN_XID, 1),
+        RelKind::Index | RelKind::Sequence => (0, 0),
+    };
     RowBuilder::new(oids::PG_CLASS)
         .set("oid", Datum::Oid(s.oid))
         .set("relname", text(s.name))
@@ -110,17 +156,17 @@ pub fn class_row(s: &ClassSpec<'_>) -> Row {
         .set("reltype", Datum::Oid(s.reltype))
         .set("reloftype", Datum::Oid(0))
         .set("relowner", Datum::Oid(s.owner))
-        .set("relam", Datum::Oid(oids::HEAP_TABLE_AM))
+        .set("relam", Datum::Oid(relam_of(s.kind)))
         .set("relfilenode", Datum::Oid(s.relfilenode))
         .set("reltablespace", Datum::Oid(s.reltablespace))
-        .set("relpages", Datum::Int4(0))
-        .set("reltuples", Datum::Float4(-1.0))
+        .set("relpages", Datum::Int4(s.relpages))
+        .set("reltuples", Datum::Float4(s.reltuples))
         .set("relallvisible", Datum::Int4(0))
         .set("reltoastrelid", Datum::Oid(0))
-        .set("relhasindex", Datum::Bool(false))
+        .set("relhasindex", Datum::Bool(s.has_index))
         .set("relisshared", Datum::Bool(s.is_shared))
         .set("relpersistence", ch('p'))
-        .set("relkind", ch('r'))
+        .set("relkind", ch(s.kind.code()))
         .set("relnatts", Datum::Int2(s.natts))
         .set("relchecks", Datum::Int2(s.nchecks))
         .set("relhasrules", Datum::Bool(false))
@@ -132,8 +178,8 @@ pub fn class_row(s: &ClassSpec<'_>) -> Row {
         .set("relreplident", ch(s.replident))
         .set("relispartition", Datum::Bool(false))
         .set("relrewrite", Datum::Oid(0))
-        .set("relfrozenxid", Datum::Xid(FROZEN_XID))
-        .set("relminmxid", Datum::Xid(1))
+        .set("relfrozenxid", Datum::Xid(frozen))
+        .set("relminmxid", Datum::Xid(minmxid))
         .build()
 }
 
@@ -149,6 +195,8 @@ pub struct AttributeSpec<'a> {
     pub has_default: bool,
     /// A column of a system catalog: collatable types get `C` (950).
     pub catalog_column: bool,
+    /// `attidentity`（`None` = 通常の列）。
+    pub identity: Option<IdentityKind>,
 }
 
 /// A `pg_attribute` row. The length, alignment and storage come from the
@@ -176,7 +224,13 @@ pub fn attribute_row(s: &AttributeSpec<'_>) -> Option<Row> {
             .set("attnotnull", Datum::Bool(s.not_null))
             .set("atthasdef", Datum::Bool(s.has_default))
             .set("atthasmissing", Datum::Bool(false))
-            .set("attidentity", Datum::Char(0))
+            .set(
+                "attidentity",
+                Datum::Char(
+                    s.identity
+                        .map_or(0, |i| u8::try_from(i.code()).unwrap_or(0)),
+                ),
+            )
             .set("attgenerated", Datum::Char(0))
             .set("attisdropped", Datum::Bool(false))
             .set("attislocal", Datum::Bool(true))
@@ -199,6 +253,7 @@ pub fn system_attribute_rows(relid: Oid, catalog_column: bool) -> Vec<Row> {
                 not_null: true,
                 has_default: false,
                 catalog_column,
+                identity: None,
             })
         })
         .collect()
@@ -213,26 +268,112 @@ pub fn attrdef_row(oid: Oid, relid: Oid, adnum: i16, expr_sql: &str) -> Row {
         .build()
 }
 
-/// A CHECK constraint row (`contype = 'c'`). `conkey` stays NULL because
-/// `int2[]` is a NULL-only type in M2.
+/// A CHECK constraint row (`contype = 'c'`)。`constraint_row` の薄い包み。
 pub fn check_constraint_row(
     oid: Oid,
     name: &str,
     namespace: Oid,
     relid: Oid,
     expr_sql: &str,
+    no_inherit: bool,
 ) -> Row {
-    RowBuilder::new(oids::PG_CONSTRAINT)
-        .set("oid", Datum::Oid(oid))
-        .set("conname", text(name))
-        .set("connamespace", Datum::Oid(namespace))
-        .set("contype", ch('c'))
+    constraint_row(&ConstraintRowSpec {
+        oid,
+        name,
+        namespace,
+        kind: ConstraintKind::Check,
+        relid,
+        index_oid: 0,
+        columns: &[],
+        check_sql: Some(expr_sql),
+        no_inherit,
+    })
+}
+
+/// What a `pg_index` row needs (`m4/07-catalog-ddl.md` §3.4). 列ごとの配列は同じ長さ。
+#[derive(Debug, Clone)]
+pub struct IndexRowSpec<'a> {
+    pub index_oid: Oid,
+    pub table_oid: Oid,
+    pub unique: bool,
+    pub primary: bool,
+    /// `indkey`: 表の attnum の並び。
+    pub key: &'a [i16],
+    /// `indcollation`: 列ごとの照合順序の OID。
+    pub collations: &'a [Oid],
+    /// `indclass`: 列ごとの演算子クラスの OID。
+    pub classes: &'a [Oid],
+    /// `indoption`: 列ごと。bit0 = DESC、bit1 = NULLS FIRST。
+    pub options: &'a [i16],
+}
+
+/// A `pg_index` row. INCLUDE・式・部分索引・DEFERRABLE はないので、対応する列は固定値（または NULL）。
+pub fn index_row(s: &IndexRowSpec<'_>) -> Row {
+    let natts = i16::try_from(s.key.len()).unwrap_or(i16::MAX);
+    RowBuilder::new(oids::PG_INDEX)
+        .set("indexrelid", Datum::Oid(s.index_oid))
+        .set("indrelid", Datum::Oid(s.table_oid))
+        .set("indnatts", Datum::Int2(natts))
+        .set("indnkeyatts", Datum::Int2(natts))
+        .set("indisunique", Datum::Bool(s.unique))
+        .set("indnullsnotdistinct", Datum::Bool(false))
+        .set("indisprimary", Datum::Bool(s.primary))
+        .set("indisexclusion", Datum::Bool(false))
+        .set("indimmediate", Datum::Bool(true))
+        .set("indisclustered", Datum::Bool(false))
+        .set("indisvalid", Datum::Bool(true))
+        .set("indcheckxmin", Datum::Bool(false))
+        .set("indisready", Datum::Bool(true))
+        .set("indislive", Datum::Bool(true))
+        .set("indisreplident", Datum::Bool(false))
+        .set("indkey", Datum::Int2Vector(s.key.to_vec()))
+        .set("indcollation", Datum::OidVector(s.collations.to_vec()))
+        .set("indclass", Datum::OidVector(s.classes.to_vec()))
+        .set("indoption", Datum::Int2Vector(s.options.to_vec()))
+        .build()
+}
+
+/// What a `pg_constraint` row needs (c / p / u)。
+#[derive(Debug, Clone)]
+pub struct ConstraintRowSpec<'a> {
+    pub oid: Oid,
+    pub name: &'a str,
+    pub namespace: Oid,
+    pub kind: ConstraintKind,
+    pub relid: Oid,
+    /// `conindid`（Check は 0）。
+    pub index_oid: Oid,
+    /// `conkey`（p / u）。Check は無視する（NULL）。
+    pub columns: &'a [i16],
+    /// `conbin`（Check）。
+    pub check_sql: Option<&'a str>,
+    /// CHECK の `NO INHERIT`（p / u の `connoinherit` は常に真）。
+    pub no_inherit: bool,
+}
+
+fn constraint_type_char(kind: ConstraintKind) -> char {
+    match kind {
+        ConstraintKind::Check => 'c',
+        ConstraintKind::PrimaryKey => 'p',
+        ConstraintKind::Unique => 'u',
+    }
+}
+
+/// A `pg_constraint` row. `connoinherit` は p / u で真、CHECK で偽（実測）。
+/// `conkey` は p / u だけ値を持つ（CHECK は式の走査が要るので NULL。M5）。
+pub fn constraint_row(s: &ConstraintRowSpec<'_>) -> Row {
+    let is_check = s.kind == ConstraintKind::Check;
+    let mut b = RowBuilder::new(oids::PG_CONSTRAINT)
+        .set("oid", Datum::Oid(s.oid))
+        .set("conname", text(s.name))
+        .set("connamespace", Datum::Oid(s.namespace))
+        .set("contype", ch(constraint_type_char(s.kind)))
         .set("condeferrable", Datum::Bool(false))
         .set("condeferred", Datum::Bool(false))
         .set("convalidated", Datum::Bool(true))
-        .set("conrelid", Datum::Oid(relid))
+        .set("conrelid", Datum::Oid(s.relid))
         .set("contypid", Datum::Oid(0))
-        .set("conindid", Datum::Oid(0))
+        .set("conindid", Datum::Oid(s.index_oid))
         .set("conparentid", Datum::Oid(0))
         .set("confrelid", Datum::Oid(0))
         .set("confupdtype", ch(' '))
@@ -240,9 +381,91 @@ pub fn check_constraint_row(
         .set("confmatchtype", ch(' '))
         .set("conislocal", Datum::Bool(true))
         .set("coninhcount", Datum::Int2(0))
-        .set("connoinherit", Datum::Bool(false))
-        .set("conbin", text(expr_sql))
+        .set("connoinherit", Datum::Bool(!is_check || s.no_inherit));
+    if is_check {
+        if let Some(sql) = s.check_sql {
+            b = b.set("conbin", text(sql));
+        }
+    } else {
+        b = b.set("conkey", Datum::Int2Vector(s.columns.to_vec()));
+    }
+    b.build()
+}
+
+/// A `pg_depend` row.
+pub fn depend_row(d: &NewDepend) -> Row {
+    RowBuilder::new(oids::PG_DEPEND)
+        .set("classid", Datum::Oid(d.dependent.class_id))
+        .set("objid", Datum::Oid(d.dependent.obj_id))
+        .set("objsubid", Datum::Int4(d.dependent.obj_sub))
+        .set("refclassid", Datum::Oid(d.referenced.class_id))
+        .set("refobjid", Datum::Oid(d.referenced.obj_id))
+        .set("refobjsubid", Datum::Int4(d.referenced.obj_sub))
+        .set("deptype", ch(d.deptype.code()))
         .build()
+}
+
+/// A `pg_sequence` row. `owned_by` は `pg_depend` の側にあるので書かない。
+pub fn sequence_row(oid: Oid, p: &SequenceParams) -> Row {
+    RowBuilder::new(oids::PG_SEQUENCE)
+        .set("seqrelid", Datum::Oid(oid))
+        .set("seqtypid", Datum::Oid(p.type_oid))
+        .set("seqstart", Datum::Int8(p.start))
+        .set("seqincrement", Datum::Int8(p.increment))
+        .set("seqmax", Datum::Int8(p.max))
+        .set("seqmin", Datum::Int8(p.min))
+        .set("seqcache", Datum::Int8(p.cache))
+        .set("seqcycle", Datum::Bool(p.cycle))
+        .build()
+}
+
+/// The `pg_attribute` rows of an index: one per key column, no system columns
+/// (`m4/07-catalog-ddl.md` §3.3)。型と typmod は表の列のもの。`attnotnull` は常に偽。
+/// Returns `None`-free rows; a column whose type is not built in makes the whole call give an empty list
+/// (the caller has validated the types).
+pub fn index_attribute_rows(s: &super::store::NewIndex) -> Vec<Row> {
+    s.columns
+        .iter()
+        .zip(1i16..)
+        .filter_map(|(c, attnum)| {
+            attribute_row(&AttributeSpec {
+                relid: s.oid,
+                name: &c.name,
+                attnum,
+                ty: c.ty,
+                not_null: false,
+                has_default: false,
+                catalog_column: false,
+                identity: None,
+            })
+        })
+        .collect()
+}
+
+/// The `pg_attribute` rows of a sequence: `last_value` / `log_cnt` / `is_called`, then the system columns.
+pub fn sequence_attribute_rows(relid: Oid) -> Vec<Row> {
+    let mut rows: Vec<Row> = [
+        ("last_value", SqlType::INT8),
+        ("log_cnt", SqlType::INT8),
+        ("is_called", SqlType::BOOL),
+    ]
+    .into_iter()
+    .zip(1i16..)
+    .filter_map(|((name, ty), attnum)| {
+        attribute_row(&AttributeSpec {
+            relid,
+            name,
+            attnum,
+            ty,
+            not_null: true,
+            has_default: false,
+            catalog_column: false,
+            identity: None,
+        })
+    })
+    .collect();
+    rows.extend(system_attribute_rows(relid, false));
+    rows
 }
 
 // ----- initial rows -------------------------------------------------------------
@@ -270,6 +493,12 @@ pub fn initial_rows(catalog_oid: Oid, params: &InitParams) -> Vec<Row> {
         oids::PG_CAST => cast_rows(),
         oids::PG_CLASS => schema::CATALOGS.iter().map(catalog_class_row).collect(),
         oids::PG_ATTRIBUTE => catalog_attribute_rows(),
+        oids::PG_LANGUAGE => language_rows(),
+        oids::PG_OPFAMILY => opfamily_rows(),
+        oids::PG_OPCLASS => opclass_rows(),
+        oids::PG_AMOP => amop_rows(),
+        oids::PG_AMPROC => amproc_rows(),
+        // pg_index / pg_depend / pg_sequence / pg_description は空（行は DDL が書く）。
         _ => Vec::new(),
     }
 }
@@ -287,6 +516,11 @@ fn namespace_rows() -> Vec<Row> {
             oids::BOOTSTRAP_SUPERUSER,
         ),
         (oids::NAMESPACE_PUBLIC, "public", oids::DATABASE_OWNER),
+        (
+            oids::NAMESPACE_INFORMATION_SCHEMA,
+            "information_schema",
+            oids::BOOTSTRAP_SUPERUSER,
+        ),
     ]
     .into_iter()
     .map(|(o, name, owner)| {
@@ -446,7 +680,7 @@ fn proc_rows() -> Vec<Row> {
                 .set("proname", text(p.name))
                 .set("pronamespace", Datum::Oid(oids::NAMESPACE_PG_CATALOG))
                 .set("proowner", Datum::Oid(oids::BOOTSTRAP_SUPERUSER))
-                .set("prolang", Datum::Oid(oids::INTERNAL_LANGUAGE))
+                .set("prolang", Datum::Oid(oids::LANGUAGE_INTERNAL))
                 .set("procost", Datum::Float4(p.cost))
                 .set("prorows", Datum::Float4(0.0))
                 .set("provariadic", Datum::Oid(0))
@@ -501,6 +735,108 @@ fn operator_rows() -> Vec<Row> {
         .collect()
 }
 
+/// `pg_language` の 3 行（実測の PostgreSQL 17。`lanvalidator` は対応する `pg_proc` の行がないので 0）。
+fn language_rows() -> Vec<Row> {
+    // (oid, name, trusted)
+    [
+        (oids::LANGUAGE_INTERNAL, "internal", false),
+        (oids::LANGUAGE_C, "c", false),
+        (oids::LANGUAGE_SQL, "sql", true),
+    ]
+    .into_iter()
+    .map(|(o, name, trusted)| {
+        RowBuilder::new(oids::PG_LANGUAGE)
+            .set("oid", Datum::Oid(o))
+            .set("lanname", text(name))
+            .set("lanowner", Datum::Oid(oids::BOOTSTRAP_SUPERUSER))
+            .set("lanispl", Datum::Bool(false))
+            .set("lanpltrusted", Datum::Bool(trusted))
+            .set("lanplcallfoid", Datum::Oid(0))
+            .set("laninline", Datum::Oid(0))
+            .set("lanvalidator", Datum::Oid(0))
+            .build()
+    })
+    .collect()
+}
+
+/// 静的な表（`opclass.rs`）から作る。oid 順に並べるので、表の書き順に左右されない。
+fn opfamily_rows() -> Vec<Row> {
+    let mut v: Vec<_> = opclass::OPFAMILIES.iter().collect();
+    v.sort_by_key(|f| f.oid);
+    v.into_iter()
+        .map(|f| {
+            RowBuilder::new(oids::PG_OPFAMILY)
+                .set("oid", Datum::Oid(f.oid))
+                .set("opfmethod", Datum::Oid(oids::BTREE_AM))
+                .set("opfname", text(f.name))
+                .set("opfnamespace", Datum::Oid(oids::NAMESPACE_PG_CATALOG))
+                .set("opfowner", Datum::Oid(oids::BOOTSTRAP_SUPERUSER))
+                .build()
+        })
+        .collect()
+}
+
+fn opclass_rows() -> Vec<Row> {
+    let mut v: Vec<_> = opclass::OPCLASSES.iter().collect();
+    v.sort_by_key(|c| c.oid);
+    v.into_iter()
+        .map(|c| {
+            RowBuilder::new(oids::PG_OPCLASS)
+                .set("oid", Datum::Oid(c.oid))
+                .set("opcmethod", Datum::Oid(oids::BTREE_AM))
+                .set("opcname", text(c.name))
+                .set("opcnamespace", Datum::Oid(oids::NAMESPACE_PG_CATALOG))
+                .set("opcowner", Datum::Oid(oids::BOOTSTRAP_SUPERUSER))
+                .set("opcfamily", Datum::Oid(c.family))
+                .set("opcintype", Datum::Oid(c.input_type))
+                .set("opcdefault", Datum::Bool(c.is_default))
+                // `name_ops` は PostgreSQL では cstring だが、yuzhu は name のまま扱う（D07-17）。
+                .set("opckeytype", Datum::Oid(0))
+                .build()
+        })
+        .collect()
+}
+
+/// `(family, left, right, strategy)` 順。`oid` は 10000 から振る（`pg_cast` と同じ）。
+fn amop_rows() -> Vec<Row> {
+    let mut v: Vec<_> = opclass::AMOPS.iter().collect();
+    v.sort_by_key(|a| (a.family, a.left, a.right, a.strategy));
+    v.into_iter()
+        .zip(oid::FIRST_GENBKI_OBJECT_ID..)
+        .map(|(a, o)| {
+            RowBuilder::new(oids::PG_AMOP)
+                .set("oid", Datum::Oid(o))
+                .set("amopfamily", Datum::Oid(a.family))
+                .set("amoplefttype", Datum::Oid(a.left))
+                .set("amoprighttype", Datum::Oid(a.right))
+                .set("amopstrategy", Datum::Int2(i16::from(a.strategy)))
+                .set("amoppurpose", ch('s'))
+                .set("amopopr", Datum::Oid(a.operator))
+                .set("amopmethod", Datum::Oid(oids::BTREE_AM))
+                .set("amopsortfamily", Datum::Oid(0))
+                .build()
+        })
+        .collect()
+}
+
+fn amproc_rows() -> Vec<Row> {
+    let mut v: Vec<_> = opclass::AMPROCS.iter().collect();
+    v.sort_by_key(|a| (a.family, a.left, a.right, a.support));
+    v.into_iter()
+        .zip(oid::FIRST_GENBKI_OBJECT_ID..)
+        .map(|(a, o)| {
+            RowBuilder::new(oids::PG_AMPROC)
+                .set("oid", Datum::Oid(o))
+                .set("amprocfamily", Datum::Oid(a.family))
+                .set("amproclefttype", Datum::Oid(a.left))
+                .set("amprocrighttype", Datum::Oid(a.right))
+                .set("amprocnum", Datum::Int2(i16::from(a.support)))
+                .set("amproc", Datum::Oid(a.proc_oid))
+                .build()
+        })
+        .collect()
+}
+
 fn cast_rows() -> Vec<Row> {
     let mut casts: Vec<_> = builtin::CASTS.iter().collect();
     casts.sort_by_key(|c| (c.source, c.target));
@@ -533,6 +869,10 @@ fn catalog_class_row(def: &'static CatalogDef) -> Row {
         natts: i16::try_from(def.natts()).unwrap_or(i16::MAX),
         nchecks: 0,
         replident: 'n',
+        kind: RelKind::Table,
+        has_index: false,
+        relpages: 0,
+        reltuples: -1.0,
     })
 }
 
@@ -548,6 +888,7 @@ fn catalog_attribute_rows() -> Vec<Row> {
                 not_null: c.not_null,
                 has_default: false,
                 catalog_column: true,
+                identity: None,
             };
             rows.extend(attribute_row(&spec));
         }
@@ -644,13 +985,39 @@ fn put_datum(out: &mut Vec<u8>, d: &Datum) {
             out.push(16);
             put_bytes(out, &n.to_binary());
         }
+        Datum::BpChar(s) => {
+            out.push(17);
+            put_bytes(out, s.as_bytes());
+        }
+        Datum::Date(v) => {
+            out.push(18);
+            out.extend(v.0.to_le_bytes());
+        }
+        Datum::Timestamp(v) => {
+            out.push(19);
+            out.extend(v.0.to_le_bytes());
+        }
+        Datum::TimestampTz(v) => {
+            out.push(20);
+            out.extend(v.0.to_le_bytes());
+        }
+        Datum::Int2Vector(v) => {
+            out.push(21);
+            out.extend(u32::try_from(v.len()).unwrap_or(u32::MAX).to_le_bytes());
+            for e in v {
+                out.extend(e.to_le_bytes());
+            }
+        }
     }
 }
 
 /// The canonical byte string of the initial rows of `pg_type`, `pg_proc`,
-/// `pg_operator` and `pg_cast`. The rows are sorted by OID (`pg_cast` by
-/// `(castsource, casttarget)`), so the order of the tables in `builtin.rs`
-/// does not matter.
+/// `pg_operator`, `pg_cast`, `pg_language` and the rows generated from the
+/// static operator-class tables (`pg_opfamily` / `pg_opclass` / `pg_amop` /
+/// `pg_amproc`). The rows are sorted by OID (`pg_cast` by
+/// `(castsource, casttarget)`, `pg_amop` / `pg_amproc` by their keys), so the
+/// order of the tables in `builtin.rs` and `opclass.rs` does not matter
+/// (`m4/07-catalog-ddl.md` §3.8).
 pub fn builtin_canonical_bytes() -> Vec<u8> {
     let params = InitParams {
         superuser: String::new(),
@@ -661,6 +1028,11 @@ pub fn builtin_canonical_bytes() -> Vec<u8> {
         oids::PG_PROC,
         oids::PG_OPERATOR,
         oids::PG_CAST,
+        oids::PG_LANGUAGE,
+        oids::PG_OPFAMILY,
+        oids::PG_OPCLASS,
+        oids::PG_AMOP,
+        oids::PG_AMPROC,
     ] {
         let rows = initial_rows(catalog, &params);
         out.extend(catalog.to_le_bytes());
@@ -708,16 +1080,21 @@ pub fn datum_matches_type(d: &Datum, type_oid: Oid) -> bool {
         Datum::OidVector(_) => type_oid == oid::OIDVECTOR,
         Datum::Int4Array(_) => type_oid == oid::INT4_ARRAY,
         Datum::Void => type_oid == oid::VOID,
+        Datum::BpChar(_) => type_oid == oid::BPCHAR,
+        Datum::Date(_) => type_oid == oid::DATE,
+        Datum::Timestamp(_) => type_oid == oid::TIMESTAMP,
+        Datum::TimestampTz(_) => type_oid == oid::TIMESTAMPTZ,
+        Datum::Int2Vector(_) => matches!(type_oid, oid::INT2VECTOR | oid::INT2_ARRAY),
     }
 }
 
 /// Every OID column of the built-in catalog rows and the catalog that the
 /// reference must resolve in; used to check that the rows are closed.
-/// `prolang` is the only exception (`m2.md` §6.8.2) and is not listed.
+/// `pg_language` が実在するので、`prolang` も閉包に含まれる（`m4/07-catalog-ddl.md` §3.7）。
 fn reference_columns() -> Vec<(Oid, &'static str, Oid)> {
     use oids::{
-        PG_AM, PG_AUTHID, PG_CAST, PG_CLASS, PG_NAMESPACE, PG_OPERATOR, PG_PROC, PG_TABLESPACE,
-        PG_TYPE,
+        PG_AM, PG_AMOP, PG_AMPROC, PG_AUTHID, PG_CAST, PG_CLASS, PG_LANGUAGE, PG_NAMESPACE,
+        PG_OPCLASS, PG_OPERATOR, PG_OPFAMILY, PG_PROC, PG_TABLESPACE, PG_TYPE,
     };
     vec![
         (PG_CLASS, "relnamespace", PG_NAMESPACE),
@@ -736,6 +1113,7 @@ fn reference_columns() -> Vec<(Oid, &'static str, Oid)> {
         (PG_TYPE, "typoutput", PG_PROC),
         (PG_PROC, "pronamespace", PG_NAMESPACE),
         (PG_PROC, "proowner", PG_AUTHID),
+        (PG_PROC, "prolang", PG_LANGUAGE),
         (PG_PROC, "prorettype", PG_TYPE),
         (PG_OPERATOR, "oprnamespace", PG_NAMESPACE),
         (PG_OPERATOR, "oprowner", PG_AUTHID),
@@ -753,6 +1131,24 @@ fn reference_columns() -> Vec<(Oid, &'static str, Oid)> {
         (PG_TABLESPACE, "spcowner", PG_AUTHID),
         (oids::PG_DATABASE, "datdba", PG_AUTHID),
         (oids::PG_DATABASE, "dattablespace", PG_TABLESPACE),
+        (PG_OPFAMILY, "opfmethod", PG_AM),
+        (PG_OPFAMILY, "opfnamespace", PG_NAMESPACE),
+        (PG_OPFAMILY, "opfowner", PG_AUTHID),
+        (PG_OPCLASS, "opcmethod", PG_AM),
+        (PG_OPCLASS, "opcnamespace", PG_NAMESPACE),
+        (PG_OPCLASS, "opcowner", PG_AUTHID),
+        (PG_OPCLASS, "opcfamily", PG_OPFAMILY),
+        (PG_OPCLASS, "opcintype", PG_TYPE),
+        (PG_AMOP, "amopfamily", PG_OPFAMILY),
+        (PG_AMOP, "amoplefttype", PG_TYPE),
+        (PG_AMOP, "amoprighttype", PG_TYPE),
+        (PG_AMOP, "amopopr", PG_OPERATOR),
+        (PG_AMOP, "amopmethod", PG_AM),
+        (PG_AMPROC, "amprocfamily", PG_OPFAMILY),
+        (PG_AMPROC, "amproclefttype", PG_TYPE),
+        (PG_AMPROC, "amprocrighttype", PG_TYPE),
+        (PG_AMPROC, "amproc", PG_PROC),
+        (PG_LANGUAGE, "lanowner", PG_AUTHID),
     ]
 }
 
@@ -855,18 +1251,31 @@ mod tests {
     #[test]
     fn row_counts() {
         let n = |oid| initial_rows(oid, &params()).len();
-        assert_eq!(n(oids::PG_NAMESPACE), 3);
+        assert_eq!(n(oids::PG_NAMESPACE), 4);
         assert_eq!(n(oids::PG_AUTHID), 2);
         assert_eq!(n(oids::PG_TABLESPACE), 2);
         assert_eq!(n(oids::PG_AM), 2);
         assert_eq!(n(oids::PG_DATABASE), 3);
-        assert_eq!(n(oids::PG_CLASS), 13);
+        assert_eq!(n(oids::PG_CLASS), 22);
         assert_eq!(n(oids::PG_ATTRDEF), 0);
         assert_eq!(n(oids::PG_CONSTRAINT), 0);
         assert_eq!(n(oids::PG_TYPE), builtin::TYPES.len());
         assert_eq!(n(oids::PG_PROC), builtin::PROCS.len());
         assert_eq!(n(oids::PG_OPERATOR), builtin::OPERATORS.len());
         assert_eq!(n(oids::PG_CAST), builtin::CASTS.len());
+        assert_eq!(n(oids::PG_LANGUAGE), 3);
+        assert_eq!(n(oids::PG_OPFAMILY), opclass::OPFAMILIES.len());
+        assert_eq!(n(oids::PG_OPCLASS), opclass::OPCLASSES.len());
+        assert_eq!(n(oids::PG_AMOP), opclass::AMOPS.len());
+        assert_eq!(n(oids::PG_AMPROC), opclass::AMPROCS.len());
+        for empty in [
+            oids::PG_INDEX,
+            oids::PG_DEPEND,
+            oids::PG_SEQUENCE,
+            oids::PG_DESCRIPTION,
+        ] {
+            assert_eq!(n(empty), 0);
+        }
         let natts: usize = schema::CATALOGS.iter().map(|c| c.natts() + 6).sum();
         assert_eq!(n(oids::PG_ATTRIBUTE), natts);
     }
@@ -884,6 +1293,11 @@ mod tests {
             oids::PG_DATABASE,
             oids::PG_TABLESPACE,
             oids::PG_AM,
+            oids::PG_LANGUAGE,
+            oids::PG_OPFAMILY,
+            oids::PG_OPCLASS,
+            oids::PG_AMOP,
+            oids::PG_AMPROC,
         ] {
             let mut seen = HashSet::new();
             for row in initial_rows(catalog, &params()) {
@@ -1142,17 +1556,8 @@ mod tests {
     #[test]
     fn row_builders_for_user_tables() {
         let c = class_row(&ClassSpec {
-            oid: 16384,
-            name: "t",
-            namespace: 2200,
-            reltype: 0,
-            owner: 10,
-            relfilenode: 16384,
-            reltablespace: 0,
-            is_shared: false,
-            natts: 2,
             nchecks: 1,
-            replident: 'd',
+            ..ClassSpec::table(16384, "t", 2200, 10, 2)
         });
         assert_eq!(c.len(), 33);
         assert_eq!(get(&c, oids::PG_CLASS, "relreplident"), &Datum::Char(b'd'));
@@ -1165,6 +1570,7 @@ mod tests {
             not_null: false,
             has_default: false,
             catalog_column: false,
+            identity: None,
         })
         .expect("text is a built-in type");
         assert_eq!(
@@ -1179,6 +1585,7 @@ mod tests {
             not_null: true,
             has_default: true,
             catalog_column: false,
+            identity: None,
         })
         .expect("varchar");
         assert_eq!(get(&v, oids::PG_ATTRIBUTE, "atttypmod"), &Datum::Int4(14));
@@ -1192,13 +1599,14 @@ mod tests {
                 not_null: false,
                 has_default: false,
                 catalog_column: false,
+                identity: None,
             })
             .is_none()
         );
         assert_eq!(system_attribute_rows(16384, false).len(), 6);
         let d = attrdef_row(20000, 16384, 1, "1");
         assert_eq!(get(&d, oids::PG_ATTRDEF, "adbin"), &text("1"));
-        let k = check_constraint_row(20001, "t_a_check", 2200, 16384, "a > 0");
+        let k = check_constraint_row(20001, "t_a_check", 2200, 16384, "a > 0", false);
         assert_eq!(get(&k, oids::PG_CONSTRAINT, "contype"), &Datum::Char(b'c'));
         assert_eq!(
             get(&k, oids::PG_CONSTRAINT, "confupdtype"),
@@ -1207,5 +1615,183 @@ mod tests {
         assert!(get(&k, oids::PG_CONSTRAINT, "conkey").is_null());
         assert_eq!(get(&k, oids::PG_CONSTRAINT, "conbin"), &text("a > 0"));
         assert_eq!(cast_context_char(CastContext::Assignment), 'a');
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::many_single_char_names)]
+mod tests_m4 {
+    use super::*;
+    use crate::catalog::depend::{DependType, ObjectAddress};
+
+    fn get<'a>(row: &'a Row, catalog: Oid, column: &str) -> &'a Datum {
+        &row[column_index(catalog, column)]
+    }
+
+    #[test]
+    fn index_row_encodes_indoption_for_the_four_cases() {
+        for (desc, nulls_first, want) in [
+            (false, false, 0i16),
+            (true, true, 3),
+            (true, false, 1),
+            (false, true, 2),
+        ] {
+            let r = index_row(&IndexRowSpec {
+                index_oid: 20_000,
+                table_oid: 16_384,
+                unique: false,
+                primary: false,
+                key: &[3],
+                collations: &[0],
+                classes: &[1978],
+                options: &[i16::from(desc) | (i16::from(nulls_first) << 1)],
+            });
+            let p = oids::PG_INDEX;
+            assert_eq!(get(&r, p, "indoption"), &Datum::Int2Vector(vec![want]));
+            assert_eq!(get(&r, p, "indkey"), &Datum::Int2Vector(vec![3]));
+            assert_eq!(get(&r, p, "indclass"), &Datum::OidVector(vec![1978]));
+            assert_eq!(get(&r, p, "indimmediate"), &Datum::Bool(true));
+            assert_eq!(get(&r, p, "indnatts"), &Datum::Int2(1));
+            assert!(get(&r, p, "indexprs").is_null() && get(&r, p, "indpred").is_null());
+        }
+    }
+
+    #[test]
+    fn constraint_rows_follow_the_measured_values() {
+        let spec = |kind, cols: &'static [i16]| ConstraintRowSpec {
+            oid: 1,
+            name: "c",
+            namespace: 2200,
+            kind,
+            relid: 2,
+            index_oid: 3,
+            columns: cols,
+            check_sql: None,
+            no_inherit: false,
+        };
+        let c = oids::PG_CONSTRAINT;
+        let p = constraint_row(&spec(ConstraintKind::PrimaryKey, &[1, 2]));
+        assert_eq!(get(&p, c, "contype"), &Datum::Char(b'p'));
+        assert_eq!(get(&p, c, "connoinherit"), &Datum::Bool(true));
+        assert_eq!(get(&p, c, "conkey"), &Datum::Int2Vector(vec![1, 2]));
+        assert_eq!(get(&p, c, "conindid"), &Datum::Oid(3));
+        let u = constraint_row(&spec(ConstraintKind::Unique, &[2]));
+        assert_eq!(get(&u, c, "contype"), &Datum::Char(b'u'));
+        let k = check_constraint_row(1, "k", 2200, 2, "a > 0", false);
+        assert_eq!(get(&k, c, "connoinherit"), &Datum::Bool(false));
+        assert!(get(&k, c, "conkey").is_null());
+        assert_eq!(get(&k, c, "conindid"), &Datum::Oid(0));
+    }
+
+    #[test]
+    fn depend_sequence_and_class_rows() {
+        let d = depend_row(&NewDepend {
+            dependent: ObjectAddress::attrdef(5),
+            referenced: ObjectAddress::column(6, 2),
+            deptype: DependType::Auto,
+        });
+        let p = oids::PG_DEPEND;
+        assert_eq!(get(&d, p, "classid"), &Datum::Oid(2604));
+        assert_eq!(get(&d, p, "refobjsubid"), &Datum::Int4(2));
+        assert_eq!(get(&d, p, "deptype"), &Datum::Char(b'a'));
+        let params = SequenceParams {
+            type_oid: oid::INT4,
+            start: 1,
+            increment: 1,
+            min: 1,
+            max: 2_147_483_647,
+            cache: 1,
+            cycle: false,
+            owned_by: None,
+        };
+        let s = sequence_row(9, &params);
+        assert_eq!(
+            get(&s, oids::PG_SEQUENCE, "seqmax"),
+            &Datum::Int8(2_147_483_647)
+        );
+        assert_eq!(sequence_attribute_rows(9).len(), 9);
+        // relkind drives relam and the frozen XIDs
+        let c = oids::PG_CLASS;
+        let mk = |kind| {
+            class_row(&ClassSpec {
+                kind,
+                ..ClassSpec::table(1, "x", 2200, 10, 1)
+            })
+        };
+        let (t, i, q) = (
+            mk(RelKind::Table),
+            mk(RelKind::Index),
+            mk(RelKind::Sequence),
+        );
+        assert_eq!(get(&t, c, "relam"), &Datum::Oid(2));
+        assert_eq!(get(&i, c, "relam"), &Datum::Oid(403));
+        assert_eq!(get(&q, c, "relam"), &Datum::Oid(0));
+        assert_eq!(get(&i, c, "relkind"), &Datum::Char(b'i'));
+        assert_eq!(get(&q, c, "relfrozenxid"), &Datum::Xid(0));
+        assert_eq!(get(&t, c, "relfrozenxid"), &Datum::Xid(3));
+    }
+
+    #[test]
+    fn identity_is_written_to_attidentity() {
+        let r = attribute_row(&AttributeSpec {
+            relid: 1,
+            name: "id",
+            attnum: 1,
+            ty: SqlType::INT4,
+            not_null: true,
+            has_default: false,
+            catalog_column: false,
+            identity: Some(IdentityKind::Always),
+        })
+        .unwrap();
+        assert_eq!(
+            get(&r, oids::PG_ATTRIBUTE, "attidentity"),
+            &Datum::Char(b'a')
+        );
+    }
+
+    #[test]
+    fn language_and_generated_rows() {
+        let p = InitParams {
+            superuser: "postgres".into(),
+        };
+        let langs = initial_rows(oids::PG_LANGUAGE, &p);
+        let names: Vec<_> = langs
+            .iter()
+            .map(|r| get(r, oids::PG_LANGUAGE, "lanname").clone())
+            .collect();
+        assert_eq!(names, [text("internal"), text("c"), text("sql")]);
+        assert_eq!(
+            get(&langs[2], oids::PG_LANGUAGE, "lanpltrusted"),
+            &Datum::Bool(true)
+        );
+        // oid order, and every class belongs to an existing family
+        let fam: Vec<Oid> = initial_rows(oids::PG_OPFAMILY, &p)
+            .iter()
+            .map(|r| oid_of(&r[0]))
+            .collect();
+        let classes = initial_rows(oids::PG_OPCLASS, &p);
+        let mut sorted: Vec<Oid> = classes.iter().map(|r| oid_of(&r[0])).collect();
+        let before = sorted.clone();
+        sorted.sort_unstable();
+        assert_eq!(before, sorted);
+        for r in &classes {
+            assert!(fam.contains(&oid_of(get(r, oids::PG_OPCLASS, "opcfamily"))));
+        }
+        let amop = initial_rows(oids::PG_AMOP, &p);
+        assert_eq!(oid_of(&amop[0][0]), 10_000);
+        assert_eq!(
+            get(&amop[0], oids::PG_AMOP, "amoppurpose"),
+            &Datum::Char(b's')
+        );
+        let dangling = dangling_references(&p);
+        assert!(dangling.is_empty(), "{dangling:?}");
+    }
+
+    fn oid_of(d: &Datum) -> Oid {
+        match d {
+            Datum::Oid(o) => *o,
+            _ => 0,
+        }
     }
 }

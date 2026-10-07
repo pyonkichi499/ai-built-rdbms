@@ -1,0 +1,373 @@
+-- case arith
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a = 1 + 2
+-- build
+Project [#0:t.a]
+  Filter (#0:t.a = (1 + 2))
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Project [#0:t.a]
+  Filter (#0:t.a = 3)
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case and_false_short_circuit
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select 1 where false and 1/0 = 1
+-- build
+Project [#0 := 1]
+  Filter (false AND ((1 / 0) = 1))
+    Result
+-- const_fold
+Empty
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case filter_false
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where false
+-- build
+Project [#0:t.a]
+  Filter false
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Empty
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case or_true_no_error
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a > 1 or true
+-- build
+Project [#0:t.a]
+  Filter ((#0:t.a > 1) OR true)
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Project [#0:t.a]
+  Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case not_negator
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where not (a > 1)
+-- build
+Project [#0:t.a]
+  Filter (NOT (#0:t.a > 1))
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Project [#0:t.a]
+  Filter (#0:t.a <= 1)
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case case_true
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select case when true then 1 else 1/0 end
+-- build
+Project [#0 := CASE WHEN true THEN 1 ELSE (1 / 0) END]
+  Result
+-- const_fold
+Project [#0 := 1]
+  Result
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case coalesce_lazy
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select coalesce(1, 1/0)
+-- build
+Project [#0 := COALESCE(1, (1 / 0))]
+  Result
+-- const_fold
+Project [#0 := 1]
+  Result
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case dup_conjunct
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a is not null and a is not null
+-- build
+Project [#0:t.a]
+  Filter ((#0:t.a IS NOT NULL) AND (#0:t.a IS NOT NULL))
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Project [#0:t.a]
+  Filter (#0:t.a IS NOT NULL)
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case exists_empty
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where exists (select 1 from u where false)
+-- build
+Project [#0:t.a]
+  Filter {SubLink Exists}
+    ~ Project [#6 := 1]
+        Filter false
+          Get u [#3:u.a #4:u.d #5:u.e]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Empty
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case agg_having_false
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select count(*) from t having false
+-- build
+Project [#3:count]
+  Filter false
+    Aggregate group=[] aggs=[#3 := count(*)]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Empty
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case limit_zero_stays
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t limit 0
+-- build
+Limit limit=CAST(0 AS bigint)
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Limit limit=0
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case const_sort_key
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t order by 1 + 1
+-- build
+Project [#0:t.a]
+  Sort [#3:?column? ASC NULLS LAST]
+    Project [#0:t.a #3 := (1 + 1)]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Project [#0:t.a]
+  Project [#0:t.a #3 := 2]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a]
+  Get t [#0:t.a #1:t.b #2:t.c]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case div_by_zero_where_a
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select a from t where a = 1 or 1/0 = 1
+-- error
+22012 division by zero
+-- case div_by_zero_unused
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table v(x int4, y int4);
+create table p(id int4 primary key, v int4);
+-- sql
+select 1/0 where false
+-- error
+22012 division by zero

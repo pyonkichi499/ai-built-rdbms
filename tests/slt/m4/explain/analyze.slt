@@ -46,12 +46,22 @@ Seq Scan on ex_a_t (actual rows=0 loops=1)
   Filter: (b > 100)
   Rows Removed by Filter: 100
 
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+skipif yuzhu
 query T
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE a = 5
 ----
 Seq Scan on ex_a_t (actual rows=1 loops=1)
   Filter: (a = 5)
   Rows Removed by Filter: 99
+
+# KNOWN-DIFF: KD-25
+onlyif yuzhu
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE a = 5
+----
+Index Scan using ex_a_t_pkey on ex_a_t (actual rows=1 loops=1)
+  Index Cond: (a = 5)
 
 query T
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE b > 5 LIMIT 3
@@ -111,6 +121,8 @@ statement ok
 RESET enable_mergejoin
 
 # 実行されない InitPlan
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+skipif yuzhu
 query T
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE a < 0 AND b = (SELECT count(*) FROM ex_a_u)
 ----
@@ -121,7 +133,21 @@ Seq Scan on ex_a_t (actual rows=0 loops=1)
     ->  Aggregate (never executed)
           ->  Seq Scan on ex_a_u (never executed)
 
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+onlyif yuzhu
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT * FROM ex_a_t WHERE a < 0 AND b = (SELECT count(*) FROM ex_a_u)
+----
+Index Scan using ex_a_t_pkey on ex_a_t (actual rows=0 loops=1)
+  Index Cond: (a < 0)
+  Filter: (b = (InitPlan 1).col1)
+  InitPlan 1
+    ->  Aggregate (never executed)
+          ->  Seq Scan on ex_a_u (never executed)
+
 # 副問い合わせ
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+skipif yuzhu
 query T
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT a, (SELECT count(*) FROM ex_a_u WHERE ex_a_u.a = ex_a_t.a) FROM ex_a_t WHERE a <= 3
 ----
@@ -133,6 +159,18 @@ Seq Scan on ex_a_t (actual rows=3 loops=1)
           ->  Seq Scan on ex_a_u (actual rows=4 loops=3)
                 Filter: (a = ex_a_t.a)
                 Rows Removed by Filter: 196
+
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+onlyif yuzhu
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT a, (SELECT count(*) FROM ex_a_u WHERE ex_a_u.a = ex_a_t.a) FROM ex_a_t WHERE a <= 3
+----
+Index Scan using ex_a_t_pkey on ex_a_t (actual rows=3 loops=1)
+  Index Cond: (a <= 3)
+  SubPlan 1
+    ->  Aggregate (actual rows=1 loops=3)
+          ->  Index Scan using ex_a_u_a_idx on ex_a_u (actual rows=4 loops=3)
+                Index Cond: (a = ex_a_t.a)
 
 # DML は実際に書く
 query T
@@ -148,6 +186,8 @@ SELECT count(*) FROM ex_a_u
 ----
 210
 
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+skipif yuzhu
 query T
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) UPDATE ex_a_t SET b = 99 WHERE a <= 5
 ----
@@ -155,6 +195,15 @@ Update on ex_a_t (actual rows=0 loops=1)
   ->  Seq Scan on ex_a_t (actual rows=5 loops=1)
         Filter: (a <= 5)
         Rows Removed by Filter: 95
+
+# KNOWN-DIFF: KD-25 小さな表でも yuzhu は索引を使う（PostgreSQL は Seq Scan）
+onlyif yuzhu
+query T
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) UPDATE ex_a_t SET b = 99 WHERE a <= 5
+----
+Update on ex_a_t (actual rows=0 loops=1)
+  ->  Index Scan using ex_a_t_pkey on ex_a_t (actual rows=5 loops=1)
+        Index Cond: (a <= 5)
 
 query I
 SELECT count(*) FROM ex_a_t WHERE b = 99

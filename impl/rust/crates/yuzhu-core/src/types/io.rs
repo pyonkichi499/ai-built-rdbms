@@ -40,10 +40,10 @@ pub fn output_text(d: &Datum, ty: SqlType) -> Option<String> {
 /// The output depends only on the datum variant; `ty` is accepted so that
 /// future types (numeric scale, timestamps, ...) can use it.
 pub fn output_text_with(d: &Datum, ty: SqlType, opts: &OutputOpts) -> Option<String> {
-    let _ = ty;
     let efd = opts.extra_float_digits;
     Some(match d {
-        Datum::Null => return None,
+        // 日時の出力は `TypeEnv` が要る。T2 が `output_text` の TypeEnv 版で実装するまでは None。
+        Datum::Null | Datum::Date(_) | Datum::Timestamp(_) | Datum::TimestampTz(_) => return None,
         Datum::Bool(b) => if *b { "t" } else { "f" }.to_owned(),
         Datum::Int2(v) => v.to_string(),
         Datum::Int4(v) => v.to_string(),
@@ -51,7 +51,14 @@ pub fn output_text_with(d: &Datum, ty: SqlType, opts: &OutputOpts) -> Option<Str
         Datum::Float4(v) => float4_out_with(*v, efd),
         Datum::Float8(v) => float8_out_with(*v, efd),
         Datum::Numeric(n) => n.to_string(),
-        Datum::Text(s) => s.clone(),
+        Datum::Text(s) | Datum::BpChar(s) => s.clone(),
+        Datum::Int2Vector(v) if ty.oid == oid::INT2_ARRAY => {
+            format!(
+                "{{{}}}",
+                v.iter().map(i16::to_string).collect::<Vec<_>>().join(",")
+            )
+        }
+        Datum::Int2Vector(v) => v.iter().map(i16::to_string).collect::<Vec<_>>().join(" "),
         Datum::Oid(_)
         | Datum::Char(_)
         | Datum::Xid(_)
@@ -207,6 +214,7 @@ pub fn input_text(s: &str, ty: SqlType) -> Result<Datum> {
         oid::FLOAT4 => float4_in(s).map(Datum::Float4),
         oid::FLOAT8 => float8_in(s).map(Datum::Float8),
         oid::NUMERIC => Ok(Datum::Numeric(yuzhu_numeric::Numeric::parse(s)?)),
+        oid::BPCHAR => Ok(super::bpchar::bpchar_in(s)),
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => Ok(Datum::Text(s.to_owned())),
         oid::NAME => Ok(Datum::Text(truncate_identifier(s).to_owned())),
         t if super::sys::handles(t) => super::sys::input_text(s, ty),
@@ -769,5 +777,224 @@ mod tests {
             panic!()
         };
         assert_eq!(n.len(), 63);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `TypeEnv` を受け取る版（`m4/09-types-functions.md` §3.4）。日時型の入出力、reg* の名前表示、
+// `input_text_typed`。TypeEnv 版への置き換えが終わったら `input_text` / `output_text` の名前に戻す。
+// ---------------------------------------------------------------------------
+
+/// `input_text` の `TypeEnv` 版。日時型は `env.datetime`（DateStyle・TimeZone・`now`）に従う。
+/// `ty.typmod` は無視する（typmod は `apply_typmod` で別に適用する。`input_text_typed` を使うと両方行う）。
+pub fn input_text_env(s: &str, ty: SqlType, env: &super::TypeEnv<'_>) -> Result<Datum> {
+    match ty.oid {
+        oid::DATE => super::datetime::date_in(s, env),
+        oid::TIMESTAMP => super::datetime::timestamp_in(s, -1, env),
+        oid::TIMESTAMPTZ => super::datetime::timestamptz_in(s, -1, env),
+        _ => input_text(s, ty),
+    }
+}
+
+/// 入力関数 + typmod の適用（代入の意味）。COPY、Extended Query のテキストパラメータが使う。
+pub fn input_text_typed(s: &str, ty: SqlType, env: &super::TypeEnv<'_>) -> Result<Datum> {
+    let d = input_text_env(s, ty, env)?;
+    super::typmod::apply_typmod(d, ty, false)
+}
+
+/// アナライザが unknown リテラルを `TypeEnv::default()` で即座に評価してよい型か。
+/// 日時型は DateStyle・TimeZone・`now` に依存するので `false`（プランナの定数畳み込みが評価する。D-9-3）。
+pub fn input_is_eager(type_oid: Oid) -> bool {
+    !matches!(type_oid, oid::DATE | oid::TIMESTAMP | oid::TIMESTAMPTZ)
+}
+
+/// `output_text` の `TypeEnv` 版。`extra_float_digits`、日時の出力形式、reg* の名前表示に従う。
+/// NULL と、出力できない値（日時の範囲外・`env.datetime` なし。通常は起きない）は `None`。
+/// 失敗の理由が要るときは [`try_output_text_env`]。
+pub fn output_text_env(d: &Datum, ty: SqlType, env: &super::TypeEnv<'_>) -> Option<String> {
+    try_output_text_env(d, ty, env).ok().flatten()
+}
+
+/// [`output_text_env`] でエラーを返す版（日時が範囲外・`env.datetime` なしのとき）。
+pub fn try_output_text_env(
+    d: &Datum,
+    ty: SqlType,
+    env: &super::TypeEnv<'_>,
+) -> Result<Option<String>> {
+    if let Some(r) = super::datetime::output_any(d, env) {
+        return r.map(Some);
+    }
+    if let (Datum::Oid(v), Some(names)) = (d, env.names) {
+        let name = match ty.oid {
+            oid::REGCLASS => Some(names.class_name(*v)),
+            oid::REGTYPE => Some(names.type_name(*v)),
+            oid::REGPROC => Some(names.proc_name(*v)),
+            oid::REGNAMESPACE => Some(names.namespace_name(*v)),
+            _ => None,
+        };
+        if let Some(name) = name {
+            return Ok(Some(match (*v, name) {
+                (0, _) => "-".to_owned(),
+                (_, Some(n)) => n,
+                (v, None) => v.to_string(),
+            }));
+        }
+    }
+    let opts = OutputOpts {
+        extra_float_digits: env.extra_float_digits,
+    };
+    Ok(output_text_with(d, ty, &opts))
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+    use crate::types::{OidNames, TypeEnv, typmod};
+    use yuzhu_datetime::{DateTimeEnv, TimeZone, ZoneDb};
+
+    #[derive(Debug)]
+    struct Names;
+    impl OidNames for Names {
+        fn class_oid(&self, _: &str) -> Result<Oid> {
+            Ok(1259)
+        }
+        fn class_name(&self, oid: Oid) -> Option<String> {
+            (oid == 1259).then(|| "pg_class".to_owned())
+        }
+        fn type_oid(&self, _: &str) -> Result<Oid> {
+            Ok(23)
+        }
+        fn type_name(&self, oid: Oid) -> Option<String> {
+            (oid == 23).then(|| "integer".to_owned())
+        }
+        fn proc_name(&self, oid: Oid) -> Option<String> {
+            (oid == 1299).then(|| "now".to_owned())
+        }
+    }
+
+    #[test]
+    fn datetime_roundtrip_through_io() {
+        let tz = TimeZone::utc();
+        let zones = ZoneDb::without_tzdata();
+        let env = TypeEnv {
+            datetime: Some(DateTimeEnv::new(&tz, &zones)),
+            ..TypeEnv::default()
+        };
+        for (ty, text) in [
+            (SqlType::DATE, "2024-01-31"),
+            (SqlType::TIMESTAMP, "2024-01-31 10:20:30.25"),
+            (SqlType::TIMESTAMPTZ, "2024-01-31 10:20:30+00"),
+            (SqlType::DATE, "infinity"),
+            (SqlType::TIMESTAMP, "-infinity"),
+        ] {
+            let d = input_text_env(text, ty, &env).unwrap();
+            assert_eq!(output_text_env(&d, ty, &env).as_deref(), Some(text));
+        }
+        assert!(!input_is_eager(oid::DATE));
+        assert!(!input_is_eager(oid::TIMESTAMP));
+        assert!(!input_is_eager(oid::TIMESTAMPTZ));
+        assert!(input_is_eager(oid::NUMERIC));
+        assert!(input_is_eager(oid::BPCHAR));
+        // typmod は input_text_typed だけが適用する。
+        let ty = SqlType::new(oid::TIMESTAMP, 0);
+        let plain = input_text_env("2024-01-01 10:00:00.6", ty, &env).unwrap();
+        assert_eq!(
+            output_text_env(&plain, ty, &env).as_deref(),
+            Some("2024-01-01 10:00:00.6")
+        );
+        let typed = input_text_typed("2024-01-01 10:00:00.6", ty, &env).unwrap();
+        assert_eq!(
+            output_text_env(&typed, ty, &env).as_deref(),
+            Some("2024-01-01 10:00:01")
+        );
+        let ty = SqlType::new(oid::BPCHAR, typmod::typmod_in(oid::BPCHAR, &[3]).unwrap());
+        let d = input_text_typed("ab", ty, &env).unwrap();
+        assert_eq!(d, Datum::BpChar("ab ".into()));
+        assert_eq!(
+            input_text_typed("abcd", ty, &env)
+                .unwrap_err()
+                .sqlstate
+                .code(),
+            "22001"
+        );
+        // 日時の環境がなければ内部エラー。
+        let e = input_text_env("2024-01-01", SqlType::DATE, &TypeEnv::default()).unwrap_err();
+        assert_eq!(e.sqlstate.code(), "XX000");
+    }
+
+    #[test]
+    fn bpchar_and_numeric_input_output() {
+        let env = TypeEnv::default();
+        let d = input_text_env(" a b ", SqlType::BPCHAR, &env).unwrap();
+        assert_eq!(d, Datum::BpChar(" a b ".into()));
+        assert_eq!(
+            output_text_env(&d, SqlType::BPCHAR, &env).as_deref(),
+            Some(" a b ")
+        );
+        let n = input_text_env("1.50", SqlType::NUMERIC, &env).unwrap();
+        assert_eq!(
+            output_text_env(&n, SqlType::NUMERIC, &env).as_deref(),
+            Some("1.50")
+        );
+        assert_eq!(output_text_env(&Datum::Null, SqlType::INT4, &env), None);
+    }
+
+    #[test]
+    fn extra_float_digits_follow_env() {
+        let env = TypeEnv {
+            extra_float_digits: 0,
+            ..TypeEnv::default()
+        };
+        let d = Datum::Float8(0.1 + 0.2);
+        assert_eq!(
+            output_text_env(&d, SqlType::FLOAT8, &env).as_deref(),
+            Some("0.3")
+        );
+        let env = TypeEnv::default();
+        assert_eq!(
+            output_text_env(&d, SqlType::FLOAT8, &env).as_deref(),
+            Some("0.30000000000000004")
+        );
+    }
+
+    #[test]
+    fn reg_types_use_names() {
+        let names = Names;
+        let env = TypeEnv {
+            names: Some(&names),
+            ..TypeEnv::default()
+        };
+        let o = |v| Datum::Oid(v);
+        assert_eq!(
+            output_text_env(&o(1259), SqlType::REGCLASS, &env).as_deref(),
+            Some("pg_class")
+        );
+        assert_eq!(
+            output_text_env(&o(23), SqlType::REGTYPE, &env).as_deref(),
+            Some("integer")
+        );
+        assert_eq!(
+            output_text_env(&o(1299), SqlType::of(oid::REGPROC), &env).as_deref(),
+            Some("now")
+        );
+        // 存在しない OID は数字、0 は `-`。
+        assert_eq!(
+            output_text_env(&o(99_999_999), SqlType::REGCLASS, &env).as_deref(),
+            Some("99999999")
+        );
+        assert_eq!(
+            output_text_env(&o(0), SqlType::REGCLASS, &env).as_deref(),
+            Some("-")
+        );
+        // names なしなら数字。
+        assert_eq!(
+            output_text_env(&o(1259), SqlType::REGCLASS, &TypeEnv::default()).as_deref(),
+            Some("1259")
+        );
+        // oid 型自身は名前を引かない。
+        assert_eq!(
+            output_text_env(&o(1259), SqlType::OID, &env).as_deref(),
+            Some("1259")
+        );
     }
 }

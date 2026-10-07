@@ -11,6 +11,7 @@ use super::{CatalogReader, FnKind};
 use crate::error::Result;
 use crate::executor::{RuntimeInfo, SessionInfo};
 use crate::types::funcs;
+use crate::types::numeric;
 use crate::types::ops::{self, BuiltinFn};
 use crate::types::{Datum, Oid, oid};
 
@@ -84,6 +85,9 @@ pub enum CastMethod {
     Binary,
     /// `i`: via the source type's output and target type's input functions.
     InOut,
+    /// TypeEnv（TimeZone・now・regclass の名前）を使う変換。stable なので定数畳み込みしない
+    /// （`m4/09-types-functions.md` D-9-4、11 §7.1 の C-14）。
+    Env(fn(&[Datum], &crate::types::TypeEnv<'_>) -> Result<Datum>),
 }
 
 /// A row of `pg_cast`.
@@ -245,6 +249,7 @@ pub static TYPES: &[BuiltinType] = &[
     ty(1010, "_tid", -1, false, 'b', 'A', false, ',', 0, 27, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1011, "_xid", -1, false, 'b', 'A', false, ',', 0, 28, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1012, "_cid", -1, false, 'b', 'A', false, ',', 0, 29, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
+    ty(1006, "_int2vector", -1, false, 'b', 'A', false, ',', 0, 22, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1013, "_oidvector", -1, false, 'b', 'A', false, ',', 0, 30, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1028, "_oid", -1, false, 'b', 'A', false, ',', 0, 26, 0, ("array_in", 750), ("array_out", 751), 'i', 'x', 0),
     ty(1033, "aclitem", 16, false, 'b', 'U', false, ',', 0, 0, 1034, ("aclitemin", 1031), ("aclitemout", 1032), 'd', 'p', 0),
@@ -262,6 +267,19 @@ pub static TYPES: &[BuiltinType] = &[
     ty(2281, "internal", 8, true, 'p', 'P', false, ',', 0, 0, 0, ("internal_in", 2304), ("internal_out", 2305), 'd', 'p', 0),
     ty(2776, "anynonarray", 4, true, 'p', 'P', false, ',', 0, 0, 0, ("anynonarray_in", 2777), ("anynonarray_out", 2778), 'i', 'p', 0),
     ty(2842, "pg_authid", -1, false, 'c', 'C', false, ',', 1260, 0, 10057, ("record_in", 2290), ("record_out", 2291), 'd', 'x', 0),
+    // ===== region: numeric (T1) =====
+    // ===== region: datetime-bpchar (T2) =====
+    ty(1042, "bpchar", -1, false, 'b', 'S', false, ',', 0, 0, 1014, ("bpcharin", 1044), ("bpcharout", 1045), 'i', 'x', 100),
+    ty(1114, "timestamp", 8, true, 'b', 'D', false, ',', 0, 0, 1115, ("timestamp_in", 1312), ("timestamp_out", 1313), 'd', 'p', 0),
+    // ===== region: agg-set-sys (T3) =====
+    ty(22, "int2vector", -1, false, 'b', 'A', false, ',', 0, 21, 1006, ("int2vectorin", 40), ("int2vectorout", 41), 'i', 'p', 0),
+    ty(2205, "regclass", 4, true, 'b', 'N', false, ',', 0, 0, 2210, ("regclassin", 2218), ("regclassout", 2219), 'i', 'p', 0),
+    ty(2206, "regtype", 4, true, 'b', 'N', false, ',', 0, 0, 2211, ("regtypein", 2220), ("regtypeout", 2221), 'i', 'p', 0),
+    ty(4089, "regnamespace", 4, true, 'b', 'N', false, ',', 0, 0, 4090, ("regnamespacein", 4084), ("regnamespaceout", 4085), 'i', 'p', 0),
+    // ===== region: sequence (Q1) =====
+    // ===== region: btree-procs (B2) =====
+    // ===== region: explain-deparse (E1) =====
+    // ===== region: misc (C1) =====
 ];
 
 /// OID of `numeric` (not implemented yet; see `TYPES`).
@@ -293,6 +311,13 @@ pub fn is_supported_type(t: Oid) -> bool {
             | oid::NUMERIC
             | oid::TEXT
             | oid::VARCHAR
+            | oid::BPCHAR
+            | oid::DATE
+            | oid::TIMESTAMP
+            | oid::TIMESTAMPTZ
+            | oid::REGCLASS
+            | oid::REGTYPE
+            | oid::REGNAMESPACE
             | oid::NAME
             | oid::UNKNOWN
             | oid::OID
@@ -301,6 +326,7 @@ pub fn is_supported_type(t: Oid) -> bool {
             | oid::XID
             | oid::CID
             | oid::OIDVECTOR
+            | oid::INT2VECTOR
             | oid::PG_NODE_TREE
             | oid::INT4_ARRAY
             | oid::VOID
@@ -315,7 +341,6 @@ pub fn is_null_only_type(t: Oid) -> bool {
         t,
         oid::ACLITEM
             | oid::ACLITEM_ARRAY
-            | oid::TIMESTAMPTZ
             | oid::ANYARRAY
             | oid::TEXT_ARRAY
             | oid::INT2_ARRAY
@@ -333,7 +358,7 @@ const fn cast(
     func_oid: Oid,
 ) -> BuiltinCast {
     let pg_method = match method {
-        CastMethod::Function(_) => 'f',
+        CastMethod::Function(_) | CastMethod::Env(_) => 'f',
         CastMethod::Binary => 'b',
         CastMethod::InOut => 'i',
     };
@@ -541,6 +566,16 @@ pub static CASTS: &[BuiltinCast] = &[
     cast_fn(oid::REGPROC, oid::INT8, CastContext::Assignment, ops::oid_to_int8, 1288),
     cast(oid::OID, oid::REGPROC, CastContext::Implicit, CastMethod::Binary, 0),
     cast(oid::REGPROC, oid::OID, CastContext::Implicit, CastMethod::Binary, 0),
+    cast(oid::OID, oid::REGCLASS, CastContext::Implicit, CastMethod::Binary, 0),
+    cast(oid::REGCLASS, oid::OID, CastContext::Implicit, CastMethod::Binary, 0),
+    cast(oid::OID, oid::REGTYPE, CastContext::Implicit, CastMethod::Binary, 0),
+    cast(oid::REGTYPE, oid::OID, CastContext::Implicit, CastMethod::Binary, 0),
+    cast(oid::OID, oid::REGNAMESPACE, CastContext::Implicit, CastMethod::Binary, 0),
+    cast(oid::REGNAMESPACE, oid::OID, CastContext::Implicit, CastMethod::Binary, 0),
+    cast_bin(oid::INT4, oid::REGCLASS, CastContext::Implicit, ops::int_to_oid),
+    cast(oid::TEXT, oid::REGCLASS, CastContext::Implicit, CastMethod::Env(cast_text_to_regclass), 1079),
+    cast_bin(oid::INT4, oid::REGTYPE, CastContext::Implicit, ops::int_to_oid),
+    cast_bin(oid::INT4, oid::REGNAMESPACE, CastContext::Implicit, ops::int_to_oid),
     // "char"
     cast_fn(oid::CHAR, oid::INT4, CastContext::Explicit, ops::char_to_int4, 77),
     cast_fn(oid::INT4, oid::CHAR, CastContext::Explicit, ops::int4_to_char, 78),
@@ -550,6 +585,30 @@ pub static CASTS: &[BuiltinCast] = &[
     cast_fn(oid::VARCHAR, oid::CHAR, CastContext::Assignment, ops::text_to_char, 944),
     // pg_node_tree holds text.
     cast(oid::PG_NODE_TREE, oid::TEXT, CastContext::Implicit, CastMethod::Binary, 0),
+    // ===== region: numeric (T1) =====
+    // ===== region: datetime-bpchar (T2) =====
+    // bpchar
+    cast_bin(oid::TEXT, oid::BPCHAR, CastContext::Implicit, crate::types::bpchar::text_to_bpchar),
+    cast_bin(oid::VARCHAR, oid::BPCHAR, CastContext::Implicit, crate::types::bpchar::text_to_bpchar),
+    cast_fn(oid::BPCHAR, oid::TEXT, CastContext::Implicit, crate::types::bpchar::bpchar_to_text, 401),
+    cast_fn(oid::BPCHAR, oid::VARCHAR, CastContext::Implicit, crate::types::bpchar::bpchar_to_text, 401),
+    cast_fn(oid::BPCHAR, oid::NAME, CastContext::Implicit, crate::types::bpchar::bpchar_to_name, 409),
+    cast_fn(oid::NAME, oid::BPCHAR, CastContext::Assignment, crate::types::bpchar::name_to_bpchar, 408),
+    cast_fn(oid::CHAR, oid::BPCHAR, CastContext::Assignment, crate::types::bpchar::char_to_bpchar, 860),
+    cast_fn(oid::BPCHAR, oid::CHAR, CastContext::Assignment, crate::types::bpchar::bpchar_to_char, 944),
+    cast_fn(oid::BOOL, oid::BPCHAR, CastContext::Assignment, crate::types::bpchar::bool_to_bpchar, 2971),
+    // date / timestamp / timestamptz（`Env` は TimeZone に依存する stable な変換）
+    cast_fn(oid::DATE, oid::TIMESTAMP, CastContext::Implicit, crate::types::datetime::cast_date_to_timestamp, 2024),
+    cast_fn(oid::TIMESTAMP, oid::DATE, CastContext::Assignment, crate::types::datetime::cast_timestamp_to_date, 2029),
+    cast(oid::DATE, oid::TIMESTAMPTZ, CastContext::Implicit, CastMethod::Env(crate::types::datetime::cast_date_to_timestamptz), 1174),
+    cast(oid::TIMESTAMP, oid::TIMESTAMPTZ, CastContext::Implicit, CastMethod::Env(crate::types::datetime::cast_timestamp_to_timestamptz), 2028),
+    cast(oid::TIMESTAMPTZ, oid::TIMESTAMP, CastContext::Assignment, CastMethod::Env(crate::types::datetime::cast_timestamptz_to_timestamp), 2027),
+    cast(oid::TIMESTAMPTZ, oid::DATE, CastContext::Assignment, CastMethod::Env(crate::types::datetime::cast_timestamptz_to_date), 1178),
+    // ===== region: agg-set-sys (T3) =====
+    // ===== region: sequence (Q1) =====
+    // ===== region: btree-procs (B2) =====
+    // ===== region: explain-deparse (E1) =====
+    // ===== region: misc (C1) =====
 ];
 
 /// Built-in operators (`pg_operator`). Cross-width integer operators share
@@ -661,12 +720,12 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(1755, "<=", NUMERIC, NUMERIC, oid::BOOL, ops::cmp_le),
     op(1756, ">", NUMERIC, NUMERIC, oid::BOOL, ops::cmp_gt),
     op(1757, ">=", NUMERIC, NUMERIC, oid::BOOL, ops::cmp_ge),
-    op(1093, "=", DATE, DATE, oid::BOOL, ops::unsupported),
-    op(1094, "<>", DATE, DATE, oid::BOOL, ops::unsupported),
-    op(1095, "<", DATE, DATE, oid::BOOL, ops::unsupported),
-    op(1096, "<=", DATE, DATE, oid::BOOL, ops::unsupported),
-    op(1097, ">", DATE, DATE, oid::BOOL, ops::unsupported),
-    op(1098, ">=", DATE, DATE, oid::BOOL, ops::unsupported),
+    op(1093, "=", DATE, DATE, oid::BOOL, ops::cmp_eq),
+    op(1094, "<>", DATE, DATE, oid::BOOL, ops::cmp_ne),
+    op(1095, "<", DATE, DATE, oid::BOOL, ops::cmp_lt),
+    op(1096, "<=", DATE, DATE, oid::BOOL, ops::cmp_le),
+    op(1097, ">", DATE, DATE, oid::BOOL, ops::cmp_gt),
+    op(1098, ">=", DATE, DATE, oid::BOOL, ops::cmp_ge),
     op(1330, "=", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
     op(1331, "<>", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
     op(1332, "<", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
@@ -733,10 +792,10 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(1760, "*", NUMERIC, NUMERIC, NUMERIC, ops::numeric_mul),
     op(1761, "/", NUMERIC, NUMERIC, NUMERIC, ops::numeric_div),
     op(1762, "%", NUMERIC, NUMERIC, NUMERIC, ops::numeric_mod),
-    op(1100, "+", DATE, oid::INT4, DATE, ops::unsupported),
-    op(2555, "+", oid::INT4, DATE, DATE, ops::unsupported),
-    op(1099, "-", DATE, DATE, oid::INT4, ops::unsupported),
-    op(1101, "-", DATE, oid::INT4, DATE, ops::unsupported),
+    op(1100, "+", DATE, oid::INT4, DATE, crate::types::datetime::date_pli),
+    op(2555, "+", oid::INT4, DATE, DATE, crate::types::datetime::integer_pl_date),
+    op(1099, "-", DATE, DATE, oid::INT4, crate::types::datetime::date_mi),
+    op(1101, "-", DATE, oid::INT4, DATE, crate::types::datetime::date_mii),
     op(1337, "+", INTERVAL, INTERVAL, INTERVAL, ops::unsupported),
     op(1338, "-", INTERVAL, INTERVAL, INTERVAL, ops::unsupported),
     op(1583, "*", INTERVAL, oid::FLOAT8, INTERVAL, ops::unsupported),
@@ -827,6 +886,45 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(642, "!~", oid::TEXT, oid::TEXT, oid::BOOL, funcs::textregexne),
     op(1228, "~*", oid::TEXT, oid::TEXT, oid::BOOL, funcs::texticregexeq),
     op(1229, "!~*", oid::TEXT, oid::TEXT, oid::BOOL, funcs::texticregexne),
+    // ===== region: numeric (T1) =====
+    // ===== region: datetime-bpchar (T2) =====
+    // bpchar
+    op(1054, "=", oid::BPCHAR, oid::BPCHAR, oid::BOOL, ops::cmp_eq),
+    op(1057, "<>", oid::BPCHAR, oid::BPCHAR, oid::BOOL, ops::cmp_ne),
+    op(1058, "<", oid::BPCHAR, oid::BPCHAR, oid::BOOL, ops::cmp_lt),
+    op(1059, "<=", oid::BPCHAR, oid::BPCHAR, oid::BOOL, ops::cmp_le),
+    op(1060, ">", oid::BPCHAR, oid::BPCHAR, oid::BOOL, ops::cmp_gt),
+    op(1061, ">=", oid::BPCHAR, oid::BPCHAR, oid::BOOL, ops::cmp_ge),
+    op(1211, "~~", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharlike),
+    op(1212, "!~~", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharnlike),
+    op(1629, "~~*", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpchariclike),
+    op(1630, "!~~*", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharicnlike),
+    op(1055, "~", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharregexeq),
+    op(1056, "!~", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharregexne),
+    op(1234, "~*", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharicregexeq),
+    op(1235, "!~*", oid::BPCHAR, oid::TEXT, oid::BOOL, crate::types::bpchar::bpcharicregexne),
+    // timestamp / timestamptz
+    op(2060, "=", oid::TIMESTAMP, oid::TIMESTAMP, oid::BOOL, ops::cmp_eq),
+    op(2061, "<>", oid::TIMESTAMP, oid::TIMESTAMP, oid::BOOL, ops::cmp_ne),
+    op(2062, "<", oid::TIMESTAMP, oid::TIMESTAMP, oid::BOOL, ops::cmp_lt),
+    op(2063, "<=", oid::TIMESTAMP, oid::TIMESTAMP, oid::BOOL, ops::cmp_le),
+    op(2064, ">", oid::TIMESTAMP, oid::TIMESTAMP, oid::BOOL, ops::cmp_gt),
+    op(2065, ">=", oid::TIMESTAMP, oid::TIMESTAMP, oid::BOOL, ops::cmp_ge),
+    op(1320, "=", oid::TIMESTAMPTZ, oid::TIMESTAMPTZ, oid::BOOL, ops::cmp_eq),
+    op(1321, "<>", oid::TIMESTAMPTZ, oid::TIMESTAMPTZ, oid::BOOL, ops::cmp_ne),
+    op(1322, "<", oid::TIMESTAMPTZ, oid::TIMESTAMPTZ, oid::BOOL, ops::cmp_lt),
+    op(1323, "<=", oid::TIMESTAMPTZ, oid::TIMESTAMPTZ, oid::BOOL, ops::cmp_le),
+    op(1324, ">", oid::TIMESTAMPTZ, oid::TIMESTAMPTZ, oid::BOOL, ops::cmp_gt),
+    op(1325, ">=", oid::TIMESTAMPTZ, oid::TIMESTAMPTZ, oid::BOOL, ops::cmp_ge),
+    // ===== region: agg-set-sys (T3) =====
+    op(639, "~", oid::NAME, oid::TEXT, oid::BOOL, funcs::nameregexeq),
+    op(640, "!~", oid::NAME, oid::TEXT, oid::BOOL, funcs::nameregexne),
+    op(1226, "~*", oid::NAME, oid::TEXT, oid::BOOL, funcs::nameicregexeq),
+    op(1227, "!~*", oid::NAME, oid::TEXT, oid::BOOL, funcs::nameicregexne),
+    // ===== region: sequence (Q1) =====
+    // ===== region: btree-procs (B2) =====
+    // ===== region: explain-deparse (E1) =====
+    // ===== region: misc (C1) =====
 ];
 
 /// `(oid, oprcanmerge, oprcanhash)` for the operators of PostgreSQL 17 where
@@ -890,6 +988,13 @@ static OPERATOR_MERGE_HASH: &[(Oid, bool, bool)] = &[
     (3676, true, false),
     (3882, true, true),
     (5068, true, true),
+    // ===== region: numeric (T1) =====
+    // ===== region: datetime-bpchar (T2) =====
+    // ===== region: agg-set-sys (T3) =====
+    // ===== region: sequence (Q1) =====
+    // ===== region: btree-procs (B2) =====
+    // ===== region: explain-deparse (E1) =====
+    // ===== region: misc (C1) =====
 ];
 
 /// `(oprcanmerge, oprcanhash)` of the operator `oid`.
@@ -1022,8 +1127,8 @@ pub static OPERATOR_META: &[OperatorMeta] = &[
     OperatorMeta { oid: 632, proc_oid: 72, com: 634, negate: 633 },
     OperatorMeta { oid: 633, proc_oid: 73, com: 631, negate: 632 },
     OperatorMeta { oid: 634, proc_oid: 74, com: 632, negate: 631 },
-    OperatorMeta { oid: 641, proc_oid: 1244, com: 0, negate: 642 },
-    OperatorMeta { oid: 642, proc_oid: 1240, com: 0, negate: 641 },
+    OperatorMeta { oid: 641, proc_oid: 1254, com: 0, negate: 642 },
+    OperatorMeta { oid: 642, proc_oid: 1256, com: 0, negate: 641 },
     OperatorMeta { oid: 643, proc_oid: 659, com: 643, negate: 93 },
     OperatorMeta { oid: 654, proc_oid: 1258, com: 0, negate: 0 },
     OperatorMeta { oid: 660, proc_oid: 655, com: 662, negate: 663 },
@@ -1171,6 +1276,43 @@ pub static OPERATOR_META: &[OperatorMeta] = &[
     OperatorMeta { oid: 2802, proc_oid: 2792, com: 2801, negate: 2799 },
     OperatorMeta { oid: 3315, proc_oid: 3308, com: 3315, negate: 352 },
     OperatorMeta { oid: 3316, proc_oid: 3309, com: 0, negate: 353 },
+    // ===== region: numeric (T1) =====
+    // ===== region: datetime-bpchar (T2) =====
+    OperatorMeta { oid: 1054, proc_oid: 1048, com: 1054, negate: 1057 },
+    OperatorMeta { oid: 1055, proc_oid: 1658, com: 0, negate: 1056 },
+    OperatorMeta { oid: 1056, proc_oid: 1659, com: 0, negate: 1055 },
+    OperatorMeta { oid: 1057, proc_oid: 1053, com: 1057, negate: 1054 },
+    OperatorMeta { oid: 1058, proc_oid: 1049, com: 1060, negate: 1061 },
+    OperatorMeta { oid: 1059, proc_oid: 1050, com: 1061, negate: 1060 },
+    OperatorMeta { oid: 1060, proc_oid: 1051, com: 1058, negate: 1059 },
+    OperatorMeta { oid: 1061, proc_oid: 1052, com: 1059, negate: 1058 },
+    OperatorMeta { oid: 1211, proc_oid: 1631, com: 0, negate: 1212 },
+    OperatorMeta { oid: 1212, proc_oid: 1632, com: 0, negate: 1211 },
+    OperatorMeta { oid: 1234, proc_oid: 1656, com: 0, negate: 1235 },
+    OperatorMeta { oid: 1235, proc_oid: 1657, com: 0, negate: 1234 },
+    OperatorMeta { oid: 1320, proc_oid: 1152, com: 1320, negate: 1321 },
+    OperatorMeta { oid: 1321, proc_oid: 1153, com: 1321, negate: 1320 },
+    OperatorMeta { oid: 1322, proc_oid: 1154, com: 1324, negate: 1325 },
+    OperatorMeta { oid: 1323, proc_oid: 1155, com: 1325, negate: 1324 },
+    OperatorMeta { oid: 1324, proc_oid: 1157, com: 1322, negate: 1323 },
+    OperatorMeta { oid: 1325, proc_oid: 1156, com: 1323, negate: 1322 },
+    OperatorMeta { oid: 1629, proc_oid: 1660, com: 0, negate: 1630 },
+    OperatorMeta { oid: 1630, proc_oid: 1661, com: 0, negate: 1629 },
+    OperatorMeta { oid: 2060, proc_oid: 2052, com: 2060, negate: 2061 },
+    OperatorMeta { oid: 2061, proc_oid: 2053, com: 2061, negate: 2060 },
+    OperatorMeta { oid: 2062, proc_oid: 2054, com: 2064, negate: 2065 },
+    OperatorMeta { oid: 2063, proc_oid: 2055, com: 2065, negate: 2064 },
+    OperatorMeta { oid: 2064, proc_oid: 2057, com: 2062, negate: 2063 },
+    OperatorMeta { oid: 2065, proc_oid: 2056, com: 2063, negate: 2062 },
+    // ===== region: agg-set-sys (T3) =====
+    OperatorMeta { oid: 639, proc_oid: 79, com: 0, negate: 640 },
+    OperatorMeta { oid: 640, proc_oid: 1252, com: 0, negate: 639 },
+    OperatorMeta { oid: 1226, proc_oid: 1240, com: 0, negate: 1227 },
+    OperatorMeta { oid: 1227, proc_oid: 1241, com: 0, negate: 1226 },
+    // ===== region: sequence (Q1) =====
+    // ===== region: btree-procs (B2) =====
+    // ===== region: explain-deparse (E1) =====
+    // ===== region: misc (C1) =====
 ];
 
 /// Built-in functions (`pg_proc`). `current_database()` and
@@ -1187,6 +1329,8 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(1706, "sign", &[NUMERIC], NUMERIC, ops::numeric_sign),
     func(1730, "sqrt", &[NUMERIC], NUMERIC, ops::numeric_sqrt),
     func(1734, "ln", &[NUMERIC], NUMERIC, ops::numeric_ln),
+    func(1732, "exp", &[NUMERIC], NUMERIC, ops::numeric_exp),
+    func(2169, "power", &[NUMERIC, NUMERIC], NUMERIC, ops::numeric_power),
     func(1736, "log", &[NUMERIC, NUMERIC], NUMERIC, ops::numeric_log),
     func(1741, "log", &[NUMERIC], NUMERIC, ops::numeric_log10),
     func(1481, "log10", &[NUMERIC], NUMERIC, ops::numeric_log10),
@@ -1226,6 +1370,10 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(483, "int8", &[oid::FLOAT8], oid::INT8, ops::to_int8),
     func(311, "float8", &[oid::FLOAT4], oid::FLOAT8, ops::to_float8),
     func(312, "float4", &[oid::FLOAT8], oid::FLOAT4, ops::to_float4),
+    func(1783, "int2", &[oid::NUMERIC], oid::INT2, ops::numeric_to_int2),
+    func(1744, "int4", &[oid::NUMERIC], oid::INT4, ops::numeric_to_int4),
+    func(1779, "int8", &[oid::NUMERIC], oid::INT8, ops::numeric_to_int8),
+    func(1746, "float8", &[oid::NUMERIC], oid::FLOAT8, ops::numeric_to_float8),
     func(2557, "bool", &[oid::INT4], oid::BOOL, ops::int4_to_bool),
     func(2558, "int4", &[oid::BOOL], oid::INT4, ops::bool_to_int4),
     func(2971, "text", &[oid::BOOL], oid::TEXT, ops::bool_to_text),
@@ -1234,13 +1382,19 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(1400, "name", &[oid::VARCHAR], oid::NAME, ops::text_to_name),
     func(1401, "varchar", &[oid::NAME], oid::VARCHAR, ops::text_identity),
     ctx_func(1642, "pg_get_userbyid", &[oid::OID], oid::NAME, pg_get_userbyid),
+    ctx_func(3494, "to_regclass", &[oid::TEXT], oid::REGCLASS, to_regclass),
+    ctx_func(3493, "to_regtype", &[oid::TEXT], oid::REGTYPE, to_regtype),
     func(1597, "pg_encoding_to_char", &[oid::INT4], oid::NAME, ops::pg_encoding_to_char),
     func(2176, "array_length", &[oid::ANYARRAY, oid::INT4], oid::INT4, ops::array_unsupported),
     func(395, "array_to_string", &[oid::ANYARRAY, oid::TEXT], oid::TEXT, ops::array_unsupported),
     ctx_func(2079, "pg_table_is_visible", &[oid::OID], oid::BOOL, pg_table_is_visible),
     nonstrict_func(1081, "format_type", &[oid::OID, oid::INT4], oid::TEXT, format_type),
-    func(1716, "pg_get_expr", &[oid::PG_NODE_TREE, oid::OID], oid::TEXT, ops::pg_get_expr),
+    ctx_func(1716, "pg_get_expr", &[oid::PG_NODE_TREE, oid::OID], oid::TEXT, pg_get_expr_pretty),
     runtime_func(2026, "pg_backend_pid", &[], oid::INT4, pg_backend_pid),
+    func(1299, "now", &[], oid::TIMESTAMPTZ, now_unreachable),
+    func(2647, "transaction_timestamp", &[], oid::TIMESTAMPTZ, now_unreachable),
+    runtime_func(2648, "statement_timestamp", &[], oid::TIMESTAMPTZ, statement_timestamp),
+    runtime_func(2649, "clock_timestamp", &[], oid::TIMESTAMPTZ, clock_timestamp),
     runtime_func(2077, "current_setting", &[oid::TEXT], oid::TEXT, current_setting),
     runtime_func(3294, "current_setting", &[oid::TEXT, oid::BOOL], oid::TEXT, current_setting_missing_ok),
     nonstrict_runtime_func(2078, "set_config", &[oid::TEXT, oid::TEXT, oid::BOOL], oid::TEXT, set_config),
@@ -1267,7 +1421,7 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(880, "rpad", &[oid::TEXT, oid::INT4, oid::TEXT], oid::TEXT, funcs::rpad),
     func(874, "rpad", &[oid::TEXT, oid::INT4], oid::TEXT, funcs::rpad),
     func(1381, "char_length", &[oid::TEXT], oid::INT4, funcs::char_length),
-    func(1367, "character_length", &[oid::TEXT], oid::INT4, funcs::char_length),
+    func(1369, "character_length", &[oid::TEXT], oid::INT4, funcs::char_length),
     func(3062, "reverse", &[oid::TEXT], oid::TEXT, funcs::reverse),
     func(872, "initcap", &[oid::TEXT], oid::TEXT, funcs::initcap),
     func(1620, "ascii", &[oid::TEXT], oid::INT4, funcs::ascii),
@@ -1280,8 +1434,8 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(2320, "ceiling", &[oid::FLOAT8], oid::FLOAT8, funcs::dceil),
     func(2309, "floor", &[oid::FLOAT8], oid::FLOAT8, funcs::dfloor),
     func(2310, "sign", &[oid::FLOAT8], oid::FLOAT8, funcs::dsign),
-    func(2339, "round", &[oid::FLOAT8], oid::FLOAT8, funcs::dround),
-    func(2340, "trunc", &[oid::FLOAT8], oid::FLOAT8, funcs::dtrunc),
+    func(1342, "round", &[oid::FLOAT8], oid::FLOAT8, funcs::dround),
+    func(1343, "trunc", &[oid::FLOAT8], oid::FLOAT8, funcs::dtrunc),
     func(1344, "sqrt", &[oid::FLOAT8], oid::FLOAT8, funcs::dsqrt),
     func(1345, "cbrt", &[oid::FLOAT8], oid::FLOAT8, funcs::dcbrt),
     func(1347, "exp", &[oid::FLOAT8], oid::FLOAT8, funcs::dexp),
@@ -1296,7 +1450,9 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(1283, "quote_literal", &[oid::TEXT], oid::TEXT, funcs::quote_literal),
     func(1374, "octet_length", &[oid::TEXT], oid::INT4, funcs::octet_length),
     func(1811, "bit_length", &[oid::TEXT], oid::INT4, funcs::bit_length),
-    func(1973, "div", &[NUMERIC, NUMERIC], NUMERIC, funcs::numeric_div_trunc),
+    func(1973, "div", &[NUMERIC, NUMERIC], NUMERIC, numeric::numeric_div_trunc),
+    func(1728, "mod", &[NUMERIC, NUMERIC], NUMERIC, ops::numeric_mod),
+    func(3281, "scale", &[NUMERIC], oid::INT4, numeric::numeric_scale),
     func(5044, "gcd", &[oid::INT4, oid::INT4], oid::INT4, funcs::int4gcd),
     func(5045, "gcd", &[oid::INT8, oid::INT8], oid::INT8, funcs::int8gcd),
     func(5046, "lcm", &[oid::INT4, oid::INT4], oid::INT4, funcs::int4lcm),
@@ -1315,6 +1471,40 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(1609, "radians", &[oid::FLOAT8], oid::FLOAT8, funcs::radians),
     nonstrict_func(3058, "concat", &[oid::TEXT], oid::TEXT, funcs::concat),
     nonstrict_func(3059, "concat_ws", &[oid::TEXT, oid::TEXT], oid::TEXT, funcs::concat_ws),
+    // ===== region: numeric (T1) =====
+    // ===== region: datetime-bpchar (T2) =====
+    func(2029, "date", &[oid::TIMESTAMP], oid::DATE, crate::types::datetime::cast_timestamp_to_date),
+    func(2024, "timestamp", &[oid::DATE], oid::TIMESTAMP, crate::types::datetime::cast_date_to_timestamp),
+    // now / transaction_timestamp / statement_timestamp / clock_timestamp と、tz に依存する date() / timestamp() /
+    // timestamptz() は `RuntimeInfo` に `transaction_timestamp()` `statement_timestamp()` `clock_timestamp()`
+    // `datetime_env()` が入ったら `types::datetime::runtime_fns` の `cfg(any())` を外して足す（T2 の issues 参照）。
+    func(1318, "length", &[oid::BPCHAR], oid::INT4, crate::types::bpchar::bpchar_length),
+    func(1367, "character_length", &[oid::BPCHAR], oid::INT4, crate::types::bpchar::bpchar_length),
+    func(1372, "char_length", &[oid::BPCHAR], oid::INT4, crate::types::bpchar::bpchar_length),
+    func(1375, "octet_length", &[oid::BPCHAR], oid::INT4, crate::types::bpchar::bpchar_octet_length),
+    generate_series_fn(1067, &[oid::INT4, oid::INT4], oid::INT4, funcs::generate_series_i4),
+    generate_series_fn(1066, &[oid::INT4, oid::INT4, oid::INT4], oid::INT4, funcs::generate_series_i4),
+    generate_series_fn(1069, &[oid::INT8, oid::INT8], oid::INT8, funcs::generate_series_i8),
+    generate_series_fn(1068, &[oid::INT8, oid::INT8, oid::INT8], oid::INT8, funcs::generate_series_i8),
+    func(2288, "pg_size_pretty", &[oid::INT8], oid::TEXT, funcs::pg_size_pretty),
+    func(1215, "obj_description", &[oid::OID, oid::NAME], oid::TEXT, funcs::obj_description),
+    func(1348, "obj_description", &[oid::OID], oid::TEXT, funcs::obj_description),
+    ctx_func(2081, "pg_function_is_visible", &[oid::OID], oid::BOOL, pg_function_is_visible),
+    // ===== region: agg-set-sys (T3) =====
+    // ===== region: sequence (Q1) =====
+    runtime_func(1574, "nextval", &[oid::REGCLASS], oid::INT8, ops::seq_nextval),
+    runtime_func(1575, "currval", &[oid::REGCLASS], oid::INT8, ops::seq_currval),
+    runtime_func(1576, "setval", &[oid::REGCLASS, oid::INT8], oid::INT8, ops::seq_setval2),
+    runtime_func(1765, "setval", &[oid::REGCLASS, oid::INT8, oid::BOOL], oid::INT8, ops::seq_setval3),
+    runtime_func(2559, "lastval", &[], oid::INT8, ops::seq_lastval),
+    // ===== region: btree-procs (B2) =====
+    // ===== region: explain-deparse (E1) =====
+    ctx_func(2509, "pg_get_expr", &[oid::PG_NODE_TREE, oid::OID, oid::BOOL], oid::TEXT, pg_get_expr_pretty),
+    ctx_func(1387, "pg_get_constraintdef", &[oid::OID], oid::TEXT, pg_get_constraintdef),
+    ctx_func(2508, "pg_get_constraintdef", &[oid::OID, oid::BOOL], oid::TEXT, pg_get_constraintdef),
+    ctx_func(1643, "pg_get_indexdef", &[oid::OID], oid::TEXT, pg_get_indexdef),
+    ctx_func(2507, "pg_get_indexdef", &[oid::OID, oid::INT4, oid::BOOL], oid::TEXT, pg_get_indexdef),
+    // ===== region: misc (C1) =====
 ];
 
 /// Every `pg_proc` row of yuzhu (`m2.md` §6.8.2), ordered by OID: the callable
@@ -1329,6 +1519,8 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 35, name: "nameout", args: &[19], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "nameout" },
     BuiltinProc { oid: 38, name: "int2in", args: &[2275], result: 21, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int2in" },
     BuiltinProc { oid: 39, name: "int2out", args: &[21], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int2out" },
+    BuiltinProc { oid: 40, name: "int2vectorin", args: &[2275], result: 22, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int2vectorin" },
+    BuiltinProc { oid: 41, name: "int2vectorout", args: &[22], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int2vectorout" },
     BuiltinProc { oid: 42, name: "int4in", args: &[2275], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int4in" },
     BuiltinProc { oid: 43, name: "int4out", args: &[23], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int4out" },
     BuiltinProc { oid: 44, name: "regprocin", args: &[2275], result: 24, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regprocin" },
@@ -1361,6 +1553,7 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 74, name: "charge", args: &[18, 18], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "charge" },
     BuiltinProc { oid: 77, name: "int4", args: &[18], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "chartoi4" },
     BuiltinProc { oid: 78, name: "char", args: &[23], result: 18, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "i4tochar" },
+    BuiltinProc { oid: 79, name: "nameregexeq", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "nameregexeq" },
     BuiltinProc { oid: 84, name: "boolne", args: &[16, 16], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "boolne" },
     BuiltinProc { oid: 89, name: "version", args: &[], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pgsql_version" },
     BuiltinProc { oid: 109, name: "unknownin", args: &[2275], result: 705, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "unknownin" },
@@ -1437,12 +1630,14 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 243, name: "namegetext", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "namegetext" },
     BuiltinProc { oid: 244, name: "namegttext", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "namegttext" },
     BuiltinProc { oid: 245, name: "namenetext", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "namenetext" },
+    BuiltinProc { oid: 246, name: "btnametextcmp", args: &[19, 25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btnametextcmp" },
     BuiltinProc { oid: 247, name: "texteqname", args: &[25, 19], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "texteqname" },
     BuiltinProc { oid: 248, name: "textltname", args: &[25, 19], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "textltname" },
     BuiltinProc { oid: 249, name: "textlename", args: &[25, 19], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "textlename" },
     BuiltinProc { oid: 250, name: "textgename", args: &[25, 19], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "textgename" },
     BuiltinProc { oid: 251, name: "textgtname", args: &[25, 19], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "textgtname" },
     BuiltinProc { oid: 252, name: "textnename", args: &[25, 19], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "textnename" },
+    BuiltinProc { oid: 253, name: "bttextnamecmp", args: &[25, 19], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bttextnamecmp" },
     BuiltinProc { oid: 267, name: "table_am_handler_in", args: &[2275], result: 269, strict: false, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "table_am_handler_in" },
     BuiltinProc { oid: 268, name: "table_am_handler_out", args: &[269], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "table_am_handler_out" },
     BuiltinProc { oid: 279, name: "float48mul", args: &[700, 701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "float48mul" },
@@ -1488,9 +1683,19 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 326, name: "index_am_handler_in", args: &[2275], result: 325, strict: false, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "index_am_handler_in" },
     BuiltinProc { oid: 327, name: "index_am_handler_out", args: &[325], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "index_am_handler_out" },
     BuiltinProc { oid: 330, name: "bthandler", args: &[2281], result: 325, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bthandler" },
+    BuiltinProc { oid: 350, name: "btint2cmp", args: &[21, 21], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint2cmp" },
+    BuiltinProc { oid: 351, name: "btint4cmp", args: &[23, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint4cmp" },
+    BuiltinProc { oid: 354, name: "btfloat4cmp", args: &[700, 700], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btfloat4cmp" },
+    BuiltinProc { oid: 355, name: "btfloat8cmp", args: &[701, 701], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btfloat8cmp" },
+    BuiltinProc { oid: 356, name: "btoidcmp", args: &[26, 26], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btoidcmp" },
+    BuiltinProc { oid: 359, name: "btnamecmp", args: &[19, 19], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btnamecmp" },
+    BuiltinProc { oid: 360, name: "bttextcmp", args: &[25, 25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bttextcmp" },
     BuiltinProc { oid: 395, name: "array_to_string", args: &[2277, 25], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "array_to_text" },
+    BuiltinProc { oid: 401, name: "text", args: &[1042], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "rtrim1" },
     BuiltinProc { oid: 406, name: "text", args: &[19], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "name_text" },
     BuiltinProc { oid: 407, name: "name", args: &[25], result: 19, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "text_name" },
+    BuiltinProc { oid: 408, name: "bpchar", args: &[19], result: 1042, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "name_bpchar" },
+    BuiltinProc { oid: 409, name: "name", args: &[1042], result: 19, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpchar_name" },
     BuiltinProc { oid: 460, name: "int8in", args: &[2275], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int8in" },
     BuiltinProc { oid: 461, name: "int8out", args: &[20], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int8out" },
     BuiltinProc { oid: 462, name: "int8um", args: &[20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int8um" },
@@ -1536,6 +1741,7 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 839, name: "int82mul", args: &[20, 21], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int82mul" },
     BuiltinProc { oid: 840, name: "int82div", args: &[20, 21], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int82div" },
     BuiltinProc { oid: 841, name: "int28pl", args: &[21, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int28pl" },
+    BuiltinProc { oid: 842, name: "btint8cmp", args: &[20, 20], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint8cmp" },
     BuiltinProc { oid: 849, name: "position", args: &[25, 25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textpos" },
     BuiltinProc { oid: 850, name: "textlike", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlike" },
     BuiltinProc { oid: 851, name: "textnlike", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textnlike" },
@@ -1545,6 +1751,7 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 855, name: "int48gt", args: &[23, 20], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int48gt" },
     BuiltinProc { oid: 856, name: "int48le", args: &[23, 20], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int48le" },
     BuiltinProc { oid: 857, name: "int48ge", args: &[23, 20], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int48ge" },
+    BuiltinProc { oid: 860, name: "bpchar", args: &[18], result: 1042, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "char_bpchar" },
     BuiltinProc { oid: 861, name: "current_database", args: &[], result: 19, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "current_database" },
     BuiltinProc { oid: 868, name: "strpos", args: &[25, 25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textpos" },
     BuiltinProc { oid: 870, name: "lower", args: &[25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "lower" },
@@ -1576,8 +1783,21 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 948, name: "int28div", args: &[21, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int28div" },
     BuiltinProc { oid: 1031, name: "aclitemin", args: &[2275], result: 1033, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "aclitemin" },
     BuiltinProc { oid: 1032, name: "aclitemout", args: &[1033], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "aclitemout" },
+    BuiltinProc { oid: 1044, name: "bpcharin", args: &[2275, 26, 23], result: 1042, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bpcharin" },
+    BuiltinProc { oid: 1045, name: "bpcharout", args: &[1042], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bpcharout" },
     BuiltinProc { oid: 1046, name: "varcharin", args: &[2275, 26, 23], result: 1043, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "varcharin" },
     BuiltinProc { oid: 1047, name: "varcharout", args: &[1043], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "varcharout" },
+    BuiltinProc { oid: 1048, name: "bpchareq", args: &[1042, 1042], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpchareq" },
+    BuiltinProc { oid: 1049, name: "bpcharlt", args: &[1042, 1042], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpcharlt" },
+    BuiltinProc { oid: 1050, name: "bpcharle", args: &[1042, 1042], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpcharle" },
+    BuiltinProc { oid: 1051, name: "bpchargt", args: &[1042, 1042], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpchargt" },
+    BuiltinProc { oid: 1052, name: "bpcharge", args: &[1042, 1042], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpcharge" },
+    BuiltinProc { oid: 1053, name: "bpcharne", args: &[1042, 1042], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpcharne" },
+    BuiltinProc { oid: 1066, name: "generate_series", args: &[23, 23, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "generate_series_step_int4" },
+    BuiltinProc { oid: 1067, name: "generate_series", args: &[23, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "generate_series_step_int4" },
+    BuiltinProc { oid: 1068, name: "generate_series", args: &[20, 20, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "generate_series_step_int8" },
+    BuiltinProc { oid: 1069, name: "generate_series", args: &[20, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "generate_series_step_int8" },
+    BuiltinProc { oid: 1078, name: "bpcharcmp", args: &[1042, 1042], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bpcharcmp" },
     BuiltinProc { oid: 1081, name: "format_type", args: &[26, 23], result: 25, strict: false, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "format_type" },
     BuiltinProc { oid: 1084, name: "date_in", args: &[2275], result: 1082, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_in" },
     BuiltinProc { oid: 1085, name: "date_out", args: &[1082], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_out" },
@@ -1587,11 +1807,18 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1089, name: "date_gt", args: &[1082, 1082], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "date_gt" },
     BuiltinProc { oid: 1090, name: "date_ge", args: &[1082, 1082], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "date_ge" },
     BuiltinProc { oid: 1091, name: "date_ne", args: &[1082, 1082], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "date_ne" },
+    BuiltinProc { oid: 1092, name: "date_cmp", args: &[1082, 1082], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "date_cmp" },
     BuiltinProc { oid: 1140, name: "date_mi", args: &[1082, 1082], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_mi" },
     BuiltinProc { oid: 1141, name: "date_pli", args: &[1082, 23], result: 1082, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_pli" },
     BuiltinProc { oid: 1142, name: "date_mii", args: &[1082, 23], result: 1082, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_mii" },
     BuiltinProc { oid: 1150, name: "timestamptz_in", args: &[2275, 26, 23], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamptz_in" },
     BuiltinProc { oid: 1151, name: "timestamptz_out", args: &[1184], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamptz_out" },
+    BuiltinProc { oid: 1152, name: "timestamptz_eq", args: &[1184, 1184], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_eq" },
+    BuiltinProc { oid: 1153, name: "timestamptz_ne", args: &[1184, 1184], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_ne" },
+    BuiltinProc { oid: 1154, name: "timestamptz_lt", args: &[1184, 1184], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_lt" },
+    BuiltinProc { oid: 1155, name: "timestamptz_le", args: &[1184, 1184], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_le" },
+    BuiltinProc { oid: 1156, name: "timestamptz_ge", args: &[1184, 1184], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_ge" },
+    BuiltinProc { oid: 1157, name: "timestamptz_gt", args: &[1184, 1184], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_gt" },
     BuiltinProc { oid: 1160, name: "interval_in", args: &[2275, 26, 23], result: 1186, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_in" },
     BuiltinProc { oid: 1161, name: "interval_out", args: &[1186], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_out" },
     BuiltinProc { oid: 1162, name: "interval_eq", args: &[1186, 1186], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "interval_eq" },
@@ -1603,17 +1830,23 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1168, name: "interval_um", args: &[1186], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_um" },
     BuiltinProc { oid: 1169, name: "interval_pl", args: &[1186, 1186], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_pl" },
     BuiltinProc { oid: 1170, name: "interval_mi", args: &[1186, 1186], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_mi" },
+    BuiltinProc { oid: 1174, name: "timestamptz", args: &[1082], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_timestamptz" },
+    BuiltinProc { oid: 1178, name: "date", args: &[1184], result: 1082, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamptz_date" },
+    BuiltinProc { oid: 1215, name: "obj_description", args: &[26, 19], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "obj_description" },
     BuiltinProc { oid: 1230, name: "int8abs", args: &[20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int8abs" },
     BuiltinProc { oid: 1238, name: "texticregexeq", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticregexeq" },
     BuiltinProc { oid: 1239, name: "texticregexne", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticregexne" },
-    BuiltinProc { oid: 1240, name: "textregexne", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexne" },
+    BuiltinProc { oid: 1240, name: "nameicregexeq", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "nameicregexeq" },
+    BuiltinProc { oid: 1241, name: "nameicregexne", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "nameicregexne" },
     BuiltinProc { oid: 1242, name: "boolin", args: &[2275], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "boolin" },
     BuiltinProc { oid: 1243, name: "boolout", args: &[16], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "boolout" },
-    BuiltinProc { oid: 1244, name: "textregexeq", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexeq" },
     BuiltinProc { oid: 1245, name: "charin", args: &[2275], result: 18, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "charin" },
     BuiltinProc { oid: 1246, name: "charlt", args: &[18, 18], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "charlt" },
     BuiltinProc { oid: 1251, name: "int4abs", args: &[23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int4abs" },
+    BuiltinProc { oid: 1252, name: "nameregexne", args: &[19, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "nameregexne" },
     BuiltinProc { oid: 1253, name: "int2abs", args: &[21], result: 21, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int2abs" },
+    BuiltinProc { oid: 1254, name: "textregexeq", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexeq" },
+    BuiltinProc { oid: 1256, name: "textregexne", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexne" },
     BuiltinProc { oid: 1257, name: "textlen", args: &[25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlen" },
     BuiltinProc { oid: 1258, name: "textcat", args: &[25, 25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textcat" },
     BuiltinProc { oid: 1265, name: "tidne", args: &[27, 27], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "tidne" },
@@ -1630,18 +1863,29 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1287, name: "oid", args: &[20], result: 26, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "i8tooid" },
     BuiltinProc { oid: 1288, name: "int8", args: &[26], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "oidtoi8" },
     BuiltinProc { oid: 1292, name: "tideq", args: &[27, 27], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "tideq" },
+    BuiltinProc { oid: 1299, name: "now", args: &[], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "now" },
+    BuiltinProc { oid: 1312, name: "timestamp_in", args: &[2275, 26, 23], result: 1114, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamp_in" },
+    BuiltinProc { oid: 1313, name: "timestamp_out", args: &[1114], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamp_out" },
+    BuiltinProc { oid: 1314, name: "timestamptz_cmp", args: &[1184, 1184], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_cmp" },
     BuiltinProc { oid: 1317, name: "length", args: &[25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlen" },
+    BuiltinProc { oid: 1318, name: "length", args: &[1042], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bpcharlen" },
     BuiltinProc { oid: 1319, name: "xideqint4", args: &[28, 23], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "xideq" },
     BuiltinProc { oid: 1326, name: "interval_div", args: &[1186, 701], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_div" },
     BuiltinProc { oid: 1339, name: "log10", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dlog10" },
     BuiltinProc { oid: 1340, name: "log", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dlog10" },
     BuiltinProc { oid: 1341, name: "ln", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dlog1" },
+    BuiltinProc { oid: 1342, name: "round", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dround" },
+    BuiltinProc { oid: 1343, name: "trunc", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dtrunc" },
     BuiltinProc { oid: 1344, name: "sqrt", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dsqrt" },
     BuiltinProc { oid: 1345, name: "cbrt", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dcbrt" },
     BuiltinProc { oid: 1347, name: "exp", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dexp" },
-    BuiltinProc { oid: 1367, name: "character_length", args: &[25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlen" },
+    BuiltinProc { oid: 1348, name: "obj_description", args: &[26], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "obj_description_no_catalog" },
+    BuiltinProc { oid: 1367, name: "character_length", args: &[1042], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bpcharlen" },
     BuiltinProc { oid: 1368, name: "power", args: &[701, 701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dpow" },
+    BuiltinProc { oid: 1369, name: "character_length", args: &[25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlen" },
+    BuiltinProc { oid: 1372, name: "char_length", args: &[1042], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bpcharlen" },
     BuiltinProc { oid: 1374, name: "octet_length", args: &[25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textoctetlen" },
+    BuiltinProc { oid: 1375, name: "octet_length", args: &[1042], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "bpcharoctetlen" },
     BuiltinProc { oid: 1381, name: "char_length", args: &[25], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlen" },
     BuiltinProc { oid: 1394, name: "abs", args: &[700], result: 700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "float4abs" },
     BuiltinProc { oid: 1395, name: "abs", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "float8abs" },
@@ -1652,6 +1896,9 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1401, name: "varchar", args: &[19], result: 1043, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "name_text" },
     BuiltinProc { oid: 1402, name: "current_schema", args: &[], result: 19, strict: true, volatility: 's', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "current_schema" },
     BuiltinProc { oid: 1481, name: "log10", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_log10" },
+    BuiltinProc { oid: 1574, name: "nextval", args: &[2205], result: 20, strict: true, volatility: 'v', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "nextval_oid" },
+    BuiltinProc { oid: 1575, name: "currval", args: &[2205], result: 20, strict: true, volatility: 'v', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "currval_oid" },
+    BuiltinProc { oid: 1576, name: "setval", args: &[2205, 20], result: 20, strict: true, volatility: 'v', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "setval_oid" },
     BuiltinProc { oid: 1597, name: "pg_encoding_to_char", args: &[23], result: 19, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "PG_encoding_to_char" },
     BuiltinProc { oid: 1600, name: "asin", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dasin" },
     BuiltinProc { oid: 1601, name: "acos", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dacos" },
@@ -1667,13 +1914,25 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1621, name: "chr", args: &[23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "chr" },
     BuiltinProc { oid: 1622, name: "repeat", args: &[25, 23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "repeat" },
     BuiltinProc { oid: 1624, name: "mul_d_interval", args: &[701, 1186], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "mul_d_interval" },
+    BuiltinProc { oid: 1631, name: "bpcharlike", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textlike" },
+    BuiltinProc { oid: 1632, name: "bpcharnlike", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textnlike" },
     BuiltinProc { oid: 1633, name: "texticlike", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticlike" },
     BuiltinProc { oid: 1634, name: "texticnlike", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticnlike" },
     BuiltinProc { oid: 1638, name: "oidgt", args: &[26, 26], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "oidgt" },
     BuiltinProc { oid: 1639, name: "oidge", args: &[26, 26], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "oidge" },
     BuiltinProc { oid: 1642, name: "pg_get_userbyid", args: &[26], result: 19, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_get_userbyid" },
+    BuiltinProc { oid: 3494, name: "to_regclass", args: &[25], result: 2205, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "to_regclass" },
+    BuiltinProc { oid: 1079, name: "regclass", args: &[25], result: 2205, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_regclass" },
+    BuiltinProc { oid: 3493, name: "to_regtype", args: &[25], result: 2206, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "to_regtype" },
+    BuiltinProc { oid: 1656, name: "bpcharicregexeq", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticregexeq" },
+    BuiltinProc { oid: 1657, name: "bpcharicregexne", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticregexne" },
+    BuiltinProc { oid: 1658, name: "bpcharregexeq", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexeq" },
+    BuiltinProc { oid: 1659, name: "bpcharregexne", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexne" },
+    BuiltinProc { oid: 1660, name: "bpchariclike", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticlike" },
+    BuiltinProc { oid: 1661, name: "bpcharicnlike", args: &[1042, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "texticnlike" },
     BuiltinProc { oid: 1691, name: "boolle", args: &[16, 16], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "boolle" },
     BuiltinProc { oid: 1692, name: "boolge", args: &[16, 16], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "boolge" },
+    BuiltinProc { oid: 1693, name: "btboolcmp", args: &[16, 16], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btboolcmp" },
     BuiltinProc { oid: 1701, name: "numeric_in", args: &[2275, 26, 23], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_in" },
     BuiltinProc { oid: 1702, name: "numeric_out", args: &[1700], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_out" },
     BuiltinProc { oid: 1704, name: "numeric_abs", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_abs" },
@@ -1696,9 +1955,12 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1725, name: "numeric_sub", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_sub" },
     BuiltinProc { oid: 1726, name: "numeric_mul", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_mul" },
     BuiltinProc { oid: 1727, name: "numeric_div", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_div" },
+    BuiltinProc { oid: 1728, name: "mod", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_mod" },
     BuiltinProc { oid: 1729, name: "numeric_mod", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_mod" },
     BuiltinProc { oid: 1730, name: "sqrt", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_sqrt" },
     BuiltinProc { oid: 1734, name: "ln", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_ln" },
+    BuiltinProc { oid: 1732, name: "exp", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_exp" },
+    BuiltinProc { oid: 2169, name: "power", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_power" },
     BuiltinProc { oid: 1736, name: "log", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_log" },
     BuiltinProc { oid: 1739, name: "numeric_power", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_power" },
     BuiltinProc { oid: 1740, name: "numeric", args: &[23], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int4_numeric" },
@@ -1708,6 +1970,8 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1744, name: "int4", args: &[1700], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_int4" },
     BuiltinProc { oid: 1745, name: "float4", args: &[1700], result: 700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_float4" },
     BuiltinProc { oid: 1746, name: "float8", args: &[1700], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_float8" },
+    BuiltinProc { oid: 1765, name: "setval", args: &[2205, 20, 16], result: 20, strict: true, volatility: 'v', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "setval3_oid" },
+    BuiltinProc { oid: 1769, name: "numeric_cmp", args: &[1700, 1700], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_cmp" },
     BuiltinProc { oid: 1771, name: "numeric_uminus", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_uminus" },
     BuiltinProc { oid: 1779, name: "int8", args: &[1700], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_int8" },
     BuiltinProc { oid: 1781, name: "numeric", args: &[20], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int8_numeric" },
@@ -1755,14 +2019,39 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1973, name: "div", args: &[1700, 1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_div_trunc" },
     BuiltinProc { oid: 2003, name: "textanycat", args: &[25, 2776], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "select $1 operator(pg_catalog.||) $2::pg_catalog.text" },
     BuiltinProc { oid: 2004, name: "anytextcat", args: &[2776, 25], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "select $1::pg_catalog.text operator(pg_catalog.||) $2" },
+    BuiltinProc { oid: 2024, name: "timestamp", args: &[1082], result: 1114, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "date_timestamp" },
     BuiltinProc { oid: 2026, name: "pg_backend_pid", args: &[], result: 23, strict: true, volatility: 's', parallel: 'r', leakproof: false, cost: 1.0, prosrc: "pg_backend_pid" },
+    BuiltinProc { oid: 2027, name: "timestamp", args: &[1184], result: 1114, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamptz_timestamp" },
+    BuiltinProc { oid: 2028, name: "timestamptz", args: &[1114], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamp_timestamptz" },
+    BuiltinProc { oid: 2029, name: "date", args: &[1114], result: 1082, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamp_date" },
+    BuiltinProc { oid: 2045, name: "timestamp_cmp", args: &[1114, 1114], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_cmp" },
+    BuiltinProc { oid: 2052, name: "timestamp_eq", args: &[1114, 1114], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_eq" },
+    BuiltinProc { oid: 2053, name: "timestamp_ne", args: &[1114, 1114], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_ne" },
+    BuiltinProc { oid: 2054, name: "timestamp_lt", args: &[1114, 1114], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_lt" },
+    BuiltinProc { oid: 2055, name: "timestamp_le", args: &[1114, 1114], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_le" },
+    BuiltinProc { oid: 2056, name: "timestamp_ge", args: &[1114, 1114], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_ge" },
+    BuiltinProc { oid: 2057, name: "timestamp_gt", args: &[1114, 1114], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "timestamp_gt" },
     BuiltinProc { oid: 2077, name: "current_setting", args: &[25], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "show_config_by_name" },
     BuiltinProc { oid: 2078, name: "set_config", args: &[25, 25, 16], result: 25, strict: false, volatility: 'v', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "set_config_by_name" },
     BuiltinProc { oid: 2079, name: "pg_table_is_visible", args: &[26], result: 16, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 10.0, prosrc: "pg_table_is_visible" },
+    BuiltinProc { oid: 2081, name: "pg_function_is_visible", args: &[26], result: 16, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_function_is_visible" },
     BuiltinProc { oid: 2087, name: "replace", args: &[25, 25, 25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "replace_text" },
     BuiltinProc { oid: 2088, name: "split_part", args: &[25, 25, 23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "split_part" },
     BuiltinProc { oid: 2167, name: "ceiling", args: &[1700], result: 1700, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_ceil" },
     BuiltinProc { oid: 2176, name: "array_length", args: &[2277, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "array_length" },
+    BuiltinProc { oid: 2188, name: "btint48cmp", args: &[23, 20], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint48cmp" },
+    BuiltinProc { oid: 2189, name: "btint84cmp", args: &[20, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint84cmp" },
+    BuiltinProc { oid: 2190, name: "btint24cmp", args: &[21, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint24cmp" },
+    BuiltinProc { oid: 2191, name: "btint42cmp", args: &[23, 21], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint42cmp" },
+    BuiltinProc { oid: 2192, name: "btint28cmp", args: &[21, 20], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint28cmp" },
+    BuiltinProc { oid: 2193, name: "btint82cmp", args: &[20, 21], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btint82cmp" },
+    BuiltinProc { oid: 2194, name: "btfloat48cmp", args: &[700, 701], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btfloat48cmp" },
+    BuiltinProc { oid: 2195, name: "btfloat84cmp", args: &[701, 700], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "btfloat84cmp" },
+    BuiltinProc { oid: 2218, name: "regclassin", args: &[2275], result: 2205, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regclassin" },
+    BuiltinProc { oid: 2219, name: "regclassout", args: &[2205], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regclassout" },
+    BuiltinProc { oid: 2220, name: "regtypein", args: &[2275], result: 2206, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regtypein" },
+    BuiltinProc { oid: 2221, name: "regtypeout", args: &[2206], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regtypeout" },
+    BuiltinProc { oid: 2288, name: "pg_size_pretty", args: &[20], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_size_pretty" },
     BuiltinProc { oid: 2290, name: "record_in", args: &[2275, 26, 23], result: 2249, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "record_in" },
     BuiltinProc { oid: 2291, name: "record_out", args: &[2249], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "record_out" },
     BuiltinProc { oid: 2292, name: "cstring_in", args: &[2275], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "cstring_in" },
@@ -1778,15 +2067,17 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 2310, name: "sign", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dsign" },
     BuiltinProc { oid: 2311, name: "md5", args: &[25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "md5_text" },
     BuiltinProc { oid: 2320, name: "ceiling", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dceil" },
-    BuiltinProc { oid: 2339, name: "round", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dround" },
-    BuiltinProc { oid: 2340, name: "trunc", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dtrunc" },
     BuiltinProc { oid: 2462, name: "sinh", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dsinh" },
     BuiltinProc { oid: 2463, name: "cosh", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dcosh" },
     BuiltinProc { oid: 2464, name: "tanh", args: &[701], result: 701, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "dtanh" },
     BuiltinProc { oid: 2550, name: "integer_pl_date", args: &[23, 1082], result: 1082, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "" },
     BuiltinProc { oid: 2557, name: "bool", args: &[23], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "int4_bool" },
     BuiltinProc { oid: 2558, name: "int4", args: &[16], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "bool_int4" },
+    BuiltinProc { oid: 2559, name: "lastval", args: &[], result: 20, strict: true, volatility: 'v', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "lastval" },
     BuiltinProc { oid: 2626, name: "pg_sleep", args: &[701], result: 2278, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_sleep" },
+    BuiltinProc { oid: 2647, name: "transaction_timestamp", args: &[], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "now" },
+    BuiltinProc { oid: 2648, name: "statement_timestamp", args: &[], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "statement_timestamp" },
+    BuiltinProc { oid: 2649, name: "clock_timestamp", args: &[], result: 1184, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "clock_timestamp" },
     BuiltinProc { oid: 2777, name: "anynonarray_in", args: &[2275], result: 2776, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "anynonarray_in" },
     BuiltinProc { oid: 2778, name: "anynonarray_out", args: &[2776], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "anynonarray_out" },
     BuiltinProc { oid: 2790, name: "tidgt", args: &[27, 27], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "tidgt" },
@@ -1799,20 +2090,90 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 3060, name: "left", args: &[25, 23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_left" },
     BuiltinProc { oid: 3061, name: "right", args: &[25, 23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_right" },
     BuiltinProc { oid: 3062, name: "reverse", args: &[25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_reverse" },
+    BuiltinProc { oid: 3281, name: "scale", args: &[1700], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "numeric_scale" },
     BuiltinProc { oid: 3294, name: "current_setting", args: &[25, 16], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "show_config_by_name_missing_ok" },
     BuiltinProc { oid: 3308, name: "xidneq", args: &[28, 28], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "xidneq" },
     BuiltinProc { oid: 3309, name: "xidneqint4", args: &[28, 23], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: true, cost: 1.0, prosrc: "xidneq" },
     BuiltinProc { oid: 3348, name: "txid_current_if_assigned", args: &[], result: 20, strict: true, volatility: 's', parallel: 'u', leakproof: false, cost: 1.0, prosrc: "pg_current_xact_id_if_assigned" },
     BuiltinProc { oid: 3378, name: "pg_isolation_test_session_is_blocked", args: &[23, 1007], result: 16, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_isolation_test_session_is_blocked" },
     BuiltinProc { oid: 3696, name: "starts_with", args: &[25, 25], result: 16, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_starts_with" },
+    BuiltinProc { oid: 4084, name: "regnamespacein", args: &[2275], result: 4089, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regnamespacein" },
+    BuiltinProc { oid: 4085, name: "regnamespaceout", args: &[4089], result: 2275, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "regnamespaceout" },
     BuiltinProc { oid: 5044, name: "gcd", args: &[23, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int4gcd" },
     BuiltinProc { oid: 5045, name: "gcd", args: &[20, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int8gcd" },
     BuiltinProc { oid: 5046, name: "lcm", args: &[23, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int4lcm" },
     BuiltinProc { oid: 5047, name: "lcm", args: &[20, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int8lcm" },
+    // ===== region: explain-deparse (E1) =====
+    BuiltinProc { oid: 2509, name: "pg_get_expr", args: &[194, 26, 16], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_get_expr_ext" },
+    BuiltinProc { oid: 1387, name: "pg_get_constraintdef", args: &[26], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_get_constraintdef" },
+    BuiltinProc { oid: 2508, name: "pg_get_constraintdef", args: &[26, 16], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_get_constraintdef_ext" },
+    BuiltinProc { oid: 1643, name: "pg_get_indexdef", args: &[26], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_get_indexdef" },
+    BuiltinProc { oid: 2507, name: "pg_get_indexdef", args: &[26, 23, 16], result: 25, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_get_indexdef_ext" },
 ];
 
 // ----- catalog-aware function bodies ---------------------------------------
 
+/// `CastMethod::Env` 用: `text -> regclass`（1079。`nextval('name'::text)` が通る）。
+fn cast_text_to_regclass(args: &[Datum], env: &crate::types::TypeEnv<'_>) -> Result<Datum> {
+    let Some(Datum::Text(s)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "text to regclass expects a text",
+        ));
+    };
+    crate::types::sys::regclass_in(s, env.names).map(Datum::Oid)
+}
+
+/// `to_regclass(text) -> regclass`: the relation's OID, or NULL if it does not exist.
+fn to_regclass(
+    args: &[Datum],
+    catalog: &dyn CatalogReader,
+    _session: &SessionInfo,
+) -> Result<Datum> {
+    use crate::types::OidNames;
+    let Some(Datum::Text(name)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "to_regclass expects a text argument",
+        ));
+    };
+    match super::names::CatalogNames(catalog).class_oid(name) {
+        Ok(oid) => Ok(Datum::Oid(oid)),
+        Err(e)
+            if e.sqlstate == crate::error::sqlstate::UNDEFINED_TABLE
+                || e.sqlstate == crate::error::sqlstate::INVALID_NAME =>
+        {
+            Ok(Datum::Null)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `to_regtype(text) -> regtype`: the type's OID, or NULL if it does not exist (or the name is malformed).
+fn to_regtype(
+    args: &[Datum],
+    catalog: &dyn CatalogReader,
+    _session: &SessionInfo,
+) -> Result<Datum> {
+    use crate::error::sqlstate;
+    use crate::types::OidNames;
+    let Some(Datum::Text(name)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "to_regtype expects a text argument",
+        ));
+    };
+    // 空文字列は NULL。構文エラー（`a%`、`a b` など）は PG と同じく 42601 で返す。
+    if name.trim().is_empty() {
+        return Ok(Datum::Null);
+    }
+    match super::names::CatalogNames(catalog).type_oid(name) {
+        Ok(oid) => Ok(Datum::Oid(oid)),
+        Err(e)
+            if e.sqlstate == sqlstate::UNDEFINED_OBJECT || e.sqlstate == sqlstate::INVALID_NAME =>
+        {
+            Ok(Datum::Null)
+        }
+        Err(e) => Err(e),
+    }
+}
 /// `pg_get_userbyid(oid) -> name`: the role name, or `unknown (OID=n)`.
 fn pg_get_userbyid(
     args: &[Datum],
@@ -1834,6 +2195,37 @@ fn pg_get_userbyid(
 #[allow(clippy::unnecessary_wraps)]
 fn pg_backend_pid(_args: &[Datum], runtime: &dyn RuntimeInfo) -> Result<Datum> {
     Ok(Datum::Int4(runtime.backend_pid()))
+}
+
+/// `statement_timestamp() -> timestamptz`: the start of the running statement (the wall clock
+/// when the session does not track it).
+fn statement_timestamp(args: &[Datum], runtime: &dyn RuntimeInfo) -> Result<Datum> {
+    match runtime.statement_timestamp() {
+        Some(us) => Ok(Datum::TimestampTz(yuzhu_datetime::TimestampTz(us))),
+        None => clock_timestamp(args, runtime),
+    }
+}
+
+/// `clock_timestamp()` / `statement_timestamp() -> timestamptz`: the wall-clock time at the call
+/// (statement start is not tracked separately; `now()` / `transaction_timestamp()` are session
+/// values and never reach here).
+#[allow(clippy::unnecessary_wraps)]
+fn clock_timestamp(_args: &[Datum], _runtime: &dyn RuntimeInfo) -> Result<Datum> {
+    const UNIX_TO_PG_SECS: i64 = 946_684_800;
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_micros()).ok())
+        .map_or(0, |us| us - UNIX_TO_PG_SECS * 1_000_000);
+    Ok(Datum::TimestampTz(yuzhu_datetime::TimestampTz(micros)))
+}
+
+/// Placeholder for `now()` / `transaction_timestamp()`: the analyzer turns them into
+/// `CURRENT_TIMESTAMP`, so this is never called.
+fn now_unreachable(_args: &[Datum]) -> Result<Datum> {
+    Err(crate::error::Error::internal(
+        "now() is rewritten to a session value by the analyzer",
+    ))
 }
 
 fn text_arg<'a>(args: &'a [Datum], i: usize, func: &str) -> Result<&'a str> {
@@ -1944,7 +2336,8 @@ fn pg_isolation_test_session_is_blocked(
 
 /// `pg_table_is_visible(oid) -> bool`: NULL when the relation does not
 /// exist; otherwise whether an unqualified reference to its name finds this
-/// relation (`pg_catalog` first, then the `search_path`).
+/// relation (`pg_catalog` first, then the `search_path`). Tables, sequences
+/// and indexes all count (`\di` asks about indexes; `m4/07` §4.2).
 fn pg_table_is_visible(
     args: &[Datum],
     catalog: &dyn CatalogReader,
@@ -1955,11 +2348,13 @@ fn pg_table_is_visible(
             "pg_table_is_visible expects an oid argument",
         ));
     };
-    let Some(def) = catalog.table_by_oid(*rel)? else {
-        return Ok(Datum::Null);
+    let name = match (catalog.table_by_oid(*rel)?, catalog.index_by_oid(*rel)?) {
+        (Some(t), _) => t.name.clone(),
+        (None, Some(i)) => i.name.clone(),
+        (None, None) => return Ok(Datum::Null),
     };
-    let found = catalog.table(None, &def.name)?;
-    Ok(Datum::Bool(found.is_some_and(|t| t.oid == def.oid)))
+    let found = catalog.relation_kind(None, &name)?;
+    Ok(Datum::Bool(found.is_some_and(|(oid, _)| oid == *rel)))
 }
 
 /// `format_type(oid, int4) -> text`. Not strict: a NULL type gives NULL, a
@@ -1991,6 +2386,8 @@ pub fn format_type_name(type_oid: Oid, typmod: Option<i32>) -> String {
     if t.category == 'A' && t.elem != 0 && t.name.starts_with('_') {
         return format!("{}[]", format_type_name(t.elem, typmod));
     }
+    let given = typmod.is_some();
+    let m = typmod.filter(|m| *m >= 0);
     let name = match type_oid {
         oid::BOOL => "boolean".to_owned(),
         oid::INT8 => "bigint".to_owned(),
@@ -1999,32 +2396,35 @@ pub fn format_type_name(type_oid: Oid, typmod: Option<i32>) -> String {
         oid::FLOAT4 => "real".to_owned(),
         oid::FLOAT8 => "double precision".to_owned(),
         oid::VARCHAR => "character varying".to_owned(),
-        oid::TIMESTAMPTZ => "timestamp with time zone".to_owned(),
+        // `bpchar` with a typmod of -1 is not the same as `character` (PostgreSQL prints `bpchar`).
+        oid::BPCHAR if given && m.is_none() => "bpchar".to_owned(),
+        oid::BPCHAR => "character".to_owned(),
+        oid::TIMESTAMP | oid::TIMESTAMPTZ => "timestamp".to_owned(),
+        oid::TIME | oid::TIMETZ => "time".to_owned(),
         _ => quote_identifier(t.name),
     };
-    let Some(m) = typmod.filter(|m| *m >= 0) else {
-        return name;
+    // The text after the (optional) modifier: `timestamp(3) without time zone`.
+    let suffix = match type_oid {
+        oid::TIMESTAMP | oid::TIME => " without time zone",
+        oid::TIMESTAMPTZ | oid::TIMETZ => " with time zone",
+        _ => "",
     };
-    match type_oid {
-        oid::VARCHAR => {
-            if m > crate::types::VARHDRSZ {
-                format!("{name}({})", m - crate::types::VARHDRSZ)
-            } else {
-                name
-            }
+    let modifier = match (type_oid, m) {
+        (_, None) => String::new(),
+        (oid::VARCHAR | oid::BPCHAR, Some(m)) if m > crate::types::VARHDRSZ => {
+            format!("({})", m - crate::types::VARHDRSZ)
         }
-        NUMERIC => {
-            let tmp = m - crate::types::VARHDRSZ;
-            if tmp >= 0 {
-                format!("{name}({},{})", (tmp >> 16) & 0xffff, tmp & 0xffff)
-            } else {
-                name
-            }
+        (NUMERIC, Some(m)) => yuzhu_numeric::format_typmod(m),
+        // The special-cased names never print a modifier.
+        (oid::BOOL | oid::INT2 | oid::INT4 | oid::INT8 | oid::FLOAT4 | oid::FLOAT8, _) => {
+            String::new()
         }
-        // These are special-cased by PostgreSQL and never print a modifier.
-        oid::BOOL | oid::INT2 | oid::INT4 | oid::INT8 | oid::FLOAT4 | oid::FLOAT8 => name,
-        _ => format!("{name}({m})"),
-    }
+        // varchar / char with a length of 0 or less print nothing; any other type is shown with the raw modifier
+        // (PostgreSQL falls back to `(typmod)` for a type without `typmodout`).
+        (oid::VARCHAR | oid::BPCHAR, _) => String::new(),
+        (_, Some(m)) => format!("({m})"),
+    };
+    format!("{name}{modifier}{suffix}")
 }
 
 /// `quote_identifier` for type names: double quotes unless the name is made
@@ -2066,6 +2466,11 @@ pub fn functions_named(name: &str) -> Vec<&'static BuiltinFunction> {
     FUNCTIONS.iter().filter(|f| f.name == name).collect()
 }
 
+/// The `OPERATORS` row with this OID.
+pub fn operator_by_oid(oid: Oid) -> Option<&'static BuiltinOperator> {
+    OPERATORS.iter().find(|o| o.oid == oid)
+}
+
 /// The `pg_proc` row with this OID (any function in `PROCS`).
 pub fn proc_by_oid(oid: Oid) -> Option<&'static BuiltinProc> {
     PROCS.iter().find(|p| p.oid == oid)
@@ -2089,6 +2494,275 @@ pub fn regproc_name(oid: Oid) -> Option<String> {
 pub fn operator_meta(oid: Oid) -> Option<&'static OperatorMeta> {
     OPERATOR_META.iter().find(|m| m.oid == oid)
 }
+
+// 以降は本体コード（関数・補助表）の区画。各担当は自分の区画の中だけを編集する（m4/11-tests-plan.md §4.2）。
+// ===== region: numeric (T1) =====
+// ===== region: datetime-bpchar (T2) =====
+// ===== region: agg-set-sys (T3) =====
+/// `generate_series`（`FnKind::Set`。FROM 句でだけ呼べる。`m4/09-types-functions.md` §10.1）。
+fn pg_function_is_visible(
+    args: &[Datum],
+    _catalog: &dyn CatalogReader,
+    _session: &SessionInfo,
+) -> Result<Datum> {
+    // 組み込み関数はすべて `pg_catalog` にあり、検索パスの先頭なので見える。
+    let Some(Datum::Oid(f)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "pg_function_is_visible expects an oid argument",
+        ));
+    };
+    Ok(proc_by_oid(*f).map_or(Datum::Null, |_| Datum::Bool(true)))
+}
+
+const fn generate_series_fn(
+    oid: Oid,
+    args: &'static [Oid],
+    result: Oid,
+    begin: fn(&[Datum]) -> Result<Box<dyn super::SetIter>>,
+) -> BuiltinFunction {
+    BuiltinFunction {
+        oid,
+        name: "generate_series",
+        args,
+        result,
+        strict: true,
+        kind: FnKind::Set(super::SetFn {
+            begin,
+            column_name: "generate_series",
+        }),
+    }
+}
+
+pub use super::{AggKind, BuiltinAggregate};
+
+/// `pg_type` の `"any"`（`count(any)` の引数）。
+const ANY_OID: Oid = 2276;
+
+const fn agg(
+    oid: Oid,
+    name: &'static str,
+    args: &'static [Oid],
+    result: Oid,
+    kind: AggKind,
+) -> BuiltinAggregate {
+    BuiltinAggregate {
+        oid,
+        name,
+        args,
+        result,
+        kind,
+    }
+}
+
+/// 集約関数の表（`pg_proc` の `prokind = 'a'` の行。43 行。09 §8、PG17 の `pg_proc` で照合済み）。
+/// PG 側はすべて非 strict の `aggregate_dummy`。NULL 入力を飛ばす規則と、
+/// `min` / `max` の等しいときの代表（後に来た値。11 §7.1 C-4）は `AggState`（X2）の責務。
+#[rustfmt::skip]
+pub static AGGREGATES: &[BuiltinAggregate] = &[
+    agg(2803, "count", &[], oid::INT8, AggKind::CountStar),
+    agg(2147, "count", &[ANY_OID], oid::INT8, AggKind::Count),
+    agg(2109, "sum", &[oid::INT2], oid::INT8, AggKind::SumInt2),
+    agg(2108, "sum", &[oid::INT4], oid::INT8, AggKind::SumInt4),
+    agg(2107, "sum", &[oid::INT8], oid::NUMERIC, AggKind::SumInt8),
+    agg(2110, "sum", &[oid::FLOAT4], oid::FLOAT4, AggKind::SumFloat4),
+    agg(2111, "sum", &[oid::FLOAT8], oid::FLOAT8, AggKind::SumFloat8),
+    agg(2114, "sum", &[oid::NUMERIC], oid::NUMERIC, AggKind::SumNumeric),
+    agg(2102, "avg", &[oid::INT2], oid::NUMERIC, AggKind::AvgInt2),
+    agg(2101, "avg", &[oid::INT4], oid::NUMERIC, AggKind::AvgInt4),
+    agg(2100, "avg", &[oid::INT8], oid::NUMERIC, AggKind::AvgInt8),
+    agg(2104, "avg", &[oid::FLOAT4], oid::FLOAT8, AggKind::AvgFloat4),
+    agg(2105, "avg", &[oid::FLOAT8], oid::FLOAT8, AggKind::AvgFloat8),
+    agg(2103, "avg", &[oid::NUMERIC], oid::NUMERIC, AggKind::AvgNumeric),
+    agg(2133, "min", &[oid::INT2], oid::INT2, AggKind::Min),
+    agg(2132, "min", &[oid::INT4], oid::INT4, AggKind::Min),
+    agg(2131, "min", &[oid::INT8], oid::INT8, AggKind::Min),
+    agg(2134, "min", &[oid::OID], oid::OID, AggKind::Min),
+    agg(2135, "min", &[oid::FLOAT4], oid::FLOAT4, AggKind::Min),
+    agg(2136, "min", &[oid::FLOAT8], oid::FLOAT8, AggKind::Min),
+    agg(2138, "min", &[oid::DATE], oid::DATE, AggKind::Min),
+    agg(2142, "min", &[oid::TIMESTAMP], oid::TIMESTAMP, AggKind::Min),
+    agg(2143, "min", &[oid::TIMESTAMPTZ], oid::TIMESTAMPTZ, AggKind::Min),
+    agg(2145, "min", &[oid::TEXT], oid::TEXT, AggKind::Min),
+    agg(2146, "min", &[oid::NUMERIC], oid::NUMERIC, AggKind::Min),
+    agg(2245, "min", &[oid::BPCHAR], oid::BPCHAR, AggKind::Min),
+    agg(2798, "min", &[oid::TID], oid::TID, AggKind::Min),
+    agg(2117, "max", &[oid::INT2], oid::INT2, AggKind::Max),
+    agg(2116, "max", &[oid::INT4], oid::INT4, AggKind::Max),
+    agg(2115, "max", &[oid::INT8], oid::INT8, AggKind::Max),
+    agg(2118, "max", &[oid::OID], oid::OID, AggKind::Max),
+    agg(2119, "max", &[oid::FLOAT4], oid::FLOAT4, AggKind::Max),
+    agg(2120, "max", &[oid::FLOAT8], oid::FLOAT8, AggKind::Max),
+    agg(2122, "max", &[oid::DATE], oid::DATE, AggKind::Max),
+    agg(2126, "max", &[oid::TIMESTAMP], oid::TIMESTAMP, AggKind::Max),
+    agg(2127, "max", &[oid::TIMESTAMPTZ], oid::TIMESTAMPTZ, AggKind::Max),
+    agg(2129, "max", &[oid::TEXT], oid::TEXT, AggKind::Max),
+    agg(2130, "max", &[oid::NUMERIC], oid::NUMERIC, AggKind::Max),
+    agg(2244, "max", &[oid::BPCHAR], oid::BPCHAR, AggKind::Max),
+    agg(2797, "max", &[oid::TID], oid::TID, AggKind::Max),
+    agg(2517, "bool_and", &[oid::BOOL], oid::BOOL, AggKind::BoolAnd),
+    agg(2518, "bool_or", &[oid::BOOL], oid::BOOL, AggKind::BoolOr),
+    agg(2519, "every", &[oid::BOOL], oid::BOOL, AggKind::BoolAnd),
+    agg(3538, "string_agg", &[oid::TEXT, oid::TEXT], oid::TEXT, AggKind::StringAgg),
+];
+
+/// 名前が一致する集約関数（`pg_catalog` の組み込みだけ）。
+pub fn aggregates_named(name: &str) -> Vec<&'static BuiltinAggregate> {
+    AGGREGATES.iter().filter(|a| a.name == name).collect()
+}
+
+#[cfg(test)]
+mod t3_tests {
+    use super::*;
+
+    #[test]
+    fn format_type_name_matches_postgresql() {
+        let f = format_type_name;
+        for (oid, tm, want) in [
+            (1700, Some(-1), "numeric"),
+            (1700, Some(655_366), "numeric(10,2)"),
+            (1700, Some(4), "numeric(0,0)"),
+            (1700, None, "numeric"),
+            (1042, Some(-1), "bpchar"),
+            (1042, None, "character"),
+            (1042, Some(5), "character(1)"),
+            (1042, Some(4), "character"),
+            (1114, Some(-1), "timestamp without time zone"),
+            (1114, Some(3), "timestamp(3) without time zone"),
+            (1184, Some(-1), "timestamp with time zone"),
+            (1184, Some(0), "timestamp(0) with time zone"),
+            (1114, None, "timestamp without time zone"),
+            (22, None, "int2vector"),
+            (2205, None, "regclass"),
+            (2206, None, "regtype"),
+            (25, Some(5), "text(5)"),
+            (1009, None, "text[]"),
+        ] {
+            assert_eq!(f(oid, tm), want, "{oid} {tm:?}");
+        }
+        // numeric(10,-2): the scale is a signed 11-bit field.
+        let tm = ((10 << 16) | (-2_i32 & 0x7ff)) + 4;
+        assert_eq!(f(1700, Some(tm)), "numeric(10,-2)");
+        assert_eq!(crate::types::type_display_name(1700), "numeric");
+        assert_eq!(crate::types::type_display_name(1042), "character");
+        assert_eq!(
+            crate::types::type_display_name(1114),
+            "timestamp without time zone"
+        );
+        assert_eq!(
+            crate::types::type_display_name(1184),
+            "timestamp with time zone"
+        );
+    }
+
+    #[test]
+    fn operator_lookup_and_regex_operators() {
+        assert_eq!(operator_by_oid(639).unwrap().name, "~");
+        assert!(operator_by_oid(1).is_none());
+        for (o, proc_oid, negate) in [
+            (639, 79, 640),
+            (640, 1252, 639),
+            (641, 1254, 642),
+            (642, 1256, 641),
+            (1226, 1240, 1227),
+            (1227, 1241, 1226),
+            (1228, 1238, 1229),
+            (1229, 1239, 1228),
+        ] {
+            let m = operator_meta(o).unwrap();
+            assert_eq!((m.proc_oid, m.negate), (proc_oid, negate), "{o}");
+            assert!(proc_by_oid(proc_oid).is_some());
+        }
+        let name_eq = operator_by_oid(639).unwrap();
+        let args = [Datum::Text("pg_class".into()), Datum::Text("^pg_".into())];
+        assert_eq!((name_eq.func)(&args).unwrap(), Datum::Bool(true));
+        let name_ne = operator_by_oid(1227).unwrap();
+        assert_eq!((name_ne.func)(&args).unwrap(), Datum::Bool(false));
+    }
+
+    #[test]
+    fn generate_series_rows_are_set_functions() {
+        for o in [1066, 1067, 1068, 1069] {
+            let f = FUNCTIONS.iter().find(|f| f.oid == o).unwrap();
+            assert!(matches!(f.kind, FnKind::Set(_)), "{o}");
+            assert_eq!(f.name, "generate_series");
+            assert!(proc_by_oid(o).is_some());
+        }
+        assert_eq!(functions_named("generate_series").len(), 4);
+    }
+}
+// ===== region: sequence (Q1) =====
+// ===== region: btree-procs (B2) =====
+// ===== region: explain-deparse (E1) =====
+
+/// 保存式の出力に使う `TypeEnv`（ISO・UTC。セッションの DateStyle・TimeZone は渡らない）で `f` を呼ぶ。
+fn with_stored_type_env<R>(f: impl FnOnce(&crate::types::TypeEnv<'_>) -> R) -> R {
+    let tz = yuzhu_datetime::TimeZone::utc();
+    let zones = yuzhu_datetime::ZoneDb::without_tzdata();
+    let env = crate::types::TypeEnv {
+        datetime: Some(yuzhu_datetime::DateTimeEnv::new(&tz, &zones)),
+        ..crate::types::TypeEnv::default()
+    };
+    f(&env)
+}
+
+fn text_or_null(v: Option<String>) -> Datum {
+    v.map_or(Datum::Null, Datum::Text)
+}
+
+/// `pg_get_expr(pg_node_tree, oid, bool) -> text`。2 引数版（`pretty = false`）にも使える。
+fn pg_get_expr_pretty(
+    args: &[Datum],
+    catalog: &dyn CatalogReader,
+    _session: &SessionInfo,
+) -> Result<Datum> {
+    let (Some(Datum::Text(src)), Some(Datum::Oid(relid))) = (args.first(), args.get(1)) else {
+        return Err(crate::error::Error::internal(
+            "pg_get_expr expects (pg_node_tree, oid)",
+        ));
+    };
+    let pretty = matches!(args.get(2), Some(Datum::Bool(true)));
+    with_stored_type_env(|env| {
+        crate::deparse::stored::pg_get_expr(src, *relid, pretty, catalog, env).map(text_or_null)
+    })
+}
+
+/// `pg_get_constraintdef(oid [, bool]) -> text`。
+fn pg_get_constraintdef(
+    args: &[Datum],
+    catalog: &dyn CatalogReader,
+    _session: &SessionInfo,
+) -> Result<Datum> {
+    let Some(Datum::Oid(oid)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "pg_get_constraintdef expects an oid",
+        ));
+    };
+    let pretty = matches!(args.get(1), Some(Datum::Bool(true)));
+    with_stored_type_env(|env| {
+        crate::deparse::stored::pg_get_constraintdef(*oid, pretty, catalog, env).map(text_or_null)
+    })
+}
+
+/// `pg_get_indexdef(oid [, int4, bool]) -> text`。
+fn pg_get_indexdef(
+    args: &[Datum],
+    catalog: &dyn CatalogReader,
+    _session: &SessionInfo,
+) -> Result<Datum> {
+    let Some(Datum::Oid(oid)) = args.first() else {
+        return Err(crate::error::Error::internal(
+            "pg_get_indexdef expects an oid",
+        ));
+    };
+    let column = args
+        .get(1)
+        .and_then(Datum::as_i64)
+        .and_then(|v| i32::try_from(v).ok())
+        .unwrap_or(0);
+    let pretty = matches!(args.get(2), Some(Datum::Bool(true)));
+    crate::deparse::stored::pg_get_indexdef(*oid, column, pretty, catalog).map(text_or_null)
+}
+// ===== region: misc (C1) =====
 
 #[cfg(test)]
 mod tests {
@@ -2240,8 +2914,7 @@ mod tests {
         assert!(all_unique(PROCS.iter().map(|p| p.oid)));
         assert!(all_unique(OPERATOR_META.iter().map(|m| m.oid)));
         assert!(all_unique(CASTS.iter().map(|c| (c.source, c.target))));
-        assert!(PROCS.windows(2).all(|w| w[0].oid < w[1].oid));
-        assert!(OPERATOR_META.windows(2).all(|w| w[0].oid < w[1].oid));
+        // PROCS は区画ごとに追記するので OID 順は要求しない（`proc_by_oid` は線形探索）。
     }
 
     #[test]
@@ -2291,7 +2964,10 @@ mod tests {
             assert!(type_by_oid(c.target).is_some(), "{}", c.target);
             match c.pg_method {
                 'f' => {
-                    assert!(matches!(c.method, CastMethod::Function(_)));
+                    assert!(matches!(
+                        c.method,
+                        CastMethod::Function(_) | CastMethod::Env(_)
+                    ));
                     assert_ne!(c.func_oid, 0, "{}->{}", c.source, c.target);
                 }
                 'b' => assert_eq!(c.func_oid, 0, "{}->{}", c.source, c.target),
@@ -2363,13 +3039,7 @@ mod tests {
             assert!(is_supported_type(t), "{t}");
             assert!(!is_null_only_type(t), "{t}");
         }
-        for t in [
-            oid::ACLITEM,
-            oid::TIMESTAMPTZ,
-            oid::ANYARRAY,
-            oid::TEXT_ARRAY,
-            oid::OID_ARRAY,
-        ] {
+        for t in [oid::ACLITEM, oid::ANYARRAY, oid::TEXT_ARRAY, oid::OID_ARRAY] {
             assert!(!is_supported_type(t), "{t}");
             assert!(is_null_only_type(t), "{t}");
         }
@@ -2485,6 +3155,8 @@ mod tests {
     struct TestCatalog {
         roles: HashMap<Oid, String>,
         tables: Vec<Arc<TableDef>>,
+        /// Indexes of the tables (`public`, or `pg_catalog` when the namespace is 11).
+        indexes: Vec<Arc<crate::catalog::IndexDef>>,
     }
 
     impl CatalogReader for TestCatalog {
@@ -2514,6 +3186,28 @@ mod tests {
         }
         fn visible_namespaces(&self) -> Result<Vec<Oid>> {
             Ok(vec![11, 2200])
+        }
+        fn relation_kind(
+            &self,
+            schema: Option<&str>,
+            name: &str,
+        ) -> Result<Option<(Oid, crate::catalog::RelKind)>> {
+            if let Some(t) = self.table(schema, name)? {
+                return Ok(Some((t.oid, crate::catalog::RelKind::Table)));
+            }
+            let order = [(11, "pg_catalog"), (2200, "public")];
+            Ok(order
+                .iter()
+                .filter(|(_, s)| schema.is_none_or(|x| x == *s))
+                .find_map(|(nsp, _)| {
+                    self.indexes
+                        .iter()
+                        .find(|i| i.namespace == *nsp && i.name == name)
+                })
+                .map(|i| (i.oid, crate::catalog::RelKind::Index)))
+        }
+        fn index_by_oid(&self, oid: Oid) -> Result<Option<Arc<crate::catalog::IndexDef>>> {
+            Ok(self.indexes.iter().find(|i| i.oid == oid).cloned())
         }
     }
 
@@ -2559,6 +3253,15 @@ mod tests {
                 table_in("public", 16384, "t"),
                 // Shadowed by the pg_catalog table of the same name.
                 table_in("public", 16385, "pg_class"),
+                table_in("public", 16386, "u"),
+            ],
+            indexes: vec![
+                index_in(11, 2662, "pg_class_oid_index", 1259),
+                index_in(2200, 16390, "t_pkey", 16384),
+                // Shadowed by a table of the same name found first.
+                index_in(2200, 16391, "u", 16386),
+                // Shadowed by the pg_catalog index of the same name.
+                index_in(2200, 16392, "pg_class_oid_index", 16384),
             ],
         };
         let s = session();
@@ -2567,6 +3270,29 @@ mod tests {
         assert_eq!(call(16384), Datum::Bool(true));
         assert_eq!(call(16385), Datum::Bool(false));
         assert_eq!(call(99_999), Datum::Null);
+        // Indexes count too (`\di`).
+        assert_eq!(call(2662), Datum::Bool(true));
+        assert_eq!(call(16390), Datum::Bool(true));
+        assert_eq!(call(16391), Datum::Bool(false));
+        assert_eq!(call(16392), Datum::Bool(false));
+    }
+
+    fn index_in(nsp: Oid, oid: Oid, name: &str, table_oid: Oid) -> Arc<crate::catalog::IndexDef> {
+        Arc::new(crate::catalog::IndexDef {
+            oid,
+            name: name.into(),
+            namespace: nsp,
+            table_oid,
+            locator: crate::storage::smgr::RelFileLocator {
+                spc_oid: 1663,
+                db_oid: 5,
+                rel_number: crate::storage::smgr::RelFileNumber(oid),
+            },
+            columns: vec![],
+            unique: false,
+            primary: false,
+            constraint: None,
+        })
     }
 
     #[test]
@@ -2580,5 +3306,85 @@ mod tests {
             panic!("pure");
         };
         assert_eq!(f(&[Datum::Int4(6)]).unwrap(), Datum::Text("UTF8".into()));
+    }
+}
+
+#[cfg(test)]
+mod agg_tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn has_44_rows_with_unique_oid_and_signature() {
+        assert_eq!(AGGREGATES.len(), 44);
+        let oids: HashSet<_> = AGGREGATES.iter().map(|a| a.oid).collect();
+        assert_eq!(oids.len(), AGGREGATES.len());
+        let sigs: HashSet<_> = AGGREGATES.iter().map(|a| (a.name, a.args)).collect();
+        assert_eq!(sigs.len(), AGGREGATES.len());
+    }
+
+    #[test]
+    fn counts_per_name() {
+        let n = |s: &str| aggregates_named(s).len();
+        assert_eq!(
+            (n("count"), n("sum"), n("avg"), n("min"), n("max")),
+            (2, 6, 6, 13, 13)
+        );
+        assert_eq!(
+            (n("bool_and"), n("bool_or"), n("every"), n("nope")),
+            (1, 1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn result_types_follow_pg17() {
+        let find = |name: &str, arg: Oid| {
+            aggregates_named(name)
+                .into_iter()
+                .find(|a| a.args == [arg])
+                .unwrap()
+        };
+        assert_eq!(find("sum", oid::INT2).result, oid::INT8);
+        assert_eq!(find("sum", oid::INT4).result, oid::INT8);
+        assert_eq!(find("sum", oid::INT8).result, oid::NUMERIC);
+        assert_eq!(find("avg", oid::FLOAT4).result, oid::FLOAT8);
+        assert_eq!(find("avg", oid::INT4).result, oid::NUMERIC);
+        assert_eq!(find("every", oid::BOOL).kind, AggKind::BoolAnd);
+        let c = aggregates_named("count");
+        assert!(
+            c.iter()
+                .any(|a| a.args.is_empty() && a.kind == AggKind::CountStar)
+        );
+        assert!(
+            c.iter()
+                .any(|a| a.args == [ANY_OID] && a.kind == AggKind::Count)
+        );
+        assert!(c.iter().all(|a| a.result == oid::INT8));
+    }
+
+    #[test]
+    fn min_max_return_argument_type() {
+        for a in AGGREGATES
+            .iter()
+            .filter(|a| matches!(a.kind, AggKind::Min | AggKind::Max))
+        {
+            assert_eq!(a.args, [a.result], "{}", a.name);
+        }
+    }
+
+    /// `PROCS` に行がある OID は、名前・引数・結果型が `AGGREGATES` と一致する。
+    #[test]
+    fn agrees_with_procs_when_present() {
+        for a in AGGREGATES {
+            if let Some(p) = proc_by_oid(a.oid) {
+                assert_eq!(
+                    (p.name, p.args, p.result),
+                    (a.name, a.args, a.result),
+                    "{}",
+                    a.oid
+                );
+            }
+        }
     }
 }

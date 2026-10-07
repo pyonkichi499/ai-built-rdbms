@@ -1,0 +1,928 @@
+# 生成物（tests/gen/plan_variants/dml.tpl から `slttools plan-variants expand` で作る。手で直さない）。
+# 同じ問い合わせを enable_* の設定を変えて流し、結果が同じことを確かめる。
+
+statement ok
+CREATE TABLE pv_dm_t (a int PRIMARY KEY, b int, c text)
+
+statement ok
+CREATE TABLE pv_dm_u (d int, e int)
+
+statement ok
+INSERT INTO pv_dm_t SELECT g, g % 5, 'r' || g FROM generate_series(1, 50) g
+
+statement ok
+INSERT INTO pv_dm_u SELECT g * 3, g FROM generate_series(1, 20) g
+
+# profile: default
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+# profile: no_hashjoin
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+statement ok
+RESET enable_hashjoin
+
+# profile: no_nestloop
+
+statement ok
+SET enable_nestloop = off
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_hashjoin_no_nestloop
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_nestloop = off
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_nestloop
+
+# profile: no_indexscan
+
+statement ok
+SET enable_indexscan = off
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+statement ok
+RESET enable_indexscan
+
+# profile: no_seqscan
+
+statement ok
+SET enable_seqscan = off
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+statement ok
+RESET enable_seqscan
+
+# profile: combined
+
+statement ok
+SET enable_hashjoin = off
+
+statement ok
+SET enable_hashagg = off
+
+statement ok
+SET enable_indexscan = off
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET b = b + 100 FROM pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t WHERE b >= 100
+----
+16
+
+query II rowsort
+SELECT a, b FROM pv_dm_t WHERE b >= 100 AND a < 20
+----
+12	102
+15	100
+18	103
+3	103
+6	101
+9	104
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t USING pv_dm_u WHERE pv_dm_t.a = pv_dm_u.d AND pv_dm_u.e > 10
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+44
+
+query I rowsort
+SELECT a FROM pv_dm_t WHERE a > 30 AND a < 50
+----
+31
+32
+34
+35
+37
+38
+40
+41
+43
+44
+46
+47
+49
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO pv_dm_u SELECT a, b FROM pv_dm_t WHERE a IN (SELECT d FROM pv_dm_u)
+
+query I rowsort
+SELECT count(*) FROM pv_dm_u
+----
+36
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+UPDATE pv_dm_t SET c = 'z' WHERE a IN (SELECT d FROM pv_dm_u WHERE e < 5)
+
+query II rowsort
+SELECT a, c FROM pv_dm_t WHERE c = 'z'
+----
+12	z
+3	z
+6	z
+9	z
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+DELETE FROM pv_dm_t WHERE NOT EXISTS (SELECT 1 FROM pv_dm_u WHERE d = a)
+
+query I rowsort
+SELECT a FROM pv_dm_t
+----
+12
+15
+18
+21
+24
+27
+3
+30
+33
+36
+39
+42
+45
+48
+6
+9
+
+statement ok
+ROLLBACK
+
+query I rowsort
+SELECT count(*) FROM pv_dm_t
+----
+50
+
+statement ok
+RESET enable_hashjoin
+
+statement ok
+RESET enable_hashagg
+
+statement ok
+RESET enable_indexscan
+
+statement ok
+DROP TABLE pv_dm_t
+
+statement ok
+DROP TABLE pv_dm_u

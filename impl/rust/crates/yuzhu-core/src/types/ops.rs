@@ -895,15 +895,17 @@ pub fn numeric_mod(args: &[Datum]) -> Result<Datum> {
 pub fn numeric_uminus(args: &[Datum]) -> Result<Datum> {
     Ok(Datum::Numeric(numeric_arg(args, 0)?.negate()))
 }
-/// `numeric ^ numeric` is not implemented yet.
+/// `numeric ^ numeric` is not implemented yet (`0A000`).
 pub fn numeric_power(_args: &[Datum]) -> Result<Datum> {
-    Err(Error::not_supported(
-        "operator ^ for type numeric is not supported yet (cast an operand to float8)",
-    ))
+    Err(Error::not_supported("numeric power is not supported yet"))
 }
 /// `sqrt(numeric)`.
 pub fn numeric_sqrt(args: &[Datum]) -> Result<Datum> {
     Ok(Datum::Numeric(numeric_arg(args, 0)?.sqrt()?))
+}
+/// `exp(numeric)`.
+pub fn numeric_exp(args: &[Datum]) -> Result<Datum> {
+    Ok(Datum::Numeric(numeric_arg(args, 0)?.exp()?))
 }
 /// `ln(numeric)`.
 pub fn numeric_ln(args: &[Datum]) -> Result<Datum> {
@@ -994,6 +996,115 @@ pub fn unsupported(_args: &[Datum]) -> Result<Datum> {
     Err(Error::not_supported(
         "this function is not supported yet".to_owned(),
     ))
+}
+
+// ===== region: sequence (Q1) =====
+// シーケンス関数（`m4/08-sequence-serial.md` §4.5）。引数の `regclass` は `Datum::Oid`。実行は `RuntimeInfo` に委ねる。
+
+fn seq_oid_arg(args: &[Datum], func: &str) -> Result<u32> {
+    match args.first() {
+        Some(Datum::Oid(v)) => Ok(*v),
+        _ => Err(bad_arg(func)),
+    }
+}
+
+fn seq_value_arg(args: &[Datum], func: &str) -> Result<i64> {
+    match args.get(1) {
+        Some(d) => d.as_i64().ok_or_else(|| bad_arg(func)),
+        None => Err(bad_arg(func)),
+    }
+}
+
+pub fn seq_nextval(args: &[Datum], rt: &dyn crate::executor::RuntimeInfo) -> Result<Datum> {
+    Ok(Datum::Int8(rt.nextval(seq_oid_arg(args, "nextval")?)?))
+}
+
+pub fn seq_currval(args: &[Datum], rt: &dyn crate::executor::RuntimeInfo) -> Result<Datum> {
+    Ok(Datum::Int8(rt.currval(seq_oid_arg(args, "currval")?)?))
+}
+
+pub fn seq_setval2(args: &[Datum], rt: &dyn crate::executor::RuntimeInfo) -> Result<Datum> {
+    let seq = seq_oid_arg(args, "setval")?;
+    let v = seq_value_arg(args, "setval")?;
+    Ok(Datum::Int8(rt.setval(seq, v, true)?))
+}
+
+pub fn seq_setval3(args: &[Datum], rt: &dyn crate::executor::RuntimeInfo) -> Result<Datum> {
+    let seq = seq_oid_arg(args, "setval")?;
+    let v = seq_value_arg(args, "setval")?;
+    let Some(Datum::Bool(is_called)) = args.get(2) else {
+        return Err(bad_arg("setval"));
+    };
+    Ok(Datum::Int8(rt.setval(seq, v, *is_called)?))
+}
+
+pub fn seq_lastval(_args: &[Datum], rt: &dyn crate::executor::RuntimeInfo) -> Result<Datum> {
+    Ok(Datum::Int8(rt.lastval()?))
+}
+
+#[cfg(test)]
+mod seq_fn_tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::error::sqlstate;
+    use crate::executor::RuntimeInfo;
+
+    #[derive(Debug, Default)]
+    struct Rt {
+        calls: Cell<u32>,
+    }
+
+    impl RuntimeInfo for Rt {
+        fn backend_pid(&self) -> i32 {
+            0
+        }
+        fn is_blocked_by(&self, _: i32, _: &[i32]) -> bool {
+            false
+        }
+        fn check_interrupts(&self) -> Result<()> {
+            Ok(())
+        }
+        fn nextval(&self, seq: u32) -> Result<i64> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(i64::from(seq) + 1)
+        }
+        fn currval(&self, seq: u32) -> Result<i64> {
+            Ok(i64::from(seq))
+        }
+        fn lastval(&self) -> Result<i64> {
+            Ok(-1)
+        }
+        fn setval(&self, seq: u32, value: i64, is_called: bool) -> Result<i64> {
+            assert_eq!(seq, 7);
+            Ok(if is_called { value } else { -value })
+        }
+    }
+
+    #[test]
+    fn functions_delegate_to_the_runtime() {
+        let rt = Rt::default();
+        assert_eq!(seq_nextval(&[Datum::Oid(7)], &rt).unwrap(), Datum::Int8(8));
+        assert_eq!(rt.calls.get(), 1);
+        assert_eq!(seq_currval(&[Datum::Oid(7)], &rt).unwrap(), Datum::Int8(7));
+        assert_eq!(seq_lastval(&[], &rt).unwrap(), Datum::Int8(-1));
+        assert_eq!(
+            seq_setval2(&[Datum::Oid(7), Datum::Int8(5)], &rt).unwrap(),
+            Datum::Int8(5)
+        );
+        assert_eq!(
+            seq_setval3(&[Datum::Oid(7), Datum::Int8(5), Datum::Bool(false)], &rt).unwrap(),
+            Datum::Int8(-5)
+        );
+    }
+
+    #[test]
+    fn bad_arguments_are_internal_errors() {
+        let rt = Rt::default();
+        let e = seq_nextval(&[Datum::Int8(1)], &rt).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        assert!(seq_setval3(&[Datum::Oid(7), Datum::Int8(1)], &rt).is_err());
+    }
 }
 
 #[cfg(test)]

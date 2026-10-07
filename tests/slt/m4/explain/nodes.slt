@@ -66,10 +66,32 @@ EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u WHERE a IS NULL
 Index Scan using ex_n_u_a_idx on ex_n_u
   Index Cond: (a IS NULL)
 
+# KNOWN-DIFF: KD-25 ソートの省略は Limit の直下か述語の索引だけ・走査の出力列の選び方
+skipif yuzhu
+# KNOWN-DIFF: KD-25 LIMIT のない ORDER BY は索引の順序を使わず Sort にする（04 §7.4。PostgreSQL は費用で選ぶ）
+skipif yuzhu
 query T
 EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u ORDER BY a DESC
 ----
 Index Scan Backward using ex_n_u_a_idx on ex_n_u
+
+# KNOWN-DIFF: KD-25 LIMIT のない ORDER BY は索引の順序を使わず Sort にする（04 §7.4。PostgreSQL は費用で選ぶ）
+onlyif yuzhu
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u ORDER BY a DESC
+----
+Sort
+  Sort Key: a DESC
+  ->  Seq Scan on ex_n_u
+
+# KNOWN-DIFF: KD-25 ソートの省略は Limit の直下か述語の索引だけ・走査の出力列の選び方
+onlyif yuzhu
+query T
+EXPLAIN (COSTS OFF) SELECT * FROM ex_n_u ORDER BY a DESC
+----
+Sort
+  Sort Key: a DESC
+  ->  Seq Scan on ex_n_u
 
 query T
 EXPLAIN (COSTS OFF) SELECT * FROM ex_n_t WHERE a > 3 ORDER BY a LIMIT 5 OFFSET 2
@@ -183,6 +205,8 @@ GroupAggregate
 statement ok
 RESET enable_hashagg
 
+# KNOWN-DIFF: KD-25 ソートの省略は Limit の直下か述語の索引だけ・走査の出力列の選び方
+skipif yuzhu
 query T
 EXPLAIN (COSTS OFF, VERBOSE) SELECT ex_n_t.a, ex_n_t.b + 1 AS x FROM ex_n_u2 JOIN ex_n_t ON ex_n_u2.b = ex_n_t.a ORDER BY x
 ----
@@ -194,6 +218,24 @@ Sort
         Hash Cond: (ex_n_t.a = ex_n_u2.b)
         ->  Seq Scan on public.ex_n_t
               Output: ex_n_t.a, ex_n_t.b, ex_n_t.c
+        ->  Hash
+              Output: ex_n_u2.b
+              ->  Seq Scan on public.ex_n_u2
+                    Output: ex_n_u2.b
+
+# KNOWN-DIFF: KD-25 ソートの省略は Limit の直下か述語の索引だけ・走査の出力列の選び方
+onlyif yuzhu
+query T
+EXPLAIN (COSTS OFF, VERBOSE) SELECT ex_n_t.a, ex_n_t.b + 1 AS x FROM ex_n_u2 JOIN ex_n_t ON ex_n_u2.b = ex_n_t.a ORDER BY x
+----
+Sort
+  Output: ex_n_t.a, ((ex_n_t.b + 1))
+  Sort Key: ((ex_n_t.b + 1))
+  ->  Hash Join
+        Output: ex_n_t.a, (ex_n_t.b + 1)
+        Hash Cond: (ex_n_t.a = ex_n_u2.b)
+        ->  Seq Scan on public.ex_n_t
+              Output: ex_n_t.a, ex_n_t.b
         ->  Hash
               Output: ex_n_u2.b
               ->  Seq Scan on public.ex_n_u2

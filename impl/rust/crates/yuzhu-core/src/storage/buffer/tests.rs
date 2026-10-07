@@ -1167,3 +1167,82 @@ fn drop_relation_buffers_from_discards_only_the_tail_of_one_fork() {
     assert_eq!(value_of(&ts, r2, 0), 200);
     ts.assert_clean();
 }
+
+#[test]
+fn tree_latches_allow_descending_blocks_and_hold_extend() {
+    let ts = TestStorage::new();
+    let rel = test_rel(5001);
+    ts.create_rel(rel).unwrap();
+    add_page(&ts, rel, 0);
+    add_page(&ts, rel, 1);
+    let lo = ts.pool().read_buffer(test_tag(rel, 0)).unwrap();
+    let hi = ts.pool().read_buffer(test_tag(rel, 1)).unwrap();
+    // Child-before-parent style order: higher block first, then lower.
+    let g1 = hi.write_tree().unwrap();
+    let g0 = lo.read_tree().unwrap();
+    // A split allocates a page while holding both latches.
+    let new = ts.pool().extend_tree(rel, ForkNumber::Main).unwrap();
+    assert_eq!(new.tag().block, 2);
+    assert_eq!(ts.pool().nblocks(rel, ForkNumber::Main).unwrap(), 3);
+    let mut gn = new.write_tree().unwrap();
+    pm(&mut gn).init_special(16);
+    drop((gn, g0, g1));
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "double latch")]
+fn tree_latches_still_detect_a_double_latch() {
+    let ts = TestStorage::new();
+    let rel = test_rel(5002);
+    ts.create_rel(rel).unwrap();
+    add_page(&ts, rel, 0);
+    let buf = ts.pool().read_buffer(test_tag(rel, 0)).unwrap();
+    let _a = buf.read_tree().unwrap();
+    let _b = buf.read_tree().unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "latch order violation")]
+fn plain_latches_keep_the_order_check_next_to_tree_latches() {
+    let ts = TestStorage::new();
+    let rel = test_rel(5003);
+    ts.create_rel(rel).unwrap();
+    add_page(&ts, rel, 0);
+    add_page(&ts, rel, 1);
+    let lo = ts.pool().read_buffer(test_tag(rel, 0)).unwrap();
+    let hi = ts.pool().read_buffer(test_tag(rel, 1)).unwrap();
+    let _g1 = hi.write_tree().unwrap();
+    let _g0 = lo.write().unwrap();
+}
+
+#[test]
+fn tree_latch_guards_release_tracking_on_drop() {
+    let ts = TestStorage::new();
+    let rel = test_rel(5004);
+    ts.create_rel(rel).unwrap();
+    add_page(&ts, rel, 0);
+    let buf = ts.pool().read_buffer(test_tag(rel, 0)).unwrap();
+    drop(buf.write_tree().unwrap());
+    drop(buf.read_tree().unwrap());
+    assert_eq!(track::latches_held(), 0);
+    // Re-latching after release is fine.
+    let _g = buf.write().unwrap();
+}
+
+#[test]
+fn page_mut_hint_dirties_at_the_call() {
+    let ts = TestStorage::new();
+    let rel = test_rel(5005);
+    ts.create_rel(rel).unwrap();
+    add_page(&ts, rel, 0);
+    ts.pool().flush_all_for_checkpoint().unwrap();
+    assert_eq!(ts.pool().dirty_frames(), 0);
+    let buf = ts.pool().read_buffer(test_tag(rel, 0)).unwrap();
+    let mut g = buf.write_tree().unwrap();
+    assert_eq!(ts.pool().dirty_frames(), 0);
+    let _ = g.page_mut_hint();
+    assert_eq!(ts.pool().dirty_frames(), 1, "dirty before any WAL/LSN");
+    assert!(!g.lsn_missing());
+}

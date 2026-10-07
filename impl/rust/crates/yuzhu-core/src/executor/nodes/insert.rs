@@ -1,26 +1,26 @@
 //! Executor node: INSERT.
 //!
 //! Per input row (already coerced to the column types): build the table
-//! row via `column_map` / `defaults` → NOT NULL checks in column order
-//! (23502) → CHECK constraints (23514; NULL passes) → `storage.insert`
-//! (with the transaction's `WriteCtx`). Emits no rows; the count is `rows_affected`.
+//! row via `column_map` / `defaults` ([`RowBuilder`]) → NOT NULL checks in column order
+//! (23502) → CHECK constraints (23514; NULL passes) ([`RowChecker`]) → `insert_with_indexes`
+//! (with the transaction's `WriteCtx`). Without `returning` the node emits no rows and the
+//! count is `rows_affected`; with it, one row per inserted row.
 
-use crate::analyzer::{BoundCheck, BoundExpr};
-use crate::catalog::TableDef;
-use crate::error::{Error, Result, sqlstate};
-use crate::executor::eval::eval_pred;
-use crate::executor::{BoxedExecutor, ExecCtx, Executor, eval};
+use crate::error::{Error, Result};
+use crate::executor::dml::{RowBuilder, RowChecker, insert_with_indexes};
+use crate::executor::eval::eval;
+use crate::executor::{BoxedExecutor, ExecCtx, Executor};
+use crate::planner::physical::{PhysCheck, PhysExpr};
 use crate::storage::RelHandle;
-use crate::types::{Datum, Row, io};
+use crate::types::Row;
 
 pub struct InsertExec {
     rel: RelHandle,
     table_name: String,
     input: BoxedExecutor,
-    column_map: Vec<Option<usize>>,
-    defaults: Vec<Option<BoundExpr>>,
-    checks: Vec<BoundCheck>,
-    not_null: Vec<bool>,
+    builder: RowBuilder,
+    checker: RowChecker,
+    returning: Option<Vec<PhysExpr>>,
     count: u64,
     done: bool,
 }
@@ -40,138 +40,55 @@ impl InsertExec {
         table_name: String,
         input: BoxedExecutor,
         column_map: Vec<Option<usize>>,
-        defaults: Vec<Option<BoundExpr>>,
-        checks: Vec<BoundCheck>,
+        defaults: Vec<Option<PhysExpr>>,
+        checks: Vec<PhysCheck>,
         not_null: Vec<bool>,
     ) -> Self {
+        InsertExec::with_returning(
+            rel, table_name, input, column_map, defaults, checks, not_null, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_returning(
+        rel: RelHandle,
+        table_name: String,
+        input: BoxedExecutor,
+        column_map: Vec<Option<usize>>,
+        defaults: Vec<Option<PhysExpr>>,
+        checks: Vec<PhysCheck>,
+        not_null: Vec<bool>,
+        returning: Option<Vec<PhysExpr>>,
+    ) -> Self {
+        let checker = RowChecker::new(rel.oid, table_name.clone(), not_null, checks);
         InsertExec {
             rel,
             table_name,
             input,
-            column_map,
-            defaults,
-            checks,
-            not_null,
+            builder: RowBuilder::new(column_map, defaults),
+            checker,
+            returning,
             count: 0,
             done: false,
         }
     }
 
-    fn build_row(&self, input: &Row, ctx: &ExecCtx<'_>) -> Result<Row> {
-        let empty = Row::new();
-        self.column_map
-            .iter()
-            .enumerate()
-            .map(|(i, src)| match src {
-                Some(j) => input
-                    .get(*j)
-                    .cloned()
-                    .ok_or_else(|| Error::internal(format!("input column {j} out of range"))),
-                None => match self.defaults.get(i).and_then(Option::as_ref) {
-                    Some(e) => eval(e, &empty, ctx),
-                    None => Ok(Datum::Null),
-                },
-            })
-            .collect()
-    }
-
-    fn insert_one(&mut self, input: &Row, ctx: &mut ExecCtx<'_>) -> Result<()> {
-        let row = self.build_row(input, ctx)?;
-        enforce_constraints(self.rel.oid, &row, &self.not_null, &self.checks, ctx)?;
+    /// 1 行を書く。RETURNING があればその行を返す。
+    fn insert_one(&mut self, input: &Row, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
+        let row = self.builder.build(ctx, input)?;
+        self.checker.check(ctx, &row)?;
         let w = ctx.write_ctx()?;
-        ctx.storage.insert(&self.rel, &w, &row)?;
+        insert_with_indexes(ctx, &self.rel, &w, &row)?;
         self.count += 1;
-        Ok(())
+        let Some(returning) = &self.returning else {
+            return Ok(None);
+        };
+        returning
+            .iter()
+            .map(|e| eval(e, &row, ctx))
+            .collect::<Result<Row>>()
+            .map(Some)
     }
-}
-
-/// NOT NULL then CHECK, as PostgreSQL's `ExecConstraints`.
-fn check_constraints(
-    table: &TableDef,
-    row: &Row,
-    not_null: &[bool],
-    checks: &[BoundCheck],
-    ctx: &ExecCtx<'_>,
-) -> Result<()> {
-    for (i, d) in row.iter().enumerate() {
-        if d.is_null() && not_null.get(i).copied().unwrap_or(false) {
-            let col = table.columns.get(i).map_or("?", |c| c.name.as_str());
-            return Err(Error::new(
-                sqlstate::NOT_NULL_VIOLATION,
-                format!(
-                    "null value in column \"{col}\" of relation \"{}\" violates not-null constraint",
-                    table.name
-                ),
-            )
-            .with_detail(failing_row(table, row)));
-        }
-    }
-    for check in checks {
-        if eval_pred(&check.expr, row, ctx)? == Some(false) {
-            return Err(Error::new(
-                sqlstate::CHECK_VIOLATION,
-                format!(
-                    "new row for relation \"{}\" violates check constraint \"{}\"",
-                    table.name, check.name
-                ),
-            )
-            .with_detail(failing_row(table, row)));
-        }
-    }
-    Ok(())
-}
-
-/// NOT NULL then CHECK for a row about to be written, as PostgreSQL's
-/// `ExecConstraints`. The table definition is fetched from the catalog
-/// only when something needs checking (names are used in messages).
-pub(crate) fn enforce_constraints(
-    rel_oid: crate::types::Oid,
-    row: &Row,
-    not_null: &[bool],
-    checks: &[BoundCheck],
-    ctx: &ExecCtx<'_>,
-) -> Result<()> {
-    let needs_table =
-        not_null.iter().zip(row).any(|(nn, d)| *nn && d.is_null()) || !checks.is_empty();
-    if !needs_table {
-        return Ok(());
-    }
-    let table = ctx
-        .catalog
-        .table_by_oid(rel_oid)?
-        .ok_or_else(|| Error::internal(format!("relation with OID {rel_oid} does not exist")))?;
-    check_constraints(&table, row, not_null, checks, ctx)
-}
-
-/// Maximum bytes of each value shown in `Failing row contains (...)`.
-const MAX_FIELD_LEN: usize = 64;
-
-/// `Failing row contains (v1, v2, ...).` (PostgreSQL's
-/// `ExecBuildSlotValueDescription`: NULL is `null`, long values are clipped
-/// to 64 bytes followed by `...`).
-pub fn failing_row(table: &TableDef, row: &Row) -> String {
-    let vals: Vec<String> = row
-        .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            let ty = table
-                .columns
-                .get(i)
-                .map_or(crate::types::SqlType::TEXT, |c| c.ty);
-            match io::output_text(d, ty) {
-                None => "null".to_owned(),
-                Some(s) if s.len() <= MAX_FIELD_LEN => s,
-                Some(s) => {
-                    let mut end = MAX_FIELD_LEN;
-                    while !s.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    format!("{}...", &s[..end])
-                }
-            }
-        })
-        .collect();
-    format!("Failing row contains ({}).", vals.join(", "))
 }
 
 impl Executor for InsertExec {
@@ -179,11 +96,18 @@ impl Executor for InsertExec {
         if self.done {
             return Ok(None);
         }
-        self.done = true;
         while let Some(input) = self.input.next(ctx)? {
-            self.insert_one(&input, ctx)?;
+            ctx.check_interrupts()?;
+            if let Some(out) = self.insert_one(&input, ctx)? {
+                return Ok(Some(out));
+            }
         }
+        self.done = true;
         Ok(None)
+    }
+
+    fn rewind(&mut self, _ctx: &mut ExecCtx<'_>) -> Result<()> {
+        Err(Error::internal("rewind is not supported for DML nodes"))
     }
 
     fn rows_affected(&self) -> u64 {
@@ -196,10 +120,11 @@ mod tests {
     use super::*;
     use crate::catalog::ColumnDef;
     use crate::catalog::fake::table_def;
+    use crate::error::sqlstate;
     use crate::executor::eval::tests::{GT, col, int, null, op, text};
     use crate::executor::nodes::ValuesExec;
     use crate::executor::nodes::test_util::Fixture;
-    use crate::storage::RelHandle;
+    use crate::types::Datum;
     use crate::types::{Oid, SqlType};
     use std::sync::Arc;
 
@@ -213,6 +138,7 @@ mod tests {
             ty,
             not_null,
             default: None,
+            identity: None,
         };
         f.catalog.put_table(Arc::new(table_def(
             T,
@@ -227,8 +153,8 @@ mod tests {
         f
     }
 
-    fn check_a_gt_0() -> BoundCheck {
-        BoundCheck {
+    fn check_a_gt_0() -> PhysCheck {
+        PhysCheck {
             name: "t_a_check".into(),
             expr: op(&GT, col(0, SqlType::INT4), int(0)),
         }
@@ -238,7 +164,7 @@ mod tests {
         RelHandle::from_table(&table_def(T, "t", vec![], vec![]))
     }
 
-    fn insert(rows: Vec<Vec<BoundExpr>>, column_map: Vec<Option<usize>>) -> InsertExec {
+    fn insert(rows: Vec<Vec<PhysExpr>>, column_map: Vec<Option<usize>>) -> InsertExec {
         InsertExec::new(
             rel(),
             "t".into(),
@@ -320,7 +246,7 @@ mod tests {
             Box::new(ValuesExec::new(vec![vec![int(5)]])),
             vec![Some(0), None, None],
             vec![None, None, None],
-            vec![BoundCheck {
+            vec![PhysCheck {
                 name: "t_c_check".into(),
                 expr: op(&GT, col(2, SqlType::INT4), int(0)),
             }],
@@ -335,9 +261,10 @@ mod tests {
         let f = fixture();
         let table = f.catalog.table_by_oid(T).unwrap().unwrap();
         let long = "é".repeat(40);
-        let d = failing_row(
+        let d = crate::executor::dml::failing_row_detail(
             &table,
             &vec![Datum::Int4(1), Datum::Text(long), Datum::Null],
+            &crate::types::TypeEnv::default(),
         );
         assert_eq!(
             d,
@@ -345,4 +272,49 @@ mod tests {
         );
     }
     use crate::catalog::CatalogReader;
+
+    #[test]
+    fn returning_emits_a_row_per_inserted_row() {
+        let mut f = fixture();
+        let mut e: BoxedExecutor = Box::new(InsertExec::with_returning(
+            rel(),
+            "t".into(),
+            Box::new(ValuesExec::new(vec![vec![int(1)], vec![int(2)]])),
+            vec![Some(0), None, None],
+            vec![None, None, Some(int(42))],
+            vec![],
+            vec![true, false, false],
+            Some(vec![col(2, SqlType::INT4), col(0, SqlType::INT4)]),
+        ));
+        assert_eq!(
+            f.run(&mut e).unwrap(),
+            vec![
+                vec![Datum::Int4(42), Datum::Int4(1)],
+                vec![Datum::Int4(42), Datum::Int4(2)]
+            ]
+        );
+        assert_eq!(e.rows_affected(), 2);
+    }
+
+    #[test]
+    fn dml_rewind_is_internal_error() {
+        let mut f = fixture();
+        let mut e: BoxedExecutor = Box::new(insert(vec![], vec![Some(0), Some(1), None]));
+        let mut ctx = f.ctx();
+        let err = e.rewind(&mut ctx).unwrap_err();
+        assert_eq!(err.sqlstate, sqlstate::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn stops_on_cancel_per_input_row() {
+        let mut f = fixture();
+        f.interrupts.request_cancel();
+        let mut e: BoxedExecutor = Box::new(insert(
+            vec![vec![int(1), text("x")]],
+            vec![Some(0), Some(1), None],
+        ));
+        let err = f.run(&mut e).unwrap_err();
+        assert_eq!(err.sqlstate, sqlstate::QUERY_CANCELED);
+        assert!(scan(&f).is_empty());
+    }
 }

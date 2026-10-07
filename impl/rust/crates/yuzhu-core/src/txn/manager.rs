@@ -23,7 +23,7 @@ use crate::storage::WriteCtx;
 use crate::storage::XID_PREFETCH;
 use crate::storage::smgr::RelFileLocator;
 use crate::util::sync::{lock, lock_ignore_poison, read, wait_timeout, write};
-use crate::wal::Wal;
+use crate::wal::{Lsn, Wal};
 
 /// How often a waiter for the writer lock checks for interrupts (§6.6.3).
 const WAIT_POLL: Duration = Duration::from_millis(50);
@@ -311,6 +311,16 @@ impl TxnManager {
         Ok(())
     }
 
+    /// XID を持たないトランザクションの COMMIT（`m4/08` §4.6）。`flush_upto` が `Lsn(0)` でなければ
+    /// `wal.flush(flush_upto)`。コミットゲートは取らない（clog を触らない）。失敗は `Severity::Panic`。
+    /// `DebugKnobs::skip_commit_flush` のときは何もしない（変異試験）。
+    pub fn finish_without_xid(&self, flush_upto: Lsn) -> Result<()> {
+        if flush_upto == Lsn::INVALID || self.knobs.skip_commit_flush {
+            return Ok(());
+        }
+        self.wal.flush(flush_upto).map_err(panic_err)
+    }
+
     /// Held by the checkpoint only while it fixes its REDO point (D10). It
     /// waits for the commits and aborts in progress and blocks new ones.
     pub fn commit_gate_exclusive(&self) -> Result<GateWrite<'_>> {
@@ -487,6 +497,12 @@ pub struct Transaction {
     pub pending_unlinks: Vec<RelFileLocator>,
     /// The transaction changed the catalog.
     pub catalog_dirty: bool,
+    /// 非トランザクション的に書いた WAL（`SEQ_LOG`）のうち、このトランザクションが払い出した値を覆うものの
+    /// 終端 LSN の最大値。コミット時にここまで flush する。`Lsn(0)` = なし（`m4/08` §4.6）。
+    pub wal_flush_upto: Lsn,
+    /// トランザクションの開始時刻（2000-01-01 からのマイクロ秒。PostgreSQL のエポック）。
+    /// `Transaction::new()` は 0。session が開始時に設定する。
+    pub started_at: i64,
 }
 
 impl Transaction {
@@ -494,6 +510,13 @@ impl Transaction {
         Transaction {
             cid: FIRST_COMMAND_ID,
             ..Transaction::default()
+        }
+    }
+
+    /// `wal_flush_upto` を大きい方に更新する。
+    pub fn note_wal(&mut self, lsn: Lsn) {
+        if lsn > self.wal_flush_upto {
+            self.wal_flush_upto = lsn;
         }
     }
 

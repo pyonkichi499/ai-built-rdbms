@@ -185,7 +185,7 @@ statement ok
 ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c60 CHECK (tz > '2020-01-01 10:00+00')
 
 statement ok
-ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c61 CHECK (ts > now())
+ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c61 CHECK (tz > now())
 
 statement ok
 ALTER TABLE ex_ds_t ADD CONSTRAINT ex_ds_c62 CHECK (tz > current_timestamp)
@@ -268,7 +268,7 @@ ex_ds_c57 ## CHECK ((i > (1)::bigint)) ## CHECK (i > 1::bigint)
 ex_ds_c58 ## CHECK ((d > '2020-01-01'::date)) ## CHECK (d > '2020-01-01'::date)
 ex_ds_c59 ## CHECK ((ts > '2020-01-01 10:00:00'::timestamp without time zone)) ## CHECK (ts > '2020-01-01 10:00:00'::timestamp without time zone)
 ex_ds_c60 ## CHECK ((tz > '2020-01-01 10:00:00+00'::timestamp with time zone)) ## CHECK (tz > '2020-01-01 10:00:00+00'::timestamp with time zone)
-ex_ds_c61 ## CHECK ((ts > now())) ## CHECK (ts > now())
+ex_ds_c61 ## CHECK ((tz > now())) ## CHECK (tz > now())
 ex_ds_c62 ## CHECK ((tz > CURRENT_TIMESTAMP)) ## CHECK (tz > CURRENT_TIMESTAMP)
 ex_ds_c63 ## CHECK ((d > CURRENT_DATE)) ## CHECK (d > CURRENT_DATE)
 ex_ds_c64 ## CHECK (((ts)::date = d)) ## CHECK (ts::date = d)

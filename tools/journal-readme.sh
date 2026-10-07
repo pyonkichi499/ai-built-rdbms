@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# journal/README.md の AUTO ブロック（index, speclines）を更新する。冪等。TZ=UTC。
+# journal/README.md の AUTO ブロック（index, speclines）を更新する。冪等。TZ=Asia/Tokyo。
 # 使い方: tools/journal-readme.sh [--dry-run]
 set -euo pipefail
-export TZ=UTC LC_ALL=C.UTF-8
+export TZ=Asia/Tokyo LC_ALL=C.UTF-8
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 target=journal/README.md
@@ -29,7 +29,7 @@ if ! declare -F replace_block >/dev/null; then
   }
 fi
 
-mtime() { [ -f "$1" ] && date -u -d "@$(stat -c %Y "$1")" '+%Y-%m-%d %H:%M UTC' || echo '未作成'; }
+mtime() { [ -f "$1" ] && date -d "@$(stat -c %Y "$1")" '+%Y-%m-%d %H:%M JST' || echo '未作成'; }
 kind() { case "$1" in
   timeline.md|workflows.md|metrics.md) echo '自動 + 手書き';;
   decisions.md|setbacks.md) echo '自動 + 手書き';;

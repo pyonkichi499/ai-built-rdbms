@@ -5,8 +5,21 @@ use super::{Ctx, Table};
 
 const XCOLS: &[(&str, &[&str])] = &[
     ("real", &["1.5", "-0.25", "NULL", "3", "'NaN'", "100.125"]),
-    ("numeric", &["1.50", "-0.1", "NULL", "100", "0.000", "123456789.123456789"]),
-    ("float8", &["1.5", "-0", "NULL", "'Infinity'", "'NaN'", "1e300"]),
+    (
+        "numeric",
+        &[
+            "1.50",
+            "-0.1",
+            "NULL",
+            "100",
+            "0.000",
+            "123456789.123456789",
+        ],
+    ),
+    (
+        "float8",
+        &["1.5", "-0", "NULL", "'Infinity'", "'NaN'", "1e300"],
+    ),
     ("int2", &["1", "-5", "NULL", "32767", "0"]),
     ("varchar", &["'b'", "'B'", "NULL", "'a b'", "''"]),
 ];
@@ -14,8 +27,14 @@ const XCOLS: &[(&str, &[&str])] = &[
 pub fn xtable_scenario(ctx: &mut Ctx) {
     let name = ctx.fresh_table_name();
     let n = ctx.rng.range(2, 4) as usize;
-    let cols: Vec<usize> = (0..n).map(|_| ctx.rng.below(XCOLS.len() as u64) as usize).collect();
-    let defs: Vec<String> = cols.iter().enumerate().map(|(i, &k)| format!("x{i} {}", XCOLS[k].0)).collect();
+    let cols: Vec<usize> = (0..n)
+        .map(|_| ctx.rng.below(XCOLS.len() as u64) as usize)
+        .collect();
+    let defs: Vec<String> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, &k)| format!("x{i} {}", XCOLS[k].0))
+        .collect();
     ctx.push(format!("CREATE TABLE {name} ({});", defs.join(", ")));
     for _ in 0..ctx.rng.range(1, 2) {
         let nr = ctx.rng.range(2, 6);
@@ -69,9 +88,17 @@ pub fn structure_extra(ctx: &mut Ctx, t: &Table) {
         0 => format!("SELECT {c} AS a, {c2} AS a FROM {tn} ORDER BY a;"),
         1 => format!("SELECT {c} AS a FROM {tn} ORDER BY {}, 1;", n + 3),
         2 => format!("SELECT DISTINCT {c} FROM {tn} ORDER BY {c2};"),
+        3 if c == c2 => format!("SELECT DISTINCT ON ({c}) * FROM {tn} ORDER BY {c}, {all};"),
         3 => format!("SELECT DISTINCT ON ({c}) * FROM {tn} ORDER BY {c2};"),
-        4 => format!("SELECT DISTINCT ON ({c}) * FROM {tn} ORDER BY {c}{}, {all};", dir(ctx)),
-        5 => format!("SELECT {c} AS x, {c2} AS y FROM {tn} ORDER BY y{}, x{}, {all};", dir(ctx), dir(ctx)),
+        4 => format!(
+            "SELECT DISTINCT ON ({c}) * FROM {tn} ORDER BY {c}{}, {all};",
+            dir(ctx)
+        ),
+        5 => format!(
+            "SELECT {c} AS x, {c2} AS y FROM {tn} ORDER BY y{}, x{}, {all};",
+            dir(ctx),
+            dir(ctx)
+        ),
         6 => format!("SELECT {c} FROM {tn} ORDER BY 0;"),
         7 => format!("SELECT {c} FROM {tn} ORDER BY -1;"),
         8 => format!("SELECT {c} FROM {tn} ORDER BY 1.5;"),
@@ -85,7 +112,10 @@ pub fn structure_extra(ctx: &mut Ctx, t: &Table) {
         16 => format!("SELECT {c} FROM {tn} ORDER BY {c} USING <;"),
         _ => format!(
             "SELECT {tn}.{c}, {tn}.* FROM {tn} ORDER BY {};",
-            (1..=n + 1).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+            (1..=n + 1)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     };
     ctx.push(sql);
@@ -93,12 +123,29 @@ pub fn structure_extra(ctx: &mut Ctx, t: &Table) {
 
 pub fn extra_values(ctx: &mut Ctx) -> String {
     const LITS: &[&str] = &[
-        "2.5::numeric", "(-1)::bigint", "1.5::real", "'x'::varchar(2)", "1::int2",
-        "1.5e0::float8", "0.0", "-0.0", "1e0", "'NaN'::float8", "NULL", "'a'", "1", "10000000000", "2.50",
-        "true", "'1'::text", "CAST(1 AS bigint)",
+        "2.5::numeric",
+        "(-1)::bigint",
+        "1.5::real",
+        "'x'::varchar(2)",
+        "1::int2",
+        "1.5e0::float8",
+        "0.0",
+        "-0.0",
+        "1e0",
+        "'NaN'::float8",
+        "NULL",
+        "'a'",
+        "1",
+        "10000000000",
+        "2.50",
+        "true",
+        "'1'::text",
+        "CAST(1 AS bigint)",
     ];
     let nrow = ctx.rng.range(2, 4);
-    let rows: Vec<String> = (0..nrow).map(|_| format!("({})", ctx.rng.pick(LITS))).collect();
+    let rows: Vec<String> = (0..nrow)
+        .map(|_| format!("({})", ctx.rng.pick(LITS)))
+        .collect();
     let mut sql = match ctx.rng.below(3) {
         0 => format!("VALUES {} ORDER BY 1{}", rows.join(", "), dir(ctx)),
         1 => format!("VALUES {}", rows.join(", ")),

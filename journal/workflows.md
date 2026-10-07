@@ -2,7 +2,7 @@
 
 Workflow ごとの狙い、計画と実績、時間、コスト、成否を横並びにして、並列設計と見積もりの根拠にする。
 
-- 時刻はすべて UTC（JST は +9 時間）。日付は断りが無ければ 2026-10-04。
+- 時刻はすべて JST（JST は +9 時間）。日付は断りが無ければ 2026-10-04。
 - `<!-- AUTO:名前 BEGIN/END -->` の間は `tools/journal-workflows.sh`（`tools/journal-all.sh` 経由）が書き換える。それ以外は手書きで、日付見出しで積み、過去の記述は上書きしない。
 - 情報源は Workflow のトランスクリプト（`/home/sandbox/.claude/projects/-home-hiroshi-work-private-github-ai-built-rdbms/<session>/subagents/workflows/wf_*/` の `journal.jsonl`、`agent-*.jsonl`、`agent-*.meta.json`）と、`.../<session>/workflows/scripts/*-wf_*.js` の `meta`。WORKLOG.md / `tools/worklog.sh` の担当別所要時間とは同じ元データで、一致を確認した（例: K-m2-tests 13m02s）。
 - 数字の出所の注意: `journal.jsonl` に時刻は無い。開始・終了・所要は各 `agent-*.jsonl` の最初と最後の `timestamp`（秒単位）から出している。コストはトークン数のみで、金額は不明（ログに単価が無い）。
@@ -10,23 +10,24 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 ## 1. 台帳
 
 <!-- AUTO:ledger BEGIN -->
-> 自動生成(tools/journal-workflows.sh)。時刻はすべて UTC。出所: `/home/sandbox/.claude/projects/-home-hiroshi-work-private-github-ai-built-rdbms/*/subagents/workflows/wf_*/` の journal.jsonl と agent-*.jsonl、`workflows/scripts/*.js` の meta.phases。
-> 最新ログ時刻: 2026-10-05 13:29:23 UTC。壁時計 = 担当ファイルの最小 timestamp から最大 timestamp まで(journal.jsonl 自体は時刻を持たない)。進行中の Workflow は最新ログ時刻までの暫定値。
+> 自動生成(tools/journal-workflows.sh)。時刻はすべて JST。出所: `/home/sandbox/.claude/projects/-home-hiroshi-work-private-github-ai-built-rdbms/*/subagents/workflows/wf_*/` の journal.jsonl と agent-*.jsonl、`workflows/scripts/*.js` の meta.phases。
+> 最新ログ時刻: 2026-10-07 21:45:03 JST。壁時計 = 担当ファイルの最小 timestamp から最大 timestamp まで(journal.jsonl 自体は時刻を持たない)。進行中の Workflow は最新ログ時刻までの暫定値。
 > 最長/壁時計 = 最長担当の所要 ÷ 壁時計。並列効率 = 全担当の所要の合計 ÷ 壁時計(1.0 なら実質直列、大きいほど並列が効いている)。
 
 ### Workflow 一覧
 
-| Workflow | 名前 | 状態 | 開始 (UTC) | 終了 (UTC) | 壁時計 | 担当数 (結果あり) | 最長担当 | 最長/壁時計 | 合計稼働 | 並列効率 |
+| Workflow | 名前 | 状態 | 開始 (JST) | 終了 (JST) | 壁時計 | 担当数 (結果あり) | 最長担当 | 最長/壁時計 | 合計稼働 | 並列効率 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| wf_fabaf03d-9d6 | m1-finish-and-m2-tests | 完了 | 2026-10-04 14:35:15 | 2026-10-04 14:49:17 | 14m02s | 13 (13) | K-m2-tests (13m02s) | 92.9% | 18m04s | ×1.29 |
-| wf_0cc0a7be-171 | m2-implement | 進行中 | 2026-10-04 14:50:14 | 2026-10-04 21:57:14 (暫定) | 7h07m | 21 (20) | I-session (4h38m) | 65.3% | 10h08m | ×1.43 |
-| wf_dc96a8cc-646 | journal-design-and-write | 完了 | 2026-10-04 14:59:52 | 2026-10-04 15:33:41 | 33m49s | 21 (21) | write:tools/journal-workflows.sh (19m45s) | 58.4% | 3h17m | ×5.83 |
-| wf_4d730f24-348 | design-doc | 進行中 | 2026-10-04 20:53:24 | 2026-10-05 07:58:58 (暫定) | 11h05m | 16 (15) | outline (8h02m) | 72.5% | 20h55m | ×1.89 |
-| wf_32cf6626-a0c | design-doc | 進行中 | 2026-10-04 20:53:36 | 2026-10-05 07:05:47 (暫定) | 10h12m | 16 (15) | outline (7h55m) | 77.7% | 16h49m | ×1.65 |
-| wf_5e84e5ec-172 | m3-shared-tests | 完了 | 2026-10-04 20:53:49 | 2026-10-04 21:48:55 | 55m06s | 5 (5) | K:crash (30m13s) | 54.8% | 1h36m | ×1.75 |
-| wf_b10ff45b-956 | m3-implement | 完了 | 2026-10-04 21:59:20 | 2026-10-05 07:32:35 | 9h33m | 30 (30) | A-foundation (6h56m) | 72.6% | 12h43m | ×1.33 |
-| wf_383fcbbf-1a5 | pg-diff-fuzz | 進行中 | 2026-10-05 07:35:30 | 2026-10-05 13:29:23 (暫定) | 5h53m | 85 (84) | fuzz:txn:r3 (3h37m) | 61.4% | 38h34m | ×6.54 |
-| wf_b836e612-b0c | m4-shared-tests | 完了 | 2026-10-05 08:04:46 | 2026-10-05 09:12:04 | 1h07m | 5 (5) | K2 (45m40s) | 67.9% | 2h09m | ×1.92 |
+| wf_fabaf03d-9d6 | m1-finish-and-m2-tests | 完了 | 2026-10-04 23:35:15 | 2026-10-04 23:49:17 | 14m02s | 13 (13) | K-m2-tests (13m02s) | 92.9% | 18m04s | ×1.29 |
+| wf_0cc0a7be-171 | m2-implement | 進行中 | 2026-10-04 23:50:14 | 2026-10-05 06:57:14 (暫定) | 7h07m | 21 (20) | I-session (4h38m) | 65.3% | 10h08m | ×1.43 |
+| wf_dc96a8cc-646 | journal-design-and-write | 完了 | 2026-10-04 23:59:52 | 2026-10-05 00:33:41 | 33m49s | 21 (21) | write:tools/journal-workflows.sh (19m45s) | 58.4% | 3h17m | ×5.83 |
+| wf_4d730f24-348 | design-doc | 進行中 | 2026-10-05 05:53:24 | 2026-10-05 16:58:58 (暫定) | 11h05m | 16 (15) | outline (8h02m) | 72.5% | 20h55m | ×1.89 |
+| wf_32cf6626-a0c | design-doc | 進行中 | 2026-10-05 05:53:36 | 2026-10-05 16:05:47 (暫定) | 10h12m | 16 (15) | outline (7h55m) | 77.7% | 16h49m | ×1.65 |
+| wf_5e84e5ec-172 | m3-shared-tests | 完了 | 2026-10-05 05:53:49 | 2026-10-05 06:48:55 | 55m06s | 5 (5) | K:crash (30m13s) | 54.8% | 1h36m | ×1.75 |
+| wf_b10ff45b-956 | m3-implement | 完了 | 2026-10-05 06:59:20 | 2026-10-05 16:32:35 | 9h33m | 30 (30) | A-foundation (6h56m) | 72.6% | 12h43m | ×1.33 |
+| wf_383fcbbf-1a5 | pg-diff-fuzz | 完了 | 2026-10-05 16:35:30 | 2026-10-05 22:33:02 | 5h57m | 85 (85) | fuzz:txn:r3 (3h37m) | 60.8% | 38h38m | ×6.48 |
+| wf_b836e612-b0c | m4-shared-tests | 完了 | 2026-10-05 17:04:46 | 2026-10-05 18:12:04 | 1h07m | 5 (5) | K2 (45m40s) | 67.9% | 2h09m | ×1.92 |
+| wf_18ddb87d-acf | m4-implement | 進行中 | 2026-10-05 22:37:29 | 2026-10-07 21:45:03 (暫定) | 47h07m | 87 (85) | fix:done-check:r3 (11h34m) | 24.5% | 135h00m | ×2.86 |
 
 ### 計画(meta.phases)と実績
 
@@ -36,12 +37,12 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: M1 を緑にする（コンパイル修正→領域別 slt 修正→統合）と、M2 の slt テスト作成を並列実行
 - journal.jsonl の行数: 27、agent-*.jsonl の数: 13、started の担当数: 13
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Stabilize | cargo test のコンパイルエラーを直す | 1 (1) | 2026-10-04 14:35:15 | 2026-10-04 14:36:15 | 1m00s |  |
-| Fix | slt 領域ごとに yuzhu を修正 | 10 (10) | 2026-10-04 14:36:15 | 2026-10-04 14:36:46 | 0m31s |  |
-| Integrate | 全体確認・PROGRESS 更新・コミット | 1 (1) | 2026-10-04 14:36:46 | 2026-10-04 14:37:35 | 0m49s |  |
-| M2 tests | tests/slt/m2 を PostgreSQL で検証しつつ作成 | 1 (1) | 2026-10-04 14:36:15 | 2026-10-04 14:49:17 | 13m02s |  |
+| Stabilize | cargo test のコンパイルエラーを直す | 1 (1) | 2026-10-04 23:35:15 | 2026-10-04 23:36:15 | 1m00s |  |
+| Fix | slt 領域ごとに yuzhu を修正 | 10 (10) | 2026-10-04 23:36:15 | 2026-10-04 23:36:46 | 0m31s |  |
+| Integrate | 全体確認・PROGRESS 更新・コミット | 1 (1) | 2026-10-04 23:36:46 | 2026-10-04 23:37:35 | 0m49s |  |
+| M2 tests | tests/slt/m2 を PostgreSQL で検証しつつ作成 | 1 (1) | 2026-10-04 23:36:15 | 2026-10-04 23:49:17 | 13m02s |  |
 
 #### wf_0cc0a7be-171 m2-implement (進行中)
 
@@ -49,13 +50,13 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: M2（永続化）を spec/design/m2.md 第8節の担当表どおりに依存順で並列実装し、結合・レビューまで行う
 - journal.jsonl の行数: 42、agent-*.jsonl の数: 21、started の担当数: 21
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| A foundation | 基盤とスタブ | 1 (1) | 2026-10-04 14:50:14 | 2026-10-04 15:20:13 | 29m59s |  |
-| Parallel | B C D E F H1 H2 を並列実装 | 8 (8) | 2026-10-04 15:20:13 | 2026-10-04 16:04:34 | 44m21s |  |
-| Assemble | G → I → J | 4 (3) | 2026-10-04 16:04:34 | 2026-10-04 21:24:00 | 5h19m | 進行中の担当あり |
-| Integrate | slt m1+m2・再起動テストを通す | 1 (1) | 2026-10-04 21:24:00 | 2026-10-04 21:27:57 | 3m57s |  |
-| Review | 3 観点レビューと修正 | 7 (7) | 2026-10-04 21:27:57 | 2026-10-04 21:57:14 | 29m17s |  |
+| A foundation | 基盤とスタブ | 1 (1) | 2026-10-04 23:50:14 | 2026-10-05 00:20:13 | 29m59s |  |
+| Parallel | B C D E F H1 H2 を並列実装 | 8 (8) | 2026-10-05 00:20:13 | 2026-10-05 01:04:34 | 44m21s |  |
+| Assemble | G → I → J | 4 (3) | 2026-10-05 01:04:34 | 2026-10-05 06:24:00 | 5h19m | 進行中の担当あり |
+| Integrate | slt m1+m2・再起動テストを通す | 1 (1) | 2026-10-05 06:24:00 | 2026-10-05 06:27:57 | 3m57s |  |
+| Review | 3 観点レビューと修正 | 7 (7) | 2026-10-05 06:27:57 | 2026-10-05 06:57:14 | 29m17s |  |
 
 #### wf_dc96a8cc-646 journal-design-and-write (完了)
 
@@ -63,12 +64,12 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: 振り返り用の作業日誌に何を書くべきかを複数観点で検討し、構成を決めて日誌を書く
 - journal.jsonl の行数: 43、agent-*.jsonl の数: 21、started の担当数: 21
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Propose | 観点別に記録項目を提案 | 4 (4) | 2026-10-04 14:59:52 | 2026-10-04 15:03:48 | 3m56s |  |
-| Design | 提案を統合して日誌の構成を決める | 1 (1) | 2026-10-04 15:03:48 | 2026-10-04 15:09:12 | 5m24s |  |
-| Write | 項目ごとに日誌を書く | 15 (15) | 2026-10-04 15:09:12 | 2026-10-04 15:28:59 | 19m47s |  |
-| Review | 事実確認と抜け漏れチェック | 1 (1) | 2026-10-04 15:28:59 | 2026-10-04 15:33:41 | 4m42s |  |
+| Propose | 観点別に記録項目を提案 | 4 (4) | 2026-10-04 23:59:52 | 2026-10-05 00:03:48 | 3m56s |  |
+| Design | 提案を統合して日誌の構成を決める | 1 (1) | 2026-10-05 00:03:48 | 2026-10-05 00:09:12 | 5m24s |  |
+| Write | 項目ごとに日誌を書く | 15 (15) | 2026-10-05 00:09:12 | 2026-10-05 00:28:59 | 19m47s |  |
+| Review | 事実確認と抜け漏れチェック | 1 (1) | 2026-10-05 00:28:59 | 2026-10-05 00:33:41 | 4m42s |  |
 
 #### wf_4d730f24-348 design-doc (進行中)
 
@@ -76,12 +77,12 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: 次マイルストーンの基本設計書を、章立て→章ごとの並列執筆→3観点レビュー→修正で作る（コードは触らない）
 - journal.jsonl の行数: 33、agent-*.jsonl の数: 16、started の担当数: 16
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Outline | 章立てと契約の骨子 | 1 (1) | 2026-10-04 20:53:24 | 2026-10-05 04:55:41 | 8h02m |  |
-| Write | 章ごとに並列執筆 | 11 (10) | 2026-10-05 04:55:41 | 2026-10-05 06:53:02 | 1h57m | 進行中の担当あり |
-| Review | 観点別レビュー | 3 (3) | 2026-10-05 06:53:02 | 2026-10-05 07:23:55 | 30m53s |  |
-| Fix | 指摘の反映と索引 | 1 (1) | 2026-10-05 07:23:55 | 2026-10-05 07:58:58 | 35m03s |  |
+| Outline | 章立てと契約の骨子 | 1 (1) | 2026-10-05 05:53:24 | 2026-10-05 13:55:41 | 8h02m |  |
+| Write | 章ごとに並列執筆 | 11 (10) | 2026-10-05 13:55:41 | 2026-10-05 15:53:02 | 1h57m | 進行中の担当あり |
+| Review | 観点別レビュー | 3 (3) | 2026-10-05 15:53:02 | 2026-10-05 16:23:55 | 30m53s |  |
+| Fix | 指摘の反映と索引 | 1 (1) | 2026-10-05 16:23:55 | 2026-10-05 16:58:58 | 35m03s |  |
 
 #### wf_32cf6626-a0c design-doc (進行中)
 
@@ -89,12 +90,12 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: 次マイルストーンの基本設計書を、章立て→章ごとの並列執筆→3観点レビュー→修正で作る（コードは触らない）
 - journal.jsonl の行数: 32、agent-*.jsonl の数: 16、started の担当数: 16
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Outline | 章立てと契約の骨子 | 2 (1) | 2026-10-04 20:53:36 | 2026-10-05 05:08:19 | 8h14m | 進行中の担当あり |
-| Write | 章ごとに並列執筆 | 10 (10) | 2026-10-05 05:08:19 | 2026-10-05 06:12:22 | 1h04m |  |
-| Review | 観点別レビュー | 3 (3) | 2026-10-05 06:12:22 | 2026-10-05 06:26:26 | 14m04s |  |
-| Fix | 指摘の反映と索引 | 1 (1) | 2026-10-05 06:26:26 | 2026-10-05 07:05:47 | 39m21s |  |
+| Outline | 章立てと契約の骨子 | 2 (1) | 2026-10-05 05:53:36 | 2026-10-05 14:08:19 | 8h14m | 進行中の担当あり |
+| Write | 章ごとに並列執筆 | 10 (10) | 2026-10-05 14:08:19 | 2026-10-05 15:12:22 | 1h04m |  |
+| Review | 観点別レビュー | 3 (3) | 2026-10-05 15:12:22 | 2026-10-05 15:26:26 | 14m04s |  |
+| Fix | 指摘の反映と索引 | 1 (1) | 2026-10-05 15:26:26 | 2026-10-05 16:05:47 | 39m21s |  |
 
 #### wf_5e84e5ec-172 m3-shared-tests (完了)
 
@@ -102,10 +103,10 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: M3 の共有テスト（slt・再起動/クラッシュ・分離性）を PostgreSQL 17 で検証しながら作る（K 担当）
 - journal.jsonl の行数: 11、agent-*.jsonl の数: 5、started の担当数: 5
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Write | 領域別に並列作成 | 4 (4) | 2026-10-04 20:53:49 | 2026-10-04 21:24:02 | 30m13s |  |
-| Verify | PG17 での全件確認と整合 | 1 (1) | 2026-10-04 21:24:02 | 2026-10-04 21:48:55 | 24m53s |  |
+| Write | 領域別に並列作成 | 4 (4) | 2026-10-05 05:53:49 | 2026-10-05 06:24:02 | 30m13s |  |
+| Verify | PG17 での全件確認と整合 | 1 (1) | 2026-10-05 06:24:02 | 2026-10-05 06:48:55 | 24m53s |  |
 
 #### wf_b10ff45b-956 m3-implement (完了)
 
@@ -113,25 +114,25 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: M3（WAL・リカバリ・トランザクション特性）を m3.md 第8節の担当表どおり依存グラフで並列実装→領域別並列修正の統合→レビュー
 - journal.jsonl の行数: 61、agent-*.jsonl の数: 30、started の担当数: 30
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| A foundation | 基盤とスタブ、m3.md の訂正 | 1 (1) | 2026-10-04 21:59:20 | 2026-10-05 04:55:42 | 6h56m |  |
-| Build | W1 B F S → W2 C E → D → R → T J の依存グラフ | 12 (12) | 2026-10-05 04:55:42 | 2026-10-05 06:15:41 | 1h19m |  |
-| Integrate | 全テスト → 失敗領域ごとに並列修正（最大4周） | 8 (8) | 2026-10-05 06:15:41 | 2026-10-05 06:27:17 | 11m36s |  |
-| Review | 観点別レビューと修正 | 8 (8) | 2026-10-05 06:27:17 | 2026-10-05 07:24:36 | 57m19s |  |
-| Finish | 日誌・PROGRESS 更新とコミット | 1 (1) | 2026-10-05 07:24:36 | 2026-10-05 07:32:35 | 7m59s |  |
+| A foundation | 基盤とスタブ、m3.md の訂正 | 1 (1) | 2026-10-05 06:59:20 | 2026-10-05 13:55:42 | 6h56m |  |
+| Build | W1 B F S → W2 C E → D → R → T J の依存グラフ | 12 (12) | 2026-10-05 13:55:42 | 2026-10-05 15:15:41 | 1h19m |  |
+| Integrate | 全テスト → 失敗領域ごとに並列修正（最大4周） | 8 (8) | 2026-10-05 15:15:41 | 2026-10-05 15:27:17 | 11m36s |  |
+| Review | 観点別レビューと修正 | 8 (8) | 2026-10-05 15:27:17 | 2026-10-05 16:24:36 | 57m19s |  |
+| Finish | 日誌・PROGRESS 更新とコミット | 1 (1) | 2026-10-05 16:24:36 | 2026-10-05 16:32:35 | 7m59s |  |
 
-#### wf_383fcbbf-1a5 pg-diff-fuzz (進行中)
+#### wf_383fcbbf-1a5 pg-diff-fuzz (完了)
 
 - 計画スクリプト: `<session>/workflows/scripts/pg-diff-fuzz-wf_383fcbbf-1a5.js`
 - 説明: ランダム SQL を PG 17 と yuzhu の両方に流して結果差分を見つけ、原因クラスタごとに修正する（収束するまで）
-- journal.jsonl の行数: 170、agent-*.jsonl の数: 85、started の担当数: 85
+- journal.jsonl の行数: 171、agent-*.jsonl の数: 85、started の担当数: 85
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Harness | 差分ファジングの道具を作る | 1 (1) | 2026-10-05 07:35:30 | 2026-10-05 07:44:33 | 9m03s |  |
-| Round | 領域別に実行→差分のクラスタ化→修正 | 83 (83) | 2026-10-05 07:44:33 | 2026-10-05 13:23:10 | 5h38m |  |
-| Wrap | 回帰テスト化・記録・コミット | 1 (0) | 2026-10-05 13:23:10 | 2026-10-05 13:29:23 | 6m13s | 進行中の担当あり |
+| Harness | 差分ファジングの道具を作る | 1 (1) | 2026-10-05 16:35:30 | 2026-10-05 16:44:33 | 9m03s |  |
+| Round | 領域別に実行→差分のクラスタ化→修正 | 83 (83) | 2026-10-05 16:44:33 | 2026-10-05 22:23:10 | 5h38m |  |
+| Wrap | 回帰テスト化・記録・コミット | 1 (1) | 2026-10-05 22:23:10 | 2026-10-05 22:33:02 | 9m52s |  |
 
 #### wf_b836e612-b0c m4-shared-tests (完了)
 
@@ -139,10 +140,24 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 - 説明: M4 の共有テスト K1〜K4（slt m4・EXPLAIN・COPY・psql・pgbench・完了判定スクリプト）を PG 17 で検証しながら作る
 - journal.jsonl の行数: 11、agent-*.jsonl の数: 5、started の担当数: 5
 
-| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (UTC) | 終了 (UTC) | 壁時計 | 備考 |
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
 |---|---|---|---|---|---|---|
-| Write | K1〜K4 を並列作成 | 4 (4) | 2026-10-05 08:04:46 | 2026-10-05 08:50:27 | 45m41s |  |
-| Verify | PG 17 で全件確認と整合 | 1 (1) | 2026-10-05 08:50:27 | 2026-10-05 09:12:04 | 21m37s |  |
+| Write | K1〜K4 を並列作成 | 4 (4) | 2026-10-05 17:04:46 | 2026-10-05 17:50:27 | 45m41s |  |
+| Verify | PG 17 で全件確認と整合 | 1 (1) | 2026-10-05 17:50:27 | 2026-10-05 18:12:04 | 21m37s |  |
+
+#### wf_18ddb87d-acf m4-implement (進行中)
+
+- 計画スクリプト: `<session>/workflows/scripts/m4-implement-wf_18ddb87d-acf.js`
+- 説明: M4（インデックスとクエリ）を、設計書の担当表から作る依存グラフに沿って約35担当で並列実装→領域別並列修正の統合→レビュー
+- journal.jsonl の行数: 174、agent-*.jsonl の数: 87、started の担当数: 87
+
+| フェーズ | 計画での説明 | 実績の担当数 (結果あり) | 開始 (JST) | 終了 (JST) | 壁時計 | 備考 |
+|---|---|---|---|---|---|---|
+| Plan | 担当と依存のグラフを設計書から作る | 1 (1) | 2026-10-05 22:37:29 | 2026-10-05 23:41:50 | 1h04m |  |
+| Build | 依存グラフに沿って並列実装 | 50 (49) | 2026-10-05 23:41:50 | 2026-10-06 20:00:31 | 20h18m | 進行中の担当あり |
+| Integrate | 全テスト→失敗領域ごとに並列修正（最大6周） | 27 (27) | 2026-10-06 20:00:31 | 2026-10-07 12:39:54 | 16h39m |  |
+| Review | 観点別レビューと修正 | 8 (8) | 2026-10-07 12:39:55 | 2026-10-07 17:06:16 | 4h26m |  |
+| Finish | 日誌・PROGRESS 更新とコミット | 1 (0) | 2026-10-07 17:06:16 | 2026-10-07 21:45:03 | 4h38m | 進行中の担当あり |
 
 ### 結果スキーマの不揃い(result に passed キーが無い担当)
 
@@ -340,11 +355,97 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 | wf_383fcbbf-1a5 | fix:txn:r3:3 | Round | done, summary |
 | wf_383fcbbf-1a5 | fix:txn:r3:4 | Round | done, summary |
 | wf_383fcbbf-1a5 | fix:txn:r3:5 | Round | done, summary |
+| wf_383fcbbf-1a5 | wrap | Wrap | done, issues, summary |
 | wf_b836e612-b0c | K1 | Write | done, summary |
 | wf_b836e612-b0c | K2 | Write | done, issues, summary |
 | wf_b836e612-b0c | K3 | Write | done, issues, summary |
 | wf_b836e612-b0c | K4 | Write | done, issues, summary |
 | wf_b836e612-b0c | K-verify | Verify | done, summary |
+| wf_18ddb87d-acf | plan | Plan | notes, tasks |
+| wf_18ddb87d-acf | A | Build | done, issues, summary |
+| wf_18ddb87d-acf | P0-b | Build | done, summary |
+| wf_18ddb87d-acf | S1a | Build | done, issues, summary |
+| wf_18ddb87d-acf | H4a | Build | done, summary |
+| wf_18ddb87d-acf | T1 | Build | done, summary |
+| wf_18ddb87d-acf | T2 | Build | done, issues, summary |
+| wf_18ddb87d-acf | H4b | Build | done, summary |
+| wf_18ddb87d-acf | H4c | Build | done, issues, summary |
+| wf_18ddb87d-acf | B1a | Build | done, issues, summary |
+| wf_18ddb87d-acf | T2-retry | Build | done, summary |
+| wf_18ddb87d-acf | S1b | Build | done, summary |
+| wf_18ddb87d-acf | P0-c | Build | done, issues, summary |
+| wf_18ddb87d-acf | B2a | Build | done, issues, summary |
+| wf_18ddb87d-acf | T3a | Build | done, issues, summary |
+| wf_18ddb87d-acf | E1a | Build | done, issues, summary |
+| wf_18ddb87d-acf | O1a | Build | done, issues, summary |
+| wf_18ddb87d-acf | C1a | Build | done, issues, summary |
+| wf_18ddb87d-acf | B1b | Build | done, issues, summary |
+| wf_18ddb87d-acf | T3b | Build | done, issues, summary |
+| wf_18ddb87d-acf | C1a-retry | Build | done, summary |
+| wf_18ddb87d-acf | B2b | Build | done, issues, summary |
+| wf_18ddb87d-acf | P0-d | Build | done, issues, summary |
+| wf_18ddb87d-acf | Q1a | Build | done, issues, summary |
+| wf_18ddb87d-acf | X1 | Build | done, issues, summary |
+| wf_18ddb87d-acf | X2 | Build | done, summary |
+| wf_18ddb87d-acf | X3 | Build | done, summary |
+| wf_18ddb87d-acf | C1b | Build | done, issues, summary |
+| wf_18ddb87d-acf | P0-d-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | P0-e | Build | done, issues, summary |
+| wf_18ddb87d-acf | O1b | Build | done, summary |
+| wf_18ddb87d-acf | C1c | Build | done, issues, summary |
+| wf_18ddb87d-acf | Q1b | Build | done, issues, summary |
+| wf_18ddb87d-acf | N1 | Build | done, issues, summary |
+| wf_18ddb87d-acf | N2 | Build | done, issues, summary |
+| wf_18ddb87d-acf | N3 | Build | done, issues, summary |
+| wf_18ddb87d-acf | N1b | Build | done, issues, summary |
+| wf_18ddb87d-acf | N1b-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | E1b | Build | done, issues, summary |
+| wf_18ddb87d-acf | L1 | Build | done, summary |
+| wf_18ddb87d-acf | S | Build | done, issues, summary |
+| wf_18ddb87d-acf | L1-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | S-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | J | Build | done, summary |
+| wf_18ddb87d-acf | R2a | Build | done, issues, summary |
+| wf_18ddb87d-acf | L2-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | R2a-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | R2b | Build | done, issues, summary |
+| wf_18ddb87d-acf | R2b-retry | Build | done, issues, summary |
+| wf_18ddb87d-acf | Z | Build | done, issues, summary |
+| wf_18ddb87d-acf | test-1 | Integrate | allPass, failures, summary |
+| wf_18ddb87d-acf | fix:cargo:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m1/errors,expressions,select:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m2/catalog,ddl,dml:r1 | Integrate | done, summary |
+| wf_18ddb87d-acf | fix:m3:r1 | Integrate | done, summary |
+| wf_18ddb87d-acf | fix:m4/agg:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/catalog:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/constraint:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/copy:r1 | Integrate | done, summary |
+| wf_18ddb87d-acf | fix:m4/explain:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/join:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/psql:r1 | Integrate | done, summary |
+| wf_18ddb87d-acf | fix:m4/seq:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/types:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4/z_final:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:m4 slt 件数:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:restart:r1 | Integrate | done, summary |
+| wf_18ddb87d-acf | fix:crash:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:isolation:r1 | Integrate | done, summary |
+| wf_18ddb87d-acf | fix:done-check:r1 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | test-2 | Integrate | allPass, failures, summary |
+| wf_18ddb87d-acf | fix:cargo:r2 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:done-check:r2 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | test-3 | Integrate | allPass, failures, summary |
+| wf_18ddb87d-acf | fix:done-check:r3 | Integrate | done, issues, summary |
+| wf_18ddb87d-acf | fix:isolation:r3 | Integrate | done, summary |
+| wf_18ddb87d-acf | test-4 | Integrate | allPass, failures, summary |
+| wf_18ddb87d-acf | review:btree-storage | Review | findings |
+| wf_18ddb87d-acf | review:planner-executor | Review | findings |
+| wf_18ddb87d-acf | review:sql-compat | Review | findings |
+| wf_18ddb87d-acf | review:ddl-catalog-crash | Review | findings |
+| wf_18ddb87d-acf | fix:planner-executor | Review | done, issues, summary |
+| wf_18ddb87d-acf | fix:sql-compat | Review | done, issues, summary |
+| wf_18ddb87d-acf | fix:ddl-catalog-crash | Review | done, issues, summary |
+| wf_18ddb87d-acf | fix:btree-storage | Review | done, issues, summary |
 
 ### first-pass 判定
 
@@ -361,20 +462,22 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 | wf_fabaf03d-9d6 | fix:errors | 5 | 初回 |
 | wf_dc96a8cc-646 | write:tools/journal-metrics.sh | 7 | 初回 |
 | wf_383fcbbf-1a5 | fix:txn:r3:5 | 2 | コード変更なし |
+| wf_18ddb87d-acf | fix:isolation:r1 | 6 | 修正は不要 |
 
 ### 進行中の担当(result 未着)
 
-| Workflow | 担当 | フェーズ | 開始 (UTC) | 最終ログ (UTC) | ここまでの所要 |
+| Workflow | 担当 | フェーズ | 開始 (JST) | 最終ログ (JST) | ここまでの所要 |
 |---|---|---|---|---|---|
-| wf_0cc0a7be-171 | J-server | Assemble | 2026-10-04 20:47:55 | 2026-10-04 20:49:14 | 1m19s |
-| wf_4d730f24-348 | write:01-scope-decisions.md | Write | 2026-10-05 04:55:41 | 2026-10-05 05:25:26 | 29m45s |
-| wf_32cf6626-a0c | outline | Outline | 2026-10-04 20:53:36 | 2026-10-05 04:49:33 | 7h55m |
-| wf_383fcbbf-1a5 | wrap | Wrap | 2026-10-05 13:23:10 | 2026-10-05 13:29:23 | 6m13s |
+| wf_0cc0a7be-171 | J-server | Assemble | 2026-10-05 05:47:55 | 2026-10-05 05:49:14 | 1m19s |
+| wf_4d730f24-348 | write:01-scope-decisions.md | Write | 2026-10-05 13:55:41 | 2026-10-05 14:25:26 | 29m45s |
+| wf_32cf6626-a0c | outline | Outline | 2026-10-05 05:53:36 | 2026-10-05 13:49:33 | 7h55m |
+| wf_18ddb87d-acf | L2 | Build | 2026-10-06 13:02:26 | 2026-10-06 15:31:16 | 2h28m |
+| wf_18ddb87d-acf | finish | Finish | 2026-10-07 17:06:16 | 2026-10-07 21:45:03 | 4h38m |
 <!-- AUTO:ledger END -->
 
 読み方と補足（手書き）:
 
-- `wf_fabaf03d`（M1 完成 + M2 テスト作成）: stabilize(1) → fix:* 10 領域並列 + K-m2-tests → integrate(1) の計 13 担当。壁時計は 14m02s（14:35:15〜14:49:17 UTC、JST 23:35〜23:49）で、K-m2-tests の 13m02s が支配した。WORKLOG.md の「約 14 分」と一致する。
+- `wf_fabaf03d`（M1 完成 + M2 テスト作成）: stabilize(1) → fix:* 10 領域並列 + K-m2-tests → integrate(1) の計 13 担当。壁時計は 14m02s（23:35:15〜23:49:17 JST、JST 翌08:35〜翌08:49）で、K-m2-tests の 13m02s が支配した。WORKLOG.md の「約 14 分」と一致する。
 - `wf_0cc0a7be`（M2 実装）: 計画は A → Parallel(B C D E F H1 H2) → Assemble(G → I → J) → Integrate → Review（`m2-implement-wf_0cc0a7be-171.js` の `meta.phases` と本体）。**進行中**。結果欄は完了後に追記する。担当数は「現時点で起動済み」の数で、最終的な数ではない。
 - `wf_dc96a8cc`: この日誌を設計して書く Workflow（`journal-design-and-write`）。M2 実装と同時に走っているため、表に自動で載る。M2 の壁時計と並走していることに注意（同じマシンを使うので、所要時間の比較には交絡する）。
 - 「結果要約」列は自動集計の `passed=true/false` の件数だけ。M2 実装の result は `done` キーなので、この欄は 0/0 になる。中身は第 4 節と各 Workflow の所見を見る。
@@ -385,29 +488,29 @@ Workflow ごとの狙い、計画と実績、時間、コスト、成否を横�
 
 | フェーズ | 計画（meta.phases / script） | 実績 | 差・気づき |
 |---|---|---|---|
-| Stabilize | 1 担当。`cargo test` のコンパイルエラーを直す | 14:35:15〜14:36:15（1m00s）。10 ターン、tool_use 11 | プロンプトは `analyzer/tests.rs` 付近と書いていたが、実際に壊れていたのは `planner/mod.rs` のテスト `insert_plan_and_execution`（`BoundInsert` に `coercions: None` が無い）。clippy の `assert_is_empty` 9 件も直した（result.summary より） |
-| Fix | slt 10 領域を並列。失敗した領域だけ `fix2:*` で再実行（最大 12 周） | 10 担当が 14:36:15 に同時開始、13〜31 秒で全員が passed:true | `fix2:*` は 1 本も起動していない（journal に該当 label が無い）。再実行の仕組みは未使用のまま |
-| M2 tests | K-m2-tests。m2.md 第 8 節では**依存なし** | 14:36:15〜14:49:17（13m02s） | script 上、K は stabilize の結果を待ってから起動している（journal の順序と開始時刻 14:36:15 が一致）。依存が無いのに 1m00s 遅れて始まった。K が最長経路だったので、この 1 分は全体の壁時計にそのまま乗った |
-| Integrate | fix の全結果を待って 1 担当 | 14:36:46〜14:37:35（49s）。fix:ddl（31s）の終了直後に開始 | K を待たずに走った。M1 の結果（yuzhu 37/37、PG17 37/37）は 14:37:35 に出ていたが、Workflow 全体の完了は 14:49:17 で、利用者に見えたのは約 14:50（WORKLOG.md）。約 12 分遅れて見えた |
+| Stabilize | 1 担当。`cargo test` のコンパイルエラーを直す | 23:35:15〜23:36:15（1m00s）。10 ターン、tool_use 11 | プロンプトは `analyzer/tests.rs` 付近と書いていたが、実際に壊れていたのは `planner/mod.rs` のテスト `insert_plan_and_execution`（`BoundInsert` に `coercions: None` が無い）。clippy の `assert_is_empty` 9 件も直した（result.summary より） |
+| Fix | slt 10 領域を並列。失敗した領域だけ `fix2:*` で再実行（最大 12 周） | 10 担当が 23:36:15 に同時開始、13〜31 秒で全員が passed:true | `fix2:*` は 1 本も起動していない（journal に該当 label が無い）。再実行の仕組みは未使用のまま |
+| M2 tests | K-m2-tests。m2.md 第 8 節では**依存なし** | 23:36:15〜23:49:17（13m02s） | script 上、K は stabilize の結果を待ってから起動している（journal の順序と開始時刻 23:36:15 が一致）。依存が無いのに 1m00s 遅れて始まった。K が最長経路だったので、この 1 分は全体の壁時計にそのまま乗った |
+| Integrate | fix の全結果を待って 1 担当 | 23:36:46〜23:37:35（49s）。fix:ddl（31s）の終了直後に開始 | K を待たずに走った。M1 の結果（yuzhu 37/37、PG17 37/37）は 23:37:35 に出ていたが、Workflow 全体の完了は 23:49:17 で、利用者に見えたのは約 23:50（WORKLOG.md）。約 12 分遅れて見えた |
 
-M1 側だけの最長経路は stabilize 1m00s → fix 最長 31s → integrate 49s = **2m20s**（14:35:15〜14:37:35）。K が無ければ Workflow は約 2.3 分で終わっていた。
+M1 側だけの最長経路は stabilize 1m00s → fix 最長 31s → integrate 49s = **2m20s**（23:35:15〜23:37:35）。K が無ければ Workflow は約 2.3 分で終わっていた。
 
-### wf_0cc0a7be（M2 実装）。2026-10-04 15:26 UTC 時点の途中経過
+### wf_0cc0a7be（M2 実装）。2026-10-05 00:26 JST 時点の途中経過
 
 | フェーズ | 計画 | 実績（途中） | 差・気づき |
 |---|---|---|---|
-| A foundation | 1 担当。★ファイルのスタブ、第 4 節の型とトレイト | 14:50:14〜15:20:13（29m59s）で完了。85 ターン、tool_use 95、出力 111,384 トークン。コミット 610c121（15:19:58 UTC） | m2.md 第 8 節の A の見積もりは 1.5（AI 1 本の日数。粗い見積もり）。実時間は 30 分。以降の 7 担当すべてが A の完了待ちだったので、ここが最初のボトルネック |
-| Parallel | B C D E F H1 H2 を並列。未完了は 1 回だけ `*-retry` で再実行 | 15:20:13 に 7 担当が同時開始。完了は未確認 | m2.md 第 8 節は「D は C と E の API が置かれ次第」と書くが、script は D も同時に起動する（A がトレイトとスタブを置いたため）。この前提が成り立つかは D の結果で判断する |
+| A foundation | 1 担当。★ファイルのスタブ、第 4 節の型とトレイト | 23:50:14〜翌00:20:13（29m59s）で完了。85 ターン、tool_use 95、出力 111,384 トークン。コミット 610c121（翌00:19:58 JST） | m2.md 第 8 節の A の見積もりは 1.5（AI 1 本の日数。粗い見積もり）。実時間は 30 分。以降の 7 担当すべてが A の完了待ちだったので、ここが最初のボトルネック |
+| Parallel | B C D E F H1 H2 を並列。未完了は 1 回だけ `*-retry` で再実行 | 翌00:20:13 に 7 担当が同時開始。完了は未確認 | m2.md 第 8 節は「D は C と E の API が置かれ次第」と書くが、script は D も同時に起動する（A がトレイトとスタブを置いたため）。この前提が成り立つかは D の結果で判断する |
 | Assemble | G → I → J の直列 | 未着手 | 依存順なので並列化できない。所要は 3 担当の合計になる |
 | Integrate | 最大 3 ラウンド | 未着手 | |
 | Review | 3 観点（crash-safety / mvcc-concurrency / pg-compat）の pipeline、各観点に修正担当、最後に最終確認 | 未着手 | |
 
-- 開始時刻のずれ: WORKLOG.md は M2 実装の開始を「約 14:52」と書くが、A のトランスクリプトの最初の timestamp は 14:50:14（UTC）。約 2 分の差。どちらが正かは不明（WORKLOG は概算の可能性がある）。
+- 開始時刻のずれ: WORKLOG.md は M2 実装の開始を「約 23:52」と書くが、A のトランスクリプトの最初の timestamp は 23:50:14（JST）。約 2 分の差。どちらが正かは不明（WORKLOG は概算の可能性がある）。
 - 完了後にこの節を更新する（実際の順序、遅れ、飛ばし、`*-retry` や統合の再ラウンドの有無）。
 
 ### wf_dc96a8cc（日誌の設計と執筆）。途中
 
-- Propose の 4 担当（process-retro / decisions / ai-ops / future-reader）が 14:59:52 前後に並列開始、約 3m45s〜3m54s で完了。Design 1 担当が 15:03:48〜（5m24s）。Write の担当が 15:09:12 から並列で起動した。Review は未着手（2026-10-04 15:26 UTC 時点）。完了後に追記する。
+- Propose の 4 担当（process-retro / decisions / ai-ops / future-reader）が 23:59:52 前後に並列開始、約 3m45s〜3m54s で完了。Design 1 担当が 翌00:03:48〜（5m24s）。Write の担当が 翌00:09:12 から並列で起動した。Review は未着手（2026-10-05 00:26 JST 時点）。完了後に追記する。
 
 ## 3. 担当別の実績
 
@@ -418,278 +521,372 @@ M1 側だけの最長経路は stabilize 1m00s → fix 最長 31s → integrate 
 
 ### wf_fabaf03d-9d6 m1-finish-and-m2-tests (完了)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| stabilize | Stabilize | 完了 | true | 2026-10-04 14:35:15 | 2026-10-04 14:36:15 | 1m00s | 10 | 11 | 0 | 20 | 2833 | 281914 | 37274 | claude-sonnet-5-5 | - |
-| K-m2-tests | M2 tests | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:49:17 | 13m02s | 52 | 54 | 3 | 104 | 78949 | 5068223 | 148928 | claude-sonnet-5-5 | - |
-| fix:ddl | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:46 | 0m31s | 5 | 6 | 0 | 10 | 1077 | 132636 | 11441 | claude-sonnet-5-5 | first-pass |
-| fix:insert | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:31 | 0m16s | 4 | 4 | 0 | 8 | 945 | 101544 | 10234 | claude-sonnet-5-5 | - |
-| fix:constraints | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:33 | 0m18s | 5 | 6 | 0 | 10 | 1246 | 132147 | 11726 | claude-sonnet-5-5 | first-pass |
-| fix:select | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:40 | 0m25s | 5 | 5 | 0 | 10 | 1304 | 131331 | 10890 | claude-sonnet-5-5 | - |
-| fix:expressions | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:39 | 0m24s | 6 | 7 | 1 | 12 | 2006 | 160660 | 11713 | claude-sonnet-5-5 | first-pass |
-| fix:types | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:29 | 0m14s | 4 | 6 | 0 | 8 | 882 | 101728 | 10337 | claude-sonnet-5-5 | first-pass |
-| fix:functions | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:28 | 0m13s | 4 | 4 | 0 | 8 | 817 | 100134 | 9250 | claude-sonnet-5-5 | first-pass |
-| fix:txn | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:30 | 0m15s | 5 | 5 | 0 | 10 | 834 | 130427 | 10309 | claude-sonnet-5-5 | first-pass |
-| fix:session | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:34 | 0m19s | 5 | 5 | 0 | 10 | 1073 | 129526 | 10470 | claude-sonnet-5-5 | - |
-| fix:errors | Fix | 完了 | true | 2026-10-04 14:36:15 | 2026-10-04 14:36:33 | 0m18s | 4 | 5 | 0 | 8 | 774 | 102273 | 10867 | claude-sonnet-5-5 | first-pass |
-| integrate | Integrate | 完了 | true | 2026-10-04 14:36:46 | 2026-10-04 14:37:35 | 0m49s | 12 | 14 | 0 | 24 | 4700 | 373798 | 20336 | claude-sonnet-5-5 | - |
+| stabilize | Stabilize | 完了 | true | 2026-10-04 23:35:15 | 2026-10-04 23:36:15 | 1m00s | 10 | 11 | 0 | 20 | 2833 | 281914 | 37274 | claude-sonnet-5-5 | - |
+| K-m2-tests | M2 tests | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:49:17 | 13m02s | 52 | 54 | 3 | 104 | 78949 | 5068223 | 148928 | claude-sonnet-5-5 | - |
+| fix:ddl | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:46 | 0m31s | 5 | 6 | 0 | 10 | 1077 | 132636 | 11441 | claude-sonnet-5-5 | first-pass |
+| fix:insert | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:31 | 0m16s | 4 | 4 | 0 | 8 | 945 | 101544 | 10234 | claude-sonnet-5-5 | - |
+| fix:constraints | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:33 | 0m18s | 5 | 6 | 0 | 10 | 1246 | 132147 | 11726 | claude-sonnet-5-5 | first-pass |
+| fix:select | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:40 | 0m25s | 5 | 5 | 0 | 10 | 1304 | 131331 | 10890 | claude-sonnet-5-5 | - |
+| fix:expressions | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:39 | 0m24s | 6 | 7 | 1 | 12 | 2006 | 160660 | 11713 | claude-sonnet-5-5 | first-pass |
+| fix:types | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:29 | 0m14s | 4 | 6 | 0 | 8 | 882 | 101728 | 10337 | claude-sonnet-5-5 | first-pass |
+| fix:functions | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:28 | 0m13s | 4 | 4 | 0 | 8 | 817 | 100134 | 9250 | claude-sonnet-5-5 | first-pass |
+| fix:txn | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:30 | 0m15s | 5 | 5 | 0 | 10 | 834 | 130427 | 10309 | claude-sonnet-5-5 | first-pass |
+| fix:session | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:34 | 0m19s | 5 | 5 | 0 | 10 | 1073 | 129526 | 10470 | claude-sonnet-5-5 | - |
+| fix:errors | Fix | 完了 | true | 2026-10-04 23:36:15 | 2026-10-04 23:36:33 | 0m18s | 4 | 5 | 0 | 8 | 774 | 102273 | 10867 | claude-sonnet-5-5 | first-pass |
+| integrate | Integrate | 完了 | true | 2026-10-04 23:36:46 | 2026-10-04 23:37:35 | 0m49s | 12 | 14 | 0 | 24 | 4700 | 373798 | 20336 | claude-sonnet-5-5 | - |
 
 合計: ターン 121、tool_use 132、エラー 4、入力 242、出力 97440、cache読 6946341、cache作成 313775
 
 ### wf_0cc0a7be-171 m2-implement (進行中)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| A-foundation | A foundation | 完了 | - | 2026-10-04 14:50:14 | 2026-10-04 15:20:13 | 29m59s | 85 | 95 | 2 | 170 | 111384 | 17664412 | 311598 | claude-sonnet-5-5 | - |
-| B-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 15:42:22 | 22m09s | 25 | 25 | 0 | 52 | 65626 | 2721103 | 142443 | claude-sonnet-5-5 | - |
-| C-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 15:59:10 | 38m57s | 64 | 66 | 3 | 128 | 123852 | 10300714 | 219201 | claude-sonnet-5-5 | - |
-| D-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 15:47:16 | 27m03s | 27 | 30 | 0 | 54 | 43306 | 2403235 | 361111 | claude-sonnet-5-5 | - |
-| E-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 15:38:23 | 18m10s | 36 | 36 | 2 | 74 | 36406 | 3010040 | 89597 | claude-sonnet-5-5 | - |
-| F-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 16:04:12 | 43m59s | 123 | 127 | 5 | 246 | 192111 | 27875230 | 359833 | claude-sonnet-5-5 | - |
-| H1-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 15:33:07 | 12m54s | 45 | 48 | 1 | 90 | 29089 | 3966485 | 107931 | claude-sonnet-5-5 | - |
-| H2-impl | Parallel | 完了 | - | 2026-10-04 15:20:13 | 2026-10-04 15:33:29 | 13m16s | 38 | 40 | 3 | 76 | 32586 | 4111389 | 131266 | claude-sonnet-5-5 | - |
-| D-retry | Parallel | 完了 | - | 2026-10-04 16:04:12 | 2026-10-04 16:04:34 | 0m22s | 3 | 3 | 0 | 6 | 928 | 79239 | 12465 | claude-sonnet-5-5 | - |
-| G-engine | Assemble | 完了 | - | 2026-10-04 16:04:34 | 2026-10-04 16:09:04 | 4m30s | 24 | 26 | 1 | 48 | 29933 | 2253345 | 113465 | claude-sonnet-5-5 | - |
-| I-session | Assemble | 完了 | - | 2026-10-04 16:09:04 | 2026-10-04 20:47:55 | 4h38m | 63 | 70 | 0 | 126 | 40000 | 8044974 | 300780 | claude-sonnet-5-5 | - |
-| J-server | Assemble | 進行中 | - | 2026-10-04 20:47:55 | 2026-10-04 20:49:14 | 1m19s | 5 | 6 | 0 | 10 | 1351 | 273386 | 66697 | claude-sonnet-5-5 | - |
-| J-server | Assemble | 完了 | - | 2026-10-04 20:49:17 | 2026-10-04 21:24:00 | 34m43s | 35 | 41 | 1 | 70 | 49145 | 3950741 | 129685 | claude-sonnet-5-5 | - |
-| integrate-1 | Integrate | 完了 | - | 2026-10-04 21:24:00 | 2026-10-04 21:27:57 | 3m57s | 35 | 42 | 3 | 70 | 13605 | 1854750 | 55831 | claude-sonnet-5-5 | - |
-| review:crash-safety | Review | 完了 | - | 2026-10-04 21:27:57 | 2026-10-04 21:52:16 | 24m19s | 46 | 57 | 1 | 92 | 57606 | 6733617 | 409923 | claude-sonnet-5-5 | - |
-| review:mvcc-concurrency | Review | 完了 | - | 2026-10-04 21:27:59 | 2026-10-04 21:50:41 | 22m42s | 40 | 41 | 0 | 80 | 53989 | 4000813 | 301859 | claude-sonnet-5-5 | - |
-| review:pg-compat | Review | 完了 | - | 2026-10-04 21:27:59 | 2026-10-04 21:37:20 | 9m21s | 49 | 50 | 5 | 98 | 32481 | 4260944 | 105130 | claude-sonnet-5-5 | - |
-| fix:pg-compat | Review | 完了 | - | 2026-10-04 21:37:20 | 2026-10-04 21:52:47 | 15m27s | 41 | 43 | 1 | 82 | 20805 | 2433784 | 100614 | claude-sonnet-5-5 | - |
-| fix:mvcc-concurrency | Review | 完了 | - | 2026-10-04 21:50:41 | 2026-10-04 21:52:24 | 1m43s | 7 | 7 | 0 | 14 | 5369 | 224412 | 22316 | claude-sonnet-5-5 | - |
-| fix:crash-safety | Review | 完了 | - | 2026-10-04 21:52:16 | 2026-10-04 21:54:39 | 2m23s | 22 | 23 | 0 | 44 | 10171 | 998752 | 42388 | claude-sonnet-5-5 | - |
-| final | Review | 完了 | - | 2026-10-04 21:54:39 | 2026-10-04 21:57:14 | 2m35s | 14 | 15 | 0 | 28 | 8014 | 546405 | 30295 | claude-sonnet-5-5 | - |
+| A-foundation | A foundation | 完了 | - | 2026-10-04 23:50:14 | 2026-10-05 00:20:13 | 29m59s | 85 | 95 | 2 | 170 | 111384 | 17664412 | 311598 | claude-sonnet-5-5 | - |
+| B-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 00:42:22 | 22m09s | 25 | 25 | 0 | 52 | 65626 | 2721103 | 142443 | claude-sonnet-5-5 | - |
+| C-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 00:59:10 | 38m57s | 64 | 66 | 3 | 128 | 123852 | 10300714 | 219201 | claude-sonnet-5-5 | - |
+| D-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 00:47:16 | 27m03s | 27 | 30 | 0 | 54 | 43306 | 2403235 | 361111 | claude-sonnet-5-5 | - |
+| E-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 00:38:23 | 18m10s | 36 | 36 | 2 | 74 | 36406 | 3010040 | 89597 | claude-sonnet-5-5 | - |
+| F-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 01:04:12 | 43m59s | 123 | 127 | 5 | 246 | 192111 | 27875230 | 359833 | claude-sonnet-5-5 | - |
+| H1-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 00:33:07 | 12m54s | 45 | 48 | 1 | 90 | 29089 | 3966485 | 107931 | claude-sonnet-5-5 | - |
+| H2-impl | Parallel | 完了 | - | 2026-10-05 00:20:13 | 2026-10-05 00:33:29 | 13m16s | 38 | 40 | 3 | 76 | 32586 | 4111389 | 131266 | claude-sonnet-5-5 | - |
+| D-retry | Parallel | 完了 | - | 2026-10-05 01:04:12 | 2026-10-05 01:04:34 | 0m22s | 3 | 3 | 0 | 6 | 928 | 79239 | 12465 | claude-sonnet-5-5 | - |
+| G-engine | Assemble | 完了 | - | 2026-10-05 01:04:34 | 2026-10-05 01:09:04 | 4m30s | 24 | 26 | 1 | 48 | 29933 | 2253345 | 113465 | claude-sonnet-5-5 | - |
+| I-session | Assemble | 完了 | - | 2026-10-05 01:09:04 | 2026-10-05 05:47:55 | 4h38m | 63 | 70 | 0 | 126 | 40000 | 8044974 | 300780 | claude-sonnet-5-5 | - |
+| J-server | Assemble | 進行中 | - | 2026-10-05 05:47:55 | 2026-10-05 05:49:14 | 1m19s | 5 | 6 | 0 | 10 | 1351 | 273386 | 66697 | claude-sonnet-5-5 | - |
+| J-server | Assemble | 完了 | - | 2026-10-05 05:49:17 | 2026-10-05 06:24:00 | 34m43s | 35 | 41 | 1 | 70 | 49145 | 3950741 | 129685 | claude-sonnet-5-5 | - |
+| integrate-1 | Integrate | 完了 | - | 2026-10-05 06:24:00 | 2026-10-05 06:27:57 | 3m57s | 35 | 42 | 3 | 70 | 13605 | 1854750 | 55831 | claude-sonnet-5-5 | - |
+| review:crash-safety | Review | 完了 | - | 2026-10-05 06:27:57 | 2026-10-05 06:52:16 | 24m19s | 46 | 57 | 1 | 92 | 57606 | 6733617 | 409923 | claude-sonnet-5-5 | - |
+| review:mvcc-concurrency | Review | 完了 | - | 2026-10-05 06:27:59 | 2026-10-05 06:50:41 | 22m42s | 40 | 41 | 0 | 80 | 53989 | 4000813 | 301859 | claude-sonnet-5-5 | - |
+| review:pg-compat | Review | 完了 | - | 2026-10-05 06:27:59 | 2026-10-05 06:37:20 | 9m21s | 49 | 50 | 5 | 98 | 32481 | 4260944 | 105130 | claude-sonnet-5-5 | - |
+| fix:pg-compat | Review | 完了 | - | 2026-10-05 06:37:20 | 2026-10-05 06:52:47 | 15m27s | 41 | 43 | 1 | 82 | 20805 | 2433784 | 100614 | claude-sonnet-5-5 | - |
+| fix:mvcc-concurrency | Review | 完了 | - | 2026-10-05 06:50:41 | 2026-10-05 06:52:24 | 1m43s | 7 | 7 | 0 | 14 | 5369 | 224412 | 22316 | claude-sonnet-5-5 | - |
+| fix:crash-safety | Review | 完了 | - | 2026-10-05 06:52:16 | 2026-10-05 06:54:39 | 2m23s | 22 | 23 | 0 | 44 | 10171 | 998752 | 42388 | claude-sonnet-5-5 | - |
+| final | Review | 完了 | - | 2026-10-05 06:54:39 | 2026-10-05 06:57:14 | 2m35s | 14 | 15 | 0 | 28 | 8014 | 546405 | 30295 | claude-sonnet-5-5 | - |
 
 合計: ターン 827、tool_use 891、エラー 28、入力 1658、出力 957757、cache読 107707770、cache作成 3414428
 
 ### wf_dc96a8cc-646 journal-design-and-write (完了)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| propose:process-retro | Propose | 完了 | - | 2026-10-04 14:59:52 | 2026-10-04 15:03:43 | 3m51s | 6 | 6 | 0 | 12 | 4788 | 178751 | 48618 | claude-sonnet-5-5 | - |
-| propose:decisions | Propose | 完了 | - | 2026-10-04 14:59:54 | 2026-10-04 15:03:37 | 3m43s | 4 | 5 | 1 | 8 | 3807 | 122839 | 22374 | claude-sonnet-5-5 | - |
-| propose:ai-ops | Propose | 完了 | - | 2026-10-04 14:59:54 | 2026-10-04 15:03:48 | 3m54s | 7 | 8 | 0 | 14 | 6149 | 225289 | 21087 | claude-sonnet-5-5 | - |
-| propose:future-reader | Propose | 完了 | - | 2026-10-04 14:59:54 | 2026-10-04 15:03:39 | 3m45s | 4 | 5 | 1 | 8 | 4417 | 114173 | 16205 | claude-sonnet-5-5 | - |
-| design | Design | 完了 | - | 2026-10-04 15:03:48 | 2026-10-04 15:09:12 | 5m24s | 2 | 1 | 0 | 4 | 15666 | 18740 | 62373 | claude-sonnet-5-5 | - |
-| write:journal/README.md | Write | 完了 | - | 2026-10-04 15:09:12 | 2026-10-04 15:19:48 | 10m36s | 10 | 10 | 1 | 20 | 10712 | 506184 | 56622 | claude-sonnet-5-5 | - |
-| write:journal/timeline.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:20:43 | 11m29s | 13 | 14 | 0 | 26 | 17649 | 592226 | 37937 | claude-sonnet-5-5 | - |
-| write:journal/decisions.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:26:54 | 17m40s | 29 | 30 | 0 | 56 | 28463 | 2223946 | 95537 | <synthetic>,claude-sonnet-5-5 | - |
-| write:journal/workflows.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:28:16 | 19m02s | 29 | 31 | 0 | 58 | 32709 | 2178969 | 74046 | claude-sonnet-5-5 | - |
-| write:journal/setbacks.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:25:14 | 16m00s | 28 | 27 | 0 | 54 | 25076 | 1744190 | 77472 | <synthetic>,claude-sonnet-5-5 | - |
-| write:journal/metrics.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:21:16 | 12m02s | 16 | 13 | 0 | 32 | 15343 | 664817 | 45705 | claude-sonnet-5-5 | - |
-| write:journal/retrospective.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:20:26 | 11m12s | 14 | 15 | 1 | 28 | 13204 | 674109 | 42134 | claude-sonnet-5-5 | - |
-| write:journal/snapshots.md | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:21:50 | 12m36s | 9 | 13 | 1 | 18 | 9695 | 376689 | 43845 | claude-sonnet-5-5 | - |
-| write:tools/journal-lib.sh | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:12:50 | 3m36s | 5 | 5 | 0 | 10 | 3859 | 151512 | 17886 | claude-sonnet-5-5 | - |
-| write:tools/journal-all.sh | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:12:38 | 3m24s | 4 | 4 | 1 | 8 | 477 | 115165 | 16187 | claude-sonnet-5-5 | - |
-| write:tools/journal-timeline.sh | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:16:29 | 7m15s | 8 | 9 | 0 | 16 | 5903 | 274474 | 26831 | claude-sonnet-5-5 | - |
-| write:tools/journal-workflows.sh | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:28:59 | 19m45s | 17 | 18 | 1 | 34 | 28646 | 993442 | 66517 | claude-sonnet-5-5 | - |
-| write:tools/journal-decisions.sh | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:22:04 | 12m50s | 20 | 18 | 1 | 40 | 15304 | 943212 | 54085 | claude-sonnet-5-5 | - |
-| write:tools/journal-metrics.sh | Write | 完了 | - | 2026-10-04 15:09:14 | 2026-10-04 15:19:41 | 10m27s | 7 | 7 | 1 | 14 | 8640 | 246289 | 21176 | claude-sonnet-5-5 | first-pass |
-| write:tools/journal-verify.sh | Write | 完了 | - | 2026-10-04 15:12:38 | 2026-10-04 15:16:28 | 3m50s | 6 | 7 | 0 | 12 | 5630 | 194953 | 26265 | claude-sonnet-5-5 | - |
-| review | Review | 完了 | - | 2026-10-04 15:28:59 | 2026-10-04 15:33:41 | 4m42s | 21 | 22 | 1 | 42 | 10369 | 1295144 | 67970 | claude-sonnet-5-5 | - |
+| propose:process-retro | Propose | 完了 | - | 2026-10-04 23:59:52 | 2026-10-05 00:03:43 | 3m51s | 6 | 6 | 0 | 12 | 4788 | 178751 | 48618 | claude-sonnet-5-5 | - |
+| propose:decisions | Propose | 完了 | - | 2026-10-04 23:59:54 | 2026-10-05 00:03:37 | 3m43s | 4 | 5 | 1 | 8 | 3807 | 122839 | 22374 | claude-sonnet-5-5 | - |
+| propose:ai-ops | Propose | 完了 | - | 2026-10-04 23:59:54 | 2026-10-05 00:03:48 | 3m54s | 7 | 8 | 0 | 14 | 6149 | 225289 | 21087 | claude-sonnet-5-5 | - |
+| propose:future-reader | Propose | 完了 | - | 2026-10-04 23:59:54 | 2026-10-05 00:03:39 | 3m45s | 4 | 5 | 1 | 8 | 4417 | 114173 | 16205 | claude-sonnet-5-5 | - |
+| design | Design | 完了 | - | 2026-10-05 00:03:48 | 2026-10-05 00:09:12 | 5m24s | 2 | 1 | 0 | 4 | 15666 | 18740 | 62373 | claude-sonnet-5-5 | - |
+| write:journal/README.md | Write | 完了 | - | 2026-10-05 00:09:12 | 2026-10-05 00:19:48 | 10m36s | 10 | 10 | 1 | 20 | 10712 | 506184 | 56622 | claude-sonnet-5-5 | - |
+| write:journal/timeline.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:20:43 | 11m29s | 13 | 14 | 0 | 26 | 17649 | 592226 | 37937 | claude-sonnet-5-5 | - |
+| write:journal/decisions.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:26:54 | 17m40s | 29 | 30 | 0 | 56 | 28463 | 2223946 | 95537 | <synthetic>,claude-sonnet-5-5 | - |
+| write:journal/workflows.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:28:16 | 19m02s | 29 | 31 | 0 | 58 | 32709 | 2178969 | 74046 | claude-sonnet-5-5 | - |
+| write:journal/setbacks.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:25:14 | 16m00s | 28 | 27 | 0 | 54 | 25076 | 1744190 | 77472 | <synthetic>,claude-sonnet-5-5 | - |
+| write:journal/metrics.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:21:16 | 12m02s | 16 | 13 | 0 | 32 | 15343 | 664817 | 45705 | claude-sonnet-5-5 | - |
+| write:journal/retrospective.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:20:26 | 11m12s | 14 | 15 | 1 | 28 | 13204 | 674109 | 42134 | claude-sonnet-5-5 | - |
+| write:journal/snapshots.md | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:21:50 | 12m36s | 9 | 13 | 1 | 18 | 9695 | 376689 | 43845 | claude-sonnet-5-5 | - |
+| write:tools/journal-lib.sh | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:12:50 | 3m36s | 5 | 5 | 0 | 10 | 3859 | 151512 | 17886 | claude-sonnet-5-5 | - |
+| write:tools/journal-all.sh | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:12:38 | 3m24s | 4 | 4 | 1 | 8 | 477 | 115165 | 16187 | claude-sonnet-5-5 | - |
+| write:tools/journal-timeline.sh | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:16:29 | 7m15s | 8 | 9 | 0 | 16 | 5903 | 274474 | 26831 | claude-sonnet-5-5 | - |
+| write:tools/journal-workflows.sh | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:28:59 | 19m45s | 17 | 18 | 1 | 34 | 28646 | 993442 | 66517 | claude-sonnet-5-5 | - |
+| write:tools/journal-decisions.sh | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:22:04 | 12m50s | 20 | 18 | 1 | 40 | 15304 | 943212 | 54085 | claude-sonnet-5-5 | - |
+| write:tools/journal-metrics.sh | Write | 完了 | - | 2026-10-05 00:09:14 | 2026-10-05 00:19:41 | 10m27s | 7 | 7 | 1 | 14 | 8640 | 246289 | 21176 | claude-sonnet-5-5 | first-pass |
+| write:tools/journal-verify.sh | Write | 完了 | - | 2026-10-05 00:12:38 | 2026-10-05 00:16:28 | 3m50s | 6 | 7 | 0 | 12 | 5630 | 194953 | 26265 | claude-sonnet-5-5 | - |
+| review | Review | 完了 | - | 2026-10-05 00:28:59 | 2026-10-05 00:33:41 | 4m42s | 21 | 22 | 1 | 42 | 10369 | 1295144 | 67970 | claude-sonnet-5-5 | - |
 
 合計: ターン 259、tool_use 268、エラー 10、入力 514、出力 266506、cache読 13835113、cache作成 940872
 
 ### wf_4d730f24-348 design-doc (進行中)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| outline | Outline | 完了 | - | 2026-10-04 20:53:24 | 2026-10-05 04:55:41 | 8h02m | 61 | 72 | 1 | 120 | 214325 | 18031983 | 1369998 | <synthetic>,claude-sonnet-5-5 | - |
-| write:01-scope-decisions.md | Write | 進行中 | - | 2026-10-05 04:55:41 | 2026-10-05 05:25:26 | 29m45s | 54 | 69 | 0 | 106 | 66230 | 11564172 | 335101 | <synthetic>,claude-sonnet-5-5 | - |
-| write:02-pipeline-refactor.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 06:05:20 | 1h09m | 66 | 109 | 1 | 132 | 245971 | 18739859 | 680384 | claude-sonnet-5-5 | - |
-| write:03-parser-analyzer.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 06:03:28 | 1h07m | 183 | 203 | 3 | 366 | 385707 | 96829622 | 833044 | claude-sonnet-5-5 | - |
-| write:04-planner-optimizer.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 06:02:37 | 1h06m | 68 | 79 | 1 | 136 | 273642 | 19612257 | 744885 | claude-sonnet-5-5 | - |
-| write:05-executor.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:30:23 | 34m41s | 30 | 42 | 1 | 60 | 113504 | 4549246 | 416187 | claude-sonnet-5-5 | - |
-| write:06-btree.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 06:20:18 | 1h24m | 96 | 113 | 2 | 192 | 336631 | 42240675 | 1342110 | claude-sonnet-5-5 | - |
-| write:07-catalog-ddl.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:44:59 | 49m17s | 106 | 130 | 3 | 212 | 270553 | 35685211 | 571318 | claude-sonnet-5-5 | - |
-| write:08-sequence-serial.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:47:14 | 51m32s | 100 | 118 | 6 | 200 | 266251 | 35067324 | 1078240 | claude-sonnet-5-5 | - |
-| write:09-types-functions.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:31:38 | 35m56s | 79 | 89 | 2 | 158 | 152071 | 19689482 | 798387 | claude-sonnet-5-5 | - |
-| write:10-explain-copy-compat.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:47:33 | 51m51s | 90 | 95 | 5 | 180 | 257726 | 24657558 | 465255 | claude-sonnet-5-5 | - |
-| write:11-tests-plan.md | Write | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 06:53:02 | 1h57m | 135 | 150 | 2 | 270 | 270450 | 61312454 | 3745839 | claude-sonnet-5-5 | - |
-| review:consistency | Review | 完了 | - | 2026-10-05 06:53:02 | 2026-10-05 07:18:49 | 25m47s | 77 | 79 | 1 | 154 | 70857 | 26966252 | 556887 | claude-sonnet-5-5 | - |
-| review:pg-compat | Review | 完了 | - | 2026-10-05 06:53:02 | 2026-10-05 07:23:55 | 30m53s | 151 | 152 | 3 | 302 | 128644 | 36414393 | 394293 | claude-sonnet-5-5 | - |
-| review:implementability | Review | 完了 | - | 2026-10-05 06:53:02 | 2026-10-05 07:15:00 | 21m58s | 71 | 71 | 0 | 142 | 62984 | 14200485 | 337984 | claude-sonnet-5-5 | - |
-| fix-and-index | Fix | 完了 | - | 2026-10-05 07:23:55 | 2026-10-05 07:58:58 | 35m03s | 159 | 169 | 0 | 318 | 203070 | 54390765 | 552139 | claude-sonnet-5-5 | - |
+| outline | Outline | 完了 | - | 2026-10-05 05:53:24 | 2026-10-05 13:55:41 | 8h02m | 61 | 72 | 1 | 120 | 214325 | 18031983 | 1369998 | <synthetic>,claude-sonnet-5-5 | - |
+| write:01-scope-decisions.md | Write | 進行中 | - | 2026-10-05 13:55:41 | 2026-10-05 14:25:26 | 29m45s | 54 | 69 | 0 | 106 | 66230 | 11564172 | 335101 | <synthetic>,claude-sonnet-5-5 | - |
+| write:02-pipeline-refactor.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 15:05:20 | 1h09m | 66 | 109 | 1 | 132 | 245971 | 18739859 | 680384 | claude-sonnet-5-5 | - |
+| write:03-parser-analyzer.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 15:03:28 | 1h07m | 183 | 203 | 3 | 366 | 385707 | 96829622 | 833044 | claude-sonnet-5-5 | - |
+| write:04-planner-optimizer.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 15:02:37 | 1h06m | 68 | 79 | 1 | 136 | 273642 | 19612257 | 744885 | claude-sonnet-5-5 | - |
+| write:05-executor.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:30:23 | 34m41s | 30 | 42 | 1 | 60 | 113504 | 4549246 | 416187 | claude-sonnet-5-5 | - |
+| write:06-btree.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 15:20:18 | 1h24m | 96 | 113 | 2 | 192 | 336631 | 42240675 | 1342110 | claude-sonnet-5-5 | - |
+| write:07-catalog-ddl.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:44:59 | 49m17s | 106 | 130 | 3 | 212 | 270553 | 35685211 | 571318 | claude-sonnet-5-5 | - |
+| write:08-sequence-serial.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:47:14 | 51m32s | 100 | 118 | 6 | 200 | 266251 | 35067324 | 1078240 | claude-sonnet-5-5 | - |
+| write:09-types-functions.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:31:38 | 35m56s | 79 | 89 | 2 | 158 | 152071 | 19689482 | 798387 | claude-sonnet-5-5 | - |
+| write:10-explain-copy-compat.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:47:33 | 51m51s | 90 | 95 | 5 | 180 | 257726 | 24657558 | 465255 | claude-sonnet-5-5 | - |
+| write:11-tests-plan.md | Write | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 15:53:02 | 1h57m | 135 | 150 | 2 | 270 | 270450 | 61312454 | 3745839 | claude-sonnet-5-5 | - |
+| review:consistency | Review | 完了 | - | 2026-10-05 15:53:02 | 2026-10-05 16:18:49 | 25m47s | 77 | 79 | 1 | 154 | 70857 | 26966252 | 556887 | claude-sonnet-5-5 | - |
+| review:pg-compat | Review | 完了 | - | 2026-10-05 15:53:02 | 2026-10-05 16:23:55 | 30m53s | 151 | 152 | 3 | 302 | 128644 | 36414393 | 394293 | claude-sonnet-5-5 | - |
+| review:implementability | Review | 完了 | - | 2026-10-05 15:53:02 | 2026-10-05 16:15:00 | 21m58s | 71 | 71 | 0 | 142 | 62984 | 14200485 | 337984 | claude-sonnet-5-5 | - |
+| fix-and-index | Fix | 完了 | - | 2026-10-05 16:23:55 | 2026-10-05 16:58:58 | 35m03s | 159 | 169 | 0 | 318 | 203070 | 54390765 | 552139 | claude-sonnet-5-5 | - |
 
 合計: ターン 1526、tool_use 1740、エラー 31、入力 3048、出力 3318616、cache読 519951738、cache作成 14222051
 
 ### wf_32cf6626-a0c design-doc (進行中)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| outline | Outline | 進行中 | - | 2026-10-04 20:53:36 | 2026-10-05 04:49:33 | 7h55m | 44 | 52 | 0 | 88 | 166670 | 11668869 | 800070 | claude-sonnet-5-5 | - |
-| outline | Outline | 完了 | - | 2026-10-05 04:49:37 | 2026-10-05 05:08:19 | 18m42s | 65 | 75 | 1 | 130 | 108768 | 13002906 | 278972 | claude-sonnet-5-5 | - |
-| write:01-lock-txn.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 06:07:43 | 59m24s | 172 | 186 | 4 | 344 | 325658 | 75112509 | 719071 | claude-sonnet-5-5 | - |
-| write:02-row-lock-rr.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 06:12:22 | 1h04m | 140 | 158 | 5 | 280 | 313599 | 51014552 | 678031 | claude-sonnet-5-5 | - |
-| write:03-vacuum.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 06:02:50 | 54m31s | 82 | 103 | 2 | 164 | 305120 | 31467562 | 873176 | claude-sonnet-5-5 | - |
-| write:04-extended-query.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:56:00 | 47m41s | 89 | 104 | 2 | 178 | 251549 | 28410551 | 559282 | claude-sonnet-5-5 | - |
-| write:05-types-core.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:49:56 | 41m37s | 126 | 133 | 2 | 252 | 223024 | 36756481 | 524165 | claude-sonnet-5-5 | - |
-| write:06-types-datetime.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:35:12 | 26m53s | 62 | 73 | 6 | 122 | 111164 | 11888338 | 579093 | <synthetic>,claude-sonnet-5-5 | - |
-| write:07-foreign-key.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:43:34 | 35m15s | 56 | 65 | 2 | 112 | 164042 | 11678539 | 668416 | claude-sonnet-5-5 | - |
-| write:08-auth-roles.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:45:17 | 36m58s | 49 | 60 | 2 | 98 | 186603 | 8652435 | 640028 | claude-sonnet-5-5 | - |
-| write:09-database-ddl.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:46:26 | 38m07s | 58 | 74 | 3 | 116 | 175258 | 12015612 | 670621 | claude-sonnet-5-5 | - |
-| write:10-tests-plan.md | Write | 完了 | - | 2026-10-05 05:08:19 | 2026-10-05 05:45:27 | 37m08s | 37 | 41 | 1 | 74 | 159166 | 6092980 | 764764 | claude-sonnet-5-5 | - |
-| review:consistency | Review | 完了 | - | 2026-10-05 06:12:22 | 2026-10-05 06:21:07 | 8m45s | 87 | 89 | 1 | 174 | 57189 | 20498476 | 379965 | claude-sonnet-5-5 | - |
-| review:pg-compat | Review | 完了 | - | 2026-10-05 06:12:23 | 2026-10-05 06:26:26 | 14m03s | 61 | 63 | 1 | 122 | 108685 | 14201534 | 389522 | claude-sonnet-5-5 | - |
-| review:implementability | Review | 完了 | - | 2026-10-05 06:12:23 | 2026-10-05 06:23:33 | 11m10s | 64 | 66 | 2 | 128 | 76328 | 14028109 | 340245 | claude-sonnet-5-5 | - |
-| fix-and-index | Fix | 完了 | - | 2026-10-05 06:26:26 | 2026-10-05 07:05:47 | 39m21s | 219 | 256 | 5 | 438 | 247650 | 86166173 | 644771 | claude-sonnet-5-5 | - |
+| outline | Outline | 進行中 | - | 2026-10-05 05:53:36 | 2026-10-05 13:49:33 | 7h55m | 44 | 52 | 0 | 88 | 166670 | 11668869 | 800070 | claude-sonnet-5-5 | - |
+| outline | Outline | 完了 | - | 2026-10-05 13:49:37 | 2026-10-05 14:08:19 | 18m42s | 65 | 75 | 1 | 130 | 108768 | 13002906 | 278972 | claude-sonnet-5-5 | - |
+| write:01-lock-txn.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 15:07:43 | 59m24s | 172 | 186 | 4 | 344 | 325658 | 75112509 | 719071 | claude-sonnet-5-5 | - |
+| write:02-row-lock-rr.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 15:12:22 | 1h04m | 140 | 158 | 5 | 280 | 313599 | 51014552 | 678031 | claude-sonnet-5-5 | - |
+| write:03-vacuum.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 15:02:50 | 54m31s | 82 | 103 | 2 | 164 | 305120 | 31467562 | 873176 | claude-sonnet-5-5 | - |
+| write:04-extended-query.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:56:00 | 47m41s | 89 | 104 | 2 | 178 | 251549 | 28410551 | 559282 | claude-sonnet-5-5 | - |
+| write:05-types-core.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:49:56 | 41m37s | 126 | 133 | 2 | 252 | 223024 | 36756481 | 524165 | claude-sonnet-5-5 | - |
+| write:06-types-datetime.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:35:12 | 26m53s | 62 | 73 | 6 | 122 | 111164 | 11888338 | 579093 | <synthetic>,claude-sonnet-5-5 | - |
+| write:07-foreign-key.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:43:34 | 35m15s | 56 | 65 | 2 | 112 | 164042 | 11678539 | 668416 | claude-sonnet-5-5 | - |
+| write:08-auth-roles.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:45:17 | 36m58s | 49 | 60 | 2 | 98 | 186603 | 8652435 | 640028 | claude-sonnet-5-5 | - |
+| write:09-database-ddl.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:46:26 | 38m07s | 58 | 74 | 3 | 116 | 175258 | 12015612 | 670621 | claude-sonnet-5-5 | - |
+| write:10-tests-plan.md | Write | 完了 | - | 2026-10-05 14:08:19 | 2026-10-05 14:45:27 | 37m08s | 37 | 41 | 1 | 74 | 159166 | 6092980 | 764764 | claude-sonnet-5-5 | - |
+| review:consistency | Review | 完了 | - | 2026-10-05 15:12:22 | 2026-10-05 15:21:07 | 8m45s | 87 | 89 | 1 | 174 | 57189 | 20498476 | 379965 | claude-sonnet-5-5 | - |
+| review:pg-compat | Review | 完了 | - | 2026-10-05 15:12:23 | 2026-10-05 15:26:26 | 14m03s | 61 | 63 | 1 | 122 | 108685 | 14201534 | 389522 | claude-sonnet-5-5 | - |
+| review:implementability | Review | 完了 | - | 2026-10-05 15:12:23 | 2026-10-05 15:23:33 | 11m10s | 64 | 66 | 2 | 128 | 76328 | 14028109 | 340245 | claude-sonnet-5-5 | - |
+| fix-and-index | Fix | 完了 | - | 2026-10-05 15:26:26 | 2026-10-05 16:05:47 | 39m21s | 219 | 256 | 5 | 438 | 247650 | 86166173 | 644771 | claude-sonnet-5-5 | - |
 
 合計: ターン 1411、tool_use 1598、エラー 39、入力 2820、出力 2980473、cache読 432655626、cache作成 9510192
 
 ### wf_5e84e5ec-172 m3-shared-tests (完了)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| K:slt | Write | 完了 | - | 2026-10-04 20:53:49 | 2026-10-04 21:09:00 | 15m11s | 22 | 23 | 0 | 44 | 18300 | 1333617 | 88346 | claude-sonnet-5-5 | - |
-| K:crash | Write | 完了 | - | 2026-10-04 20:53:49 | 2026-10-04 21:24:02 | 30m13s | 29 | 28 | 1 | 58 | 34136 | 2195801 | 85234 | claude-sonnet-5-5 | - |
-| K:isolation | Write | 完了 | - | 2026-10-04 20:53:49 | 2026-10-04 21:09:51 | 16m02s | 31 | 33 | 2 | 64 | 22863 | 2383821 | 74495 | claude-sonnet-5-5 | - |
-| K:ci | Write | 完了 | - | 2026-10-04 20:53:49 | 2026-10-04 21:04:04 | 10m15s | 13 | 14 | 1 | 26 | 7345 | 558578 | 38565 | claude-sonnet-5-5 | - |
-| K:verify | Verify | 完了 | - | 2026-10-04 21:24:02 | 2026-10-04 21:48:55 | 24m53s | 28 | 30 | 2 | 56 | 14907 | 1351725 | 123522 | claude-sonnet-5-5 | - |
+| K:slt | Write | 完了 | - | 2026-10-05 05:53:49 | 2026-10-05 06:09:00 | 15m11s | 22 | 23 | 0 | 44 | 18300 | 1333617 | 88346 | claude-sonnet-5-5 | - |
+| K:crash | Write | 完了 | - | 2026-10-05 05:53:49 | 2026-10-05 06:24:02 | 30m13s | 29 | 28 | 1 | 58 | 34136 | 2195801 | 85234 | claude-sonnet-5-5 | - |
+| K:isolation | Write | 完了 | - | 2026-10-05 05:53:49 | 2026-10-05 06:09:51 | 16m02s | 31 | 33 | 2 | 64 | 22863 | 2383821 | 74495 | claude-sonnet-5-5 | - |
+| K:ci | Write | 完了 | - | 2026-10-05 05:53:49 | 2026-10-05 06:04:04 | 10m15s | 13 | 14 | 1 | 26 | 7345 | 558578 | 38565 | claude-sonnet-5-5 | - |
+| K:verify | Verify | 完了 | - | 2026-10-05 06:24:02 | 2026-10-05 06:48:55 | 24m53s | 28 | 30 | 2 | 56 | 14907 | 1351725 | 123522 | claude-sonnet-5-5 | - |
 
 合計: ターン 123、tool_use 128、エラー 6、入力 248、出力 97551、cache読 7823542、cache作成 410162
 
 ### wf_b10ff45b-956 m3-implement (完了)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| A-foundation | A foundation | 完了 | - | 2026-10-04 21:59:20 | 2026-10-05 04:55:42 | 6h56m | 54 | 60 | 1 | 108 | 58940 | 7371283 | 281414 | claude-sonnet-5-5 | - |
-| W1 | Build | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:03:41 | 7m59s | 32 | 34 | 1 | 64 | 58239 | 3050982 | 124832 | claude-sonnet-5-5 | - |
-| B | Build | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:13:19 | 17m37s | 36 | 49 | 2 | 74 | 30236 | 3189649 | 92722 | claude-sonnet-5-5 | - |
-| F | Build | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:03:05 | 7m23s | 55 | 62 | 5 | 110 | 38315 | 5038197 | 110432 | claude-sonnet-5-5 | - |
-| S | Build | 完了 | - | 2026-10-05 04:55:42 | 2026-10-05 05:05:04 | 9m22s | 61 | 68 | 1 | 122 | 64277 | 8373077 | 181976 | claude-sonnet-5-5 | - |
-| W2 | Build | 完了 | - | 2026-10-05 05:03:41 | 2026-10-05 05:17:06 | 13m25s | 20 | 20 | 0 | 40 | 32769 | 1627497 | 93130 | claude-sonnet-5-5 | - |
-| C | Build | 完了 | - | 2026-10-05 05:13:19 | 2026-10-05 05:30:11 | 16m52s | 56 | 57 | 0 | 112 | 58153 | 7414564 | 163149 | claude-sonnet-5-5 | - |
-| E | Build | 完了 | - | 2026-10-05 05:13:19 | 2026-10-05 05:40:45 | 27m26s | 57 | 64 | 3 | 114 | 73609 | 8744707 | 353080 | claude-sonnet-5-5 | - |
-| D | Build | 完了 | - | 2026-10-05 05:30:11 | 2026-10-05 05:43:25 | 13m14s | 39 | 42 | 1 | 78 | 40481 | 4161518 | 232645 | claude-sonnet-5-5 | - |
-| R | Build | 完了 | - | 2026-10-05 05:43:25 | 2026-10-05 05:51:15 | 7m50s | 55 | 57 | 1 | 110 | 57673 | 6749198 | 156174 | claude-sonnet-5-5 | - |
-| T | Build | 完了 | - | 2026-10-05 05:51:15 | 2026-10-05 06:06:25 | 15m10s | 55 | 56 | 1 | 110 | 99232 | 7597036 | 191187 | claude-sonnet-5-5 | - |
-| J | Build | 完了 | - | 2026-10-05 05:51:15 | 2026-10-05 06:09:17 | 18m02s | 50 | 53 | 1 | 100 | 51421 | 5900951 | 143850 | claude-sonnet-5-5 | - |
-| S-finish | Build | 完了 | - | 2026-10-05 06:09:17 | 2026-10-05 06:15:41 | 6m24s | 44 | 47 | 3 | 88 | 15516 | 3304493 | 78662 | claude-sonnet-5-5 | - |
-| test-1 | Integrate | 完了 | - | 2026-10-05 06:15:41 | 2026-10-05 06:18:59 | 3m18s | 9 | 9 | 0 | 18 | 3772 | 324740 | 50412 | claude-sonnet-5-5 | - |
-| fix:crash:r1 | Integrate | 完了 | - | 2026-10-05 06:19:00 | 2026-10-05 06:21:13 | 2m13s | 16 | 27 | 0 | 32 | 12780 | 753755 | 44318 | claude-sonnet-5-5 | - |
-| fix:isolation:r1 | Integrate | 完了 | - | 2026-10-05 06:19:00 | 2026-10-05 06:20:09 | 1m09s | 7 | 7 | 0 | 14 | 2352 | 225099 | 21588 | claude-sonnet-5-5 | - |
-| fix:cargo:r1 | Integrate | 完了 | - | 2026-10-05 06:19:00 | 2026-10-05 06:19:59 | 0m59s | 5 | 6 | 0 | 10 | 1367 | 140189 | 14439 | claude-sonnet-5-5 | - |
-| test-2 | Integrate | 完了 | - | 2026-10-05 06:21:13 | 2026-10-05 06:23:26 | 2m13s | 8 | 9 | 0 | 16 | 3367 | 297840 | 29159 | claude-sonnet-5-5 | - |
-| fix:cargo:r2 | Integrate | 完了 | - | 2026-10-05 06:23:26 | 2026-10-05 06:23:59 | 0m33s | 4 | 5 | 0 | 8 | 1548 | 106971 | 12661 | claude-sonnet-5-5 | - |
-| fix:isolation:r2 | Integrate | 完了 | - | 2026-10-05 06:23:26 | 2026-10-05 06:24:30 | 1m04s | 7 | 8 | 1 | 14 | 2480 | 207770 | 17926 | claude-sonnet-5-5 | - |
-| test-3 | Integrate | 完了 | - | 2026-10-05 06:24:30 | 2026-10-05 06:27:17 | 2m47s | 11 | 12 | 0 | 22 | 3496 | 449453 | 32488 | claude-sonnet-5-5 | - |
-| review:wal-recovery | Review | 完了 | - | 2026-10-05 06:27:17 | 2026-10-05 07:18:17 | 51m00s | 140 | 145 | 2 | 280 | 179291 | 42433467 | 852920 | claude-sonnet-5-5 | - |
-| review:txn-concurrency | Review | 完了 | - | 2026-10-05 06:27:17 | 2026-10-05 06:40:50 | 13m33s | 47 | 49 | 0 | 94 | 93107 | 7834447 | 265661 | claude-sonnet-5-5 | - |
-| review:crash-test-quality | Review | 完了 | - | 2026-10-05 06:27:17 | 2026-10-05 07:01:48 | 34m31s | 83 | 86 | 1 | 166 | 82617 | 13168481 | 221903 | claude-sonnet-5-5 | - |
-| review:pg-compat | Review | 完了 | - | 2026-10-05 06:27:17 | 2026-10-05 06:43:33 | 16m16s | 92 | 94 | 24 | 184 | 66968 | 12778709 | 196044 | claude-sonnet-5-5 | - |
-| fix:txn-concurrency | Review | 完了 | - | 2026-10-05 06:40:50 | 2026-10-05 06:46:33 | 5m43s | 33 | 34 | 2 | 66 | 16094 | 1808941 | 76832 | claude-sonnet-5-5 | - |
-| fix:pg-compat | Review | 完了 | - | 2026-10-05 06:43:33 | 2026-10-05 06:57:51 | 14m18s | 51 | 62 | 0 | 102 | 30488 | 3847006 | 91344 | claude-sonnet-5-5 | - |
-| fix:crash-test-quality | Review | 完了 | - | 2026-10-05 07:01:48 | 2026-10-05 07:24:07 | 22m19s | 83 | 90 | 2 | 166 | 61648 | 9648961 | 151852 | claude-sonnet-5-5 | - |
-| fix:wal-recovery | Review | 完了 | - | 2026-10-05 07:18:17 | 2026-10-05 07:24:36 | 6m19s | 8 | 14 | 0 | 16 | 4644 | 260070 | 21879 | claude-sonnet-5-5 | - |
-| finish | Finish | 完了 | - | 2026-10-05 07:24:36 | 2026-10-05 07:32:35 | 7m59s | 30 | 32 | 0 | 60 | 12966 | 1634935 | 58693 | claude-sonnet-5-5 | - |
+| A-foundation | A foundation | 完了 | - | 2026-10-05 06:59:20 | 2026-10-05 13:55:42 | 6h56m | 54 | 60 | 1 | 108 | 58940 | 7371283 | 281414 | claude-sonnet-5-5 | - |
+| W1 | Build | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:03:41 | 7m59s | 32 | 34 | 1 | 64 | 58239 | 3050982 | 124832 | claude-sonnet-5-5 | - |
+| B | Build | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:13:19 | 17m37s | 36 | 49 | 2 | 74 | 30236 | 3189649 | 92722 | claude-sonnet-5-5 | - |
+| F | Build | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:03:05 | 7m23s | 55 | 62 | 5 | 110 | 38315 | 5038197 | 110432 | claude-sonnet-5-5 | - |
+| S | Build | 完了 | - | 2026-10-05 13:55:42 | 2026-10-05 14:05:04 | 9m22s | 61 | 68 | 1 | 122 | 64277 | 8373077 | 181976 | claude-sonnet-5-5 | - |
+| W2 | Build | 完了 | - | 2026-10-05 14:03:41 | 2026-10-05 14:17:06 | 13m25s | 20 | 20 | 0 | 40 | 32769 | 1627497 | 93130 | claude-sonnet-5-5 | - |
+| C | Build | 完了 | - | 2026-10-05 14:13:19 | 2026-10-05 14:30:11 | 16m52s | 56 | 57 | 0 | 112 | 58153 | 7414564 | 163149 | claude-sonnet-5-5 | - |
+| E | Build | 完了 | - | 2026-10-05 14:13:19 | 2026-10-05 14:40:45 | 27m26s | 57 | 64 | 3 | 114 | 73609 | 8744707 | 353080 | claude-sonnet-5-5 | - |
+| D | Build | 完了 | - | 2026-10-05 14:30:11 | 2026-10-05 14:43:25 | 13m14s | 39 | 42 | 1 | 78 | 40481 | 4161518 | 232645 | claude-sonnet-5-5 | - |
+| R | Build | 完了 | - | 2026-10-05 14:43:25 | 2026-10-05 14:51:15 | 7m50s | 55 | 57 | 1 | 110 | 57673 | 6749198 | 156174 | claude-sonnet-5-5 | - |
+| T | Build | 完了 | - | 2026-10-05 14:51:15 | 2026-10-05 15:06:25 | 15m10s | 55 | 56 | 1 | 110 | 99232 | 7597036 | 191187 | claude-sonnet-5-5 | - |
+| J | Build | 完了 | - | 2026-10-05 14:51:15 | 2026-10-05 15:09:17 | 18m02s | 50 | 53 | 1 | 100 | 51421 | 5900951 | 143850 | claude-sonnet-5-5 | - |
+| S-finish | Build | 完了 | - | 2026-10-05 15:09:17 | 2026-10-05 15:15:41 | 6m24s | 44 | 47 | 3 | 88 | 15516 | 3304493 | 78662 | claude-sonnet-5-5 | - |
+| test-1 | Integrate | 完了 | - | 2026-10-05 15:15:41 | 2026-10-05 15:18:59 | 3m18s | 9 | 9 | 0 | 18 | 3772 | 324740 | 50412 | claude-sonnet-5-5 | - |
+| fix:crash:r1 | Integrate | 完了 | - | 2026-10-05 15:19:00 | 2026-10-05 15:21:13 | 2m13s | 16 | 27 | 0 | 32 | 12780 | 753755 | 44318 | claude-sonnet-5-5 | - |
+| fix:isolation:r1 | Integrate | 完了 | - | 2026-10-05 15:19:00 | 2026-10-05 15:20:09 | 1m09s | 7 | 7 | 0 | 14 | 2352 | 225099 | 21588 | claude-sonnet-5-5 | - |
+| fix:cargo:r1 | Integrate | 完了 | - | 2026-10-05 15:19:00 | 2026-10-05 15:19:59 | 0m59s | 5 | 6 | 0 | 10 | 1367 | 140189 | 14439 | claude-sonnet-5-5 | - |
+| test-2 | Integrate | 完了 | - | 2026-10-05 15:21:13 | 2026-10-05 15:23:26 | 2m13s | 8 | 9 | 0 | 16 | 3367 | 297840 | 29159 | claude-sonnet-5-5 | - |
+| fix:cargo:r2 | Integrate | 完了 | - | 2026-10-05 15:23:26 | 2026-10-05 15:23:59 | 0m33s | 4 | 5 | 0 | 8 | 1548 | 106971 | 12661 | claude-sonnet-5-5 | - |
+| fix:isolation:r2 | Integrate | 完了 | - | 2026-10-05 15:23:26 | 2026-10-05 15:24:30 | 1m04s | 7 | 8 | 1 | 14 | 2480 | 207770 | 17926 | claude-sonnet-5-5 | - |
+| test-3 | Integrate | 完了 | - | 2026-10-05 15:24:30 | 2026-10-05 15:27:17 | 2m47s | 11 | 12 | 0 | 22 | 3496 | 449453 | 32488 | claude-sonnet-5-5 | - |
+| review:wal-recovery | Review | 完了 | - | 2026-10-05 15:27:17 | 2026-10-05 16:18:17 | 51m00s | 140 | 145 | 2 | 280 | 179291 | 42433467 | 852920 | claude-sonnet-5-5 | - |
+| review:txn-concurrency | Review | 完了 | - | 2026-10-05 15:27:17 | 2026-10-05 15:40:50 | 13m33s | 47 | 49 | 0 | 94 | 93107 | 7834447 | 265661 | claude-sonnet-5-5 | - |
+| review:crash-test-quality | Review | 完了 | - | 2026-10-05 15:27:17 | 2026-10-05 16:01:48 | 34m31s | 83 | 86 | 1 | 166 | 82617 | 13168481 | 221903 | claude-sonnet-5-5 | - |
+| review:pg-compat | Review | 完了 | - | 2026-10-05 15:27:17 | 2026-10-05 15:43:33 | 16m16s | 92 | 94 | 24 | 184 | 66968 | 12778709 | 196044 | claude-sonnet-5-5 | - |
+| fix:txn-concurrency | Review | 完了 | - | 2026-10-05 15:40:50 | 2026-10-05 15:46:33 | 5m43s | 33 | 34 | 2 | 66 | 16094 | 1808941 | 76832 | claude-sonnet-5-5 | - |
+| fix:pg-compat | Review | 完了 | - | 2026-10-05 15:43:33 | 2026-10-05 15:57:51 | 14m18s | 51 | 62 | 0 | 102 | 30488 | 3847006 | 91344 | claude-sonnet-5-5 | - |
+| fix:crash-test-quality | Review | 完了 | - | 2026-10-05 16:01:48 | 2026-10-05 16:24:07 | 22m19s | 83 | 90 | 2 | 166 | 61648 | 9648961 | 151852 | claude-sonnet-5-5 | - |
+| fix:wal-recovery | Review | 完了 | - | 2026-10-05 16:18:17 | 2026-10-05 16:24:36 | 6m19s | 8 | 14 | 0 | 16 | 4644 | 260070 | 21879 | claude-sonnet-5-5 | - |
+| finish | Finish | 完了 | - | 2026-10-05 16:24:36 | 2026-10-05 16:32:35 | 7m59s | 30 | 32 | 0 | 60 | 12966 | 1634935 | 58693 | claude-sonnet-5-5 | - |
 
 合計: ターン 1248、tool_use 1358、エラー 52、入力 2498、出力 1257846、cache読 168443986、cache作成 4363372
 
-### wf_383fcbbf-1a5 pg-diff-fuzz (進行中)
+### wf_383fcbbf-1a5 pg-diff-fuzz (完了)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| harness | Harness | 完了 | - | 2026-10-05 07:35:30 | 2026-10-05 07:44:33 | 9m03s | 22 | 22 | 3 | 44 | 40289 | 1207564 | 57787 | claude-sonnet-5-5 | - |
-| fuzz:expr:r1 | Round | 完了 | - | 2026-10-05 07:44:33 | 2026-10-05 08:03:08 | 18m35s | 28 | 31 | 2 | 56 | 19473 | 1511136 | 121244 | claude-sonnet-5-5 | - |
-| fuzz:types:r1 | Round | 完了 | - | 2026-10-05 07:44:34 | 2026-10-05 08:13:20 | 28m46s | 29 | 30 | 1 | 58 | 21324 | 1516163 | 275151 | claude-sonnet-5-5 | - |
-| fuzz:query:r1 | Round | 完了 | - | 2026-10-05 07:44:34 | 2026-10-05 08:04:04 | 19m30s | 50 | 51 | 3 | 100 | 21676 | 3088155 | 102283 | claude-sonnet-5-5 | - |
-| fuzz:dml:r1 | Round | 完了 | - | 2026-10-05 07:44:34 | 2026-10-05 08:21:45 | 37m11s | 44 | 46 | 2 | 88 | 34478 | 3466751 | 226758 | claude-sonnet-5-5 | - |
-| fuzz:txn:r1 | Round | 完了 | - | 2026-10-05 07:44:34 | 2026-10-05 08:32:52 | 48m18s | 33 | 34 | 2 | 66 | 28537 | 1932422 | 338569 | claude-sonnet-5-5 | - |
-| fix:expr:r1:0 | Round | 完了 | - | 2026-10-05 08:03:08 | 2026-10-05 08:07:51 | 4m43s | 14 | 16 | 0 | 28 | 8577 | 491464 | 47276 | claude-sonnet-5-5 | - |
-| fix:expr:r1:1 | Round | 完了 | - | 2026-10-05 08:03:09 | 2026-10-05 08:15:07 | 11m58s | 38 | 39 | 1 | 76 | 41956 | 3157341 | 91644 | claude-sonnet-5-5 | - |
-| fix:expr:r1:2 | Round | 完了 | - | 2026-10-05 08:03:09 | 2026-10-05 08:24:28 | 21m19s | 83 | 94 | 3 | 166 | 42149 | 10023029 | 159734 | claude-sonnet-5-5 | - |
-| fix:query:r1:0 | Round | 完了 | - | 2026-10-05 08:04:05 | 2026-10-05 08:21:28 | 17m23s | 42 | 42 | 4 | 84 | 20150 | 2775798 | 75510 | claude-sonnet-5-5 | - |
-| fix:query:r1:1 | Round | 完了 | - | 2026-10-05 08:04:05 | 2026-10-05 08:14:10 | 10m05s | 36 | 40 | 2 | 72 | 20428 | 2060917 | 58388 | claude-sonnet-5-5 | - |
-| fix:query:r1:2 | Round | 完了 | - | 2026-10-05 08:04:05 | 2026-10-05 08:16:42 | 12m37s | 23 | 28 | 1 | 46 | 9856 | 1078332 | 81523 | claude-sonnet-5-5 | - |
-| fix:query:r1:3 | Round | 完了 | - | 2026-10-05 08:04:05 | 2026-10-05 08:21:24 | 17m19s | 19 | 23 | 0 | 38 | 11193 | 789758 | 35298 | claude-sonnet-5-5 | - |
-| fix:types:r1:0 | Round | 完了 | - | 2026-10-05 08:13:21 | 2026-10-05 08:21:36 | 8m15s | 10 | 11 | 1 | 20 | 4212 | 356295 | 23374 | claude-sonnet-5-5 | - |
-| fix:types:r1:1 | Round | 完了 | - | 2026-10-05 08:13:21 | 2026-10-05 08:20:42 | 7m21s | 6 | 6 | 1 | 12 | 2224 | 170385 | 16516 | claude-sonnet-5-5 | - |
-| fuzz:query:r2 | Round | 完了 | - | 2026-10-05 08:21:28 | 2026-10-05 08:51:13 | 29m45s | 34 | 33 | 3 | 68 | 23983 | 1877360 | 137902 | claude-sonnet-5-5 | - |
-| fuzz:types:r2 | Round | 完了 | - | 2026-10-05 08:21:36 | 2026-10-05 08:53:44 | 32m08s | 23 | 29 | 1 | 46 | 11010 | 1007361 | 148431 | claude-sonnet-5-5 | - |
-| fix:dml:r1:0 | Round | 完了 | - | 2026-10-05 08:21:45 | 2026-10-05 08:31:58 | 10m13s | 21 | 22 | 0 | 42 | 6440 | 834025 | 31037 | claude-sonnet-5-5 | - |
-| fix:dml:r1:1 | Round | 完了 | - | 2026-10-05 08:21:45 | 2026-10-05 08:30:08 | 8m23s | 11 | 11 | 2 | 22 | 3918 | 378284 | 21933 | claude-sonnet-5-5 | - |
-| fix:dml:r1:2 | Round | 完了 | - | 2026-10-05 08:21:45 | 2026-10-05 08:27:24 | 5m39s | 12 | 13 | 1 | 24 | 3218 | 415472 | 21586 | claude-sonnet-5-5 | - |
-| fix:dml:r1:3 | Round | 完了 | - | 2026-10-05 08:21:45 | 2026-10-05 08:33:21 | 11m36s | 19 | 19 | 3 | 38 | 5426 | 789061 | 32125 | claude-sonnet-5-5 | - |
-| fix:dml:r1:4 | Round | 完了 | - | 2026-10-05 08:21:45 | 2026-10-05 08:37:46 | 16m01s | 21 | 24 | 0 | 42 | 10730 | 843903 | 58633 | claude-sonnet-5-5 | - |
-| fuzz:expr:r2 | Round | 完了 | - | 2026-10-05 08:24:28 | 2026-10-05 08:32:49 | 8m21s | 13 | 16 | 0 | 26 | 9287 | 577878 | 47041 | claude-sonnet-5-5 | - |
-| fix:expr:r2:0 | Round | 完了 | - | 2026-10-05 08:32:50 | 2026-10-05 08:48:16 | 15m26s | 32 | 33 | 1 | 64 | 27846 | 2250224 | 79354 | claude-sonnet-5-5 | - |
-| fix:expr:r2:1 | Round | 完了 | - | 2026-10-05 08:32:50 | 2026-10-05 08:38:46 | 5m56s | 14 | 16 | 2 | 28 | 6620 | 474103 | 22430 | claude-sonnet-5-5 | - |
-| fix:expr:r2:2 | Round | 完了 | - | 2026-10-05 08:32:50 | 2026-10-05 08:39:09 | 6m19s | 9 | 11 | 0 | 18 | 3260 | 274066 | 17912 | claude-sonnet-5-5 | - |
-| fix:expr:r2:3 | Round | 完了 | - | 2026-10-05 08:32:50 | 2026-10-05 08:37:20 | 4m30s | 9 | 10 | 1 | 18 | 2826 | 264036 | 15406 | claude-sonnet-5-5 | - |
-| fix:expr:r2:4 | Round | 完了 | - | 2026-10-05 08:32:50 | 2026-10-05 08:51:49 | 18m59s | 30 | 33 | 1 | 60 | 11959 | 1260793 | 60128 | claude-sonnet-5-5 | - |
-| fix:expr:r2:5 | Round | 完了 | - | 2026-10-05 08:32:50 | 2026-10-05 08:54:18 | 21m28s | 52 | 51 | 2 | 104 | 28583 | 3712321 | 85611 | claude-sonnet-5-5 | - |
-| fix:txn:r1:0 | Round | 完了 | - | 2026-10-05 08:32:52 | 2026-10-05 08:39:01 | 6m09s | 22 | 23 | 0 | 44 | 9266 | 977673 | 45962 | claude-sonnet-5-5 | - |
-| fix:txn:r1:1 | Round | 完了 | - | 2026-10-05 08:32:52 | 2026-10-05 08:43:01 | 10m09s | 17 | 22 | 1 | 34 | 8655 | 641361 | 28796 | claude-sonnet-5-5 | - |
-| fix:txn:r1:2 | Round | 完了 | - | 2026-10-05 08:32:52 | 2026-10-05 08:40:33 | 7m41s | 17 | 19 | 0 | 34 | 5391 | 632650 | 26846 | claude-sonnet-5-5 | - |
-| fix:txn:r1:3 | Round | 完了 | - | 2026-10-05 08:32:52 | 2026-10-05 08:48:52 | 16m00s | 15 | 16 | 0 | 30 | 4867 | 511108 | 20171 | claude-sonnet-5-5 | - |
-| fix:txn:r1:4 | Round | 完了 | - | 2026-10-05 08:33:21 | 2026-10-05 08:38:57 | 5m36s | 13 | 15 | 2 | 26 | 4558 | 434829 | 21781 | claude-sonnet-5-5 | - |
-| fix:txn:r1:5 | Round | 完了 | - | 2026-10-05 08:37:20 | 2026-10-05 08:43:48 | 6m28s | 15 | 17 | 2 | 30 | 7982 | 548988 | 25940 | claude-sonnet-5-5 | - |
-| fix:txn:r1:6 | Round | 完了 | - | 2026-10-05 08:37:46 | 2026-10-05 08:43:39 | 5m53s | 17 | 19 | 1 | 34 | 6229 | 607737 | 26400 | claude-sonnet-5-5 | - |
-| fix:txn:r1:7 | Round | 完了 | - | 2026-10-05 08:38:46 | 2026-10-05 08:42:50 | 4m04s | 13 | 16 | 2 | 26 | 5412 | 429281 | 22080 | claude-sonnet-5-5 | - |
-| fix:txn:r1:8 | Round | 完了 | - | 2026-10-05 08:38:57 | 2026-10-05 08:39:04 | 0m07s | 2 | 2 | 0 | 4 | 649 | 46642 | 9996 | claude-sonnet-5-5 | - |
-| fix:txn:r1:9 | Round | 完了 | - | 2026-10-05 08:39:01 | 2026-10-05 08:47:52 | 8m51s | 14 | 16 | 0 | 28 | 5228 | 499089 | 23717 | claude-sonnet-5-5 | - |
-| fix:txn:r1:10 | Round | 完了 | - | 2026-10-05 08:39:04 | 2026-10-05 08:48:37 | 9m33s | 32 | 39 | 0 | 66 | 19453 | 2108603 | 71724 | claude-sonnet-5-5 | - |
-| fix:txn:r1:11 | Round | 完了 | - | 2026-10-05 08:39:09 | 2026-10-05 08:44:04 | 4m55s | 10 | 16 | 0 | 20 | 6541 | 353904 | 28292 | claude-sonnet-5-5 | - |
-| fix:txn:r1:12 | Round | 完了 | - | 2026-10-05 08:40:33 | 2026-10-05 08:43:10 | 2m37s | 8 | 9 | 1 | 16 | 4088 | 273277 | 25574 | claude-sonnet-5-5 | - |
-| fix:txn:r1:13 | Round | 完了 | - | 2026-10-05 08:42:50 | 2026-10-05 08:43:00 | 0m10s | 2 | 2 | 0 | 4 | 799 | 46807 | 10982 | claude-sonnet-5-5 | - |
-| fuzz:dml:r2 | Round | 完了 | - | 2026-10-05 08:43:00 | 2026-10-05 09:19:16 | 36m16s | 25 | 32 | 1 | 50 | 14616 | 1184585 | 209771 | claude-sonnet-5-5 | - |
-| fuzz:txn:r2 | Round | 完了 | - | 2026-10-05 08:48:52 | 2026-10-05 09:22:15 | 33m23s | 74 | 80 | 5 | 148 | 22339 | 4411298 | 176002 | claude-sonnet-5-5 | - |
-| fix:query:r2:0 | Round | 完了 | - | 2026-10-05 08:51:13 | 2026-10-05 09:06:52 | 15m39s | 21 | 23 | 1 | 42 | 9198 | 829361 | 68597 | claude-sonnet-5-5 | - |
-| fix:query:r2:1 | Round | 完了 | - | 2026-10-05 08:51:13 | 2026-10-05 09:11:48 | 20m35s | 24 | 24 | 0 | 48 | 11745 | 1052060 | 75898 | claude-sonnet-5-5 | - |
-| fix:query:r2:2 | Round | 完了 | - | 2026-10-05 08:51:13 | 2026-10-05 09:05:50 | 14m37s | 15 | 17 | 1 | 30 | 5437 | 486505 | 42982 | claude-sonnet-5-5 | - |
-| fix:query:r2:3 | Round | 完了 | - | 2026-10-05 08:51:13 | 2026-10-05 09:07:03 | 15m50s | 19 | 21 | 2 | 38 | 6245 | 658767 | 44517 | claude-sonnet-5-5 | - |
-| fix:types:r2:0 | Round | 完了 | - | 2026-10-05 08:53:44 | 2026-10-05 09:06:16 | 12m32s | 33 | 35 | 1 | 66 | 7633 | 1217546 | 61647 | claude-sonnet-5-5 | - |
-| fix:types:r2:1 | Round | 完了 | - | 2026-10-05 08:53:44 | 2026-10-05 09:06:27 | 12m43s | 13 | 15 | 1 | 26 | 4381 | 420940 | 20616 | claude-sonnet-5-5 | - |
-| fix:types:r2:2 | Round | 完了 | - | 2026-10-05 08:53:44 | 2026-10-05 09:02:00 | 8m16s | 23 | 29 | 1 | 46 | 9213 | 913593 | 30477 | claude-sonnet-5-5 | - |
-| fuzz:expr:r3 | Round | 完了 | - | 2026-10-05 08:54:19 | 2026-10-05 08:59:36 | 5m17s | 11 | 13 | 0 | 22 | 5622 | 438047 | 31332 | claude-sonnet-5-5 | - |
-| fix:expr:r3:0 | Round | 完了 | - | 2026-10-05 08:59:36 | 2026-10-05 09:11:36 | 12m00s | 6 | 6 | 0 | 12 | 1517 | 157002 | 24081 | claude-sonnet-5-5 | - |
-| fix:expr:r3:1 | Round | 完了 | - | 2026-10-05 08:59:36 | 2026-10-05 09:07:03 | 7m27s | 8 | 9 | 0 | 16 | 2829 | 233755 | 18220 | claude-sonnet-5-5 | - |
-| fix:expr:r3:2 | Round | 完了 | - | 2026-10-05 08:59:36 | 2026-10-05 09:08:26 | 8m50s | 14 | 15 | 1 | 28 | 4321 | 456690 | 18607 | claude-sonnet-5-5 | - |
-| fix:expr:r3:3 | Round | 完了 | - | 2026-10-05 08:59:36 | 2026-10-05 09:15:25 | 15m49s | 19 | 19 | 0 | 38 | 9912 | 717365 | 60090 | claude-sonnet-5-5 | - |
-| fuzz:types:r3 | Round | 完了 | - | 2026-10-05 09:06:27 | 2026-10-05 09:35:33 | 29m06s | 15 | 18 | 3 | 30 | 8761 | 539858 | 150686 | claude-sonnet-5-5 | - |
-| fuzz:query:r3 | Round | 完了 | - | 2026-10-05 09:11:48 | 2026-10-05 09:36:38 | 24m50s | 43 | 44 | 1 | 86 | 28129 | 2741683 | 147906 | claude-sonnet-5-5 | - |
-| fix:dml:r2:0 | Round | 完了 | - | 2026-10-05 09:19:16 | 2026-10-05 09:28:58 | 9m42s | 14 | 16 | 0 | 28 | 6360 | 510964 | 58253 | claude-sonnet-5-5 | - |
-| fix:txn:r2:0 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:25:46 | 3m30s | 9 | 12 | 0 | 18 | 4058 | 282342 | 20331 | claude-sonnet-5-5 | - |
-| fix:txn:r2:1 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:28:24 | 6m08s | 22 | 26 | 1 | 44 | 13182 | 992782 | 40414 | claude-sonnet-5-5 | - |
-| fix:txn:r2:2 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:36:09 | 13m53s | 17 | 18 | 1 | 34 | 7361 | 585147 | 40035 | claude-sonnet-5-5 | - |
-| fix:txn:r2:3 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:36:48 | 14m32s | 19 | 23 | 2 | 38 | 7507 | 671149 | 49165 | claude-sonnet-5-5 | - |
-| fix:txn:r2:4 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:22:26 | 0m10s | 3 | 2 | 0 | 8 | 1069 | 75105 | 10490 | claude-sonnet-5-5 | - |
-| fix:txn:r2:5 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:31:59 | 9m43s | 13 | 15 | 1 | 26 | 5660 | 492378 | 65123 | claude-sonnet-5-5 | - |
-| fix:txn:r2:6 | Round | 完了 | - | 2026-10-05 09:22:16 | 2026-10-05 09:22:30 | 0m14s | 4 | 5 | 2 | 8 | 1647 | 109450 | 13985 | claude-sonnet-5-5 | - |
-| fuzz:dml:r3 | Round | 完了 | - | 2026-10-05 09:28:58 | 2026-10-05 12:50:02 | 3h21m | 14 | 16 | 2 | 28 | 8864 | 528262 | 134335 | claude-sonnet-5-5 | - |
-| fix:query:r3:0 | Round | 完了 | - | 2026-10-05 09:36:38 | 2026-10-05 12:45:05 | 3h08m | 13 | 15 | 1 | 26 | 7793 | 457580 | 49785 | claude-sonnet-5-5 | - |
-| fix:query:r3:1 | Round | 完了 | - | 2026-10-05 09:36:38 | 2026-10-05 12:39:43 | 3h03m | 11 | 14 | 1 | 22 | 4026 | 336247 | 38414 | claude-sonnet-5-5 | - |
-| fix:query:r3:2 | Round | 完了 | - | 2026-10-05 09:36:38 | 2026-10-05 12:43:03 | 3h06m | 12 | 14 | 0 | 24 | 4190 | 400419 | 48969 | claude-sonnet-5-5 | - |
-| fix:query:r3:3 | Round | 完了 | - | 2026-10-05 09:36:38 | 2026-10-05 12:43:27 | 3h06m | 11 | 13 | 0 | 22 | 4289 | 329518 | 58925 | claude-sonnet-5-5 | - |
-| fix:query:r3:4 | Round | 完了 | - | 2026-10-05 09:36:38 | 2026-10-05 12:44:46 | 3h08m | 14 | 15 | 0 | 28 | 7406 | 495570 | 53013 | claude-sonnet-5-5 | - |
-| fuzz:txn:r3 | Round | 完了 | - | 2026-10-05 09:36:48 | 2026-10-05 13:14:03 | 3h37m | 30 | 31 | 3 | 60 | 31568 | 1927309 | 328263 | claude-sonnet-5-5 | - |
-| fix:dml:r3:0 | Round | 完了 | - | 2026-10-05 12:50:02 | 2026-10-05 13:02:32 | 12m30s | 21 | 23 | 2 | 42 | 10085 | 1058827 | 42817 | claude-sonnet-5-5 | - |
-| fix:dml:r3:1 | Round | 完了 | - | 2026-10-05 12:50:04 | 2026-10-05 13:02:30 | 12m26s | 8 | 10 | 1 | 16 | 2812 | 242299 | 16832 | claude-sonnet-5-5 | - |
-| fix:dml:r3:2 | Round | 完了 | - | 2026-10-05 12:50:04 | 2026-10-05 12:55:22 | 5m18s | 8 | 10 | 1 | 16 | 2968 | 242446 | 18827 | claude-sonnet-5-5 | - |
-| fix:dml:r3:3 | Round | 完了 | - | 2026-10-05 12:50:04 | 2026-10-05 12:59:30 | 9m26s | 15 | 19 | 1 | 30 | 5678 | 539647 | 23146 | claude-sonnet-5-5 | - |
-| fix:txn:r3:0 | Round | 完了 | - | 2026-10-05 13:14:03 | 2026-10-05 13:23:01 | 8m58s | 14 | 15 | 0 | 28 | 4511 | 503237 | 45907 | claude-sonnet-5-5 | - |
-| fix:txn:r3:1 | Round | 完了 | - | 2026-10-05 13:14:04 | 2026-10-05 13:16:04 | 2m00s | 10 | 13 | 0 | 20 | 4828 | 322511 | 21432 | claude-sonnet-5-5 | - |
-| fix:txn:r3:2 | Round | 完了 | - | 2026-10-05 13:14:04 | 2026-10-05 13:17:51 | 3m47s | 13 | 17 | 1 | 26 | 8055 | 458162 | 26163 | claude-sonnet-5-5 | - |
-| fix:txn:r3:3 | Round | 完了 | - | 2026-10-05 13:14:04 | 2026-10-05 13:23:10 | 9m06s | 15 | 16 | 1 | 30 | 4586 | 554311 | 27208 | claude-sonnet-5-5 | - |
-| fix:txn:r3:4 | Round | 完了 | - | 2026-10-05 13:14:04 | 2026-10-05 13:21:01 | 6m57s | 15 | 17 | 1 | 30 | 4917 | 518120 | 22774 | claude-sonnet-5-5 | - |
-| fix:txn:r3:5 | Round | 完了 | - | 2026-10-05 13:14:04 | 2026-10-05 13:14:14 | 0m10s | 3 | 2 | 0 | 8 | 1069 | 76256 | 11437 | claude-sonnet-5-5 | first-pass |
-| wrap | Wrap | 進行中 | - | 2026-10-05 13:23:10 | 2026-10-05 13:29:23 | 6m13s | 27 | 28 | 1 | 54 | 10886 | 1301173 | 49103 | claude-sonnet-5-5 | - |
+| harness | Harness | 完了 | - | 2026-10-05 16:35:30 | 2026-10-05 16:44:33 | 9m03s | 22 | 22 | 3 | 44 | 40289 | 1207564 | 57787 | claude-sonnet-5-5 | - |
+| fuzz:expr:r1 | Round | 完了 | - | 2026-10-05 16:44:33 | 2026-10-05 17:03:08 | 18m35s | 28 | 31 | 2 | 56 | 19473 | 1511136 | 121244 | claude-sonnet-5-5 | - |
+| fuzz:types:r1 | Round | 完了 | - | 2026-10-05 16:44:34 | 2026-10-05 17:13:20 | 28m46s | 29 | 30 | 1 | 58 | 21324 | 1516163 | 275151 | claude-sonnet-5-5 | - |
+| fuzz:query:r1 | Round | 完了 | - | 2026-10-05 16:44:34 | 2026-10-05 17:04:04 | 19m30s | 50 | 51 | 3 | 100 | 21676 | 3088155 | 102283 | claude-sonnet-5-5 | - |
+| fuzz:dml:r1 | Round | 完了 | - | 2026-10-05 16:44:34 | 2026-10-05 17:21:45 | 37m11s | 44 | 46 | 2 | 88 | 34478 | 3466751 | 226758 | claude-sonnet-5-5 | - |
+| fuzz:txn:r1 | Round | 完了 | - | 2026-10-05 16:44:34 | 2026-10-05 17:32:52 | 48m18s | 33 | 34 | 2 | 66 | 28537 | 1932422 | 338569 | claude-sonnet-5-5 | - |
+| fix:expr:r1:0 | Round | 完了 | - | 2026-10-05 17:03:08 | 2026-10-05 17:07:51 | 4m43s | 14 | 16 | 0 | 28 | 8577 | 491464 | 47276 | claude-sonnet-5-5 | - |
+| fix:expr:r1:1 | Round | 完了 | - | 2026-10-05 17:03:09 | 2026-10-05 17:15:07 | 11m58s | 38 | 39 | 1 | 76 | 41956 | 3157341 | 91644 | claude-sonnet-5-5 | - |
+| fix:expr:r1:2 | Round | 完了 | - | 2026-10-05 17:03:09 | 2026-10-05 17:24:28 | 21m19s | 83 | 94 | 3 | 166 | 42149 | 10023029 | 159734 | claude-sonnet-5-5 | - |
+| fix:query:r1:0 | Round | 完了 | - | 2026-10-05 17:04:05 | 2026-10-05 17:21:28 | 17m23s | 42 | 42 | 4 | 84 | 20150 | 2775798 | 75510 | claude-sonnet-5-5 | - |
+| fix:query:r1:1 | Round | 完了 | - | 2026-10-05 17:04:05 | 2026-10-05 17:14:10 | 10m05s | 36 | 40 | 2 | 72 | 20428 | 2060917 | 58388 | claude-sonnet-5-5 | - |
+| fix:query:r1:2 | Round | 完了 | - | 2026-10-05 17:04:05 | 2026-10-05 17:16:42 | 12m37s | 23 | 28 | 1 | 46 | 9856 | 1078332 | 81523 | claude-sonnet-5-5 | - |
+| fix:query:r1:3 | Round | 完了 | - | 2026-10-05 17:04:05 | 2026-10-05 17:21:24 | 17m19s | 19 | 23 | 0 | 38 | 11193 | 789758 | 35298 | claude-sonnet-5-5 | - |
+| fix:types:r1:0 | Round | 完了 | - | 2026-10-05 17:13:21 | 2026-10-05 17:21:36 | 8m15s | 10 | 11 | 1 | 20 | 4212 | 356295 | 23374 | claude-sonnet-5-5 | - |
+| fix:types:r1:1 | Round | 完了 | - | 2026-10-05 17:13:21 | 2026-10-05 17:20:42 | 7m21s | 6 | 6 | 1 | 12 | 2224 | 170385 | 16516 | claude-sonnet-5-5 | - |
+| fuzz:query:r2 | Round | 完了 | - | 2026-10-05 17:21:28 | 2026-10-05 17:51:13 | 29m45s | 34 | 33 | 3 | 68 | 23983 | 1877360 | 137902 | claude-sonnet-5-5 | - |
+| fuzz:types:r2 | Round | 完了 | - | 2026-10-05 17:21:36 | 2026-10-05 17:53:44 | 32m08s | 23 | 29 | 1 | 46 | 11010 | 1007361 | 148431 | claude-sonnet-5-5 | - |
+| fix:dml:r1:0 | Round | 完了 | - | 2026-10-05 17:21:45 | 2026-10-05 17:31:58 | 10m13s | 21 | 22 | 0 | 42 | 6440 | 834025 | 31037 | claude-sonnet-5-5 | - |
+| fix:dml:r1:1 | Round | 完了 | - | 2026-10-05 17:21:45 | 2026-10-05 17:30:08 | 8m23s | 11 | 11 | 2 | 22 | 3918 | 378284 | 21933 | claude-sonnet-5-5 | - |
+| fix:dml:r1:2 | Round | 完了 | - | 2026-10-05 17:21:45 | 2026-10-05 17:27:24 | 5m39s | 12 | 13 | 1 | 24 | 3218 | 415472 | 21586 | claude-sonnet-5-5 | - |
+| fix:dml:r1:3 | Round | 完了 | - | 2026-10-05 17:21:45 | 2026-10-05 17:33:21 | 11m36s | 19 | 19 | 3 | 38 | 5426 | 789061 | 32125 | claude-sonnet-5-5 | - |
+| fix:dml:r1:4 | Round | 完了 | - | 2026-10-05 17:21:45 | 2026-10-05 17:37:46 | 16m01s | 21 | 24 | 0 | 42 | 10730 | 843903 | 58633 | claude-sonnet-5-5 | - |
+| fuzz:expr:r2 | Round | 完了 | - | 2026-10-05 17:24:28 | 2026-10-05 17:32:49 | 8m21s | 13 | 16 | 0 | 26 | 9287 | 577878 | 47041 | claude-sonnet-5-5 | - |
+| fix:expr:r2:0 | Round | 完了 | - | 2026-10-05 17:32:50 | 2026-10-05 17:48:16 | 15m26s | 32 | 33 | 1 | 64 | 27846 | 2250224 | 79354 | claude-sonnet-5-5 | - |
+| fix:expr:r2:1 | Round | 完了 | - | 2026-10-05 17:32:50 | 2026-10-05 17:38:46 | 5m56s | 14 | 16 | 2 | 28 | 6620 | 474103 | 22430 | claude-sonnet-5-5 | - |
+| fix:expr:r2:2 | Round | 完了 | - | 2026-10-05 17:32:50 | 2026-10-05 17:39:09 | 6m19s | 9 | 11 | 0 | 18 | 3260 | 274066 | 17912 | claude-sonnet-5-5 | - |
+| fix:expr:r2:3 | Round | 完了 | - | 2026-10-05 17:32:50 | 2026-10-05 17:37:20 | 4m30s | 9 | 10 | 1 | 18 | 2826 | 264036 | 15406 | claude-sonnet-5-5 | - |
+| fix:expr:r2:4 | Round | 完了 | - | 2026-10-05 17:32:50 | 2026-10-05 17:51:49 | 18m59s | 30 | 33 | 1 | 60 | 11959 | 1260793 | 60128 | claude-sonnet-5-5 | - |
+| fix:expr:r2:5 | Round | 完了 | - | 2026-10-05 17:32:50 | 2026-10-05 17:54:18 | 21m28s | 52 | 51 | 2 | 104 | 28583 | 3712321 | 85611 | claude-sonnet-5-5 | - |
+| fix:txn:r1:0 | Round | 完了 | - | 2026-10-05 17:32:52 | 2026-10-05 17:39:01 | 6m09s | 22 | 23 | 0 | 44 | 9266 | 977673 | 45962 | claude-sonnet-5-5 | - |
+| fix:txn:r1:1 | Round | 完了 | - | 2026-10-05 17:32:52 | 2026-10-05 17:43:01 | 10m09s | 17 | 22 | 1 | 34 | 8655 | 641361 | 28796 | claude-sonnet-5-5 | - |
+| fix:txn:r1:2 | Round | 完了 | - | 2026-10-05 17:32:52 | 2026-10-05 17:40:33 | 7m41s | 17 | 19 | 0 | 34 | 5391 | 632650 | 26846 | claude-sonnet-5-5 | - |
+| fix:txn:r1:3 | Round | 完了 | - | 2026-10-05 17:32:52 | 2026-10-05 17:48:52 | 16m00s | 15 | 16 | 0 | 30 | 4867 | 511108 | 20171 | claude-sonnet-5-5 | - |
+| fix:txn:r1:4 | Round | 完了 | - | 2026-10-05 17:33:21 | 2026-10-05 17:38:57 | 5m36s | 13 | 15 | 2 | 26 | 4558 | 434829 | 21781 | claude-sonnet-5-5 | - |
+| fix:txn:r1:5 | Round | 完了 | - | 2026-10-05 17:37:20 | 2026-10-05 17:43:48 | 6m28s | 15 | 17 | 2 | 30 | 7982 | 548988 | 25940 | claude-sonnet-5-5 | - |
+| fix:txn:r1:6 | Round | 完了 | - | 2026-10-05 17:37:46 | 2026-10-05 17:43:39 | 5m53s | 17 | 19 | 1 | 34 | 6229 | 607737 | 26400 | claude-sonnet-5-5 | - |
+| fix:txn:r1:7 | Round | 完了 | - | 2026-10-05 17:38:46 | 2026-10-05 17:42:50 | 4m04s | 13 | 16 | 2 | 26 | 5412 | 429281 | 22080 | claude-sonnet-5-5 | - |
+| fix:txn:r1:8 | Round | 完了 | - | 2026-10-05 17:38:57 | 2026-10-05 17:39:04 | 0m07s | 2 | 2 | 0 | 4 | 649 | 46642 | 9996 | claude-sonnet-5-5 | - |
+| fix:txn:r1:9 | Round | 完了 | - | 2026-10-05 17:39:01 | 2026-10-05 17:47:52 | 8m51s | 14 | 16 | 0 | 28 | 5228 | 499089 | 23717 | claude-sonnet-5-5 | - |
+| fix:txn:r1:10 | Round | 完了 | - | 2026-10-05 17:39:04 | 2026-10-05 17:48:37 | 9m33s | 32 | 39 | 0 | 66 | 19453 | 2108603 | 71724 | claude-sonnet-5-5 | - |
+| fix:txn:r1:11 | Round | 完了 | - | 2026-10-05 17:39:09 | 2026-10-05 17:44:04 | 4m55s | 10 | 16 | 0 | 20 | 6541 | 353904 | 28292 | claude-sonnet-5-5 | - |
+| fix:txn:r1:12 | Round | 完了 | - | 2026-10-05 17:40:33 | 2026-10-05 17:43:10 | 2m37s | 8 | 9 | 1 | 16 | 4088 | 273277 | 25574 | claude-sonnet-5-5 | - |
+| fix:txn:r1:13 | Round | 完了 | - | 2026-10-05 17:42:50 | 2026-10-05 17:43:00 | 0m10s | 2 | 2 | 0 | 4 | 799 | 46807 | 10982 | claude-sonnet-5-5 | - |
+| fuzz:dml:r2 | Round | 完了 | - | 2026-10-05 17:43:00 | 2026-10-05 18:19:16 | 36m16s | 25 | 32 | 1 | 50 | 14616 | 1184585 | 209771 | claude-sonnet-5-5 | - |
+| fuzz:txn:r2 | Round | 完了 | - | 2026-10-05 17:48:52 | 2026-10-05 18:22:15 | 33m23s | 74 | 80 | 5 | 148 | 22339 | 4411298 | 176002 | claude-sonnet-5-5 | - |
+| fix:query:r2:0 | Round | 完了 | - | 2026-10-05 17:51:13 | 2026-10-05 18:06:52 | 15m39s | 21 | 23 | 1 | 42 | 9198 | 829361 | 68597 | claude-sonnet-5-5 | - |
+| fix:query:r2:1 | Round | 完了 | - | 2026-10-05 17:51:13 | 2026-10-05 18:11:48 | 20m35s | 24 | 24 | 0 | 48 | 11745 | 1052060 | 75898 | claude-sonnet-5-5 | - |
+| fix:query:r2:2 | Round | 完了 | - | 2026-10-05 17:51:13 | 2026-10-05 18:05:50 | 14m37s | 15 | 17 | 1 | 30 | 5437 | 486505 | 42982 | claude-sonnet-5-5 | - |
+| fix:query:r2:3 | Round | 完了 | - | 2026-10-05 17:51:13 | 2026-10-05 18:07:03 | 15m50s | 19 | 21 | 2 | 38 | 6245 | 658767 | 44517 | claude-sonnet-5-5 | - |
+| fix:types:r2:0 | Round | 完了 | - | 2026-10-05 17:53:44 | 2026-10-05 18:06:16 | 12m32s | 33 | 35 | 1 | 66 | 7633 | 1217546 | 61647 | claude-sonnet-5-5 | - |
+| fix:types:r2:1 | Round | 完了 | - | 2026-10-05 17:53:44 | 2026-10-05 18:06:27 | 12m43s | 13 | 15 | 1 | 26 | 4381 | 420940 | 20616 | claude-sonnet-5-5 | - |
+| fix:types:r2:2 | Round | 完了 | - | 2026-10-05 17:53:44 | 2026-10-05 18:02:00 | 8m16s | 23 | 29 | 1 | 46 | 9213 | 913593 | 30477 | claude-sonnet-5-5 | - |
+| fuzz:expr:r3 | Round | 完了 | - | 2026-10-05 17:54:19 | 2026-10-05 17:59:36 | 5m17s | 11 | 13 | 0 | 22 | 5622 | 438047 | 31332 | claude-sonnet-5-5 | - |
+| fix:expr:r3:0 | Round | 完了 | - | 2026-10-05 17:59:36 | 2026-10-05 18:11:36 | 12m00s | 6 | 6 | 0 | 12 | 1517 | 157002 | 24081 | claude-sonnet-5-5 | - |
+| fix:expr:r3:1 | Round | 完了 | - | 2026-10-05 17:59:36 | 2026-10-05 18:07:03 | 7m27s | 8 | 9 | 0 | 16 | 2829 | 233755 | 18220 | claude-sonnet-5-5 | - |
+| fix:expr:r3:2 | Round | 完了 | - | 2026-10-05 17:59:36 | 2026-10-05 18:08:26 | 8m50s | 14 | 15 | 1 | 28 | 4321 | 456690 | 18607 | claude-sonnet-5-5 | - |
+| fix:expr:r3:3 | Round | 完了 | - | 2026-10-05 17:59:36 | 2026-10-05 18:15:25 | 15m49s | 19 | 19 | 0 | 38 | 9912 | 717365 | 60090 | claude-sonnet-5-5 | - |
+| fuzz:types:r3 | Round | 完了 | - | 2026-10-05 18:06:27 | 2026-10-05 18:35:33 | 29m06s | 15 | 18 | 3 | 30 | 8761 | 539858 | 150686 | claude-sonnet-5-5 | - |
+| fuzz:query:r3 | Round | 完了 | - | 2026-10-05 18:11:48 | 2026-10-05 18:36:38 | 24m50s | 43 | 44 | 1 | 86 | 28129 | 2741683 | 147906 | claude-sonnet-5-5 | - |
+| fix:dml:r2:0 | Round | 完了 | - | 2026-10-05 18:19:16 | 2026-10-05 18:28:58 | 9m42s | 14 | 16 | 0 | 28 | 6360 | 510964 | 58253 | claude-sonnet-5-5 | - |
+| fix:txn:r2:0 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:25:46 | 3m30s | 9 | 12 | 0 | 18 | 4058 | 282342 | 20331 | claude-sonnet-5-5 | - |
+| fix:txn:r2:1 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:28:24 | 6m08s | 22 | 26 | 1 | 44 | 13182 | 992782 | 40414 | claude-sonnet-5-5 | - |
+| fix:txn:r2:2 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:36:09 | 13m53s | 17 | 18 | 1 | 34 | 7361 | 585147 | 40035 | claude-sonnet-5-5 | - |
+| fix:txn:r2:3 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:36:48 | 14m32s | 19 | 23 | 2 | 38 | 7507 | 671149 | 49165 | claude-sonnet-5-5 | - |
+| fix:txn:r2:4 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:22:26 | 0m10s | 3 | 2 | 0 | 8 | 1069 | 75105 | 10490 | claude-sonnet-5-5 | - |
+| fix:txn:r2:5 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:31:59 | 9m43s | 13 | 15 | 1 | 26 | 5660 | 492378 | 65123 | claude-sonnet-5-5 | - |
+| fix:txn:r2:6 | Round | 完了 | - | 2026-10-05 18:22:16 | 2026-10-05 18:22:30 | 0m14s | 4 | 5 | 2 | 8 | 1647 | 109450 | 13985 | claude-sonnet-5-5 | - |
+| fuzz:dml:r3 | Round | 完了 | - | 2026-10-05 18:28:58 | 2026-10-05 21:50:02 | 3h21m | 14 | 16 | 2 | 28 | 8864 | 528262 | 134335 | claude-sonnet-5-5 | - |
+| fix:query:r3:0 | Round | 完了 | - | 2026-10-05 18:36:38 | 2026-10-05 21:45:05 | 3h08m | 13 | 15 | 1 | 26 | 7793 | 457580 | 49785 | claude-sonnet-5-5 | - |
+| fix:query:r3:1 | Round | 完了 | - | 2026-10-05 18:36:38 | 2026-10-05 21:39:43 | 3h03m | 11 | 14 | 1 | 22 | 4026 | 336247 | 38414 | claude-sonnet-5-5 | - |
+| fix:query:r3:2 | Round | 完了 | - | 2026-10-05 18:36:38 | 2026-10-05 21:43:03 | 3h06m | 12 | 14 | 0 | 24 | 4190 | 400419 | 48969 | claude-sonnet-5-5 | - |
+| fix:query:r3:3 | Round | 完了 | - | 2026-10-05 18:36:38 | 2026-10-05 21:43:27 | 3h06m | 11 | 13 | 0 | 22 | 4289 | 329518 | 58925 | claude-sonnet-5-5 | - |
+| fix:query:r3:4 | Round | 完了 | - | 2026-10-05 18:36:38 | 2026-10-05 21:44:46 | 3h08m | 14 | 15 | 0 | 28 | 7406 | 495570 | 53013 | claude-sonnet-5-5 | - |
+| fuzz:txn:r3 | Round | 完了 | - | 2026-10-05 18:36:48 | 2026-10-05 22:14:03 | 3h37m | 30 | 31 | 3 | 60 | 31568 | 1927309 | 328263 | claude-sonnet-5-5 | - |
+| fix:dml:r3:0 | Round | 完了 | - | 2026-10-05 21:50:02 | 2026-10-05 22:02:32 | 12m30s | 21 | 23 | 2 | 42 | 10085 | 1058827 | 42817 | claude-sonnet-5-5 | - |
+| fix:dml:r3:1 | Round | 完了 | - | 2026-10-05 21:50:04 | 2026-10-05 22:02:30 | 12m26s | 8 | 10 | 1 | 16 | 2812 | 242299 | 16832 | claude-sonnet-5-5 | - |
+| fix:dml:r3:2 | Round | 完了 | - | 2026-10-05 21:50:04 | 2026-10-05 21:55:22 | 5m18s | 8 | 10 | 1 | 16 | 2968 | 242446 | 18827 | claude-sonnet-5-5 | - |
+| fix:dml:r3:3 | Round | 完了 | - | 2026-10-05 21:50:04 | 2026-10-05 21:59:30 | 9m26s | 15 | 19 | 1 | 30 | 5678 | 539647 | 23146 | claude-sonnet-5-5 | - |
+| fix:txn:r3:0 | Round | 完了 | - | 2026-10-05 22:14:03 | 2026-10-05 22:23:01 | 8m58s | 14 | 15 | 0 | 28 | 4511 | 503237 | 45907 | claude-sonnet-5-5 | - |
+| fix:txn:r3:1 | Round | 完了 | - | 2026-10-05 22:14:04 | 2026-10-05 22:16:04 | 2m00s | 10 | 13 | 0 | 20 | 4828 | 322511 | 21432 | claude-sonnet-5-5 | - |
+| fix:txn:r3:2 | Round | 完了 | - | 2026-10-05 22:14:04 | 2026-10-05 22:17:51 | 3m47s | 13 | 17 | 1 | 26 | 8055 | 458162 | 26163 | claude-sonnet-5-5 | - |
+| fix:txn:r3:3 | Round | 完了 | - | 2026-10-05 22:14:04 | 2026-10-05 22:23:10 | 9m06s | 15 | 16 | 1 | 30 | 4586 | 554311 | 27208 | claude-sonnet-5-5 | - |
+| fix:txn:r3:4 | Round | 完了 | - | 2026-10-05 22:14:04 | 2026-10-05 22:21:01 | 6m57s | 15 | 17 | 1 | 30 | 4917 | 518120 | 22774 | claude-sonnet-5-5 | - |
+| fix:txn:r3:5 | Round | 完了 | - | 2026-10-05 22:14:04 | 2026-10-05 22:14:14 | 0m10s | 3 | 2 | 0 | 8 | 1069 | 76256 | 11437 | claude-sonnet-5-5 | first-pass |
+| wrap | Wrap | 完了 | - | 2026-10-05 22:23:10 | 2026-10-05 22:33:02 | 9m52s | 30 | 30 | 1 | 60 | 13445 | 1506305 | 54609 | claude-sonnet-5-5 | - |
 
-合計: ターン 1692、tool_use 1870、エラー 93、入力 3390、出力 898019、cache読 87166612、cache作成 5375420
+合計: ターン 1695、tool_use 1872、エラー 93、入力 3396、出力 900578、cache読 87371744、cache作成 5380926
 
 ### wf_b836e612-b0c m4-shared-tests (完了)
 
-| 担当 | フェーズ | 状態 | passed | 開始 (UTC) | 終了 (UTC) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| K1 | Write | 完了 | - | 2026-10-05 08:04:46 | 2026-10-05 08:09:47 | 5m01s | 32 | 34 | 0 | 64 | 40992 | 2273274 | 94604 | claude-sonnet-5-5 | - |
-| K2 | Write | 完了 | - | 2026-10-05 08:04:47 | 2026-10-05 08:50:27 | 45m40s | 128 | 124 | 1 | 256 | 157685 | 23888745 | 290413 | claude-sonnet-5-5 | - |
-| K3 | Write | 完了 | - | 2026-10-05 08:04:47 | 2026-10-05 08:42:48 | 38m01s | 107 | 106 | 3 | 214 | 119368 | 19490995 | 488084 | claude-sonnet-5-5 | - |
-| K4 | Write | 完了 | - | 2026-10-05 08:04:47 | 2026-10-05 08:23:32 | 18m45s | 64 | 67 | 2 | 128 | 77687 | 8294116 | 180194 | claude-sonnet-5-5 | - |
-| K-verify | Verify | 完了 | - | 2026-10-05 08:50:27 | 2026-10-05 09:12:04 | 21m37s | 48 | 49 | 2 | 96 | 26470 | 3838206 | 93914 | claude-sonnet-5-5 | - |
+| K1 | Write | 完了 | - | 2026-10-05 17:04:46 | 2026-10-05 17:09:47 | 5m01s | 32 | 34 | 0 | 64 | 40992 | 2273274 | 94604 | claude-sonnet-5-5 | - |
+| K2 | Write | 完了 | - | 2026-10-05 17:04:47 | 2026-10-05 17:50:27 | 45m40s | 128 | 124 | 1 | 256 | 157685 | 23888745 | 290413 | claude-sonnet-5-5 | - |
+| K3 | Write | 完了 | - | 2026-10-05 17:04:47 | 2026-10-05 17:42:48 | 38m01s | 107 | 106 | 3 | 214 | 119368 | 19490995 | 488084 | claude-sonnet-5-5 | - |
+| K4 | Write | 完了 | - | 2026-10-05 17:04:47 | 2026-10-05 17:23:32 | 18m45s | 64 | 67 | 2 | 128 | 77687 | 8294116 | 180194 | claude-sonnet-5-5 | - |
+| K-verify | Verify | 完了 | - | 2026-10-05 17:50:27 | 2026-10-05 18:12:04 | 21m37s | 48 | 49 | 2 | 96 | 26470 | 3838206 | 93914 | claude-sonnet-5-5 | - |
 
 合計: ターン 379、tool_use 380、エラー 8、入力 758、出力 422202、cache読 57785336、cache作成 1147209
+
+### wf_18ddb87d-acf m4-implement (進行中)
+
+| 担当 | フェーズ | 状態 | passed | 開始 (JST) | 終了 (JST) | 所要 | ターン | tool_use | エラー | 入力 | 出力 | cache読 | cache作成 | モデル | first-pass |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| plan | Plan | 完了 | - | 2026-10-05 22:37:29 | 2026-10-05 23:41:50 | 1h04m | 39 | 45 | 1 | 78 | 131539 | 4693043 | 223565 | claude-sonnet-5-5 | - |
+| A | Build | 完了 | - | 2026-10-05 23:41:50 | 2026-10-06 00:28:24 | 46m34s | 116 | 132 | 2 | 234 | 216050 | 42505809 | 540771 | claude-sonnet-5-5 | - |
+| P0-b | Build | 完了 | - | 2026-10-06 00:28:24 | 2026-10-06 01:02:24 | 34m00s | 85 | 98 | 2 | 170 | 70971 | 16844383 | 776218 | claude-sonnet-5-5 | - |
+| S1a | Build | 完了 | - | 2026-10-06 00:28:24 | 2026-10-06 00:45:35 | 17m11s | 99 | 110 | 4 | 198 | 62786 | 15305217 | 185169 | claude-sonnet-5-5 | - |
+| H4a | Build | 完了 | - | 2026-10-06 00:28:24 | 2026-10-06 00:35:15 | 6m51s | 25 | 28 | 0 | 50 | 18533 | 1657569 | 71812 | claude-sonnet-5-5 | - |
+| T1 | Build | 完了 | - | 2026-10-06 00:28:24 | 2026-10-06 00:37:08 | 8m44s | 48 | 50 | 1 | 96 | 26938 | 4967534 | 115325 | claude-sonnet-5-5 | - |
+| T2 | Build | 完了 | - | 2026-10-06 00:28:24 | 2026-10-06 00:43:11 | 14m47s | 72 | 79 | 1 | 144 | 82363 | 12859647 | 252804 | claude-sonnet-5-5 | - |
+| H4b | Build | 完了 | - | 2026-10-06 00:35:15 | 2026-10-06 00:40:17 | 5m02s | 19 | 26 | 0 | 38 | 16724 | 1076121 | 54407 | claude-sonnet-5-5 | - |
+| H4c | Build | 完了 | - | 2026-10-06 00:35:15 | 2026-10-06 00:46:52 | 11m37s | 34 | 35 | 4 | 68 | 24389 | 2591283 | 77639 | claude-sonnet-5-5 | - |
+| B1a | Build | 完了 | - | 2026-10-06 00:35:15 | 2026-10-06 01:02:45 | 27m30s | 63 | 66 | 2 | 126 | 78701 | 10047802 | 421256 | claude-sonnet-5-5 | - |
+| T2-retry | Build | 完了 | - | 2026-10-06 00:43:11 | 2026-10-06 00:48:21 | 5m10s | 15 | 17 | 0 | 30 | 7227 | 579653 | 28240 | claude-sonnet-5-5 | - |
+| S1b | Build | 完了 | - | 2026-10-06 00:45:35 | 2026-10-06 01:03:33 | 17m58s | 52 | 68 | 0 | 104 | 89271 | 8996650 | 245152 | claude-sonnet-5-5 | - |
+| P0-c | Build | 完了 | - | 2026-10-06 01:02:24 | 2026-10-06 11:49:00 | 10h46m | 129 | 132 | 2 | 258 | 124138 | 30678761 | 336241 | claude-sonnet-5-5 | - |
+| B2a | Build | 完了 | - | 2026-10-06 01:02:24 | 2026-10-06 11:44:40 | 10h42m | 36 | 35 | 3 | 72 | 26178 | 2371181 | 279248 | claude-sonnet-5-5 | - |
+| T3a | Build | 完了 | - | 2026-10-06 01:02:24 | 2026-10-06 01:07:49 | 5m25s | 14 | 14 | 0 | 28 | 14190 | 729958 | 52512 | claude-sonnet-5-5 | - |
+| E1a | Build | 完了 | - | 2026-10-06 01:02:24 | 2026-10-06 11:45:12 | 10h42m | 126 | 131 | 3 | 252 | 161262 | 31709441 | 340840 | claude-sonnet-5-5 | - |
+| O1a | Build | 完了 | - | 2026-10-06 01:02:24 | 2026-10-06 01:09:29 | 7m05s | 12 | 12 | 0 | 24 | 22363 | 647186 | 67519 | claude-sonnet-5-5 | - |
+| C1a | Build | 完了 | - | 2026-10-06 01:02:24 | 2026-10-06 11:44:31 | 10h42m | 77 | 91 | 2 | 154 | 153005 | 18254463 | 337479 | claude-sonnet-5-5 | - |
+| B1b | Build | 完了 | - | 2026-10-06 01:02:45 | 2026-10-06 11:59:26 | 10h56m | 76 | 78 | 1 | 152 | 96508 | 13341867 | 419604 | claude-sonnet-5-5 | - |
+| T3b | Build | 完了 | - | 2026-10-06 01:07:49 | 2026-10-06 12:12:11 | 11h04m | 147 | 145 | 3 | 294 | 164193 | 33065067 | 347210 | claude-sonnet-5-5 | - |
+| C1a-retry | Build | 完了 | - | 2026-10-06 11:44:31 | 2026-10-06 11:54:52 | 10m21s | 48 | 51 | 0 | 96 | 17941 | 2637490 | 57116 | claude-sonnet-5-5 | - |
+| B2b | Build | 完了 | - | 2026-10-06 11:44:40 | 2026-10-06 12:27:39 | 42m59s | 78 | 87 | 3 | 156 | 126473 | 15664378 | 493900 | claude-sonnet-5-5 | - |
+| P0-d | Build | 完了 | - | 2026-10-06 11:49:00 | 2026-10-06 12:10:29 | 21m29s | 90 | 98 | 2 | 182 | 128228 | 21347130 | 335067 | claude-sonnet-5-5 | - |
+| Q1a | Build | 完了 | - | 2026-10-06 11:49:00 | 2026-10-06 12:13:55 | 24m55s | 88 | 94 | 1 | 176 | 93249 | 16582285 | 245423 | claude-sonnet-5-5 | - |
+| X1 | Build | 完了 | - | 2026-10-06 11:49:00 | 2026-10-06 12:15:26 | 26m26s | 58 | 61 | 2 | 116 | 81739 | 8423356 | 176533 | claude-sonnet-5-5 | - |
+| X2 | Build | 完了 | - | 2026-10-06 11:49:00 | 2026-10-06 12:13:55 | 24m55s | 88 | 94 | 3 | 176 | 104656 | 16890708 | 239865 | claude-sonnet-5-5 | - |
+| X3 | Build | 完了 | - | 2026-10-06 11:49:00 | 2026-10-06 12:14:47 | 25m47s | 41 | 44 | 0 | 82 | 42189 | 4206755 | 393755 | claude-sonnet-5-5 | - |
+| C1b | Build | 完了 | - | 2026-10-06 11:54:52 | 2026-10-06 12:26:33 | 31m41s | 117 | 125 | 4 | 234 | 145064 | 30741680 | 374321 | claude-sonnet-5-5 | - |
+| P0-d-retry | Build | 完了 | - | 2026-10-06 12:10:29 | 2026-10-06 12:23:26 | 12m57s | 20 | 22 | 2 | 40 | 6644 | 806194 | 59338 | claude-sonnet-5-5 | - |
+| P0-e | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 13:02:26 | 39m00s | 138 | 148 | 5 | 276 | 138020 | 37576043 | 384646 | claude-sonnet-5-5 | - |
+| O1b | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 12:42:24 | 18m58s | 50 | 53 | 1 | 100 | 45953 | 5875570 | 158958 | claude-sonnet-5-5 | - |
+| C1c | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 12:33:06 | 9m40s | 30 | 32 | 1 | 60 | 47540 | 3231741 | 137810 | claude-sonnet-5-5 | - |
+| Q1b | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 12:44:37 | 21m11s | 66 | 73 | 2 | 132 | 89460 | 11747755 | 246865 | claude-sonnet-5-5 | - |
+| N1 | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 12:48:20 | 24m54s | 91 | 95 | 1 | 182 | 141684 | 21693016 | 330352 | claude-sonnet-5-5 | - |
+| N2 | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 12:45:42 | 22m16s | 71 | 78 | 0 | 142 | 87483 | 13352749 | 246077 | claude-sonnet-5-5 | - |
+| N3 | Build | 完了 | - | 2026-10-06 12:23:26 | 2026-10-06 13:09:48 | 46m22s | 54 | 59 | 1 | 108 | 80431 | 8076086 | 999866 | claude-sonnet-5-5 | - |
+| N1b | Build | 完了 | - | 2026-10-06 12:48:20 | 2026-10-06 13:00:57 | 12m37s | 59 | 61 | 2 | 116 | 30218 | 4722653 | 99304 | <synthetic>,claude-sonnet-5-5 | - |
+| N1b-retry | Build | 完了 | - | 2026-10-06 13:00:57 | 2026-10-06 13:04:51 | 3m54s | 22 | 23 | 0 | 44 | 8912 | 1090841 | 45857 | claude-sonnet-5-5 | - |
+| E1b | Build | 完了 | - | 2026-10-06 13:02:26 | 2026-10-06 13:13:08 | 10m42s | 44 | 49 | 1 | 88 | 58227 | 5619699 | 164082 | claude-sonnet-5-5 | - |
+| L1 | Build | 完了 | - | 2026-10-06 13:02:26 | 2026-10-06 14:27:41 | 1h25m | 65 | 69 | 1 | 130 | 117475 | 13241681 | 658866 | claude-sonnet-5-5 | - |
+| L2 | Build | 進行中 | - | 2026-10-06 13:02:26 | 2026-10-06 15:31:16 | 2h28m | 54 | 59 | 0 | 106 | 95576 | 9363658 | 608624 | <synthetic>,claude-sonnet-5-5 | - |
+| S | Build | 完了 | - | 2026-10-06 13:02:26 | 2026-10-06 14:54:13 | 1h51m | 154 | 172 | 11 | 308 | 148198 | 40553685 | 719009 | claude-sonnet-5-5 | - |
+| L1-retry | Build | 完了 | - | 2026-10-06 14:27:42 | 2026-10-06 15:23:40 | 55m58s | 88 | 87 | 2 | 178 | 100337 | 14050156 | 225539 | claude-sonnet-5-5 | - |
+| S-retry | Build | 完了 | - | 2026-10-06 14:54:13 | 2026-10-06 15:06:38 | 12m25s | 30 | 31 | 0 | 60 | 10012 | 1385568 | 39191 | claude-sonnet-5-5 | - |
+| J | Build | 完了 | - | 2026-10-06 15:06:38 | 2026-10-06 15:15:30 | 8m52s | 42 | 59 | 0 | 84 | 34737 | 4120728 | 119180 | claude-sonnet-5-5 | - |
+| R2a | Build | 完了 | - | 2026-10-06 15:06:38 | 2026-10-06 15:36:57 | 30m19s | 75 | 76 | 1 | 154 | 75125 | 10454553 | 197296 | claude-sonnet-5-5 | - |
+| L2-retry | Build | 完了 | - | 2026-10-06 15:31:16 | 2026-10-06 18:50:51 | 3h19m | 95 | 96 | 1 | 190 | 94069 | 16640887 | 457722 | claude-sonnet-5-5 | - |
+| R2a-retry | Build | 完了 | - | 2026-10-06 15:36:57 | 2026-10-06 15:37:25 | 0m28s | 3 | 3 | 0 | 6 | 1770 | 91127 | 20127 | claude-sonnet-5-5 | - |
+| R2b | Build | 完了 | - | 2026-10-06 15:37:25 | 2026-10-06 16:03:29 | 26m04s | 58 | 68 | 1 | 116 | 74147 | 8378600 | 180666 | claude-sonnet-5-5 | - |
+| R2b-retry | Build | 完了 | - | 2026-10-06 16:03:29 | 2026-10-06 18:41:25 | 2h37m | 12 | 13 | 0 | 24 | 5166 | 455556 | 54778 | claude-sonnet-5-5 | - |
+| Z | Build | 完了 | - | 2026-10-06 18:50:51 | 2026-10-06 20:00:31 | 1h09m | 94 | 101 | 4 | 188 | 120412 | 16738720 | 1151654 | claude-sonnet-5-5 | - |
+| test-1 | Integrate | 完了 | - | 2026-10-06 20:00:31 | 2026-10-06 20:32:03 | 31m32s | 32 | 34 | 3 | 64 | 12804 | 1968132 | 241648 | claude-sonnet-5-5 | - |
+| fix:cargo:r1 | Integrate | 完了 | - | 2026-10-06 20:32:03 | 2026-10-06 20:56:25 | 24m22s | 49 | 49 | 2 | 98 | 19470 | 2687898 | 122193 | claude-sonnet-5-5 | - |
+| fix:m1/errors,expressions,select:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:45:41 | 13m36s | 15 | 16 | 0 | 30 | 8063 | 667732 | 81627 | claude-sonnet-5-5 | - |
+| fix:m2/catalog,ddl,dml:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:45:12 | 13m07s | 21 | 23 | 0 | 42 | 7536 | 896627 | 36624 | claude-sonnet-5-5 | - |
+| fix:m3:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:32:22 | 0m17s | 4 | 4 | 0 | 8 | 656 | 105867 | 11812 | claude-sonnet-5-5 | - |
+| fix:m4/agg:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:48:05 | 16m00s | 22 | 22 | 0 | 44 | 5746 | 799728 | 43695 | claude-sonnet-5-5 | - |
+| fix:m4/catalog:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:52:45 | 20m40s | 95 | 96 | 0 | 190 | 45246 | 9887355 | 154721 | claude-sonnet-5-5 | - |
+| fix:m4/constraint:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:51:50 | 19m45s | 32 | 33 | 1 | 64 | 8879 | 1484005 | 42219 | claude-sonnet-5-5 | - |
+| fix:m4/copy:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:48:29 | 16m24s | 16 | 16 | 0 | 32 | 3844 | 564951 | 22874 | claude-sonnet-5-5 | - |
+| fix:m4/explain:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 21:25:47 | 53m42s | 205 | 215 | 4 | 410 | 101963 | 37789449 | 293782 | claude-sonnet-5-5 | - |
+| fix:m4/join:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:52:55 | 20m50s | 21 | 23 | 0 | 44 | 6261 | 770406 | 42585 | claude-sonnet-5-5 | - |
+| fix:m4/psql:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:59:27 | 27m22s | 61 | 63 | 1 | 122 | 19828 | 4276178 | 105354 | claude-sonnet-5-5 | - |
+| fix:m4/seq:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 21:00:11 | 28m06s | 79 | 84 | 1 | 158 | 29366 | 6224020 | 111206 | claude-sonnet-5-5 | - |
+| fix:m4/types:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 21:04:16 | 32m11s | 66 | 66 | 2 | 132 | 23109 | 5190618 | 108999 | claude-sonnet-5-5 | - |
+| fix:m4/z_final:r1 | Integrate | 完了 | - | 2026-10-06 20:32:05 | 2026-10-06 20:39:41 | 7m36s | 8 | 7 | 0 | 14 | 2155 | 216336 | 18790 | <synthetic>,claude-sonnet-5-5 | - |
+| fix:m4 slt 件数:r1 | Integrate | 完了 | - | 2026-10-06 20:32:22 | 2026-10-06 21:14:45 | 42m23s | 97 | 100 | 1 | 192 | 42077 | 10368713 | 162888 | <synthetic>,claude-sonnet-5-5 | - |
+| fix:restart:r1 | Integrate | 完了 | - | 2026-10-06 20:39:41 | 2026-10-06 20:52:03 | 12m22s | 29 | 30 | 0 | 58 | 7513 | 1331858 | 44364 | claude-sonnet-5-5 | - |
+| fix:crash:r1 | Integrate | 完了 | - | 2026-10-06 20:45:12 | 2026-10-06 20:50:10 | 4m58s | 9 | 10 | 0 | 18 | 4545 | 316960 | 22350 | claude-sonnet-5-5 | - |
+| fix:isolation:r1 | Integrate | 完了 | - | 2026-10-06 20:45:41 | 2026-10-06 20:46:45 | 1m04s | 6 | 6 | 0 | 12 | 1358 | 167201 | 13126 | claude-sonnet-5-5 | first-pass |
+| fix:done-check:r1 | Integrate | 完了 | - | 2026-10-06 20:46:45 | 2026-10-06 21:11:04 | 24m19s | 76 | 77 | 2 | 152 | 59576 | 9436102 | 174813 | claude-sonnet-5-5 | - |
+| test-2 | Integrate | 完了 | - | 2026-10-06 21:25:47 | 2026-10-06 23:59:14 | 2h33m | 32 | 33 | 4 | 64 | 8998 | 1433167 | 486918 | claude-sonnet-5-5 | - |
+| fix:cargo:r2 | Integrate | 完了 | - | 2026-10-06 23:59:14 | 2026-10-06 23:59:54 | 0m40s | 9 | 10 | 0 | 18 | 3239 | 266812 | 38241 | claude-sonnet-5-5 | - |
+| fix:done-check:r2 | Integrate | 完了 | - | 2026-10-06 23:59:15 | 2026-10-07 00:14:54 | 15m39s | 57 | 60 | 7 | 114 | 23105 | 3703294 | 73262 | claude-sonnet-5-5 | - |
+| test-3 | Integrate | 完了 | - | 2026-10-07 00:14:54 | 2026-10-07 00:38:40 | 23m46s | 15 | 15 | 0 | 30 | 4816 | 522568 | 142469 | claude-sonnet-5-5 | - |
+| fix:done-check:r3 | Integrate | 完了 | - | 2026-10-07 00:38:40 | 2026-10-07 12:12:47 | 11h34m | 88 | 89 | 6 | 178 | 42055 | 7911229 | 659472 | claude-sonnet-5-5 | - |
+| fix:isolation:r3 | Integrate | 完了 | - | 2026-10-07 00:38:41 | 2026-10-07 00:44:54 | 6m13s | 4 | 4 | 0 | 10 | 1116 | 123518 | 5333 | claude-sonnet-5-5 | - |
+| test-4 | Integrate | 完了 | - | 2026-10-07 12:12:47 | 2026-10-07 12:39:54 | 27m07s | 14 | 14 | 1 | 28 | 4209 | 508339 | 165239 | claude-sonnet-5-5 | - |
+| review:btree-storage | Review | 完了 | - | 2026-10-07 12:39:55 | 2026-10-07 16:41:23 | 4h01m | 176 | 179 | 10 | 352 | 169169 | 52774859 | 700703 | claude-sonnet-5-5 | - |
+| review:planner-executor | Review | 完了 | - | 2026-10-07 12:39:56 | 2026-10-07 15:42:43 | 3h02m | 85 | 85 | 3 | 170 | 68241 | 13490217 | 219844 | claude-sonnet-5-5 | - |
+| review:sql-compat | Review | 完了 | - | 2026-10-07 12:39:56 | 2026-10-07 15:47:21 | 3h07m | 72 | 72 | 16 | 144 | 65302 | 8077489 | 141814 | claude-sonnet-5-5 | - |
+| review:ddl-catalog-crash | Review | 完了 | - | 2026-10-07 12:39:56 | 2026-10-07 16:05:28 | 3h25m | 105 | 110 | 13 | 210 | 80824 | 28336623 | 360870 | claude-sonnet-5-5 | - |
+| fix:planner-executor | Review | 完了 | - | 2026-10-07 15:42:43 | 2026-10-07 16:04:00 | 21m17s | 43 | 45 | 3 | 88 | 24305 | 2707509 | 86301 | claude-sonnet-5-5 | - |
+| fix:sql-compat | Review | 完了 | - | 2026-10-07 15:47:21 | 2026-10-07 17:00:41 | 1h13m | 158 | 161 | 11 | 316 | 77826 | 22337660 | 204914 | claude-sonnet-5-5 | - |
+| fix:ddl-catalog-crash | Review | 完了 | - | 2026-10-07 16:05:28 | 2026-10-07 17:06:16 | 1h00m | 149 | 158 | 7 | 298 | 80355 | 23154012 | 463694 | claude-sonnet-5-5 | - |
+| fix:btree-storage | Review | 完了 | - | 2026-10-07 16:41:23 | 2026-10-07 16:53:07 | 11m44s | 26 | 33 | 0 | 52 | 12962 | 1253461 | 103300 | claude-sonnet-5-5 | - |
+| finish | Finish | 進行中 | - | 2026-10-07 17:06:16 | 2026-10-07 21:45:03 | 4h38m | 110 | 113 | 3 | 220 | 49613 | 12133055 | 2137746 | claude-sonnet-5-5 | - |
+
+合計: ターン 5393、tool_use 5728、エラー 184、入力 10796、出力 5064594、cache読 892567631、cache作成 22640588
 
 <!-- AUTO:agents END -->
 
@@ -704,7 +901,7 @@ M1 側だけの最長経路は stabilize 1m00s → fix 最長 31s → integrate 
 ## 4. 初回通過率と過剰分割の判定
 
 <!-- AUTO:firstpass BEGIN -->
-最終集計: 2026-10-04 15:28:03 UTC。判定基準: result.summary が正規表現 `初回|1 ?周目|最初の(実行|から)|修正は不要|コード変更なし|コードの修正は不要|コードは変更していない|コード修正はしていません|修正はしていない|実装の修正は不要|実装側のコードは修正していない` に一致し、かつ tool_use が 10 回以下の担当に「first-pass」を付ける（自動判定。内容の妥当性は下の手書き節で判断する）。
+最終集計: 2026-10-05 00:28:03 JST。判定基準: result.summary が正規表現 `初回|1 ?周目|最初の(実行|から)|修正は不要|コード変更なし|コードの修正は不要|コードは変更していない|コード修正はしていません|修正はしていない|実装の修正は不要|実装側のコードは修正していない` に一致し、かつ tool_use が 10 回以下の担当に「first-pass」を付ける（自動判定。内容の妥当性は下の手書き節で判断する）。
 
 | wf | 担当 | tool_use | first-pass | result のキー（出現順） | passed キー | スキーマ |
 |---|---|---|---|---|---|---|
@@ -772,7 +969,7 @@ M1 側だけの最長経路は stabilize 1m00s → fix 最長 31s → integrate 
 ## 6. 実行環境の前提
 
 <!-- AUTO:env BEGIN -->
-最終集計: 2026-10-04 15:28:03 UTC（agent-*.jsonl の message.model、agent-*.meta.json の agentType / requestShape）。
+最終集計: 2026-10-05 00:28:03 JST（agent-*.jsonl の message.model、agent-*.meta.json の agentType / requestShape）。
 
 | wf | モデル | agentType | requestShape | 担当数 |
 |---|---|---|---|---|
@@ -797,11 +994,11 @@ M1 側だけの最長経路は stabilize 1m00s → fix 最長 31s → integrate 
 - 壁時計 14m02s のうち、M1 を緑にする経路は 2m20s。残りの約 11m42s は K-m2-tests を待った時間で、M1 の結果が利用者に見えるのも遅れた。
 - 次に同じ形（短い経路と長い独立作業の同居）を組むなら、Workflow を 2 本に分けるか、短い経路の結果を先に報告する。K は依存が無いので最初から起動する。
 - fix:\* の 10 並列は全員が初回通過・修正 0 件で、効果は確認できなかった（第 4 節）。次は slt 全体を先に 1 回流し、失敗した領域だけ起動する。
-- integrate が報告したコミット b8c7ea3 は、reflog 上で `commit (amend)` により 0771041（同じ件名、14:37:21 UTC）に置き換わっており、どのブランチからも辿れない。報告の食い違いは setbacks.md で扱う。
+- integrate が報告したコミット b8c7ea3 は、reflog 上で `commit (amend)` により 0771041（同じ件名、23:37:21 JST）に置き換わっており、どのブランチからも辿れない。報告の食い違いは setbacks.md で扱う。
 
-### 2026-10-04 wf_0cc0a7be 途中メモ（15:26 UTC）
+### 2026-10-04 wf_0cc0a7be 途中メモ（翌00:26 JST）
 
-- A-foundation が 29m59s かかり、Parallel の 7 担当の開始が 15:20:13 まで遅れた。完了後に Parallel 以降の実績と所見を追記する。
+- A-foundation が 29m59s かかり、Parallel の 7 担当の開始が 翌00:20:13 まで遅れた。完了後に Parallel 以降の実績と所見を追記する。
 
 ### （wf_0cc0a7be 完了後に追記）
 
