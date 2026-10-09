@@ -273,6 +273,7 @@ fn push(
             checks,
             not_null,
             returning,
+            recheck,
         } => L::Update {
             table,
             rel,
@@ -283,6 +284,7 @@ fn push(
             checks,
             not_null,
             returning,
+            recheck,
         },
         L::Delete {
             table,
@@ -291,6 +293,7 @@ fn push(
             old_cols,
             ctid,
             returning,
+            recheck,
         } => L::Delete {
             table,
             rel,
@@ -298,7 +301,20 @@ fn push(
             old_cols,
             ctid,
             returning,
+            recheck,
         },
+        L::LockRows {
+            input,
+            marks,
+            recheck,
+        } => wrap(
+            L::LockRows {
+                input: Box::new(push(*input, Vec::new(), arena, d)?),
+                marks,
+                recheck,
+            },
+            preds,
+        ),
         L::Join {
             kind,
             left,

@@ -1,0 +1,91 @@
+# CREATE ROLE / USER / GROUP の既定値と属性（pg_roles の列）。ロール名は auth_role_create_ で始める
+
+statement ok
+DROP ROLE IF EXISTS auth_role_create_a
+
+statement ok
+DROP ROLE IF EXISTS auth_role_create_b
+
+statement ok
+DROP ROLE IF EXISTS auth_role_create_c
+
+statement ok
+DROP ROLE IF EXISTS auth_role_create_d
+
+statement ok
+DROP ROLE IF EXISTS auth_role_create_e
+
+statement ok
+DROP ROLE IF EXISTS auth_role_create_f
+
+# 既定値: NOLOGIN, NOSUPERUSER, INHERIT, NOCREATEROLE, NOCREATEDB, NOREPLICATION, NOBYPASSRLS, 接続数無制限
+statement ok
+CREATE ROLE auth_role_create_a
+
+query TBBBBBBBIT
+SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin, rolreplication, rolbypassrls, rolconnlimit, rolvaliduntil::text FROM pg_roles WHERE rolname = 'auth_role_create_a'
+----
+auth_role_create_a f t f f f f f -1 NULL
+
+# CREATE USER は LOGIN が既定
+statement ok
+CREATE USER auth_role_create_b
+
+query TB
+SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname = 'auth_role_create_b'
+----
+auth_role_create_b t
+
+# CREATE GROUP は CREATE ROLE と同じ（NOLOGIN）
+statement ok
+CREATE GROUP auth_role_create_c
+
+query TB
+SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname = 'auth_role_create_c'
+----
+auth_role_create_c f
+
+# 全属性（WITH あり）
+statement ok
+CREATE ROLE auth_role_create_d WITH LOGIN CREATEROLE CREATEDB REPLICATION BYPASSRLS NOINHERIT CONNECTION LIMIT 5 VALID UNTIL '2100-01-01 00:00:00+00'
+
+query TBBBBBBBI
+SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin, rolreplication, rolbypassrls, rolconnlimit FROM pg_roles WHERE rolname = 'auth_role_create_d'
+----
+auth_role_create_d f f t t t t t 5
+
+query B
+SELECT rolvaliduntil = '2100-01-01 00:00:00+00'::timestamptz FROM pg_roles WHERE rolname = 'auth_role_create_d'
+----
+t
+
+# NO... 形、WITH なし、SUPERUSER、infinity、PASSWORD NULL、SYSID（無視される）
+statement ok
+CREATE ROLE auth_role_create_e SUPERUSER NOLOGIN NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS VALID UNTIL 'infinity' PASSWORD NULL SYSID 12345
+
+query TBBT
+SELECT rolname, rolsuper, rolcanlogin, rolvaliduntil::text FROM pg_roles WHERE rolname = 'auth_role_create_e'
+----
+auth_role_create_e t f infinity
+
+statement ok
+CREATE ROLE auth_role_create_f NOSUPERUSER LOGIN CONNECTION LIMIT 0
+
+query TBI
+SELECT rolname, rolcanlogin, rolconnlimit FROM pg_roles WHERE rolname = 'auth_role_create_f'
+----
+auth_role_create_f t 0
+
+# 同時に作った 6 つ
+query I
+SELECT count(*) FROM pg_roles WHERE rolname LIKE 'auth\_role\_create\_%'
+----
+6
+
+statement ok
+DROP ROLE auth_role_create_a, auth_role_create_b, auth_role_create_c, auth_role_create_d, auth_role_create_e, auth_role_create_f
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname LIKE 'auth\_role\_create\_%'
+----
+0

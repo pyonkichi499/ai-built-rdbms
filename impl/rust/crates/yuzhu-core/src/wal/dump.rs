@@ -114,6 +114,7 @@ fn heap_desc(rec: &DecodedRecord) -> String {
             u16_at(m, 2).unwrap_or(0),
             u16_at(m, 4).unwrap_or(0)
         ),
+        0x40 => "LOCK".to_string(),
         0x20 => format!(
             "UPDATE old_off {} new_off {} old_xmax {}{}{init}",
             u16_at(m, 0).unwrap_or(0),
@@ -129,6 +130,31 @@ fn heap_desc(rec: &DecodedRecord) -> String {
     }
 }
 
+/// HEAP2 の種別名だけ（持ち主 VC が詳しくする）。
+fn heap2_desc(rec: &DecodedRecord) -> String {
+    match rec.info {
+        0x00 => "PRUNE_FREEZE".to_string(),
+        0x10 => "VACUUM_UNUSED".to_string(),
+        0x20 => "MULTI_INSERT".to_string(),
+        0x30 => "INPLACE".to_string(),
+        t => format!("UNKNOWN 0x{t:02X}"),
+    }
+}
+
+/// DBASE（`m5/09` §3.1）: `CREATE_FILE_COPY src=<oid> dst=<oid>`、`DROP db=<oid>`。
+fn dbase_desc(rec: &DecodedRecord) -> String {
+    let m = &rec.main;
+    match rec.info {
+        0x00 => format!(
+            "CREATE_FILE_COPY src={} dst={}",
+            u32_at(m, 0).unwrap_or(0),
+            u32_at(m, 4).unwrap_or(0)
+        ),
+        0x10 => format!("DROP db={}", u32_at(m, 0).unwrap_or(0)),
+        t => format!("UNKNOWN 0x{t:02X}"),
+    }
+}
+
 fn desc(rec: &DecodedRecord) -> String {
     match rec.rmgr {
         RmgrId::Xlog => xlog_desc(rec),
@@ -138,6 +164,8 @@ fn desc(rec: &DecodedRecord) -> String {
         // 各モジュールの `describe`（本実装は B1 / Q1）。
         RmgrId::Btree => crate::storage::btree::wal::describe(rec),
         RmgrId::Seq => crate::storage::sequence::describe(rec),
+        RmgrId::Heap2 => heap2_desc(rec),
+        RmgrId::Dbase => dbase_desc(rec),
     }
 }
 
@@ -241,6 +269,21 @@ mod tests {
             image: image.then(|| Box::new(Page::zeroed())),
             data: vec![],
         }
+    }
+
+    #[test]
+    fn dbase_lines() {
+        let mut copy = 1u32.to_le_bytes().to_vec();
+        copy.extend_from_slice(&16384u32.to_le_bytes());
+        let s = format_record(&rec(RmgrId::Dbase, 0x00, copy, vec![]));
+        assert!(s.ends_with("desc: CREATE_FILE_COPY src=1 dst=16384"), "{s}");
+        let s = format_record(&rec(
+            RmgrId::Dbase,
+            0x10,
+            16384u32.to_le_bytes().to_vec(),
+            vec![],
+        ));
+        assert!(s.ends_with("desc: DROP db=16384"), "{s}");
     }
 
     #[test]

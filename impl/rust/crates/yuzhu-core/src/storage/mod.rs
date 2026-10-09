@@ -7,6 +7,7 @@
 pub mod btree;
 pub mod buffer;
 pub mod checksum;
+pub mod fsm;
 pub mod heap;
 pub mod heap_store;
 pub mod index_store;
@@ -18,13 +19,18 @@ pub mod stack;
 pub mod testing;
 pub mod vfs;
 
+#[cfg(test)]
+mod heap_store_conflict_tests;
+
 use std::sync::Arc;
 
 pub use self::heap::scan::HeapScan;
 use self::smgr::RelFileLocator;
+use crate::catalog::fk::ForeignKeyDef;
 use crate::catalog::{IndexDef, SequenceParams, TableDef, builtin};
 use crate::error::{Error, Result};
-use crate::txn::{CommandId, Snapshot, Xid};
+use crate::txn::lock::WaitCtx;
+use crate::txn::{CommandId, LockTupleMode, Snapshot, Xid};
 use crate::types::{CmpFn, Datum, Oid, Row, SqlType, Tid, cmp_datum, oid};
 use crate::wal::Lsn;
 
@@ -42,7 +48,7 @@ pub const MAX_HEAP_TUPLE_SIZE: usize = 8160;
 pub const MAX_HEAP_TUPLES_PER_PAGE: usize = 185;
 pub const MAX_HEAP_ATTRIBUTE_NUMBER: usize = 1600;
 pub const PAGE_LAYOUT_VERSION: u8 = 1;
-pub const CATALOG_VERSION_NO: u32 = 2_026_100_601;
+pub const CATALOG_VERSION_NO: u32 = 2_026_100_701;
 /// How many XIDs are reserved in the control file at a time.
 pub const XID_PREFETCH: u64 = 1024;
 /// How many OIDs are reserved in the control file at a time (same as
@@ -131,6 +137,28 @@ impl TupleDesc {
     }
 }
 
+/// 表ごとの FK の一覧（`TableDef.foreign_keys` / `referenced_by` の写し）。FK の無い表は `is_empty()` の 1 回の判定で済む。
+#[derive(Clone, Debug, Default)]
+pub struct RiRelInfo {
+    /// この表が子の FK。
+    pub outgoing: Arc<[Arc<ForeignKeyDef>]>,
+    /// この表が親の FK。
+    pub incoming: Arc<[Arc<ForeignKeyDef>]>,
+}
+
+impl RiRelInfo {
+    pub fn from_table(def: &TableDef) -> RiRelInfo {
+        RiRelInfo {
+            outgoing: Arc::from(def.foreign_keys.as_slice()),
+            incoming: Arc::from(def.referenced_by.as_slice()),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.outgoing.is_empty() && self.incoming.is_empty()
+    }
+}
+
 /// Everything needed to open a relation, built at the start of a statement.
 #[derive(Clone, Debug)]
 pub struct RelHandle {
@@ -139,6 +167,10 @@ pub struct RelHandle {
     pub desc: Arc<TupleDesc>,
     /// `TableDef.indexes` の実行用の写し（M4）。
     pub indexes: Arc<[IndexHandle]>,
+    /// `TableDef.key_columns` の写し（00 §4.5）。
+    pub key_columns: Arc<[bool]>,
+    /// 外部キーの実行用の写し（M5 07 R3）。
+    pub ri: Arc<RiRelInfo>,
 }
 
 impl RelHandle {
@@ -153,6 +185,8 @@ impl RelHandle {
                 .iter()
                 .map(|i| IndexHandle::from_def(i, def))
                 .collect(),
+            key_columns: Arc::from(def.key_columns.as_slice()),
+            ri: Arc::new(RiRelInfo::from_table(def)),
         }
     }
 }
@@ -239,10 +273,64 @@ pub enum TmResult {
     WouldBlock,
 }
 
+/// `TmResult` を `simple_heap_update` / `simple_heap_delete` の流儀で検査するときの操作（RW-D16）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SimpleHeapOp {
+    Update,
+    Delete,
+}
+
+impl TmResult {
+    /// カタログの書き込み（`simple_heap_update` / `simple_heap_delete` 相当）の結果の検査。
+    /// `Ok` は `Ok(())`。それ以外は `XX000`:
+    /// `Updated` → "tuple concurrently updated"、`Deleted` → "tuple concurrently deleted"、
+    /// `SelfModified` → "tuple already updated by self"、
+    /// `Invisible` → "attempted to update invisible tuple" / "attempted to delete invisible tuple"。
+    /// `BeingModified` / `WouldBlock` は `wait: Some` で呼べば起きない。`wait: None` で呼んだ場合の
+    /// `BeingModified` は、待たずに競合を見つけたということなので "tuple concurrently updated" にする。
+    pub fn expect_simple(self, op: SimpleHeapOp) -> Result<()> {
+        match self {
+            TmResult::Ok => Ok(()),
+            TmResult::Updated { .. } | TmResult::BeingModified { .. } => {
+                Err(Error::internal("tuple concurrently updated"))
+            }
+            TmResult::Deleted { .. } => Err(Error::internal("tuple concurrently deleted")),
+            TmResult::SelfModified { .. } => Err(Error::internal("tuple already updated by self")),
+            TmResult::Invisible => Err(Error::internal(match op {
+                SimpleHeapOp::Update => "attempted to update invisible tuple",
+                SimpleHeapOp::Delete => "attempted to delete invisible tuple",
+            })),
+            TmResult::WouldBlock => Err(Error::internal(
+                "unexpected WouldBlock from a blocking heap write",
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct UpdateOutcome {
     pub result: TmResult,
     pub new_tid: Option<Tid>,
+    /// 旧版と `new_row` を比べて決まる強度（キー列が変わったら `Exclusive`、変わらなければ `NoKeyExclusive`）。
+    /// `result` が `Updated` のとき、EPQ が最新版をロックする強度に使う（RW-D18）。
+    pub lockmode: LockTupleMode,
+}
+
+/// 行ロックを待つ向き（`FOR ... [SKIP LOCKED | NOWAIT]`）。heap の中では `Skip` と `Error` は同じ（RW-D6）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RowWait {
+    Block,
+    Skip,
+    Error,
+}
+
+/// `TableStore::lock_tuple` の結果。
+#[derive(Clone, Debug)]
+pub struct LockOutcome {
+    /// `Ok` / `SelfModified` / `Deleted` / `Updated` / `WouldBlock` / `Invisible`。
+    pub result: TmResult,
+    /// `follow_updates` で最新版をたどってロックしたとき、その最新版（EPQ の入力）。それ以外は `None`。
+    pub latest: Option<HeapTuple>,
 }
 
 /// One row returned by a scan, with its system column values.
@@ -268,9 +356,20 @@ pub trait TableStore: Send + Sync + std::fmt::Debug {
     fn unlink_storage(&self, rel: RelFileLocator) -> Result<()>;
 
     fn insert(&self, rel: &RelHandle, w: &WriteCtx, row: &[Datum]) -> Result<Tid>;
-    fn delete(&self, rel: &RelHandle, w: &WriteCtx, snap: &Snapshot, tid: Tid) -> Result<TmResult>;
+    /// `wait` が `None` なら待たずに `BeingModified` を返す（内部用）。`Some` なら PostgreSQL の `l1:` ループで
+    /// 衝突する保持者の終了を待つ（`m5/02` §5.2）。`crosscheck` は FK の RR 用（PostgreSQL の crosscheck snapshot）。
+    fn delete(
+        &self,
+        rel: &RelHandle,
+        w: &WriteCtx,
+        snap: &Snapshot,
+        tid: Tid,
+        wait: Option<&WaitCtx<'_>>,
+        crosscheck: Option<&Snapshot>,
+    ) -> Result<TmResult>;
     /// Sets xmax / cmax / ctid on the old version and inserts the new one in
-    /// one call (one WAL record in M3).
+    /// one call (one WAL record in M3). 待ちと `crosscheck` は `delete` と同じ（`l2:` ループ。`m5/02` §5.3）。
+    #[allow(clippy::too_many_arguments)]
     fn update(
         &self,
         rel: &RelHandle,
@@ -278,7 +377,26 @@ pub trait TableStore: Send + Sync + std::fmt::Debug {
         snap: &Snapshot,
         tid: Tid,
         new_row: &[Datum],
+        wait: Option<&WaitCtx<'_>>,
+        crosscheck: Option<&Snapshot>,
     ) -> Result<UpdateOutcome>;
+
+    /// 行ロック（`l3:` ループ。`m5/02` §5.4）。`follow_updates` が真なら `ctid` の連鎖をたどって最新版をロックし、
+    /// `latest` に返す。既定は未実装（`HeapStore` だけが実装する）。
+    #[allow(clippy::too_many_arguments)]
+    fn lock_tuple(
+        &self,
+        _rel: &RelHandle,
+        _w: &WriteCtx,
+        _snap: &Snapshot,
+        _tid: Tid,
+        _mode: LockTupleMode,
+        _policy: RowWait,
+        _follow_updates: bool,
+        _wait: &WaitCtx<'_>,
+    ) -> Result<LockOutcome> {
+        Err(Error::not_supported("lock_tuple is not supported yet"))
+    }
 
     fn begin_scan(&self, rel: &RelHandle, snap: &Snapshot) -> Result<HeapScan>;
     fn scan_next(&self, scan: &mut HeapScan) -> Result<Option<HeapTuple>>;
@@ -317,7 +435,7 @@ pub enum DirtyResult {
     Invisible,
     /// 生きている（コミット済み、または自分の挿入）。
     Visible,
-    /// 他のトランザクションが挿入中・削除中（M4 では起きない。起きたら内部エラー）。
+    /// 他のトランザクションが挿入中・削除中（`IndexStore::insert` が `InsertOutcome::WaitFor` にして返す）。
     WaitFor(Xid),
 }
 
@@ -380,6 +498,16 @@ pub struct BuildStats {
 /// 単体テスト用の `for_test` / `fake_tids`（`executor/nodes/test_util.rs` が使う）も scan.rs にある。
 pub use self::btree::scan::IndexScan;
 
+/// `IndexStore::insert` の結果（`m5/02` §4.2、D44）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum InsertOutcome {
+    Inserted,
+    /// 他のトランザクションの未確定の項目に当たった。何も挿入しておらず、ラッチもピンも外れている。
+    /// 呼び出し側がその XID の終了を待って、同じ引数でもう一度 `insert` する（降下からやり直す）。
+    WaitFor(Xid),
+}
+
 pub trait IndexStore: Send + Sync + std::fmt::Debug {
     /// 新しい索引のファイル（作成済み）に、メタページと空のルート葉を書く（`BTREE_PAGES`）。
     fn init_index(&self, w: &WriteCtx, index: &IndexHandle) -> Result<()>;
@@ -387,7 +515,7 @@ pub trait IndexStore: Send + Sync + std::fmt::Debug {
     /// 項目を 1 つ入れる。`key` は索引列の値（NULL を含みうる）。一意索引で `check` が `Check` なら
     /// 重複を検査する（NULL を含むキーは検査しない）。重複は 23505（`s` `t` `n` を付けて返す。
     /// DETAIL は `executor/dml.rs` の `unique_violation_detail` が補う。11 §7.1 の C-11）。
-    /// 他トランザクションの待ちが必要なら内部エラー（M4）。
+    /// 他トランザクションの挿入中・削除中の項目に当たったら `InsertOutcome::WaitFor(xid)`（何も挿入しない）。
     fn insert(
         &self,
         w: &WriteCtx,
@@ -395,7 +523,7 @@ pub trait IndexStore: Send + Sync + std::fmt::Debug {
         key: &[Datum],
         tid: Tid,
         check: UniqueCheck<'_>,
-    ) -> Result<()>;
+    ) -> Result<InsertOutcome>;
 
     /// 一括構築。`init_index` 済みの空の索引にだけ使える。`entries` は (key, tid) の昇順。
     fn build(

@@ -1,0 +1,5 @@
+alice  postgres  127.0.0.2  alice-pw   28000
+bob    postgres  127.0.0.2  bob-pw     ok/scram
+bob    postgres  127.0.0.2  wrong      28P01
+alice  postgres  127.0.0.1  alice-pw   ok/scram
+alice  postgres  127.0.0.1  wrong      28P01

@@ -1,0 +1,145 @@
+# TRUNCATE はロールバックでき、その後の INSERT と VACUUM が動く
+
+statement ok
+DROP TABLE IF EXISTS vacuum_truncate_basic_t
+
+statement ok
+DROP TABLE IF EXISTS vacuum_truncate_basic_u
+
+statement ok
+DROP TABLE IF EXISTS vacuum_truncate_basic_s
+
+statement ok
+CREATE TABLE vacuum_truncate_basic_t (a int PRIMARY KEY, b text)
+
+statement ok
+CREATE TABLE vacuum_truncate_basic_u (a int)
+
+statement ok
+CREATE TABLE vacuum_truncate_basic_s (id serial, v int)
+
+statement ok
+INSERT INTO vacuum_truncate_basic_t SELECT g, 'x' || g FROM generate_series(1, 50) g
+
+statement ok
+INSERT INTO vacuum_truncate_basic_u VALUES (1), (2), (3)
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE vacuum_truncate_basic_t
+
+query I
+SELECT count(*) FROM vacuum_truncate_basic_t
+----
+0
+
+statement ok
+INSERT INTO vacuum_truncate_basic_t VALUES (999, 'in txn')
+
+statement ok
+ROLLBACK
+
+query IT
+SELECT count(*), min(b) FROM vacuum_truncate_basic_t
+----
+50 x1
+
+# インデックスもロールバックで戻る
+query T
+SELECT b FROM vacuum_truncate_basic_t WHERE a = 7
+----
+x7
+
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE TABLE ONLY vacuum_truncate_basic_t, vacuum_truncate_basic_u
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM vacuum_truncate_basic_t
+----
+0
+
+query I
+SELECT count(*) FROM vacuum_truncate_basic_u
+----
+0
+
+statement ok
+INSERT INTO vacuum_truncate_basic_t VALUES (1, 'a'), (2, 'b')
+
+# 同じキーを入れ直せる（索引も空になっている）
+statement error (23505)
+INSERT INTO vacuum_truncate_basic_t VALUES (1, 'dup')
+
+statement ok
+VACUUM vacuum_truncate_basic_t
+
+query IT
+SELECT a, b FROM vacuum_truncate_basic_t ORDER BY a
+----
+1 a
+2 b
+
+# TRUNCATE の後に VACUUM、INSERT
+statement ok
+TRUNCATE vacuum_truncate_basic_t
+
+statement ok
+VACUUM vacuum_truncate_basic_t
+
+statement ok
+INSERT INTO vacuum_truncate_basic_t SELECT g, 'y' || g FROM generate_series(1, 10) g
+
+query II
+SELECT count(*), sum(a) FROM vacuum_truncate_basic_t
+----
+10 55
+
+# 引数なしの TRUNCATE は構文エラー、存在しない表は 42P01
+statement error (42P01)
+TRUNCATE vacuum_truncate_basic_nosuch
+
+statement error (42601)
+TRUNCATE
+
+# シーケンス: 既定は CONTINUE IDENTITY、RESTART IDENTITY で戻る
+statement ok
+INSERT INTO vacuum_truncate_basic_s (v) VALUES (1), (2), (3)
+
+statement ok
+TRUNCATE vacuum_truncate_basic_s
+
+statement ok
+INSERT INTO vacuum_truncate_basic_s (v) VALUES (4)
+
+query II
+SELECT id, v FROM vacuum_truncate_basic_s
+----
+4 4
+
+statement ok
+TRUNCATE vacuum_truncate_basic_s RESTART IDENTITY
+
+statement ok
+INSERT INTO vacuum_truncate_basic_s (v) VALUES (5)
+
+query II
+SELECT id, v FROM vacuum_truncate_basic_s
+----
+1 5
+
+statement ok
+DROP TABLE vacuum_truncate_basic_t
+
+statement ok
+DROP TABLE vacuum_truncate_basic_u
+
+statement ok
+DROP TABLE vacuum_truncate_basic_s

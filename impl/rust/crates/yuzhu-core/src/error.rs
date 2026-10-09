@@ -27,6 +27,7 @@ pub mod sqlstate {
     pub const WARNING: SqlState = SqlState("01000");
     // Class 08 - connection exception
     pub const CONNECTION_EXCEPTION: SqlState = SqlState("08000");
+    pub const CONNECTION_FAILURE: SqlState = SqlState("08006");
     pub const PROTOCOL_VIOLATION: SqlState = SqlState("08P01");
     // Class 0A
     pub const FEATURE_NOT_SUPPORTED: SqlState = SqlState("0A000");
@@ -50,6 +51,10 @@ pub mod sqlstate {
     pub const INVALID_PARAMETER_VALUE: SqlState = SqlState("22023");
     pub const INVALID_ESCAPE_SEQUENCE: SqlState = SqlState("22025");
     pub const INVALID_TEXT_REPRESENTATION: SqlState = SqlState("22P02");
+    pub const INVALID_BINARY_REPRESENTATION: SqlState = SqlState("22P03");
+    pub const ARRAY_SUBSCRIPT_ERROR: SqlState = SqlState("2202E");
+    pub const SUBSTRING_ERROR: SqlState = SqlState("22011");
+    pub const INVALID_ARGUMENT_FOR_WIDTH_BUCKET_FUNCTION: SqlState = SqlState("2201G");
     // Class 23 - integrity constraint violation
     pub const INTEGRITY_CONSTRAINT_VIOLATION: SqlState = SqlState("23000");
     pub const NOT_NULL_VIOLATION: SqlState = SqlState("23502");
@@ -63,6 +68,8 @@ pub mod sqlstate {
     pub const NO_ACTIVE_SQL_TRANSACTION: SqlState = SqlState("25P01");
     pub const IN_FAILED_SQL_TRANSACTION: SqlState = SqlState("25P02");
     pub const IDLE_IN_TRANSACTION_SESSION_TIMEOUT: SqlState = SqlState("25P03");
+    // Class 26
+    pub const INVALID_SQL_STATEMENT_NAME: SqlState = SqlState("26000");
     // Class 27
     pub const TRIGGERED_DATA_CHANGE_VIOLATION: SqlState = SqlState("27000");
     // Class 28
@@ -72,6 +79,8 @@ pub mod sqlstate {
     pub const DEPENDENT_OBJECTS_STILL_EXIST: SqlState = SqlState("2BP01");
     // Class 3B
     pub const INVALID_SAVEPOINT_SPECIFICATION: SqlState = SqlState("3B001");
+    // Class 34
+    pub const INVALID_CURSOR_NAME: SqlState = SqlState("34000");
     // Class 3D
     pub const INVALID_CATALOG_NAME: SqlState = SqlState("3D000");
     // Class 3F
@@ -86,6 +95,10 @@ pub mod sqlstate {
     pub const NAME_TOO_LONG: SqlState = SqlState("42622");
     pub const UNDEFINED_TABLE: SqlState = SqlState("42P01");
     pub const UNDEFINED_PARAMETER: SqlState = SqlState("42P02");
+    pub const AMBIGUOUS_PARAMETER: SqlState = SqlState("42P08");
+    pub const DUPLICATE_CURSOR: SqlState = SqlState("42P03");
+    pub const DUPLICATE_DATABASE: SqlState = SqlState("42P04");
+    pub const DUPLICATE_PREPARED_STATEMENT: SqlState = SqlState("42P05");
     pub const UNDEFINED_COLUMN: SqlState = SqlState("42703");
     pub const UNDEFINED_FUNCTION: SqlState = SqlState("42883");
     pub const UNDEFINED_OBJECT: SqlState = SqlState("42704");
@@ -102,6 +115,8 @@ pub mod sqlstate {
     pub const CANNOT_COERCE: SqlState = SqlState("42846");
     pub const INVALID_COLUMN_REFERENCE: SqlState = SqlState("42P10");
     pub const INVALID_TABLE_DEFINITION: SqlState = SqlState("42P16");
+    pub const INVALID_OBJECT_DEFINITION: SqlState = SqlState("42P17");
+    pub const INVALID_FOREIGN_KEY: SqlState = SqlState("42830");
     pub const INDETERMINATE_DATATYPE: SqlState = SqlState("42P18");
     pub const GROUPING_ERROR: SqlState = SqlState("42803");
     // Class 53 / 54 - resources / limits
@@ -460,6 +475,48 @@ mod tests {
             (sqlstate::INVALID_TIME_ZONE_DISPLACEMENT_VALUE, "22009"),
             (sqlstate::STATEMENT_TOO_COMPLEX, "54001"),
             (sqlstate::RESERVED_NAME, "42939"),
+        ];
+        for (s, code) in codes {
+            assert_eq!(s.code(), code);
+        }
+    }
+
+    #[test]
+    fn m5_sqlstates_match_the_contract() {
+        // 00 §3.5 の一覧（PostgreSQL の errcodes.txt と同じ値）。
+        let codes = [
+            (sqlstate::SERIALIZATION_FAILURE, "40001"),
+            (sqlstate::DEADLOCK_DETECTED, "40P01"),
+            (sqlstate::INVALID_PASSWORD, "28P01"),
+            (sqlstate::DUPLICATE_DATABASE, "42P04"),
+            (sqlstate::OBJECT_IN_USE, "55006"),
+            (sqlstate::DUPLICATE_OBJECT, "42710"),
+            (sqlstate::DEPENDENT_OBJECTS_STILL_EXIST, "2BP01"),
+            (sqlstate::FOREIGN_KEY_VIOLATION, "23503"),
+            (sqlstate::INVALID_FOREIGN_KEY, "42830"),
+            (sqlstate::INVALID_BINARY_REPRESENTATION, "22P03"),
+            (sqlstate::INVALID_SQL_STATEMENT_NAME, "26000"),
+            (sqlstate::INVALID_CURSOR_NAME, "34000"),
+            (sqlstate::DUPLICATE_PREPARED_STATEMENT, "42P05"),
+            (sqlstate::DUPLICATE_CURSOR, "42P03"),
+            (sqlstate::UNDEFINED_PARAMETER, "42P02"),
+            (sqlstate::AMBIGUOUS_PARAMETER, "42P08"),
+            (sqlstate::INDETERMINATE_DATATYPE, "42P18"),
+            (sqlstate::PROTOCOL_VIOLATION, "08P01"),
+            (sqlstate::TOO_MANY_CONNECTIONS, "53300"),
+            (sqlstate::INVALID_PARAMETER_VALUE, "22023"),
+            (sqlstate::NUMERIC_VALUE_OUT_OF_RANGE, "22003"),
+            (sqlstate::ARRAY_SUBSCRIPT_ERROR, "2202E"),
+            (sqlstate::SUBSTRING_ERROR, "22011"),
+            (sqlstate::CHARACTER_NOT_IN_REPERTOIRE, "22021"),
+            (sqlstate::NAME_TOO_LONG, "42622"),
+            (
+                sqlstate::INVALID_ARGUMENT_FOR_WIDTH_BUCKET_FUNCTION,
+                "2201G",
+            ),
+            (sqlstate::CANNOT_COERCE, "42846"),
+            (sqlstate::WRONG_OBJECT_TYPE, "42809"),
+            (sqlstate::INVALID_OBJECT_DEFINITION, "42P17"),
         ];
         for (s, code) in codes {
             assert_eq!(s.code(), code);

@@ -1,0 +1,73 @@
+# pg_database の行（psql の \l と同じ問い合わせ）。DB 名は database_pg_database_rows_ で始める
+
+statement ok
+DROP DATABASE IF EXISTS database_pg_database_rows_a
+
+statement ok
+DROP DATABASE IF EXISTS database_pg_database_rows_b
+
+query I
+SELECT count(*) FROM pg_database WHERE datname LIKE 'database\_pg\_database\_rows\_%'
+----
+0
+
+statement ok
+CREATE DATABASE database_pg_database_rows_a
+
+statement ok
+CREATE DATABASE database_pg_database_rows_b CONNECTION LIMIT 7 ALLOW_CONNECTIONS false IS_TEMPLATE true
+
+query TTTTTTTTT
+SELECT d.datname AS "Name",
+       pg_catalog.pg_get_userbyid(d.datdba) AS "Owner",
+       pg_catalog.pg_encoding_to_char(d.encoding) AS "Encoding",
+       CASE d.datlocprovider WHEN 'b' THEN 'builtin' WHEN 'c' THEN 'libc' WHEN 'i' THEN 'icu' END AS "Locale Provider",
+       d.datcollate AS "Collate", d.datctype AS "Ctype", d.datlocale AS "Locale", d.daticurules AS "ICU Rules",
+       CASE WHEN pg_catalog.array_length(d.datacl, 1) = 0 THEN '(none)'
+            ELSE pg_catalog.array_to_string(d.datacl, E'\n') END AS "Access privileges"
+FROM pg_catalog.pg_database d
+WHERE d.datname LIKE 'database\_pg\_database\_rows\_%'
+ORDER BY 1
+----
+database_pg_database_rows_a postgres UTF8 libc C C NULL NULL NULL
+database_pg_database_rows_b postgres UTF8 libc C C NULL NULL NULL
+
+query TIBB
+SELECT datname, datconnlimit, datistemplate, datallowconn FROM pg_database WHERE datname LIKE 'database\_pg\_database\_rows\_%' ORDER BY 1
+----
+database_pg_database_rows_a -1 f t
+database_pg_database_rows_b 7 t f
+
+# OID は新しい DB のほうがテンプレートより大きい
+query B
+SELECT bool_and(d.oid > t.oid) FROM pg_database d, pg_database t WHERE d.datname LIKE 'database\_pg\_database\_rows\_%' AND t.datname = 'template1'
+----
+t
+
+# 組み込みの DB
+query TBB
+SELECT datname, datistemplate, datallowconn FROM pg_database WHERE datname IN ('postgres', 'template0', 'template1') ORDER BY 1
+----
+postgres f t
+template0 t f
+template1 t t
+
+# IS_TEMPLATE を戻す
+statement ok
+ALTER DATABASE database_pg_database_rows_b IS_TEMPLATE false
+
+query B
+SELECT datistemplate FROM pg_database WHERE datname = 'database_pg_database_rows_b'
+----
+f
+
+statement ok
+DROP DATABASE database_pg_database_rows_a
+
+statement ok
+DROP DATABASE database_pg_database_rows_b
+
+query I
+SELECT count(*) FROM pg_database WHERE datname LIKE 'database\_pg\_database\_rows\_%'
+----
+0

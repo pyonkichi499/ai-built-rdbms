@@ -1,0 +1,165 @@
+# PREPARE のパラメータの型の推論（m5 04 §5、§7.1）。名前は extended_prepare_param_types_ を接頭辞にする
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DROP TABLE IF EXISTS extended_prepare_param_types_t
+
+statement ok
+CREATE TABLE extended_prepare_param_types_t (id int, s text, b bigint, d numeric(10,2), f bool)
+
+statement ok
+INSERT INTO extended_prepare_param_types_t VALUES (1, 'a', 10000000000, 1.50, true), (2, 'b', 2, 2.25, false)
+
+# 宣言があればその型
+statement ok
+PREPARE extended_prepare_param_types_p1(bigint) AS SELECT pg_typeof($1)::text
+
+query T
+EXECUTE extended_prepare_param_types_p1(1)
+----
+bigint
+
+# 宣言がなく、列との比較なら列の型
+statement ok
+PREPARE extended_prepare_param_types_p2 AS SELECT id FROM extended_prepare_param_types_t WHERE b = $1
+
+query I
+EXECUTE extended_prepare_param_types_p2(10000000000)
+----
+1
+
+query I
+EXECUTE extended_prepare_param_types_p2('2')
+----
+2
+
+# 範囲外の値は bigint の入力エラー
+statement error (22003)
+EXECUTE extended_prepare_param_types_p2(99999999999999999999)
+
+statement ok
+PREPARE extended_prepare_param_types_p3 AS SELECT pg_typeof($1 + 1)::text, $1 + 1
+
+query TI
+EXECUTE extended_prepare_param_types_p3(5)
+----
+integer 6
+
+# 列との比較（text）
+statement ok
+PREPARE extended_prepare_param_types_p4 AS SELECT id FROM extended_prepare_param_types_t WHERE s = $1
+
+query I
+EXECUTE extended_prepare_param_types_p4('b')
+----
+2
+
+# 列との比較（bool）
+statement ok
+PREPARE extended_prepare_param_types_p5 AS SELECT id FROM extended_prepare_param_types_t WHERE f = $1
+
+query I
+EXECUTE extended_prepare_param_types_p5('true')
+----
+1
+
+# INSERT の VALUES は対象の列の型
+statement ok
+PREPARE extended_prepare_param_types_p6 AS INSERT INTO extended_prepare_param_types_t (id, b, d) VALUES ($1, $2, $3)
+
+statement ok
+EXECUTE extended_prepare_param_types_p6(3, 30, 3.14159)
+
+query IIR
+SELECT id, b, d FROM extended_prepare_param_types_t WHERE id = 3
+----
+3 30 3.14
+
+# UPDATE の SET は対象の列の型
+statement ok
+PREPARE extended_prepare_param_types_p7 AS UPDATE extended_prepare_param_types_t SET s = $1 WHERE id = $2
+
+statement ok
+EXECUTE extended_prepare_param_types_p7('updated', 3)
+
+query T
+SELECT s FROM extended_prepare_param_types_t WHERE id = 3
+----
+updated
+
+# 同じ $n を複数回使う（最初の使用で型が決まる）
+statement ok
+PREPARE extended_prepare_param_types_p8 AS SELECT id FROM extended_prepare_param_types_t WHERE id = $1 OR b = $1 ORDER BY id
+
+query I
+EXECUTE extended_prepare_param_types_p8(2)
+----
+2
+
+# 型の指定と暗黙の変換
+statement ok
+PREPARE extended_prepare_param_types_p9(numeric) AS SELECT $1 * 2
+
+query R
+EXECUTE extended_prepare_param_types_p9(1.25)
+----
+2.50
+
+query R
+EXECUTE extended_prepare_param_types_p9(3)
+----
+6
+
+# typmod は無視される
+statement ok
+PREPARE extended_prepare_param_types_p10(varchar(5)) AS SELECT pg_typeof($1)::text
+
+query T
+EXECUTE extended_prepare_param_types_p10('abcdefgh')
+----
+character varying
+
+# 関数の引数
+statement ok
+PREPARE extended_prepare_param_types_p11 AS SELECT pg_typeof(abs($1))::text
+
+query T
+EXECUTE extended_prepare_param_types_p11(-2)
+----
+double precision
+
+statement ok
+PREPARE extended_prepare_param_types_p12 AS SELECT length($1)
+
+query I
+EXECUTE extended_prepare_param_types_p12('hello')
+----
+5
+
+# 型を決められない（42P18）
+statement error (42P18)
+PREPARE extended_prepare_param_types_p13 AS SELECT $1 IS NULL
+
+# 宣言の型と使い方の食い違い
+statement error (42883)
+PREPARE extended_prepare_param_types_p14(int) AS SELECT * FROM extended_prepare_param_types_t WHERE s = $1
+
+statement error (42883)
+PREPARE extended_prepare_param_types_p15(int) AS SELECT * FROM extended_prepare_param_types_t WHERE s = $1 + 1
+
+# 時刻を含む型
+statement ok
+PREPARE extended_prepare_param_types_p16(date) AS SELECT $1 + 1
+
+query T
+EXECUTE extended_prepare_param_types_p16('2024-02-28')
+----
+2024-02-29
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DROP TABLE extended_prepare_param_types_t

@@ -1,0 +1,481 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# uuid の入力形式・出力・比較・キャスト・gen_random_uuid
+
+# 接頭辞: uuid_basic_（テーブルは作らない）
+
+# 入力の形（5 種）
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('a0eebc999c0b4ef8bb6d6bb9bd380a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('a0eebc99-9c0b4ef8-bb6d6bb9-bd380a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('{a0eebc999c0b4ef8bb6d6bb9bd380a11}'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('00000000-0000-0000-0000-000000000000'::uuid)::text
+----
+00000000-0000-0000-0000-000000000000
+
+query T
+SELECT ('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)::text
+----
+ffffffff-ffff-ffff-ffff-ffffffffffff
+
+query T
+SELECT ('FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'::uuid)::text
+----
+ffffffff-ffff-ffff-ffff-ffffffffffff
+
+query T
+SELECT ('a0ee-bc999c0b-4ef8bb6d6bb9bd380a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT (uuid 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11')::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT (CAST('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS uuid))::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+# 不正な形
+
+statement error (22P02)
+SELECT (''::uuid)::text
+
+statement error (22P02)
+SELECT ('a'::uuid)::text
+
+statement error (22P02)
+SELECT ('x'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a111'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1g'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11-'::uuid)::text
+
+statement error (22P02)
+SELECT ('-a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99--9c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text
+
+statement error (22P02)
+SELECT ('{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'::uuid)::text
+
+statement error (22P02)
+SELECT ('(a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11)'::uuid)::text
+
+statement error (22P02)
+SELECT (' a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11 '::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99 9c0b 4ef8 bb6d 6bb9bd380a11'::uuid)::text
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d6bb9bd380a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+statement error (22P02)
+SELECT ('a0eebc999-c0b-4ef8-bb6d-6bb9bd380a11'::uuid)::text
+
+statement error (22P02)
+SELECT ('0xa0eebc999c0b4ef8bb6d6bb9bd380a11'::uuid)::text
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11-a0eebc99'::uuid)::text
+
+statement error (22P02)
+SELECT ('{{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}}'::uuid)::text
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd38-0a11'::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+# 出力は小文字・ハイフン形式
+
+query T
+SELECT ('A0EEBC999C0B4EF8BB6D6BB9BD380A11'::uuid::text)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('{A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11}'::uuid::text)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT (length('A0EEBC999C0B4EF8BB6D6BB9BD380A11'::uuid::text))::text
+----
+36
+
+query T
+SELECT (pg_typeof('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid))::text
+----
+uuid
+
+# 比較
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid = 'A0EEBC999C0B4EF8BB6D6BB9BD380A11'::uuid)::text
+----
+true
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid <> 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12'::uuid)::text
+----
+true
+
+query T
+SELECT ('00000000-0000-0000-0000-000000000001'::uuid > '00000000-0000-0000-0000-000000000000'::uuid)::text
+----
+true
+
+query T
+SELECT ('00000000-0000-0000-0000-000000000001'::uuid < '00000000-0000-0000-0000-000000000000'::uuid)::text
+----
+false
+
+query T
+SELECT ('10000000-0000-0000-0000-000000000000'::uuid > '0fffffff-ffff-ffff-ffff-ffffffffffff'::uuid)::text
+----
+true
+
+query T
+SELECT ('7fffffff-ffff-ffff-ffff-ffffffffffff'::uuid < '80000000-0000-0000-0000-000000000000'::uuid)::text
+----
+true
+
+query T
+SELECT ('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid > '80000000-0000-0000-0000-000000000000'::uuid)::text
+----
+true
+
+query T
+SELECT ('00000000-0000-0000-0000-000000000000'::uuid <= '00000000-0000-0000-0000-000000000000'::uuid)::text
+----
+true
+
+query T
+SELECT ('00000000-0000-0000-0000-000000000000'::uuid >= '00000000-0000-0000-0000-000000000001'::uuid)::text
+----
+false
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid = NULL::uuid)::text
+----
+NULL
+
+query T
+SELECT (NULL::uuid IS NULL)::text
+----
+true
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid IS DISTINCT FROM NULL::uuid)::text
+----
+true
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid IN ('00000000-0000-0000-0000-000000000000', 'a0eebc999c0b4ef8bb6d6bb9bd380a11'))::text
+----
+true
+
+# unknown との比較
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11')::text
+----
+true
+
+statement error (22P02)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid = 'bogus')::text
+
+# キャスト
+
+statement error (22P02)
+SELECT ('x'::text::uuid)::text
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::text::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('A0EEBC999C0B4EF8BB6D6BB9BD380A11'::text::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+statement error (42846)
+SELECT (1::uuid)::text
+
+statement error (42846)
+SELECT (1::int::uuid)::text
+
+statement error (42846)
+SELECT (1::bigint::uuid)::text
+
+statement error (42846)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::int)::text
+
+statement error (42846)
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::bytea)::text
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::varchar)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::varchar(8))::text
+----
+a0eebc99
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::char(40) || '|')::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11|
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::varchar::uuid)::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid || 'x')::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11x
+
+query T
+SELECT (lower('A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'::uuid::text))::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+query T
+SELECT (upper('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::text))::text
+----
+A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11
+
+query T
+SELECT (substr('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid::text, 15, 1))::text
+----
+4
+
+# uuid[]
+
+query T
+SELECT ('{}'::uuid[])::text
+----
+{}
+
+query T
+SELECT ('{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'::uuid[])::text
+----
+{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}
+
+query T
+SELECT ('{A0EEBC999C0B4EF8BB6D6BB9BD380A11,NULL}'::uuid[])::text
+----
+{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11,NULL}
+
+query T
+SELECT ('{"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11","00000000-0000-0000-0000-000000000000"}'::uuid[])::text
+----
+{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11,00000000-0000-0000-0000-000000000000}
+
+statement error (22P02)
+SELECT ('{x}'::uuid[])::text
+
+query T
+SELECT (ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid, NULL])::text
+----
+{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11,NULL}
+
+query T
+SELECT (ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid]::text[])::text
+----
+{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}
+
+query T
+SELECT (pg_typeof(ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid]))::text
+----
+uuid[]
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid = ANY(ARRAY['00000000-0000-0000-0000-000000000000'::uuid, 'a0eebc999c0b4ef8bb6d6bb9bd380a11'::uuid]))::text
+----
+true
+
+query T
+SELECT ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid = ANY('{00000000-0000-0000-0000-000000000000}'))::text
+----
+false
+
+query T
+SELECT (array_length('{00000000-0000-0000-0000-000000000000,a0eebc999c0b4ef8bb6d6bb9bd380a11}'::uuid[], 1))::text
+----
+2
+
+query T
+SELECT (('{00000000-0000-0000-0000-000000000000,a0eebc999c0b4ef8bb6d6bb9bd380a11}'::uuid[])[2])::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+# gen_random_uuid（値は比べない）
+
+query T
+SELECT (gen_random_uuid() IS NOT NULL)::text
+----
+true
+
+query T
+SELECT (pg_typeof(gen_random_uuid()))::text
+----
+uuid
+
+query T
+SELECT (length(gen_random_uuid()::text))::text
+----
+36
+
+query T
+SELECT (substr(gen_random_uuid()::text, 15, 1) = '4')::text
+----
+true
+
+query T
+SELECT (substr(gen_random_uuid()::text, 20, 1) IN ('8','9','a','b'))::text
+----
+true
+
+query T
+SELECT (gen_random_uuid() = gen_random_uuid())::text
+----
+false
+
+query T
+SELECT (gen_random_uuid()::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')::text
+----
+true
+
+query T
+SELECT ((SELECT count(*) FROM generate_series(1, 100) g WHERE substr(gen_random_uuid()::text, 15, 1) = '4' AND substr(gen_random_uuid()::text, 20, 1) IN ('8','9','a','b') AND gen_random_uuid()::text ~ '^[0-9a-f-]{36}$'))::text
+----
+100
+
+query T
+SELECT ((SELECT count(DISTINCT gen_random_uuid()) FROM generate_series(1, 1000)))::text
+----
+1000
+
+query T
+SELECT ((SELECT count(DISTINCT u) FROM (SELECT gen_random_uuid() AS u FROM generate_series(1, 1000)) s))::text
+----
+1000
+
+query T
+SELECT (gen_random_uuid()::uuid IS NOT NULL)::text
+----
+true
+
+# uuid の bytea 化は PG に無い。 uuid の min / max も無い
+
+query T
+SELECT ((SELECT count(*) FROM (VALUES ('00000000-0000-0000-0000-000000000001'::uuid), ('00000000-0000-0000-0000-000000000001'::uuid)) v(u) GROUP BY u))::text
+----
+2
+
+query T
+SELECT u::text FROM (VALUES ('00000000-0000-0000-0000-000000000002'::uuid), ('10000000-0000-0000-0000-000000000000'::uuid), ('00000000-0000-0000-0000-000000000001'::uuid), ('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid), ('80000000-0000-0000-0000-000000000000'::uuid), ('7fffffff-ffff-ffff-ffff-ffffffffffff'::uuid), (NULL)) v(u) ORDER BY u
+----
+00000000-0000-0000-0000-000000000001
+00000000-0000-0000-0000-000000000002
+10000000-0000-0000-0000-000000000000
+7fffffff-ffff-ffff-ffff-ffffffffffff
+80000000-0000-0000-0000-000000000000
+ffffffff-ffff-ffff-ffff-ffffffffffff
+NULL
+
+
+query T
+SELECT u::text FROM (VALUES ('00000000-0000-0000-0000-000000000002'::uuid), ('10000000-0000-0000-0000-000000000000'::uuid), ('00000000-0000-0000-0000-000000000001'::uuid), ('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid), ('80000000-0000-0000-0000-000000000000'::uuid), (NULL)) v(u) ORDER BY u DESC NULLS LAST
+----
+ffffffff-ffff-ffff-ffff-ffffffffffff
+80000000-0000-0000-0000-000000000000
+10000000-0000-0000-0000-000000000000
+00000000-0000-0000-0000-000000000002
+00000000-0000-0000-0000-000000000001
+NULL
+
+
+query T
+SELECT DISTINCT u::text FROM (VALUES ('00000000-0000-0000-0000-000000000002'::uuid), ('00000000-0000-0000-0000-000000000002'::uuid), ('00000000000000000000000000000002'::uuid), ('00000000-0000-0000-0000-000000000001'::uuid)) v(u) ORDER BY 1
+----
+00000000-0000-0000-0000-000000000001
+00000000-0000-0000-0000-000000000002
+
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

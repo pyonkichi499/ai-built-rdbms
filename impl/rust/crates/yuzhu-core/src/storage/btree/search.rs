@@ -191,6 +191,7 @@ pub(crate) fn descend(ctx: &BtCtx<'_>, key: &SearchKey<'_>) -> Result<Descent> {
     if meta.root >= nblocks {
         return Err(ctx.corrupted(BT_META_BLOCK, "root block is out of range"));
     }
+    crate::sync_point!("btree.descend.parent_released");
     #[cfg(test)]
     super::testing::fire(super::testing::HookPoint::DescendAfterMeta);
 
@@ -248,6 +249,7 @@ pub(crate) fn descend(ctx: &BtCtx<'_>, key: &SearchKey<'_>) -> Result<Descent> {
         }
         blk = child;
         lvl -= 1;
+        crate::sync_point!("btree.descend.parent_released");
         #[cfg(test)]
         super::testing::fire(super::testing::HookPoint::DescendBetweenLevels { level: lvl });
     }

@@ -1,0 +1,19 @@
+# フェーズ 5（crm5_05_copy に接続）: コピー先に書いた内容が残っている。
+
+query IT
+SELECT id, v FROM crm5_05_t ORDER BY id
+----
+1 aa
+2 b
+3 c
+4 d
+
+query II
+SELECT count(*), sum(id) FROM crm5_05_big
+----
+400 80200
+
+query I
+SELECT x FROM crm5_05_only_copy
+----
+42

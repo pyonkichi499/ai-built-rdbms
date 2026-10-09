@@ -1012,6 +1012,298 @@ pub(crate) fn decode_date_time(fields: &[Field], env: &DateTimeEnv<'_>) -> DtRes
     })
 }
 
+/// Whether a zone has one fixed offset for all times. `time_in` refuses zones
+/// whose offset can change (named zones of the tz database other than the
+/// `Etc/GMT+n` family, POSIX rules with DST).
+fn zone_is_fixed(z: &TimeZone) -> bool {
+    let probe = |t: i64| {
+        let (off, dst, abbrev) = z.utc_offset_at(t);
+        (off, dst, abbrev.to_owned())
+    };
+    let first = probe(0);
+    let mut samples = vec![
+        -12_000_000_000_i64,
+        -5_000_000_000,
+        -3_000_000_000,
+        4_000_000_000,
+    ];
+    // Mid-January and mid-July of every year from 1800 to 2100.
+    for year in 0..300_i64 {
+        let jan = (year - 170) * 31_556_952 + 1_296_000;
+        samples.push(jan);
+        samples.push(jan + 15_778_476);
+    }
+    samples.into_iter().all(|t| probe(t) == first)
+}
+
+/// `DecodeTimeOnly` (as `time_in` calls it: a time zone is accepted and
+/// ignored). Returns the broken-down time and the fractional seconds.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn decode_time_only(fields: &[Field], env: &DateTimeEnv<'_>) -> DtResult<(Tm, i32)> {
+    let mut fmask: i32 = 0;
+    let mut tmask: i32;
+    let mut ptype: i32 = 0;
+    let mut mer = HR24;
+    let mut isjulian = false;
+    let mut is2digits = false;
+    let mut bc = false;
+    let mut has_zone_name = false;
+    let mut floating_zone = false;
+    let mut tm = Tm {
+        isdst: -1,
+        ..Tm::default()
+    };
+    let mut fsec: i32 = 0;
+
+    for (idx, field) in fields.iter().enumerate() {
+        let text: &[u8] = &field.text;
+        match field.ftype {
+            DTK_DATE => {
+                if ptype == DTK_JULIAN {
+                    let (jday, n, of) = strtoint(text);
+                    if of {
+                        return Err(DtErr::FieldOverflow);
+                    }
+                    let (y, m, d) = j2date(jday);
+                    tm.year = y;
+                    tm.mon = m;
+                    tm.mday = d;
+                    isjulian = true;
+                    decode_timezone(&text[n..])?;
+                    tmask = DTK_DATE_M | DTK_TIME_M | dtk_m(TZ);
+                    ptype = 0;
+                } else if idx == 0
+                    && fields.len() >= 2
+                    && (fields[fields.len() - 1].ftype == DTK_DATE || fields[1].ftype == DTK_TIME)
+                {
+                    tmask = decode_date(text, fmask, &mut is2digits, &mut tm, env.date_order)?;
+                } else if text[0].is_ascii_digit() || ptype != 0 {
+                    if ptype != 0 {
+                        return Err(DtErr::BadFormat);
+                    }
+                    if (fmask & DTK_TIME_M) == DTK_TIME_M {
+                        return Err(DtErr::BadFormat);
+                    }
+                    let Some(dash) = text.iter().position(|&c| c == b'-') else {
+                        return Err(DtErr::BadFormat);
+                    };
+                    decode_timezone(&text[dash..])?;
+                    let (_, tm2) = decode_number_field(
+                        &text[..dash],
+                        fmask | DTK_DATE_M,
+                        &mut tm,
+                        &mut fsec,
+                        &mut is2digits,
+                    )?;
+                    tmask = tm2 | dtk_m(TZ);
+                } else {
+                    let name = String::from_utf8_lossy(text).into_owned();
+                    let Some(z) = env.zones.lookup(&name) else {
+                        return Err(DtErr::BadTimezone(name));
+                    };
+                    has_zone_name = true;
+                    floating_zone |= !zone_is_fixed(&z);
+                    tmask = dtk_m(TZ);
+                }
+            }
+            DTK_TIME => {
+                if ptype != 0 {
+                    if ptype != DTK_TIME {
+                        return Err(DtErr::BadFormat);
+                    }
+                    ptype = 0;
+                }
+                tmask = decode_time(text, INTERVAL_FULL_RANGE, &mut tm, &mut fsec)?;
+            }
+            DTK_TZ => {
+                decode_timezone(text)?;
+                tmask = dtk_m(TZ);
+            }
+            DTK_NUMBER => {
+                if ptype != 0 {
+                    let (value, n, of) = strtoint(text);
+                    if of {
+                        return Err(DtErr::FieldOverflow);
+                    }
+                    if n < text.len() && text[n] != b'.' {
+                        return Err(DtErr::BadFormat);
+                    }
+                    match ptype {
+                        DTK_JULIAN => {
+                            if value < 0 {
+                                return Err(DtErr::FieldOverflow);
+                            }
+                            tmask = DTK_DATE_M;
+                            let (y, m, d) = j2date(value);
+                            tm.year = y;
+                            tm.mon = m;
+                            tm.mday = d;
+                            isjulian = true;
+                            if n < text.len() && text[n] == b'.' {
+                                let time = parse_fraction(&text[n..])?;
+                                #[allow(clippy::cast_possible_truncation)]
+                                let (h, mi, s, fs) = dt2time((time * USECS_PER_DAY as f64) as i64);
+                                tm.hour = h;
+                                tm.min = mi;
+                                tm.sec = s;
+                                fsec = fs;
+                                tmask |= DTK_TIME_M;
+                            }
+                        }
+                        DTK_TIME => {
+                            let (_, tm2) = decode_number_field(
+                                text,
+                                fmask | DTK_DATE_M,
+                                &mut tm,
+                                &mut fsec,
+                                &mut is2digits,
+                            )?;
+                            tmask = tm2;
+                            if tmask != DTK_TIME_M {
+                                return Err(DtErr::BadFormat);
+                            }
+                        }
+                        _ => return Err(DtErr::BadFormat),
+                    }
+                    ptype = 0;
+                } else {
+                    let flen = text.len();
+                    let dot = text.iter().position(|&c| c == b'.');
+                    if dot.is_some_and(|d| d > 2) {
+                        let (_, tm2) = decode_number_field(
+                            text,
+                            fmask | DTK_DATE_M,
+                            &mut tm,
+                            &mut fsec,
+                            &mut is2digits,
+                        )?;
+                        tmask = tm2;
+                    } else if dot.is_some() && fmask & DTK_DATE_M == 0 {
+                        tmask = decode_date(text, fmask, &mut is2digits, &mut tm, env.date_order)?;
+                    } else if flen >= 6 {
+                        let (_, tm2) = decode_number_field(
+                            text,
+                            fmask | DTK_DATE_M,
+                            &mut tm,
+                            &mut fsec,
+                            &mut is2digits,
+                        )?;
+                        tmask = tm2;
+                    } else {
+                        tmask = decode_number(
+                            text,
+                            false,
+                            fmask | DTK_DATE_M,
+                            &mut tm,
+                            &mut fsec,
+                            &mut is2digits,
+                            env.date_order,
+                        )?;
+                    }
+                }
+            }
+            DTK_STRING | DTK_SPECIAL => {
+                let (mut ty, mut val, valtz) = decode_timezone_abbrev(text, env)?;
+                if ty == UNKNOWN_FIELD {
+                    (ty, val) = decode_special(text);
+                }
+                if ty == IGNORE_DTF {
+                    continue;
+                }
+                tmask = dtk_m(ty);
+                match ty {
+                    RESERV => match val {
+                        DTK_NOW => {
+                            tmask = DTK_TIME_M;
+                            let (cur, cfsec, _) = current_time(env);
+                            tm.hour = cur.hour;
+                            tm.min = cur.min;
+                            tm.sec = cur.sec;
+                            fsec = cfsec;
+                        }
+                        DTK_ZULU => {
+                            tmask = DTK_TIME_M | dtk_m(TZ);
+                            tm.hour = 0;
+                            tm.min = 0;
+                            tm.sec = 0;
+                            tm.isdst = 0;
+                        }
+                        _ => return Err(DtErr::BadFormat),
+                    },
+                    DTZMOD => {
+                        tmask |= dtk_m(DTZ);
+                        tm.isdst = 1;
+                    }
+                    DTZ => {
+                        tmask |= dtk_m(TZ);
+                        tm.isdst = 1;
+                    }
+                    TZ => tm.isdst = 0,
+                    DYNTZ => {
+                        tmask |= dtk_m(TZ);
+                        has_zone_name |= valtz.is_some();
+                    }
+                    AMPM => mer = val,
+                    ADBC => bc = val == BC,
+                    UNITS | ISOTIME => {
+                        tmask = 0;
+                        if ptype != 0 {
+                            return Err(DtErr::BadFormat);
+                        }
+                        ptype = val;
+                    }
+                    UNKNOWN_FIELD => {
+                        let name = String::from_utf8_lossy(text).into_owned();
+                        let Some(z) = env.zones.lookup(&name) else {
+                            return Err(DtErr::BadFormat);
+                        };
+                        has_zone_name = true;
+                        floating_zone |= !zone_is_fixed(&z);
+                        tmask = dtk_m(TZ);
+                    }
+                    _ => return Err(DtErr::BadFormat),
+                }
+            }
+            _ => return Err(DtErr::BadFormat),
+        }
+        if tmask & fmask != 0 {
+            return Err(DtErr::BadFormat);
+        }
+        fmask |= tmask;
+    }
+
+    if ptype != 0 {
+        return Err(DtErr::BadFormat);
+    }
+    validate_date(fmask, isjulian, is2digits, bc, &mut tm)?;
+    if mer != HR24 && tm.hour > HOURS_PER_DAY / 2 {
+        return Err(DtErr::FieldOverflow);
+    }
+    if mer == AM && tm.hour == HOURS_PER_DAY / 2 {
+        tm.hour = 0;
+    } else if mer == PM && tm.hour != HOURS_PER_DAY / 2 {
+        tm.hour += HOURS_PER_DAY / 2;
+    }
+    if time_overflows(tm.hour, tm.min, tm.sec, fsec) {
+        return Err(DtErr::FieldOverflow);
+    }
+    if (fmask & DTK_TIME_M) != DTK_TIME_M {
+        return Err(DtErr::BadFormat);
+    }
+    // The zone offset is computed by PostgreSQL but discarded by `time_in`;
+    // only its error conditions matter here.
+    if has_zone_name && fmask & dtk_m(DTZMOD) != 0 {
+        return Err(DtErr::BadFormat);
+    }
+    if floating_zone && (fmask & DTK_DATE_M) != DTK_DATE_M {
+        return Err(DtErr::BadFormat);
+    }
+    if fmask & dtk_m(TZ) == 0 && fmask & dtk_m(DTZMOD) != 0 {
+        return Err(DtErr::BadFormat);
+    }
+    Ok((tm, fsec))
+}
+
 // ---------------------------------------------------------------------------
 // Interval input
 // ---------------------------------------------------------------------------

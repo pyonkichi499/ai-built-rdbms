@@ -1,0 +1,39 @@
+# フェーズ 4（crm5_05_copy に接続）: pg_database に行があり、コピー先の内容がテンプレートと同じ。
+# さらに書いて、もう一度 kill -9 される。
+
+query T
+SELECT datname FROM pg_database WHERE datname LIKE 'crm5_05_%' ORDER BY datname
+----
+crm5_05_copy
+crm5_05_tpl
+
+query IT
+SELECT id, v FROM crm5_05_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+query II
+SELECT count(*), sum(id) FROM crm5_05_big
+----
+500 125250
+
+# 主キーの索引もコピーされている
+statement error (23505)
+INSERT INTO crm5_05_t VALUES (2, 'dup')
+
+statement count 1
+INSERT INTO crm5_05_t VALUES (4, 'd')
+
+statement count 1
+UPDATE crm5_05_t SET v = 'aa' WHERE id = 1
+
+statement count 100
+DELETE FROM crm5_05_big WHERE id > 400
+
+statement ok
+CREATE TABLE crm5_05_only_copy (x int)
+
+statement count 1
+INSERT INTO crm5_05_only_copy VALUES (42)

@@ -1,0 +1,21 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_set b_set a_b b_b a_lock b_lock a_sel b_sel b_r a_c
+step a_set: SET deadlock_timeout = '10s';
+step b_set: SET deadlock_timeout = '100ms';
+step a_b: BEGIN;
+step b_b: BEGIN;
+step a_lock: LOCK TABLE dlt_x IN ACCESS EXCLUSIVE MODE;
+step b_lock: LOCK TABLE dlt_y IN ACCESS EXCLUSIVE MODE;
+step a_sel: SELECT count(*) FROM dlt_y; <waiting ...>
+step b_sel: SELECT count(*) FROM dlt_x; <waiting ...>
+step b_sel: <... completed>
+ERROR:  deadlock detected
+step a_sel: <... completed>
+count
+-----
+    1
+(1 row)
+
+step b_r: ROLLBACK;
+step a_c: COMMIT;

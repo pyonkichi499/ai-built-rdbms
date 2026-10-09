@@ -76,6 +76,12 @@ const CREATE_OBJECTS: &[&str] = &[
 impl Parser<'_> {
     pub(super) fn parse_create(&mut self) -> Result<Statement> {
         let start = self.advance().span.start;
+        if self.at_role_keyword() {
+            return self.parse_create_role(start);
+        }
+        if self.is_kw("database") {
+            return self.parse_create_database(start);
+        }
         if self.is_kw("unique") || self.is_kw("index") {
             return self.parse_create_index(start);
         }
@@ -185,7 +191,12 @@ impl Parser<'_> {
         let start = self.start();
         let name = self.parse_col_id()?;
         let type_name = self.parse_type_name(false)?;
-        let constraints = self.parse_column_constraints()?;
+        let mut constraints = self.parse_column_constraints()?;
+        for c in &mut constraints {
+            if let ColumnConstraintKind::References(spec) = &mut c.kind {
+                spec.columns = vec![name.clone()];
+            }
+        }
         Ok(TableElement::Column(ColumnDefinition {
             name,
             type_name,
@@ -266,17 +277,9 @@ impl Parser<'_> {
                     params.nulls_not_distinct = nulls_not_distinct;
                     ColumnConstraintKind::Unique(params)
                 }
-                "references" => {
-                    self.advance();
-                    let table = self.parse_object_name()?;
-                    let columns = if self.peek_kind() == &TokenKind::LParen {
-                        self.parse_paren_name_list()?
-                    } else {
-                        Vec::new()
-                    };
-                    self.skip_fk_actions()?;
-                    ColumnConstraintKind::References { table, columns }
-                }
+                "references" => ColumnConstraintKind::References(
+                    self.parse_column_references(start, name.clone())?,
+                ),
                 "generated" => self.parse_generated()?,
                 "collate" if name.is_none() => {
                     self.advance();
@@ -300,13 +303,17 @@ impl Parser<'_> {
                 _ if name.is_some() => return Err(self.unexpected()),
                 _ => break,
             };
-            let deferrable = self.parse_constraint_attributes()?
-                && matches!(
-                    kind,
-                    ColumnConstraintKind::PrimaryKey(_)
-                        | ColumnConstraintKind::Unique(_)
-                        | ColumnConstraintKind::References { .. }
-                );
+            let fk_deferrable = matches!(
+                &kind,
+                ColumnConstraintKind::References(s)
+                    if s.deferrable == Some(true) || s.initially_deferred == Some(true)
+            );
+            let deferrable = fk_deferrable
+                || (self.parse_constraint_attributes()?
+                    && matches!(
+                        kind,
+                        ColumnConstraintKind::PrimaryKey(_) | ColumnConstraintKind::Unique(_)
+                    ));
             constraints.push(ColumnConstraint {
                 name,
                 kind,
@@ -507,32 +514,6 @@ impl Parser<'_> {
         Ok((name, false))
     }
 
-    /// `[MATCH FULL|PARTIAL|SIMPLE] [ON DELETE action] [ON UPDATE action]`.
-    fn skip_fk_actions(&mut self) -> Result<()> {
-        if self.eat_kw("match") && !(self.eat_kw("full") || self.eat_kw("partial")) {
-            self.expect_kw("simple")?;
-        }
-        while self.is_kw("on") {
-            self.advance();
-            if !self.eat_kw("delete") {
-                self.expect_kw("update")?;
-            }
-            if self.eat_kw("no") {
-                self.expect_kw("action")?;
-            } else if self.eat_kw("restrict") || self.eat_kw("cascade") {
-            } else {
-                self.expect_kw("set")?;
-                if !self.eat_kw("null") {
-                    self.expect_kw("default")?;
-                }
-                if self.peek_kind() == &TokenKind::LParen {
-                    self.parse_paren_name_list()?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn parse_table_constraint(&mut self) -> Result<TableConstraint> {
         let start = self.start();
         let name: Option<Ident> = if self.eat_kw("constraint") {
@@ -558,34 +539,21 @@ impl Parser<'_> {
                 self.expect_kw("key")?;
                 TableConstraintKind::PrimaryKey(self.parse_key_constraint()?)
             }
-            "foreign" => {
-                self.advance();
-                self.expect_kw("key")?;
-                let columns = self.parse_paren_name_list()?;
-                self.expect_kw("references")?;
-                let ref_table = self.parse_object_name()?;
-                let ref_columns = if self.peek_kind() == &TokenKind::LParen {
-                    self.parse_paren_name_list()?
-                } else {
-                    Vec::new()
-                };
-                self.skip_fk_actions()?;
-                TableConstraintKind::ForeignKey {
-                    columns,
-                    ref_table,
-                    ref_columns,
-                }
-            }
+            "foreign" => self.parse_table_foreign_key(start, name.clone())?,
             "exclude" => return Err(self.not_supported("EXCLUDE constraints")),
             _ => return Err(self.unexpected()),
         };
-        let deferrable = self.parse_constraint_attributes()?
-            && matches!(
-                kind,
-                TableConstraintKind::PrimaryKey(_)
-                    | TableConstraintKind::Unique(_)
-                    | TableConstraintKind::ForeignKey { .. }
-            );
+        let fk_deferrable = matches!(
+            &kind,
+            TableConstraintKind::ForeignKey(s)
+                if s.deferrable == Some(true) || s.initially_deferred == Some(true)
+        );
+        let deferrable = fk_deferrable
+            || (self.parse_constraint_attributes()?
+                && matches!(
+                    kind,
+                    TableConstraintKind::PrimaryKey(_) | TableConstraintKind::Unique(_)
+                ));
         Ok(TableConstraint {
             name,
             kind,
@@ -617,6 +585,12 @@ impl Parser<'_> {
 
     pub(super) fn parse_drop(&mut self) -> Result<Statement> {
         let start = self.advance().span.start;
+        if self.at_role_keyword() {
+            return self.parse_drop_role(start);
+        }
+        if self.is_kw("database") {
+            return self.parse_drop_database(start);
+        }
         if self.is_kw("index") {
             return self.parse_drop_index(start);
         }

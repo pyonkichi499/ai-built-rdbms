@@ -1,0 +1,83 @@
+# lock_timeout: 衝突するロックを待つ側が必ず 55P03 で終わる形。
+# 接頭辞: lock_lock_timeout_table_
+
+statement ok
+DROP TABLE IF EXISTS lock_lock_timeout_table_t
+
+statement ok
+CREATE TABLE lock_lock_timeout_table_t (id int)
+
+statement ok
+INSERT INTO lock_lock_timeout_table_t VALUES (1)
+
+query T
+SHOW lock_timeout
+----
+0
+
+connection a
+statement ok
+BEGIN
+
+connection a
+statement ok
+LOCK TABLE lock_lock_timeout_table_t IN ACCESS EXCLUSIVE MODE
+
+connection b
+statement ok
+SET lock_timeout = '100ms'
+
+connection b
+query T
+SHOW lock_timeout
+----
+100ms
+
+connection b
+statement error (55P03)
+SELECT * FROM lock_lock_timeout_table_t
+
+connection b
+statement error (55P03)
+INSERT INTO lock_lock_timeout_table_t VALUES (2)
+
+# トランザクション内でも同様で、失敗後は中断状態
+connection b
+statement ok
+BEGIN
+
+connection b
+statement error (55P03)
+LOCK TABLE lock_lock_timeout_table_t IN ROW SHARE MODE
+
+connection b
+statement error (25P02)
+SELECT 1
+
+connection b
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+ROLLBACK
+
+# 解放後は待たずに通る
+connection b
+query I
+SELECT count(*) FROM lock_lock_timeout_table_t
+----
+1
+
+connection b
+statement ok
+RESET lock_timeout
+
+connection b
+query T
+SHOW lock_timeout
+----
+0
+
+statement ok
+DROP TABLE lock_lock_timeout_table_t

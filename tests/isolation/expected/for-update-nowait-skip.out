@@ -1,0 +1,90 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_b a_lock1 b_nowait a_c
+step a_b: BEGIN;
+step a_lock1: SELECT id FROM fun_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_nowait: SELECT id FROM fun_t WHERE id = 1 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "fun_t"
+step a_c: COMMIT;
+
+starting permutation: a_b a_lock1 b_share_nowait a_c
+step a_b: BEGIN;
+step a_lock1: SELECT id FROM fun_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_share_nowait: SELECT id FROM fun_t WHERE id = 1 FOR SHARE NOWAIT;
+ERROR:  could not obtain lock on row in relation "fun_t"
+step a_c: COMMIT;
+
+starting permutation: a_b a_lock1 b_skip a_c
+step a_b: BEGIN;
+step a_lock1: SELECT id FROM fun_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_skip: SELECT id FROM fun_t ORDER BY id FOR UPDATE SKIP LOCKED;
+id
+--
+ 2
+ 3
+(2 rows)
+
+step a_c: COMMIT;
+
+starting permutation: a_b a_lock1 b_set_lt b_upd b_sel a_c b_sel
+step a_b: BEGIN;
+step a_lock1: SELECT id FROM fun_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_set_lt: SET lock_timeout = '200ms';
+step b_upd: UPDATE fun_t SET v = v + 1 WHERE id = 1; <waiting ...>
+step b_upd: <... completed>
+ERROR:  canceling statement due to lock timeout
+step b_sel: SELECT id, v FROM fun_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_c: COMMIT;
+step b_sel: SELECT id, v FROM fun_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+
+starting permutation: a_b a_lock1 b_sel a_c
+step a_b: BEGIN;
+step a_lock1: SELECT id FROM fun_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_sel: SELECT id, v FROM fun_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_c: COMMIT;

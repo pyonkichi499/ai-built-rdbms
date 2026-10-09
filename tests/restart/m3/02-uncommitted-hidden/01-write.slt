@@ -1,5 +1,5 @@
 # フェーズ 1: 本体の接続で行をコミットしたあと、別の接続に未コミットの変更を残して kill -9 される。
-# （yuzhu の M3 は書き込みが 1 本ずつなので、先にコミットしてから other が書き始める）
+# （M3 の yuzhu は書き込みが 1 本ずつだったので、先にコミットしてから other が書き始める書き方にしている。M5 は複数ライターで、同時に書く版は tests/restart/m5/01-multiwriter-commit）
 
 statement ok
 CREATE TABLE cr2_t (id int NOT NULL, v text)

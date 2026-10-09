@@ -173,15 +173,55 @@ fn separator(ctx: &BtCtx<'_>, is_leaf: bool, it: &[u8], downlink: BlockNumber) -
     }
 }
 
-/// 親のダウンリンクを探す（`_bt_getstackbuf`）。`(親のブロック, 写し, ダウンリンクの行ポインタ番号)`。
+/// レベル `level` の最も左のページ（ルートから最も左のダウンリンクをたどる）。最も左のページは分割されても
+/// 動かないので、並行する分割があっても有効（`_bt_get_endpoint` 相当）。
+fn leftmost_at_level(ctx: &BtCtx<'_>, level: u32) -> Result<BlockNumber> {
+    let meta = {
+        let pin = ctx.pool.read_buffer(ctx.tag(BT_META_BLOCK))?;
+        let g = pin.read_tree()?;
+        BtMeta::read(ctx, &g)?
+    };
+    if meta.level < level {
+        return Err(Error::internal(format!(
+            "index \"{}\" has no level {level} (the root is at level {})",
+            ctx.index.name, meta.level
+        )));
+    }
+    let mut blk = meta.root;
+    let mut lvl = meta.level;
+    while lvl > level {
+        let pin = ctx.pool.read_buffer(ctx.tag(blk))?;
+        let g = pin.read_tree()?;
+        let sp = validate_page(ctx, &g, blk, Some(lvl))?;
+        let first = sp.first_data_offset();
+        if first > g.max_offset() {
+            return Err(ctx.corrupted(blk, "internal page without a downlink"));
+        }
+        let t = IndexTuple(item(ctx, &g, blk, first)?);
+        if !t.is_pivot() {
+            return Err(ctx.corrupted(blk, "invalid index tuple: downlink is not a pivot"));
+        }
+        blk = t.downlink();
+        lvl -= 1;
+    }
+    Ok(blk)
+}
+
+/// 親のダウンリンクを探す（`_bt_getstackbuf`。B2）。`(親のブロック, 写し, ダウンリンクの行ポインタ番号)`。
+/// 降下の後に親が分割されるとダウンリンクは右隣へ移るので、右へだけ移って探す。`entry` が無い（降下の後に
+/// ルートが分割されて、スタックの上に新しいレベルができた）ときは、そのレベルの最も左のページから探す。
 fn find_parent(
     ctx: &BtCtx<'_>,
-    entry: StackEntry,
+    entry: Option<StackEntry>,
     child: BlockNumber,
     level: u32,
 ) -> Result<(BlockNumber, Box<Page>, u16)> {
-    let nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
-    let mut blk = entry.block;
+    let mut nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
+    let mut blk = match entry {
+        Some(e) => e.block,
+        None => leftmost_at_level(ctx, level)?,
+    };
+    let hint = entry.filter(|e| e.block == blk).map(|e| e.offset);
     let mut hops = 0u32;
     loop {
         let pin = ctx.pool.read_buffer(ctx.tag(blk))?;
@@ -193,12 +233,13 @@ fn find_parent(
             let t = IndexTuple(item(ctx, &g, blk, off)?);
             Ok(t.is_pivot() && t.downlink() == child)
         };
-        if blk == entry.block
-            && entry.offset >= first
-            && entry.offset <= max
-            && is_link(entry.offset)?
+        if let Some(off) = hint
+            && hops == 0
+            && off >= first
+            && off <= max
+            && is_link(off)?
         {
-            return Ok((blk, copy_page(&g), entry.offset));
+            return Ok((blk, copy_page(&g), off));
         }
         for off in first..=max {
             if is_link(off)? {
@@ -214,7 +255,10 @@ fn find_parent(
         blk = sp.next;
         hops += 1;
         if hops > nblocks {
-            return Err(ctx.corrupted(blk, "sibling chain is cyclic"));
+            nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
+            if hops > nblocks {
+                return Err(ctx.corrupted(blk, "sibling chain is cyclic"));
+            }
         }
     }
 }
@@ -229,17 +273,56 @@ fn too_many_levels(ctx: &BtCtx<'_>) -> Error {
     )
 }
 
+/// 1 回の試みの結果。
+enum Attempt<'a> {
+    Done,
+    /// 計画の後でページが変わっていた。ラッチは葉（`g`）以外すべて放してある。
+    Retry(PageWriteGuard<'a>),
+}
+
+/// 計画をやり直す回数の上限（無限ループの防止。実際には数回で終わる）。
+const MAX_ATTEMPTS: u32 = 10_000;
+
 /// 葉 `g`（排他ガード）に入らない `tuple`（行ポインタ番号 `pos`）を、分割して入れる（§5.5）。
-#[allow(clippy::too_many_lines)]
-pub(crate) fn split_and_insert(
+///
+/// 葉の排他ラッチを持ったまま、親・右隣などを共有ラッチで読んで計画し、順序 `O` で残りの排他ラッチを取る。
+/// 取った時点で計画の元のページが変わっていたら（別のライターが親や右隣を変えた。B2）、葉以外を放して
+/// 計画からやり直す。確保したページは使い回し、不要になっても孤児（ゼロのページ）として残す（B7）。
+pub(crate) fn split_and_insert<'a>(
     ctx: &BtCtx<'_>,
     w: &WriteCtx,
-    pin: &PinnedBuffer,
-    g: PageWriteGuard<'_>,
+    pin: &'a PinnedBuffer,
+    g: PageWriteGuard<'a>,
     stack: &[StackEntry],
     tuple: &[u8],
     pos: u16,
 ) -> Result<()> {
+    let mut g = g;
+    let mut spare: Vec<PinnedBuffer> = Vec::new();
+    for _ in 0..MAX_ATTEMPTS {
+        match split_attempt(ctx, w, pin, g, stack, tuple, pos, &mut spare)? {
+            Attempt::Done => return Ok(()),
+            Attempt::Retry(back) => g = back,
+        }
+    }
+    Err(Error::internal(format!(
+        "btree split of index \"{}\" did not settle",
+        ctx.index.name
+    )))
+}
+
+/// 計画 → 確保 → ラッチと検証 → 適用、の 1 回。検証で失敗したら `Retry` で葉のガードを返す。
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn split_attempt<'a>(
+    ctx: &BtCtx<'_>,
+    w: &WriteCtx,
+    pin: &'a PinnedBuffer,
+    g: PageWriteGuard<'a>,
+    stack: &[StackEntry],
+    tuple: &[u8],
+    pos: u16,
+    spare: &mut Vec<PinnedBuffer>,
+) -> Result<Attempt<'a>> {
     let leaf_block = pin.tag().block;
 
     // ----- フェーズ 1: 計画（ページは変えない）-----
@@ -309,16 +392,15 @@ pub(crate) fn split_and_insert(
             let mg = mp.read_tree()?;
             let meta = BtMeta::read(ctx, &mg)?;
             if meta.root != cur_block {
-                return Err(Error::internal(
-                    "btree meta root differs from the root page",
-                ));
+                // 計画の写しを読んだ後にルートが分割された。計画からやり直す。
+                return Ok(Attempt::Retry(g));
             }
             new_root = true;
             break;
         }
-        let entry = stack
-            .pop()
-            .ok_or_else(|| Error::internal("btree descent stack is empty for a non-root page"))?;
+        // スタックが尽きたら、降下の後にルートが分割されている（B4）。上のレベルを最も左から探す。
+        let entry = stack.pop();
+        crate::sync_point!("btree.split.before_parent_latch");
         let child_level = levels[l].sp.level;
         let (pblk, ppage, dl_off) = find_parent(ctx, entry, cur_block, child_level + 1)?;
         cur_block = pblk;
@@ -384,16 +466,12 @@ pub(crate) fn split_and_insert(
     let nnew = nsplit + usize::from(new_root);
 
     // ----- フェーズ 2: 確保（失敗しても木は無傷）-----
-    let mut new_pins: Vec<Option<PinnedBuffer>> = Vec::with_capacity(nnew);
-    for _ in 0..nnew {
-        new_pins.push(Some(
-            ctx.pool.extend_tree(ctx.index.locator, ForkNumber::Main)?,
-        ));
+    // 前の試みで確保したページは使い回す（B7。足りないぶんだけ足す）。
+    while spare.len() < nnew {
+        spare.push(ctx.pool.extend_tree(ctx.index.locator, ForkNumber::Main)?);
     }
-    let new_blocks: Vec<BlockNumber> = new_pins
-        .iter()
-        .map(|p| p.as_ref().map_or(0, |p| p.tag().block))
-        .collect();
+    let new_blocks: Vec<BlockNumber> = spare[..nnew].iter().map(|p| p.tag().block).collect();
+    let mut new_pins: Vec<Option<PinnedBuffer>> = spare.drain(..nnew).map(Some).collect();
 
     // ----- フェーズ 3: ラッチと検証 -----
     // ピンを先に作り終えてからガードを作る（ガードがピンを借用する）。スロット 0 は呼び出し側の `g`。
@@ -416,20 +494,45 @@ pub(crate) fn split_and_insert(
     let mut order: Vec<usize> = (1..slots.len()).collect();
     order.sort_by_key(|&i| slots[i].rank());
     let mut held: Vec<Option<PageWriteGuard<'_>>> = (0..slots.len()).map(|_| None).collect();
-    held[0] = Some(g);
+    // 葉（スロット 0）は計画の間ずっと排他ラッチを持っているので、他のすべてのラッチは順序 `O` で後ろにある。
     for &i in &order {
         if let Some(p) = pins[i].as_ref() {
             held[i] = Some(p.write_tree()?);
         }
     }
-    for (i, s) in slots.iter().enumerate() {
-        if let (Some((lsn, next)), Some(g)) = (s.expect, held[i].as_ref()) {
-            let cur_next = BtSpecial::read(g.page()).map_or(u32::MAX, |sp| sp.next);
-            if g.page().lsn() != lsn || cur_next != next {
-                return Err(Error::internal("btree page changed during split planning"));
+    if new_root {
+        crate::sync_point!("btree.root.split.root_latched");
+    }
+    let mut changed = false;
+    for (i, s) in slots.iter().enumerate().skip(1) {
+        if let (Some((lsn, next)), Some(hg)) = (s.expect, held[i].as_ref()) {
+            let cur_next = BtSpecial::read(hg.page()).map_or(u32::MAX, |sp| sp.next);
+            if hg.page().lsn() != lsn || cur_next != next {
+                changed = true;
+            }
+        }
+        if matches!(s.role, Role::Meta)
+            && let Some(mg) = held[i].as_ref()
+        {
+            // ルートの分割はルート・メタの順に排他ラッチを取る。メタの `root` がまだ計画のルートか確かめる（B4）。
+            if BtMeta::read(ctx, mg.page())?.root != levels[levels.len() - 1].block {
+                changed = true;
             }
         }
     }
+    if changed {
+        // 別のライターが親・右隣・ルートを変えた。葉以外のラッチを放し、確保したページを戻して計画からやり直す。
+        drop(held);
+        for (s, p) in slots.iter().zip(pins.iter_mut()) {
+            if matches!(s.role, Role::Right(_) | Role::NewRoot)
+                && let Some(p) = p.take()
+            {
+                spare.push(p);
+            }
+        }
+        return Ok(Attempt::Retry(g));
+    }
+    held[0] = Some(g);
 
     // ----- フェーズ 4: 画像の組み立て（メモリ上）-----
     let mut images: Vec<Box<Page>> = Vec::with_capacity(slots.len());
@@ -563,7 +666,7 @@ pub(crate) fn split_and_insert(
     } else {
         log_pages(ctx.wal, w, PagesReason::Split, &mut guards).map_err(|e| cs.escalate(e))?;
     }
-    Ok(())
+    Ok(Attempt::Done)
 }
 
 #[cfg(test)]
@@ -893,6 +996,34 @@ mod tests {
         // 完全なピボット（切り詰めなし）が 2.7KB なので内部ページの子は 2〜3 個で、木はすぐ高くなる。
         let t = wide_tree(TestStorage::new(), 300, Some(9));
         assert_wide_tree_is_sound(&t, 9);
+    }
+
+    /// B2・B4: スタックが無くても、レベルの最も左のページから親のダウンリンクを探せる。
+    #[test]
+    fn find_parent_without_a_stack_starts_from_the_leftmost_page_of_the_level() {
+        let t = wide_tree(TestStorage::new(), 300, Some(9));
+        let ctx = t.ctx();
+        let level = tree_level(&t);
+        assert!(level >= 2);
+        let root = {
+            let pin = t.pool().read_buffer(ctx.tag(0)).unwrap();
+            let g = pin.read_tree().unwrap();
+            BtMeta::read(&ctx, &g).unwrap().root
+        };
+        let leftmost_child = leftmost_at_level(&ctx, level - 1).unwrap();
+        let (blk, page, off) = find_parent(&ctx, None, leftmost_child, level).unwrap();
+        assert_eq!(blk, root);
+        let sp = BtSpecial::read(&page).unwrap();
+        assert_eq!(off, sp.first_data_offset());
+        assert_eq!(
+            IndexTuple(item(&ctx, &page, blk, off).unwrap()).downlink(),
+            leftmost_child
+        );
+        // 最も左の葉。
+        let leaf = leftmost_at_level(&ctx, 0).unwrap();
+        let (pblk, _, _) = find_parent(&ctx, None, leaf, 1).unwrap();
+        assert_eq!(pblk, leftmost_at_level(&ctx, 1).unwrap());
+        assert!(leftmost_at_level(&ctx, level + 1).is_err());
     }
 
     #[test]

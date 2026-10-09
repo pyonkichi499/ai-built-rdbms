@@ -1,0 +1,11 @@
+{
+  "name": "yuzhu-compat-node-postgres",
+  "version": "0.0.0",
+  "private": true,
+  "description": "yuzhu 互換テスト: node-postgres のシナリオ（10-tests §6.10.2）",
+  "type": "commonjs",
+  "dependencies": {
+    "pg": "8.13.1",
+    "pg-cursor": "2.12.1"
+  }
+}

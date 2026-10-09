@@ -256,6 +256,9 @@ pub fn dispatch(ctx: &RedoCtx, rec: &DecodedRecord) -> Result<()> {
         // 呼び先は B1 / Q1 が本実装に置き換える（P0-b のスタブは 0A000）。
         RmgrId::Btree => btree::wal::redo(ctx, rec),
         RmgrId::Seq => sequence::redo(ctx, rec),
+        // M5。呼び先は VC-1 / DB-2 が本実装に置き換える（F0b-1 のスタブは PANIC）。
+        RmgrId::Heap2 => heap::wal2::redo(ctx, rec),
+        RmgrId::Dbase => crate::dbase::redo(ctx, rec),
     }
 }
 
@@ -274,7 +277,7 @@ mod tests {
         let vfs: Arc<dyn Vfs> = Arc::new(SimVfs::new(1));
         let smgr = Arc::new(StorageManager::new(Arc::clone(&vfs), 1024));
         let pool = BufferPool::new(8, Arc::clone(&smgr), Arc::new(NoWal), DebugKnobs::default());
-        let clog = Arc::new(Clog::open(vfs, Xid(3)).unwrap());
+        let clog = Arc::new(Clog::open(vfs, Xid(3), Xid(3)).unwrap());
         RedoCtx {
             pool,
             smgr,
@@ -306,6 +309,8 @@ mod tests {
             (RmgrId::Xact, "transaction WAL"),
             (RmgrId::Smgr, "SMGR"),
             (RmgrId::Heap, "heap WAL"),
+            (RmgrId::Heap2, "heap2 WAL"),
+            (RmgrId::Dbase, "dbase WAL"),
         ] {
             let e = dispatch(&c, &rec(rmgr)).unwrap_err();
             assert!(e.message.contains(owner), "{rmgr:?}: {}", e.message);
@@ -313,11 +318,11 @@ mod tests {
     }
 
     fn cfg() -> StackConfig {
-        StackConfig {
-            rel_seg_blocks: crate::storage::DEFAULT_RELSEG_SIZE,
-            nframes: 64,
-            knobs: DebugKnobs::default(),
-        }
+        StackConfig::new(
+            crate::storage::DEFAULT_RELSEG_SIZE,
+            64,
+            DebugKnobs::default(),
+        )
     }
 
     fn fresh() -> (SimVfs, Arc<dyn Vfs>, Arc<ControlFileHandle>) {

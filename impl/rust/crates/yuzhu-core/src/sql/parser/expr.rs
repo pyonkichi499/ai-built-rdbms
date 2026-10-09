@@ -222,7 +222,7 @@ impl Parser<'_> {
                     span: self.span_from(op_start),
                 })
             }
-            TokenKind::LBracket => Err(self.not_supported("array subscripting")),
+            TokenKind::LBracket => self.parse_subscript(*left),
             _ => self.parse_keyword_infix(left, restricted),
         }
     }
@@ -274,7 +274,17 @@ impl Parser<'_> {
                     span: self.span_from(op_start),
                 })
             }
-            "at" => Err(self.not_supported("AT TIME ZONE")),
+            "at" => {
+                self.advance();
+                let zone = if self.eat_kw("local") {
+                    None
+                } else {
+                    self.expect_kw("time")?;
+                    self.expect_kw("zone")?;
+                    Some(self.expr_bp(Ctx::new(P_AT, Assoc::Left, restricted))?)
+                };
+                Ok(self.at_time_zone(*left, zone, op_start))
+            }
             _ => {
                 let negated = self.eat_kw("not");
                 self.parse_predicate(left, negated, op_start, restricted)
@@ -554,7 +564,6 @@ impl Parser<'_> {
 
     fn reject_indirection(&self) -> Result<()> {
         match self.peek_kind() {
-            TokenKind::LBracket => Err(self.not_supported("array subscripting")),
             TokenKind::Dot => Err(self.not_supported("field selection")),
             _ => Ok(()),
         }
@@ -621,7 +630,7 @@ impl Parser<'_> {
                     TokenKind::LBracket | TokenKind::LParen
                 ) =>
             {
-                return Err(self.not_supported("ARRAY constructors"));
+                return self.parse_array_expr();
             }
             _ => {}
         }
@@ -732,7 +741,7 @@ impl Parser<'_> {
         op_start: u32,
     ) -> Result<Expr> {
         if !self.parens_then_query(1) {
-            return Err(self.not_supported("ANY/ALL with an array"));
+            return self.parse_quantified_array(left, op, op_schema, op_start);
         }
         let quantifier = if self.advance().is_kw("all") {
             Quantifier::All
@@ -823,18 +832,10 @@ impl Parser<'_> {
             };
             return Ok(self.typed_literal(type_name, s, start));
         }
-        self.reject_indirection_brackets()?;
         Ok(Expr::Column {
             parts,
             span: self.span_from(start),
         })
-    }
-
-    fn reject_indirection_brackets(&self) -> Result<()> {
-        if self.peek_kind() == &TokenKind::LBracket {
-            return Err(self.not_supported("array subscripting"));
-        }
-        Ok(())
     }
 
     /// Consumes the string token and builds `type 'literal'`.
@@ -1003,7 +1004,12 @@ impl Parser<'_> {
     /// A parenthesized query as a set-operation operand: its body if it has
     /// no ORDER BY / LIMIT / OFFSET, otherwise `QueryBody::Nested`.
     pub(super) fn unwrap_query(q: Query) -> QueryBody {
-        if q.with.is_none() && q.order_by.is_empty() && q.limit.is_none() && q.offset.is_none() {
+        if q.with.is_none()
+            && q.order_by.is_empty()
+            && q.limit.is_none()
+            && q.offset.is_none()
+            && q.locking.is_empty()
+        {
             q.body
         } else {
             QueryBody::Nested(Box::new(q))
@@ -1211,7 +1217,23 @@ impl Parser<'_> {
         let start = self.start();
         let type_name = self.parse_type_name(true)?;
         match self.peek_kind().clone() {
-            TokenKind::String(s) => Ok(self.typed_literal(type_name, s, start)),
+            TokenKind::String(s) => {
+                let is_interval = type_name
+                    .names
+                    .last()
+                    .is_some_and(|n| n.value == "interval");
+                let mut e = self.typed_literal(type_name, s, start);
+                if is_interval
+                    && let Expr::Cast {
+                        type_name, span, ..
+                    } = &mut e
+                    && type_name.modifiers.is_empty()
+                {
+                    type_name.modifiers = self.parse_interval_fields()?;
+                    *span = self.span_from(start);
+                }
+                Ok(e)
+            }
             _ => Err(self.unexpected()),
         }
     }
@@ -1365,13 +1387,7 @@ impl Parser<'_> {
                 }
                 Some("interval") => {
                     self.advance();
-                    let mods = self.opt_iconst_modifier()?;
-                    if ["year", "month", "day", "hour", "minute", "second"]
-                        .iter()
-                        .any(|f| self.is_kw(f))
-                    {
-                        return Err(self.not_supported("INTERVAL fields"));
-                    }
+                    let mods = self.parse_interval_modifiers(!const_ctx)?;
                     ("interval", mods)
                 }
                 Some("setof") => return Err(self.not_supported("SETOF")),

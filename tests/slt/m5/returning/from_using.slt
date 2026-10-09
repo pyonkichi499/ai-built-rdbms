@@ -1,0 +1,77 @@
+# UPDATE ... FROM / DELETE ... USING の RETURNING（他の表の列を含む）
+
+statement ok
+DROP TABLE IF EXISTS returning_from_using_t
+
+statement ok
+DROP TABLE IF EXISTS returning_from_using_u
+
+statement ok
+CREATE TABLE returning_from_using_t (id int PRIMARY KEY, a int, b text)
+
+statement ok
+CREATE TABLE returning_from_using_u (id int, w text)
+
+statement ok
+INSERT INTO returning_from_using_t VALUES (1, 1, 'p'), (2, 2, 'q'), (3, 3, 'r')
+
+statement ok
+INSERT INTO returning_from_using_u VALUES (1, 'w1'), (2, 'w2')
+
+query ITT rowsort
+UPDATE returning_from_using_t SET b = u.w FROM returning_from_using_u u WHERE returning_from_using_t.id = u.id RETURNING returning_from_using_t.id, u.w, returning_from_using_t.b
+----
+1 w1 w1
+2 w2 w2
+
+# RETURNING * は対象表の列に続いて FROM の表の列
+query IITTIT
+UPDATE returning_from_using_t SET a = 5 FROM returning_from_using_u u WHERE returning_from_using_t.id = u.id AND u.id = 2 RETURNING *
+----
+2 5 w2 2 w2
+
+# 対象表だけ
+query IITT
+UPDATE returning_from_using_t SET a = 6 FROM returning_from_using_u u WHERE returning_from_using_t.id = u.id AND u.id = 2 RETURNING returning_from_using_t.*
+----
+2 6 w2
+
+# 他の表に触れない RETURNING
+query I
+UPDATE returning_from_using_t SET a = 7 FROM returning_from_using_u u WHERE returning_from_using_t.id = u.id AND u.id = 2 RETURNING returning_from_using_t.a
+----
+7
+
+# 他の表の式
+query IT
+UPDATE returning_from_using_t t SET a = 8 FROM returning_from_using_u u WHERE t.id = u.id AND u.id = 1 RETURNING t.a + u.id, u.w || '!'
+----
+9 w1!
+
+query IT
+DELETE FROM returning_from_using_t USING returning_from_using_u u WHERE returning_from_using_t.id = u.id AND u.id = 2 RETURNING returning_from_using_t.id, u.w
+----
+2 w2
+
+query IITTIT rowsort
+DELETE FROM returning_from_using_t USING returning_from_using_u u WHERE returning_from_using_t.id = u.id RETURNING *
+----
+1 8 w1 1 w1
+
+# 0 行
+query IT
+DELETE FROM returning_from_using_t USING returning_from_using_u u WHERE returning_from_using_t.id = u.id RETURNING returning_from_using_t.id, u.w
+----
+
+# FROM がない文で他の表を参照すると 42P01
+statement error (42P01)
+INSERT INTO returning_from_using_t (id) VALUES (9) RETURNING u.w
+
+statement error (42P01)
+UPDATE returning_from_using_t SET a = 1 RETURNING returning_from_using_u.w
+
+statement ok
+DROP TABLE returning_from_using_t
+
+statement ok
+DROP TABLE returning_from_using_u

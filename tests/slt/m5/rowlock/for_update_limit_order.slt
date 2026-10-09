@@ -1,0 +1,85 @@
+# FOR UPDATE と ORDER BY / LIMIT / OFFSET
+
+statement ok
+DROP TABLE IF EXISTS rowlock_for_update_limit_order_t
+
+statement ok
+CREATE TABLE rowlock_for_update_limit_order_t (id int PRIMARY KEY, g int, v text)
+
+statement ok
+INSERT INTO rowlock_for_update_limit_order_t VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 2, 'c'), (4, 2, 'd'), (5, 3, 'e')
+
+query IT
+SELECT id, v FROM rowlock_for_update_limit_order_t ORDER BY id DESC FOR UPDATE
+----
+5 e
+4 d
+3 c
+2 b
+1 a
+
+query I
+SELECT id FROM rowlock_for_update_limit_order_t ORDER BY id LIMIT 2 FOR UPDATE
+----
+1
+2
+
+query I
+SELECT id FROM rowlock_for_update_limit_order_t ORDER BY id LIMIT 2 OFFSET 2 FOR UPDATE
+----
+3
+4
+
+query I
+SELECT id FROM rowlock_for_update_limit_order_t ORDER BY g DESC, id LIMIT 3 FOR NO KEY UPDATE
+----
+5
+3
+4
+
+# LIMIT 内の行だけがロックされる
+connection a
+statement ok
+BEGIN
+
+connection a
+query I
+SELECT id FROM rowlock_for_update_limit_order_t ORDER BY id LIMIT 2 FOR UPDATE
+----
+1
+2
+
+connection b
+statement error (55P03)
+SELECT id FROM rowlock_for_update_limit_order_t WHERE id = 2 FOR UPDATE NOWAIT
+
+connection b
+query I
+SELECT id FROM rowlock_for_update_limit_order_t WHERE id = 3 FOR UPDATE NOWAIT
+----
+3
+
+connection a
+statement ok
+ROLLBACK
+
+# 0 件
+query I
+SELECT id FROM rowlock_for_update_limit_order_t ORDER BY id LIMIT 0 FOR UPDATE
+----
+
+# 副問い合わせの中の FOR UPDATE
+query I
+SELECT id FROM (SELECT id FROM rowlock_for_update_limit_order_t ORDER BY id LIMIT 2 FOR UPDATE) s ORDER BY id
+----
+1
+2
+
+# FOR UPDATE をつけても結果は変わらない
+query I
+SELECT count(*) FROM (SELECT id FROM rowlock_for_update_limit_order_t WHERE g = 2 FOR UPDATE) s
+----
+2
+
+statement ok
+DROP TABLE rowlock_for_update_limit_order_t

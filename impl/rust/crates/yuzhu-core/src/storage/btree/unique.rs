@@ -1,7 +1,9 @@
-//! 一意性検査（`m4/06-btree.md` §5.4）。
+//! 一意性検査（`m4/06-btree.md` §5.4、`m5/02` §6.9 の B5・B6）。
 //!
-//! 最初の葉（`K_first` が属する葉）の排他ラッチを持ったまま、等値のキーを持つ項目をヒープで
-//! `fetch_dirty` して調べる。等値が右の葉へ続くときは右を共有ラッチして読む（左 → 右）。
+//! 最初の葉（`K_first` が属する葉 `P0`）の排他ラッチを持ったまま、等値のキーを持つ項目をヒープで
+//! `fetch_dirty` して調べる。等値が右の葉へ続くときは右を共有ラッチして読む（左 → 右。順序 `O`）。
+//! 他のトランザクションの挿入中・削除中の項目に当たったら `UniqueOutcome::Wait(xid)` を返す
+//! （呼び出し側がラッチを放して `InsertOutcome::WaitFor` にする）。
 //! `23505` には `s` / `t` / `n` を付け、DETAIL は付けない（`dml.rs` が補う。11 §7.1 の C-11）。
 
 use std::cmp::Ordering;
@@ -23,6 +25,17 @@ enum PageResult {
     Done,
     /// 等値が右のページへ続く。
     Right(BlockNumber),
+    /// 他のトランザクションの未確定の項目に当たった。
+    Wait(Xid),
+}
+
+/// `check_unique` の結果。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum UniqueOutcome {
+    /// 生きている重複はない。
+    Clear,
+    /// その XID の終了を待ってからやり直す。
+    Wait(Xid),
 }
 
 /// `23505`（`s` / `t` / `n`。DETAIL なし）。
@@ -39,7 +52,7 @@ pub(crate) fn unique_violation(ctx: &BtCtx<'_>) -> Error {
 }
 
 /// 最初の葉 `first`（呼び出し側が排他ラッチを持っている）から、`key` と等しいキーの項目を順に調べる。
-/// ヒープで生きている項目があれば `23505`。`key` は NULL を含まない。
+/// ヒープで生きている項目があれば `23505`、他者の未確定の項目があれば `Wait`。`key` は NULL を含まない。
 pub(crate) fn check_unique(
     ctx: &BtCtx<'_>,
     first: &Page,
@@ -48,7 +61,7 @@ pub(crate) fn check_unique(
     heap: &dyn TableStore,
     rel: &RelHandle,
     own: Xid,
-) -> Result<()> {
+) -> Result<UniqueOutcome> {
     let k = SearchKey {
         cols: key,
         tid: None,
@@ -56,19 +69,27 @@ pub(crate) fn check_unique(
     };
     let sp = BtSpecial::read(first).ok_or_else(|| ctx.corrupted(first_blk, "no special area"))?;
     let mut next = check_page(ctx, first, first_blk, &sp, &k, key, heap, rel, own)?;
-    let nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
+    let mut nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
     let mut hops = 0u32;
-    while let PageResult::Right(blk) = next {
+    loop {
+        let blk = match next {
+            PageResult::Done => return Ok(UniqueOutcome::Clear),
+            PageResult::Wait(x) => return Ok(UniqueOutcome::Wait(x)),
+            PageResult::Right(blk) => blk,
+        };
         hops += 1;
         if hops > nblocks {
-            return Err(ctx.corrupted(blk, "sibling chain is cyclic"));
+            // 並行する分割でファイルが伸びたかもしれないので、読み直してから判定する。
+            nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
+            if hops > nblocks {
+                return Err(ctx.corrupted(blk, "sibling chain is cyclic"));
+            }
         }
         let pin = ctx.pool.read_buffer(ctx.tag(blk))?;
         let g = pin.read_tree()?;
         let sp = validate_page(ctx, &g, blk, Some(0))?;
         next = check_page(ctx, &g, blk, &sp, &k, key, heap, rel, own)?;
     }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -101,12 +122,9 @@ fn check_page(
         match heap.fetch_dirty(rel, Some(own), tid)? {
             DirtyResult::Visible => return Err(unique_violation(ctx)),
             DirtyResult::Invisible => {}
-            DirtyResult::WaitFor(x) => {
-                return Err(Error::internal(format!(
-                    "unique check would wait for transaction {}",
-                    x.0
-                )));
-            }
+            // 変異テスト用: 待たずに通す（重複が入る）。
+            DirtyResult::WaitFor(_) if ctx.knobs.unique_skip_wait => {}
+            DirtyResult::WaitFor(x) => return Ok(PageResult::Wait(x)),
         }
     }
     if sp.is_rightmost() {
@@ -126,7 +144,7 @@ mod tests {
     use crate::storage::btree::insert::insert;
     use crate::storage::btree::testing::{FakeHeap, TestIndex, check_tree, new_index, put, tid_of};
     use crate::storage::testing::test_rel;
-    use crate::storage::{TupleDesc, UniqueCheck};
+    use crate::storage::{InsertOutcome, TupleDesc, UniqueCheck};
     use crate::types::SqlType;
     use std::sync::Arc;
 
@@ -138,10 +156,12 @@ mod tests {
             locator: test_rel(16384),
             desc: Arc::new(TupleDesc { attrs: vec![] }),
             indexes: Arc::from(Vec::new()),
+            key_columns: Arc::from(Vec::new()),
+            ri: Arc::default(),
         }
     }
 
-    fn ins(t: &TestIndex, heap: &FakeHeap, key: Datum, n: u32) -> Result<()> {
+    fn ins(t: &TestIndex, heap: &FakeHeap, key: Datum, n: u32) -> Result<InsertOutcome> {
         let r = rel();
         insert(
             &t.ctx(),
@@ -216,15 +236,80 @@ mod tests {
         ins(&t, &heap, Datum::Int4(7), 2).unwrap();
     }
 
+    /// B5: 他者の未確定の項目に当たったら、何も挿入せず `WaitFor(xid)` を返す。ラッチ・ピンは外れている。
+    /// 相手が終わった後の再試行で挿入される。
     #[test]
-    fn wait_for_is_an_internal_error() {
+    fn wait_for_returns_the_xid_without_inserting_and_a_retry_inserts() {
         let t = new_index(&INT, true);
         let heap = FakeHeap::new();
         ins(&t, &heap, Datum::Int4(7), 1).unwrap();
         heap.set(tid_of(1), DirtyResult::WaitFor(Xid(9)));
-        let e = ins(&t, &heap, Datum::Int4(7), 2).unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
-        assert_eq!(e.message, "unique check would wait for transaction 9");
+        let before = t.snapshot_pages();
+        let out = ins(&t, &heap, Datum::Int4(7), 2).unwrap();
+        assert_eq!(out, InsertOutcome::WaitFor(Xid(9)));
+        for (a, b) in before.iter().zip(t.snapshot_pages()) {
+            assert!(a.0 == b.0, "WaitFor must not change the tree");
+        }
+        t.assert_clean();
+        // 相手が中断した。
+        heap.set(tid_of(1), DirtyResult::Invisible);
+        assert_eq!(
+            ins(&t, &heap, Datum::Int4(7), 2).unwrap(),
+            InsertOutcome::Inserted
+        );
+        assert_eq!(check_tree(&t).entries.len(), 2);
+        // 相手がコミットした。
+        heap.set(tid_of(1), DirtyResult::Visible);
+        let e = ins(&t, &heap, Datum::Int4(7), 3).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::UNIQUE_VIOLATION);
+    }
+
+    /// 等値の連続が右の葉まで続くとき、右の葉の項目の `WaitFor` も返す。
+    #[test]
+    fn wait_for_on_a_later_leaf_of_the_equal_run() {
+        let heap = FakeHeap::new();
+        let t = new_index(&INT, true);
+        for i in 0..1200u32 {
+            ins(&t, &heap, Datum::Int4(5), i).unwrap();
+        }
+        assert!(check_tree(&t).pages_per_level[0] >= 3);
+        heap.set(tid_of(1100), DirtyResult::WaitFor(Xid(11)));
+        assert_eq!(
+            ins(&t, &heap, Datum::Int4(5), 9000).unwrap(),
+            InsertOutcome::WaitFor(Xid(11))
+        );
+        assert_eq!(check_tree(&t).entries.len(), 1200);
+        t.assert_clean();
+    }
+
+    /// 変異 `unique_skip_wait`: 待たずに通すので重複が入る（検出される側のテスト）。
+    #[test]
+    fn mutation_unique_skip_wait_lets_the_insert_through() {
+        let t = new_index(&INT, true);
+        let heap = FakeHeap::new();
+        ins(&t, &heap, Datum::Int4(7), 1).unwrap();
+        heap.set(tid_of(1), DirtyResult::WaitFor(Xid(9)));
+        let r = rel();
+        let ctx = BtCtx {
+            knobs: crate::debug_knobs::DebugKnobs {
+                unique_skip_wait: true,
+                ..crate::debug_knobs::DebugKnobs::default()
+            },
+            ..t.ctx()
+        };
+        let out = insert(
+            &ctx,
+            &t.write_ctx(),
+            &[Datum::Int4(7)],
+            tid_of(2),
+            UniqueCheck::Check {
+                heap: &heap,
+                rel: &r,
+                own_xid: Xid(3),
+            },
+        )
+        .unwrap();
+        assert_eq!(out, InsertOutcome::Inserted);
     }
 
     /// 等値の連続が複数の葉にまたがるとき、右の葉まで調べる（最初の葉・中間・最後の葉のどこでも検出）。

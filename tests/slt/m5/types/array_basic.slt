@@ -1,0 +1,1182 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# ARRAY[...] 構文・型決定・空配列・キャスト・= / <> ・配列関数
+
+# 接頭辞: array_basic_（テーブルは作らない。KD-14）
+
+# 型の決まり方
+
+query T
+SELECT (pg_typeof(ARRAY[1,2]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(ARRAY[1,2.5]))::text
+----
+numeric[]
+
+query T
+SELECT (pg_typeof(ARRAY[1,2.5::float8]))::text
+----
+double precision[]
+
+query T
+SELECT (pg_typeof(ARRAY[1::int2, 2::int2]))::text
+----
+smallint[]
+
+query T
+SELECT (pg_typeof(ARRAY[1::int2, 2]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(ARRAY[1, 2::int8]))::text
+----
+bigint[]
+
+query T
+SELECT (pg_typeof(ARRAY['a','b']))::text
+----
+text[]
+
+query T
+SELECT (pg_typeof(ARRAY['a'::varchar,'b']))::text
+----
+character varying[]
+
+query T
+SELECT (pg_typeof(ARRAY['a'::varchar,'b'::text]))::text
+----
+character varying[]
+
+query T
+SELECT (pg_typeof(ARRAY['a'::bpchar]))::text
+----
+character[]
+
+query T
+SELECT (pg_typeof(ARRAY['a'::char(3)]))::text
+----
+character[]
+
+query T
+SELECT (pg_typeof(ARRAY['a'::name]))::text
+----
+name[]
+
+query T
+SELECT (pg_typeof(ARRAY['a'::name, 'b'::text]))::text
+----
+name[]
+
+query T
+SELECT (pg_typeof(ARRAY[true, false]))::text
+----
+boolean[]
+
+query T
+SELECT (pg_typeof(ARRAY[1, NULL]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(ARRAY[NULL, 1]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(ARRAY[NULL::int]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(ARRAY['2024-01-01'::date]))::text
+----
+date[]
+
+query T
+SELECT (pg_typeof(ARRAY['2024-01-01'::date, '2024-01-01 00:00'::timestamp]))::text
+----
+timestamp without time zone[]
+
+query T
+SELECT (pg_typeof(ARRAY['1 day'::interval]))::text
+----
+interval[]
+
+query T
+SELECT (pg_typeof(ARRAY[1.5::numeric(5,2)]))::text
+----
+numeric[]
+
+query T
+SELECT (pg_typeof(ARRAY[1::oid]))::text
+----
+oid[]
+
+statement error (22P02)
+SELECT (pg_typeof(ARRAY['x'::uuid]))::text
+
+query T
+SELECT (pg_typeof(ARRAY['\x01'::bytea]))::text
+----
+bytea[]
+
+statement error (22P02)
+SELECT (pg_typeof(ARRAY[1, 'a']))::text
+
+query T
+SELECT (pg_typeof(ARRAY['1', 2]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(ARRAY['1', '2']))::text
+----
+text[]
+
+query T
+SELECT (pg_typeof(ARRAY[NULL, NULL]))::text
+----
+text[]
+
+query T
+SELECT (pg_typeof(ARRAY[1.5, 2]))::text
+----
+numeric[]
+
+query T
+SELECT (pg_typeof(ARRAY[2, 1.5]))::text
+----
+numeric[]
+
+query T
+SELECT (pg_typeof(ARRAY[1, 2147483648]))::text
+----
+bigint[]
+
+query T
+SELECT (pg_typeof(ARRAY[1, 1e0]))::text
+----
+numeric[]
+
+statement error (22P02)
+SELECT (ARRAY[1, 'a'])::text
+
+query T
+SELECT (ARRAY[1, '2'])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY['1', 2])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1, 2.5])::text
+----
+{1,2.5}
+
+query T
+SELECT (ARRAY[1, 2.50])::text
+----
+{1,2.50}
+
+query T
+SELECT (ARRAY[1.0, 2])::text
+----
+{1.0,2}
+
+query T
+SELECT (ARRAY[1, 2147483648])::text
+----
+{1,2147483648}
+
+statement error (42804)
+SELECT (ARRAY[1, true])::text
+
+statement error (22P02)
+SELECT (ARRAY['a', 1])::text
+
+query T
+SELECT (ARRAY[NULL, NULL])::text
+----
+{NULL,NULL}
+
+query T
+SELECT (ARRAY[NULL, NULL]::int[])::text
+----
+{NULL,NULL}
+
+query T
+SELECT (ARRAY[1, NULL, 3])::text
+----
+{1,NULL,3}
+
+query T
+SELECT (ARRAY[1+1, 2*3, abs(-4)])::text
+----
+{2,6,4}
+
+query T
+SELECT (ARRAY[length('abc'), 4])::text
+----
+{3,4}
+
+query T
+SELECT (ARRAY['a' || 'b', 'c'])::text
+----
+{ab,c}
+
+query T
+SELECT (ARRAY[1.5::float8, 2])::text
+----
+{1.5,2}
+
+query T
+SELECT (ARRAY[1::int2, 2::int8])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY['a'::char(3), 'b'::char(3)])::text
+----
+{"a  ","b  "}
+
+query T
+SELECT (ARRAY['a'::char(3), 'bcd'::varchar])::text
+----
+{"a  ",bcd}
+
+query T
+SELECT (ARRAY['2024-01-02'::date, '2024-01-03'::date])::text
+----
+{2024-01-02,2024-01-03}
+
+query T
+SELECT (ARRAY['2024-01-02'::date, '2024-01-03 04:05:06'::timestamp])::text
+----
+{"2024-01-02 00:00:00","2024-01-03 04:05:06"}
+
+query T
+SELECT (ARRAY['x'::text, NULL, 'z'])::text
+----
+{x,NULL,z}
+
+# 空配列
+
+query T
+SELECT (ARRAY[]::int[])::text
+----
+{}
+
+query T
+SELECT (ARRAY[]::text[])::text
+----
+{}
+
+query T
+SELECT (ARRAY[]::int[] = '{}'::int[])::text
+----
+true
+
+query T
+SELECT (pg_typeof(ARRAY[]::int[]))::text
+----
+integer[]
+
+query T
+SELECT (array_length(ARRAY[]::int[], 1))::text
+----
+NULL
+
+query T
+SELECT (cardinality(ARRAY[]::int[]))::text
+----
+0
+
+query T
+SELECT (array_ndims(ARRAY[]::int[]))::text
+----
+NULL
+
+query T
+SELECT (array_dims(ARRAY[]::int[]))::text
+----
+NULL
+
+query T
+SELECT (array_lower(ARRAY[]::int[], 1))::text
+----
+NULL
+
+query T
+SELECT (array_upper(ARRAY[]::int[], 1))::text
+----
+NULL
+
+statement error (42P18)
+SELECT (ARRAY[])::text
+
+statement error (42P18)
+SELECT (pg_typeof(ARRAY[]))::text
+
+statement error (42P18)
+SELECT (ARRAY[]::int)::text
+
+query T
+SELECT (ARRAY[]::int[]::text)::text
+----
+{}
+
+query T
+SELECT ((ARRAY[]::int[]) IS NULL)::text
+----
+false
+
+query T
+SELECT ('{}'::int[] IS NULL)::text
+----
+false
+
+# ::T[] のキャスト（要素型の変換・typmod）
+
+query T
+SELECT (ARRAY[1,2]::text[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::int8[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::float8[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::numeric[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1.5,2.5]::int[])::text
+----
+{2,3}
+
+query T
+SELECT (ARRAY[1.5,2.5]::numeric(3,0)[])::text
+----
+{2,3}
+
+query T
+SELECT (ARRAY[1.234]::numeric(3,1)[])::text
+----
+{1.2}
+
+query T
+SELECT (ARRAY[1.256]::numeric(3,1)[])::text
+----
+{1.3}
+
+statement error (22003)
+SELECT (ARRAY[99.99]::numeric(3,1)[])::text
+
+query T
+SELECT (ARRAY[1,2]::numeric(3,1)[])::text
+----
+{1.0,2.0}
+
+query T
+SELECT (pg_typeof(ARRAY[1.234]::numeric(3,1)[]))::text
+----
+numeric[]
+
+query T
+SELECT (ARRAY['abc','de']::varchar(2)[])::text
+----
+{ab,de}
+
+query T
+SELECT (ARRAY['abc','de']::char(2)[])::text
+----
+{ab,de}
+
+query T
+SELECT (ARRAY['a','de']::char(3)[])::text
+----
+{"a  ","de "}
+
+query T
+SELECT (('{abc}'::varchar(2)[])::text)::text
+----
+{ab}
+
+query T
+SELECT (('{abc}'::varchar(5)[])::text)::text
+----
+{abc}
+
+query T
+SELECT (('{abc}'::char(5)[])::text)::text
+----
+{"abc  "}
+
+query T
+SELECT ('{abc}'::varchar(2)[])::text
+----
+{ab}
+
+query T
+SELECT (('{ab}'::varchar(2)[])::text)::text
+----
+{ab}
+
+query T
+SELECT (ARRAY['2024-01-02']::date[])::text
+----
+{2024-01-02}
+
+query T
+SELECT (ARRAY['2024-01-02 03:04:05']::timestamp[])::text
+----
+{"2024-01-02 03:04:05"}
+
+query T
+SELECT (ARRAY['t','f']::bool[])::text
+----
+{t,f}
+
+query T
+SELECT (ARRAY[1,0]::bool[])::text
+----
+{t,f}
+
+query T
+SELECT (ARRAY['a','b']::name[])::text
+----
+{a,b}
+
+query T
+SELECT (ARRAY['1','2']::oid[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::oid[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::int2[])::text
+----
+{1,2}
+
+statement error (22003)
+SELECT (ARRAY[70000]::int2[])::text
+
+statement error (22P02)
+SELECT (ARRAY['x']::int[])::text
+
+query T
+SELECT (ARRAY[1,2]::int[]::text[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[NULL]::int[])::text
+----
+{NULL}
+
+query T
+SELECT (ARRAY[NULL, 1]::text[])::text
+----
+{NULL,1}
+
+query T
+SELECT (ARRAY['1','2']::int[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::varchar[])::text
+----
+{1,2}
+
+statement error (42846)
+SELECT (ARRAY[1,2]::bytea[])::text
+
+query T
+SELECT (CAST(ARRAY[1,2] AS text[]))::text
+----
+{1,2}
+
+query T
+SELECT (CAST(ARRAY[1,2] AS bigint[]))::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::integer[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::double precision[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::character varying[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::character varying(5)[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::real[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::smallint[])::text
+----
+{1,2}
+
+query T
+SELECT (ARRAY[1,2]::boolean[])::text
+----
+{t,t}
+
+query T
+SELECT (ARRAY[1,2]::int[][])::text
+----
+{1,2}
+
+# = / <>
+
+query T
+SELECT (ARRAY[1,2] = ARRAY[1,2])::text
+----
+true
+
+query T
+SELECT (ARRAY[1,2] = ARRAY[2,1])::text
+----
+false
+
+query T
+SELECT (ARRAY[1,2] = ARRAY[1,2,3])::text
+----
+false
+
+query T
+SELECT (ARRAY[1,2] <> ARRAY[1,2])::text
+----
+false
+
+query T
+SELECT (ARRAY[1,2] <> ARRAY[1,3])::text
+----
+true
+
+query T
+SELECT (ARRAY[1,2] <> ARRAY[1,2,3])::text
+----
+true
+
+query T
+SELECT (ARRAY[1,NULL] = ARRAY[1,NULL])::text
+----
+true
+
+query T
+SELECT (ARRAY[1,NULL] <> ARRAY[1,NULL])::text
+----
+false
+
+query T
+SELECT (ARRAY[NULL]::int[] = ARRAY[NULL]::int[])::text
+----
+true
+
+query T
+SELECT (ARRAY[1,NULL] = ARRAY[1,2])::text
+----
+false
+
+query T
+SELECT (ARRAY[NULL,2] = ARRAY[1,2])::text
+----
+false
+
+query T
+SELECT (ARRAY[1,2] = NULL::int[])::text
+----
+NULL
+
+query T
+SELECT (NULL::int[] = NULL::int[])::text
+----
+NULL
+
+query T
+SELECT (NULL::int[] IS NULL)::text
+----
+true
+
+query T
+SELECT (NULL::int[] IS DISTINCT FROM NULL::int[])::text
+----
+false
+
+query T
+SELECT (ARRAY[1,NULL] IS DISTINCT FROM ARRAY[1,NULL])::text
+----
+false
+
+query T
+SELECT (ARRAY[1,2] IS NOT DISTINCT FROM ARRAY[1,2])::text
+----
+true
+
+query T
+SELECT ('{}'::int[] = '{}'::int[])::text
+----
+true
+
+query T
+SELECT ('{}'::int[] = '{1}'::int[])::text
+----
+false
+
+query T
+SELECT ('{}'::int[] <> '{1}'::int[])::text
+----
+true
+
+query T
+SELECT ('{1,2}'::int[] = '{1,2}'::int[])::text
+----
+true
+
+query T
+SELECT ('[0:1]={1,2}'::int[] = '{1,2}'::int[])::text
+----
+false
+
+query T
+SELECT ('[0:1]={1,2}'::int[] <> '{1,2}'::int[])::text
+----
+true
+
+query T
+SELECT ('[1:2]={1,2}'::int[] = '{1,2}'::int[])::text
+----
+true
+
+statement error (42883)
+SELECT ('{1,2}'::int[] = '{1,2}'::int8[])::text
+
+statement error (42883)
+SELECT ('{1,2}'::int[] = '{1,2}'::text[])::text
+
+statement error (42883)
+SELECT (ARRAY[1,2] = ARRAY[1.0,2.0])::text
+
+query T
+SELECT (ARRAY[1,2] = '{1,2}')::text
+----
+true
+
+query T
+SELECT (ARRAY['a','b'] = ARRAY['a','b'])::text
+----
+true
+
+query T
+SELECT (ARRAY['a','b'] = ARRAY['a','B'])::text
+----
+false
+
+query T
+SELECT (ARRAY['a ','b'] = ARRAY['a','b'])::text
+----
+false
+
+query T
+SELECT (ARRAY['a'::char(3)] = ARRAY['a'::char(5)])::text
+----
+true
+
+statement error (42883)
+SELECT (ARRAY['a'::char(3)] = ARRAY['a '::text])::text
+
+statement error (42883)
+SELECT (ARRAY['a'::text] = ARRAY['a'::varchar])::text
+
+query T
+SELECT (ARRAY[1.0] = ARRAY[1.00])::text
+----
+true
+
+query T
+SELECT (ARRAY[1.0::float8] = ARRAY[1.0::float8])::text
+----
+true
+
+query T
+SELECT (ARRAY['NaN'::float8] = ARRAY['NaN'::float8])::text
+----
+true
+
+query T
+SELECT (ARRAY[true,false] = ARRAY[true,false])::text
+----
+true
+
+query T
+SELECT (ARRAY['2024-01-01'::date] = ARRAY['2024-01-01'::date])::text
+----
+true
+
+query T
+SELECT (ARRAY['a'::name] = ARRAY['a'::name])::text
+----
+true
+
+query T
+SELECT (ARRAY['\x01'::bytea] = ARRAY['\x01'::bytea])::text
+----
+true
+
+query T
+SELECT (ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid] = ARRAY['A0EEBC999C0B4EF8BB6D6BB9BD380A11'::uuid])::text
+----
+true
+
+statement error (42883)
+SELECT (ARRAY[1] = 1)::text
+
+statement error (42883)
+SELECT (1 = ARRAY[1])::text
+
+query T
+SELECT (ARRAY[1] IN (ARRAY[1], ARRAY[2]))::text
+----
+true
+
+query T
+SELECT (ARRAY[1] IN (ARRAY[3], ARRAY[2]))::text
+----
+false
+
+query T
+SELECT (ARRAY[1] IN (ARRAY[3], NULL))::text
+----
+NULL
+
+query T
+SELECT (ARRAY[1,2] != ARRAY[1,2])::text
+----
+false
+
+# array_length / cardinality / array_ndims / array_dims / array_lower / array_upper
+
+query T
+SELECT (array_length(ARRAY[1,2,3], 1))::text
+----
+3
+
+query T
+SELECT (array_length(ARRAY[1,2,3], 2))::text
+----
+NULL
+
+query T
+SELECT (array_length(ARRAY[1,2,3], 0))::text
+----
+NULL
+
+query T
+SELECT (array_length(ARRAY[1,2,3], -1))::text
+----
+NULL
+
+query T
+SELECT (array_length(ARRAY[1,2,3], NULL))::text
+----
+NULL
+
+query T
+SELECT (array_length(NULL::int[], 1))::text
+----
+NULL
+
+query T
+SELECT (array_length('{}'::int[], 1))::text
+----
+NULL
+
+query T
+SELECT (array_length('{NULL}'::int[], 1))::text
+----
+1
+
+query T
+SELECT (array_length('{1,NULL,3}'::int[], 1))::text
+----
+3
+
+query T
+SELECT (array_length('[5:7]={1,2,3}'::int[], 1))::text
+----
+3
+
+query T
+SELECT (array_length(ARRAY['a'], 1))::text
+----
+1
+
+query T
+SELECT (cardinality(ARRAY[1,2,3]))::text
+----
+3
+
+query T
+SELECT (cardinality('{}'::int[]))::text
+----
+0
+
+query T
+SELECT (cardinality(NULL::int[]))::text
+----
+NULL
+
+query T
+SELECT (cardinality('{NULL}'::int[]))::text
+----
+1
+
+query T
+SELECT (cardinality('[5:7]={1,2,3}'::int[]))::text
+----
+3
+
+statement error (42883)
+SELECT (cardinality(1))::text
+
+query T
+SELECT (array_ndims(ARRAY[1,2]))::text
+----
+1
+
+query T
+SELECT (array_ndims('{}'::int[]))::text
+----
+NULL
+
+query T
+SELECT (array_ndims(NULL::int[]))::text
+----
+NULL
+
+query T
+SELECT (array_dims(ARRAY[1,2]))::text
+----
+[1:2]
+
+query T
+SELECT (array_dims('[0:2]={1,2,3}'::int[]))::text
+----
+[0:2]
+
+query T
+SELECT (array_dims('{}'::int[]))::text
+----
+NULL
+
+query T
+SELECT (array_dims(NULL::int[]))::text
+----
+NULL
+
+query T
+SELECT (array_lower(ARRAY[1,2,3], 1))::text
+----
+1
+
+query T
+SELECT (array_lower(ARRAY[1,2,3], 2))::text
+----
+NULL
+
+query T
+SELECT (array_lower(ARRAY[1,2,3], 0))::text
+----
+NULL
+
+query T
+SELECT (array_lower(ARRAY[1,2,3], NULL))::text
+----
+NULL
+
+query T
+SELECT (array_lower('[0:2]={1,2,3}'::int[], 1))::text
+----
+0
+
+query T
+SELECT (array_lower('[-3:-1]={1,2,3}'::int[], 1))::text
+----
+-3
+
+query T
+SELECT (array_lower(NULL::int[], 1))::text
+----
+NULL
+
+query T
+SELECT (array_upper(ARRAY[1,2,3], 1))::text
+----
+3
+
+query T
+SELECT (array_upper(ARRAY[1,2,3], 2))::text
+----
+NULL
+
+query T
+SELECT (array_upper(ARRAY[1,2,3], 0))::text
+----
+NULL
+
+query T
+SELECT (array_upper('[0:2]={1,2,3}'::int[], 1))::text
+----
+2
+
+query T
+SELECT (array_upper('[-3:-1]={1,2,3}'::int[], 1))::text
+----
+-1
+
+query T
+SELECT (array_upper(NULL::int[], 1))::text
+----
+NULL
+
+statement error (42883)
+SELECT (array_length(1, 1))::text
+
+statement error (42804)
+SELECT (array_length('abc', 1))::text
+
+statement error (42804)
+SELECT (array_length('{1,2}', 1))::text
+
+# array_to_string
+
+query T
+SELECT (array_to_string(ARRAY[1,2,3], ','))::text
+----
+1,2,3
+
+query T
+SELECT (array_to_string(ARRAY[1,2,3], ', '))::text
+----
+1, 2, 3
+
+query T
+SELECT (array_to_string(ARRAY[1,2,3], ''))::text
+----
+123
+
+query T
+SELECT (array_to_string(ARRAY[1,2,3], NULL))::text
+----
+NULL
+
+query T
+SELECT (array_to_string(NULL::int[], ','))::text
+----
+NULL
+
+query T
+SELECT (array_to_string('{}'::int[], ','))::text
+----
+(empty)
+
+query T
+SELECT (array_to_string(ARRAY[1,NULL,3], ','))::text
+----
+1,3
+
+query T
+SELECT (array_to_string(ARRAY[1,NULL,3], ',', '*'))::text
+----
+1,*,3
+
+query T
+SELECT (array_to_string(ARRAY[1,NULL,3], ',', NULL))::text
+----
+1,3
+
+query T
+SELECT (array_to_string(ARRAY[NULL,NULL]::int[], ','))::text
+----
+(empty)
+
+query T
+SELECT (array_to_string(ARRAY[NULL,NULL]::int[], ',', 'x'))::text
+----
+x,x
+
+query T
+SELECT (array_to_string(ARRAY['a','b'], '-'))::text
+----
+a-b
+
+query T
+SELECT (array_to_string(ARRAY['a b','c,d'], ','))::text
+----
+a b,c,d
+
+query T
+SELECT (array_to_string(ARRAY['a',NULL,'c'], '|', 'NULL'))::text
+----
+a|NULL|c
+
+query T
+SELECT (array_to_string(ARRAY['', 'a', ''], ','))::text
+----
+,a,
+
+query T
+SELECT (array_to_string(ARRAY[1.5, 2.50], ','))::text
+----
+1.5,2.50
+
+query T
+SELECT (array_to_string(ARRAY[true, false], ','))::text
+----
+t,f
+
+query T
+SELECT (array_to_string(ARRAY['2024-01-02'::date, '2024-02-03'::date], '/'))::text
+----
+2024-01-02/2024-02-03
+
+query T
+SELECT (array_to_string(ARRAY[1], ','))::text
+----
+1
+
+query T
+SELECT (array_to_string(ARRAY['é','日本'], '、'))::text
+----
+é、日本
+
+statement error (42883)
+SELECT (array_to_string(ARRAY[1,2,3], 1))::text
+
+statement error (42883)
+SELECT (array_to_string(1, ','))::text
+
+statement error (42804)
+SELECT (array_to_string('{1,2}', ','))::text
+
+query T
+SELECT (array_to_string('[0:1]={1,2}'::int[], ','))::text
+----
+1,2
+
+query T
+SELECT (array_to_string(ARRAY['a'::char(3), 'b'::char(3)], '|'))::text
+----
+a  |b  
+
+query T
+SELECT (array_to_string(ARRAY[1.0::float8, 2.5::float8], ','))::text
+----
+1,2.5
+
+query T
+SELECT (array_to_string(ARRAY['\x01'::bytea], ','))::text
+----
+\x01
+
+query T
+SELECT (array_to_string(ARRAY['a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid], ','))::text
+----
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+
+# 連結・追加など（任意の関数）
+
+query T
+SELECT (ARRAY[1,2] || ARRAY[3])::text
+----
+{1,2,3}
+
+query T
+SELECT (ARRAY[1,2] || 3)::text
+----
+{1,2,3}
+
+query T
+SELECT (1 || ARRAY[2,3])::text
+----
+{1,2,3}
+
+query T
+SELECT (ARRAY[1,2] || ARRAY[3,4])::text
+----
+{1,2,3,4}
+
+query T
+SELECT (ARRAY[1,2] || NULL::int[])::text
+----
+{1,2}
+
+query T
+SELECT (NULL::int[] || ARRAY[1])::text
+----
+{1}
+
+query T
+SELECT (ARRAY[1,2] || NULL)::text
+----
+{1,2}
+
+query T
+SELECT ('{}'::int[] || ARRAY[1])::text
+----
+{1}
+
+statement error (22P02)
+SELECT (ARRAY['a'] || 'b')::text
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

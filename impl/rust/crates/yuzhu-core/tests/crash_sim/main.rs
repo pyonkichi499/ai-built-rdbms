@@ -19,9 +19,16 @@
 
 #![allow(clippy::too_many_lines, clippy::result_large_err)]
 
+mod determinism;
 mod invariants;
+mod invariants_m5;
 mod model;
 mod mutation;
+mod w10_fk_cascade;
+mod w11_database;
+mod w3_deadlock;
+mod w8_vacuum;
+mod w9_multixact;
 mod workload;
 
 use std::fmt;

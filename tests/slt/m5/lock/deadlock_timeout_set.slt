@@ -1,0 +1,67 @@
+# deadlock_timeout: 誰でも SET できる（KD-10）。SHOW / SET / RESET / SET LOCAL。
+# 接頭辞: lock_deadlock_timeout_set_（テーブルなし）
+
+statement ok
+RESET deadlock_timeout
+
+query T
+SHOW deadlock_timeout
+----
+1s
+
+statement ok
+SET deadlock_timeout = '200ms'
+
+query T
+SHOW deadlock_timeout
+----
+200ms
+
+statement ok
+SET deadlock_timeout = 3000
+
+query T
+SHOW deadlock_timeout
+----
+3s
+
+statement ok
+RESET deadlock_timeout
+
+query T
+SHOW deadlock_timeout
+----
+1s
+
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL deadlock_timeout = '50ms'
+
+query T
+SHOW deadlock_timeout
+----
+50ms
+
+statement ok
+COMMIT
+
+query T
+SHOW deadlock_timeout
+----
+1s
+
+statement error (22023)
+SET deadlock_timeout = 'abc'
+
+statement error (22023)
+SET deadlock_timeout = -5
+
+query T
+SELECT current_setting('deadlock_timeout')
+----
+1s
+
+statement ok
+RESET deadlock_timeout

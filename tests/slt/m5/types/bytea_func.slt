@@ -1,0 +1,902 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# bytea の演算子と関数（境界を含む）
+
+# 接頭辞: bytea_func_（テーブルは作らない）
+
+# 比較
+
+query T
+SELECT ('\x01'::bytea = '\x01'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x01'::bytea = '\x0100'::bytea)::text
+----
+false
+
+query T
+SELECT ('\x01'::bytea <> '\x02'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x01'::bytea < '\x0100'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x0100'::bytea < '\x02'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x00'::bytea < '\x'::bytea)::text
+----
+false
+
+query T
+SELECT ('\x'::bytea < '\x00'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x7f'::bytea < '\x80'::bytea)::text
+----
+true
+
+query T
+SELECT ('\xff'::bytea > '\x7f'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x01'::bytea <= '\x01'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x01'::bytea >= '\x02'::bytea)::text
+----
+false
+
+query T
+SELECT ('\x0001'::bytea < '\x0002'::bytea)::text
+----
+true
+
+query T
+SELECT ('\x61'::bytea = 'a'::bytea)::text
+----
+true
+
+query T
+SELECT (NULL::bytea = '\x01'::bytea)::text
+----
+NULL
+
+query T
+SELECT (NULL::bytea = NULL::bytea)::text
+----
+NULL
+
+query T
+SELECT ('\x01'::bytea IS NOT DISTINCT FROM NULL::bytea)::text
+----
+false
+
+# 連結
+
+query T
+SELECT ('\x01'::bytea || '\x02'::bytea)::text
+----
+\x0102
+
+query T
+SELECT ('\x'::bytea || '\x02'::bytea)::text
+----
+\x02
+
+query T
+SELECT ('\x01'::bytea || '\x'::bytea)::text
+----
+\x01
+
+query T
+SELECT ('\x01'::bytea || NULL::bytea)::text
+----
+NULL
+
+query T
+SELECT (NULL::bytea || NULL::bytea)::text
+----
+NULL
+
+query T
+SELECT ('\x00'::bytea || '\x00'::bytea)::text
+----
+\x0000
+
+# length / octet_length / bit_length
+
+query T
+SELECT (length('\x'::bytea))::text
+----
+0
+
+query T
+SELECT (length('\x00'::bytea))::text
+----
+1
+
+query T
+SELECT (length('\x00ff00'::bytea))::text
+----
+3
+
+query T
+SELECT (octet_length('\xdeadbeef'::bytea))::text
+----
+4
+
+query T
+SELECT (bit_length('\xdeadbeef'::bytea))::text
+----
+32
+
+query T
+SELECT (length(NULL::bytea))::text
+----
+NULL
+
+# substring
+
+query T
+SELECT (substring('\x0102030405'::bytea from 2))::text
+----
+\x02030405
+
+query T
+SELECT (substring('\x0102030405'::bytea from 2 for 2))::text
+----
+\x0203
+
+query T
+SELECT (substring('\x0102030405'::bytea from 0))::text
+----
+\x0102030405
+
+query T
+SELECT (substring('\x0102030405'::bytea from -1))::text
+----
+\x0102030405
+
+query T
+SELECT (substring('\x0102030405'::bytea from -1 for 3))::text
+----
+\x01
+
+query T
+SELECT (substring('\x0102030405'::bytea from 0 for 2))::text
+----
+\x01
+
+query T
+SELECT (substring('\x0102030405'::bytea from 1 for 0))::text
+----
+\x
+
+query T
+SELECT (substring('\x0102030405'::bytea from 1 for 100))::text
+----
+\x0102030405
+
+query T
+SELECT (substring('\x0102030405'::bytea from 5 for 1))::text
+----
+\x05
+
+query T
+SELECT (substring('\x0102030405'::bytea from 6))::text
+----
+\x
+
+statement error (22011)
+SELECT (substring('\x0102030405'::bytea from 3 for -1))::text
+
+query T
+SELECT (substring('\x0102030405'::bytea from 100))::text
+----
+\x
+
+query T
+SELECT (substring('\x0102030405'::bytea from 2 for 2147483647))::text
+----
+\x02030405
+
+query T
+SELECT (substring('\x0102030405'::bytea, 2, 2))::text
+----
+\x0203
+
+query T
+SELECT (substring('\x0102030405'::bytea, NULL, 2))::text
+----
+NULL
+
+query T
+SELECT (substring('\x0102030405'::bytea, 2, NULL))::text
+----
+NULL
+
+query T
+SELECT (substring(NULL::bytea, 2, 2))::text
+----
+NULL
+
+query T
+SELECT (substr('\x0102030405'::bytea, 3))::text
+----
+\x030405
+
+query T
+SELECT (substr('\x0102030405'::bytea, 3, 1))::text
+----
+\x03
+
+# overlay
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 2))::text
+----
+\x01aabb0405
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 2 for 0))::text
+----
+\x01aabb02030405
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 2 for 3))::text
+----
+\x01aabb05
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 1))::text
+----
+\xaabb030405
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 5))::text
+----
+\x01020304aabb
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 6))::text
+----
+\x0102030405aabb
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 9))::text
+----
+\x0102030405aabb
+
+statement error (22011)
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 0))::text
+
+statement error (22011)
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from -1))::text
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\x'::bytea from 2 for 2))::text
+----
+\x010405
+
+query T
+SELECT (overlay('\x'::bytea placing '\xaabb'::bytea from 1))::text
+----
+\xaabb
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 2 for -1))::text
+----
+\x01aabb0102030405
+
+query T
+SELECT (overlay('\x0102030405'::bytea placing '\xaabb'::bytea from 2 for 100))::text
+----
+\x01aabb
+
+# position / strpos
+
+query T
+SELECT (position('\x03'::bytea in '\x0102030405'::bytea))::text
+----
+3
+
+query T
+SELECT (position('\x0304'::bytea in '\x0102030405'::bytea))::text
+----
+3
+
+query T
+SELECT (position('\x'::bytea in '\x0102030405'::bytea))::text
+----
+1
+
+query T
+SELECT (position('\x0506'::bytea in '\x0102030405'::bytea))::text
+----
+0
+
+query T
+SELECT (position('\x01'::bytea in '\x'::bytea))::text
+----
+0
+
+query T
+SELECT (position('\x'::bytea in '\x'::bytea))::text
+----
+1
+
+query T
+SELECT (position('\x00'::bytea in '\x010002'::bytea))::text
+----
+2
+
+query T
+SELECT (position('\x01'::bytea in '\x010101'::bytea))::text
+----
+1
+
+query T
+SELECT (position(NULL::bytea in '\x01'::bytea))::text
+----
+NULL
+
+# get_byte / set_byte
+
+query T
+SELECT (get_byte('\xdeadbeef'::bytea, 0))::text
+----
+222
+
+query T
+SELECT (get_byte('\xdeadbeef'::bytea, 3))::text
+----
+239
+
+statement error (2202E)
+SELECT (get_byte('\xdeadbeef'::bytea, 4))::text
+
+statement error (2202E)
+SELECT (get_byte('\xdeadbeef'::bytea, -1))::text
+
+statement error (2202E)
+SELECT (get_byte('\x'::bytea, 0))::text
+
+query T
+SELECT (get_byte('\x00ff'::bytea, 1))::text
+----
+255
+
+query T
+SELECT (get_byte(NULL::bytea, 0))::text
+----
+NULL
+
+query T
+SELECT (set_byte('\x00000000'::bytea, 0, 255))::text
+----
+\xff000000
+
+query T
+SELECT (set_byte('\x00000000'::bytea, 3, 1))::text
+----
+\x00000001
+
+statement error (2202E)
+SELECT (set_byte('\x00000000'::bytea, 4, 1))::text
+
+statement error (2202E)
+SELECT (set_byte('\x00000000'::bytea, -1, 1))::text
+
+query T
+SELECT (set_byte('\x00000000'::bytea, 0, 256))::text
+----
+\x00000000
+
+query T
+SELECT (set_byte('\x00000000'::bytea, 0, -1))::text
+----
+\xff000000
+
+query T
+SELECT (set_byte('\x00000000'::bytea, 0, 511))::text
+----
+\xff000000
+
+statement error (2202E)
+SELECT (set_byte('\x'::bytea, 0, 1))::text
+
+# get_bit / set_bit
+
+query T
+SELECT (get_bit('\x01'::bytea, 0))::text
+----
+1
+
+query T
+SELECT (get_bit('\x01'::bytea, 1))::text
+----
+0
+
+query T
+SELECT (get_bit('\x80'::bytea, 7))::text
+----
+1
+
+query T
+SELECT (get_bit('\x0180'::bytea, 15))::text
+----
+1
+
+statement error (2202E)
+SELECT (get_bit('\x0180'::bytea, 16))::text
+
+statement error (2202E)
+SELECT (get_bit('\x0180'::bytea, -1))::text
+
+query T
+SELECT (set_bit('\x00'::bytea, 0, 1))::text
+----
+\x01
+
+query T
+SELECT (set_bit('\x00'::bytea, 7, 1))::text
+----
+\x80
+
+query T
+SELECT (set_bit('\x00ff'::bytea, 15, 0))::text
+----
+\x007f
+
+query T
+SELECT (set_bit('\xff'::bytea, 0, 0))::text
+----
+\xfe
+
+statement error (2202E)
+SELECT (set_bit('\x00'::bytea, 8, 1))::text
+
+statement error (22023)
+SELECT (set_bit('\x00'::bytea, 0, 2))::text
+
+statement error (22023)
+SELECT (set_bit('\x00'::bytea, 0, -1))::text
+
+statement error (2202E)
+SELECT (set_bit('\x00'::bytea, -1, 1))::text
+
+# encode / decode
+
+query T
+SELECT (encode('\xdeadbeef'::bytea, 'hex'))::text
+----
+deadbeef
+
+query T
+SELECT (encode('\x'::bytea, 'hex'))::text
+----
+(empty)
+
+query T
+SELECT (encode('\xDEADBEEF'::bytea, 'HEX'))::text
+----
+deadbeef
+
+query T
+SELECT (encode('\x00ff'::bytea, 'escape'))::text
+----
+\000\377
+
+query T
+SELECT (encode('\x615c62'::bytea, 'escape'))::text
+----
+a\\b
+
+query T
+SELECT (encode('\x80'::bytea, 'escape'))::text
+----
+\200
+
+query T
+SELECT (encode('\x'::bytea, 'escape'))::text
+----
+(empty)
+
+query T
+SELECT (encode('\x'::bytea, 'base64'))::text
+----
+(empty)
+
+query T
+SELECT (encode('\x61'::bytea, 'base64'))::text
+----
+YQ==
+
+query T
+SELECT (encode('\x6162'::bytea, 'base64'))::text
+----
+YWI=
+
+query T
+SELECT (encode('\x616263'::bytea, 'base64'))::text
+----
+YWJj
+
+query T
+SELECT (encode('\x61626364'::bytea, 'base64'))::text
+----
+YWJjZA==
+
+query T
+SELECT (encode('\x00'::bytea, 'base64'))::text
+----
+AA==
+
+query T
+SELECT (encode('\xfbff'::bytea, 'base64'))::text
+----
++/8=
+
+query T
+SELECT (replace(encode(decode(repeat('ab', 57), 'hex'), 'base64'), E'\n', '<LF>'))::text
+----
+q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur<LF>
+
+query T
+SELECT (replace(encode(decode(repeat('ab', 120), 'hex'), 'base64'), E'\n', '<LF>'))::text
+----
+q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur<LF>q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur<LF>q6urq6ur
+
+query T
+SELECT (replace(encode(decode(repeat('ab', 58), 'hex'), 'base64'), E'\n', '<LF>'))::text
+----
+q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur<LF>qw==
+
+query T
+SELECT (replace(encode(decode(repeat('ab', 114), 'hex'), 'base64'), E'\n', '<LF>'))::text
+----
+q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur<LF>q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6ur<LF>
+
+query T
+SELECT (length(encode(decode(repeat('ab', 120), 'hex'), 'base64')))::text
+----
+162
+
+statement error (22023)
+SELECT (encode('\x00'::bytea, 'bogus'))::text
+
+query T
+SELECT (encode('\x00'::bytea, NULL))::text
+----
+NULL
+
+query T
+SELECT (encode(NULL::bytea, 'hex'))::text
+----
+NULL
+
+query T
+SELECT (decode('deadbeef', 'hex'))::text
+----
+\xdeadbeef
+
+query T
+SELECT (decode('DEADBEEF', 'hex'))::text
+----
+\xdeadbeef
+
+query T
+SELECT (decode('', 'hex'))::text
+----
+\x
+
+query T
+SELECT (decode('de ad', 'hex'))::text
+----
+\xdead
+
+statement error (22023)
+SELECT (decode('d', 'hex'))::text
+
+statement error (22023)
+SELECT (decode('zz', 'hex'))::text
+
+statement error (22023)
+SELECT (decode('0x', 'hex'))::text
+
+query T
+SELECT (decode('YQ==', 'base64'))::text
+----
+\x61
+
+query T
+SELECT (decode('YWI=', 'base64'))::text
+----
+\x6162
+
+query T
+SELECT (decode('YWJj', 'base64'))::text
+----
+\x616263
+
+query T
+SELECT (decode('', 'base64'))::text
+----
+\x
+
+statement error (22023)
+SELECT (decode('YQ', 'base64'))::text
+
+query T
+SELECT (decode('YW Jj', 'base64'))::text
+----
+\x616263
+
+query T
+SELECT (decode(E'YW\nJj', 'base64'))::text
+----
+\x616263
+
+statement error (22023)
+SELECT (decode('YQ=', 'base64'))::text
+
+statement error (22023)
+SELECT (decode('Y===', 'base64'))::text
+
+statement error (22023)
+SELECT (decode('Y', 'base64'))::text
+
+statement error (22023)
+SELECT (decode('!!!!', 'base64'))::text
+
+query T
+SELECT (decode('YQ==YQ==', 'base64'))::text
+----
+\x6161
+
+query T
+SELECT (decode('abc\\', 'escape'))::text
+----
+\x6162635c
+
+query T
+SELECT (decode('a\\\\b', 'escape'))::text
+----
+\x615c5c62
+
+query T
+SELECT (decode('\\141', 'escape'))::text
+----
+\x5c313431
+
+query T
+SELECT (decode('\\9', 'escape'))::text
+----
+\x5c39
+
+statement error (22023)
+SELECT (decode('abc', 'bogus'))::text
+
+query T
+SELECT (decode(NULL, 'hex'))::text
+----
+NULL
+
+# convert_to / convert_from
+
+query T
+SELECT (convert_to('abc', 'UTF8'))::text
+----
+\x616263
+
+query T
+SELECT (convert_to('é', 'UTF8'))::text
+----
+\xc3a9
+
+query T
+SELECT (convert_to('日本', 'UTF8'))::text
+----
+\xe697a5e69cac
+
+query T
+SELECT (convert_to('', 'UTF8'))::text
+----
+\x
+
+query T
+SELECT (convert_to('é', 'utf-8'))::text
+----
+\xc3a9
+
+query T
+SELECT (convert_to('é', 'LATIN1'))::text
+----
+\xe9
+
+statement error (22P05)
+SELECT (convert_to('日', 'LATIN1'))::text
+
+statement error (22023)
+SELECT (convert_to('é', 'bogus'))::text
+
+query T
+SELECT (convert_from('\x616263'::bytea, 'UTF8'))::text
+----
+abc
+
+query T
+SELECT (convert_from('\xc3a9'::bytea, 'UTF8'))::text
+----
+é
+
+query T
+SELECT (convert_from('\xe697a5'::bytea, 'UTF8'))::text
+----
+日
+
+query T
+SELECT (convert_from('\x'::bytea, 'UTF8'))::text
+----
+(empty)
+
+statement error (22021)
+SELECT (convert_from('\xff'::bytea, 'UTF8'))::text
+
+statement error (22021)
+SELECT (convert_from('\xc3'::bytea, 'UTF8'))::text
+
+statement error (22021)
+SELECT (convert_from('\x00'::bytea, 'UTF8'))::text
+
+query T
+SELECT (convert_from('\xe9'::bytea, 'LATIN1'))::text
+----
+é
+
+statement error (22023)
+SELECT (convert_from('\x61'::bytea, 'bogus'))::text
+
+query T
+SELECT (convert_from(NULL::bytea, 'UTF8'))::text
+----
+NULL
+
+# md5 / sha256
+
+query T
+SELECT (md5('\x'::bytea))::text
+----
+d41d8cd98f00b204e9800998ecf8427e
+
+query T
+SELECT (md5('\x616263'::bytea))::text
+----
+900150983cd24fb0d6963f7d28e17f72
+
+query T
+SELECT (md5('abc'::bytea))::text
+----
+900150983cd24fb0d6963f7d28e17f72
+
+query T
+SELECT (encode(sha256('\x616263'::bytea), 'hex'))::text
+----
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+
+query T
+SELECT (encode(sha256('\x'::bytea), 'hex'))::text
+----
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+# btrim / ltrim / rtrim
+
+query T
+SELECT (btrim('\x000102000000'::bytea, '\x00'::bytea))::text
+----
+\x0102
+
+query T
+SELECT (ltrim('\x000102000000'::bytea, '\x00'::bytea))::text
+----
+\x0102000000
+
+query T
+SELECT (rtrim('\x000102000000'::bytea, '\x00'::bytea))::text
+----
+\x000102
+
+query T
+SELECT (btrim('\x010203'::bytea, '\x'::bytea))::text
+----
+\x010203
+
+query T
+SELECT (btrim('\x'::bytea, '\x00'::bytea))::text
+----
+\x
+
+# text との変換
+
+query T
+SELECT ('abc'::bytea::text)::text
+----
+\x616263
+
+query T
+SELECT (convert_from(convert_to('日本語', 'UTF8'), 'UTF8'))::text
+----
+日本語
+
+query T
+SELECT (convert_to('é', 'UTF8') = '\xc3a9'::bytea)::text
+----
+true
+
+query T
+SELECT (length(convert_to('日本語', 'UTF8')))::text
+----
+9
+
+# 集約
+
+query T
+SELECT ((SELECT count(DISTINCT b)::text FROM (VALUES ('\x01'::bytea), ('\x01'::bytea), ('\x0100'::bytea), ('\x'::bytea), (NULL)) v(b)))::text
+----
+3
+
+query T
+SELECT b::text FROM (VALUES ('\x02'::bytea), ('\x0100'::bytea), ('\x01'::bytea), ('\x'::bytea), ('\x00'::bytea), ('\xff'::bytea), (NULL)) v(b) ORDER BY b
+----
+\x
+\x00
+\x01
+\x0100
+\x02
+\xff
+NULL
+
+
+query T
+SELECT b::text FROM (VALUES ('\x02'::bytea), ('\x0100'::bytea), ('\x01'::bytea), ('\x'::bytea), ('\x00'::bytea), ('\xff'::bytea), (NULL)) v(b) ORDER BY b DESC NULLS LAST
+----
+\xff
+\x02
+\x0100
+\x01
+\x00
+\x
+NULL
+
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

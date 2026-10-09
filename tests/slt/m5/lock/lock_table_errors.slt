@@ -1,0 +1,98 @@
+# LOCK TABLE のエラー: 25P01（トランザクション外）、42P01、NOWAIT の 55P03。
+# 接頭辞: lock_lock_table_errors_
+
+statement ok
+DROP TABLE IF EXISTS lock_lock_table_errors_t
+
+statement ok
+CREATE TABLE lock_lock_table_errors_t (id int)
+
+# トランザクションの外
+statement error (25P01)
+LOCK TABLE lock_lock_table_errors_t IN ACCESS SHARE MODE
+
+statement error (25P01)
+LOCK TABLE lock_lock_table_errors_t
+
+# 存在しないテーブル（トランザクションは中断状態になる）
+statement ok
+BEGIN
+
+statement error (42P01)
+LOCK TABLE lock_lock_table_errors_missing IN SHARE MODE
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+# NOWAIT: 衝突すると待たずに 55P03
+connection a
+statement ok
+BEGIN
+
+connection a
+statement ok
+LOCK TABLE lock_lock_table_errors_t IN ACCESS EXCLUSIVE MODE
+
+connection b
+statement ok
+BEGIN
+
+connection b
+statement error (55P03)
+LOCK TABLE lock_lock_table_errors_t IN ACCESS SHARE MODE NOWAIT
+
+connection b
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+ROLLBACK
+
+# 解放後は NOWAIT でも取れる
+connection b
+statement ok
+BEGIN
+
+connection b
+statement ok
+LOCK TABLE lock_lock_table_errors_t IN ACCESS EXCLUSIVE MODE NOWAIT
+
+connection b
+statement ok
+ROLLBACK
+
+# 共有モード同士は NOWAIT でも通り、排他だけが落ちる
+connection a
+statement ok
+BEGIN
+
+connection a
+statement ok
+LOCK TABLE lock_lock_table_errors_t IN SHARE MODE
+
+connection b
+statement ok
+BEGIN
+
+connection b
+statement ok
+LOCK TABLE lock_lock_table_errors_t IN SHARE MODE NOWAIT
+
+connection b
+statement error (55P03)
+LOCK TABLE lock_lock_table_errors_t IN ROW EXCLUSIVE MODE NOWAIT
+
+connection b
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE lock_lock_table_errors_t

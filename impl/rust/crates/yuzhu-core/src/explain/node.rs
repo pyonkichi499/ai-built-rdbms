@@ -647,6 +647,7 @@ mod tests {
                 targets: vec![int(1)],
                 n_visible: 1,
                 distinct: BoundDistinct::None,
+                locking: vec![],
             }
         }
 

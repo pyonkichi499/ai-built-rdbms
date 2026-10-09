@@ -1,0 +1,15 @@
+[package]
+name = "yuzhu-compat-authc"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# 認証の互換テスト用の生ソケットのクライアント（独立した Cargo プロジェクト。yuzhu のワークスペースには入れない）。
+# SQLSTATE（libpq は接続エラーに出さない）と、サーバが要求した認証の種類、認証の途中で止まる動きを見るために使う。
+[workspace]
+
+[dependencies]
+postgres-protocol = "=0.6.12"
+socket2 = { version = "0.6", features = ["all"] }
+bytes = "1"
+fallible-iterator = "0.2"

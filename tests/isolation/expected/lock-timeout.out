@@ -64,3 +64,93 @@ step c_sel: SELECT v FROM lto_t;
 211
 (1 row)
 
+
+starting permutation: b_set a_b a_lock b_tsel a_c c_sel
+step b_set: SET lock_timeout = '500ms';
+step a_b: BEGIN;
+step a_lock: LOCK TABLE lto_t IN ACCESS EXCLUSIVE MODE;
+step b_tsel: SELECT v FROM lto_t; <waiting ...>
+step a_c: COMMIT;
+step b_tsel: <... completed>
+ v
+--
+10
+(1 row)
+
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+10
+(1 row)
+
+
+starting permutation: b_set a_b a_lock b_b b_tsel b_sel b_r a_c c_sel
+step b_set: SET lock_timeout = '500ms';
+step a_b: BEGIN;
+step a_lock: LOCK TABLE lto_t IN ACCESS EXCLUSIVE MODE;
+step b_b: BEGIN;
+step b_tsel: SELECT v FROM lto_t; <waiting ...>
+step b_tsel: <... completed>
+ERROR:  canceling statement due to lock timeout
+step b_sel: SELECT v FROM lto_t;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+10
+(1 row)
+
+
+starting permutation: a_b a_lock b_b b_lock_nowait b_r a_c c_sel
+step a_b: BEGIN;
+step a_lock: LOCK TABLE lto_t IN ACCESS EXCLUSIVE MODE;
+step b_b: BEGIN;
+step b_lock_nowait: LOCK TABLE lto_t IN ACCESS EXCLUSIVE MODE NOWAIT;
+ERROR:  could not obtain lock on relation "lto_t"
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+10
+(1 row)
+
+
+starting permutation: a_b a_upd b_fu_nowait a_c b_fu_nowait c_sel
+step a_b: BEGIN;
+step a_upd: UPDATE lto_t SET v = 11 WHERE id = 1;
+step b_fu_nowait: SELECT v FROM lto_t WHERE id = 1 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lto_t"
+step a_c: COMMIT;
+step b_fu_nowait: SELECT v FROM lto_t WHERE id = 1 FOR UPDATE NOWAIT;
+ v
+--
+11
+(1 row)
+
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+11
+(1 row)
+
+
+starting permutation: a_b a_lock b_fu_nowait a_c c_sel
+step a_b: BEGIN;
+step a_lock: LOCK TABLE lto_t IN ACCESS EXCLUSIVE MODE;
+step b_fu_nowait: SELECT v FROM lto_t WHERE id = 1 FOR UPDATE NOWAIT; <waiting ...>
+step a_c: COMMIT;
+step b_fu_nowait: <... completed>
+ v
+--
+10
+(1 row)
+
+step c_sel: SELECT v FROM lto_t;
+ v
+--
+10
+(1 row)
+

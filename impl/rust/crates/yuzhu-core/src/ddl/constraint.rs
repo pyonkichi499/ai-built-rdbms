@@ -7,16 +7,20 @@ use super::index::{
     build_from_heap, default_key_parts, new_index_columns, system_catalog_error, table_owner,
 };
 use super::{DdlCtx, RelOptTarget, validate_reloptions};
+use crate::analyzer::ddl_ext::foreign_key::{BoundFkParent, BoundForeignKey};
 use crate::analyzer::query::{
     AlterTarget, BoundAlterTableAddCheck, BoundAlterTableAddConstraint, BoundAlterTableOwner,
     IndexConstraintKind, OwnerSpec,
 };
+use crate::catalog::fk::ForeignKeyDef;
 use crate::catalog::naming::{choose_index_column_names, choose_index_name};
 use crate::catalog::schema::oids;
 use crate::catalog::store::{ClassPatch, NewConstraint, NewIndex};
-use crate::catalog::{CheckDef, IndexConstraintRef, IndexDef};
+use crate::catalog::{CatalogReader, CheckDef, IndexConstraintRef, IndexDef, TableDef};
 use crate::error::{Error, Result, Severity, sqlstate};
 use crate::storage::RelHandle;
+use crate::types::Oid;
+use std::sync::Arc;
 
 fn missing_table_notice(ctx: &mut DdlCtx<'_>, name: &str) {
     ctx.notice(
@@ -331,6 +335,183 @@ pub fn alter_owner(ctx: &mut DdlCtx<'_>, b: &BoundAlterTableOwner) -> Result<Str
     Ok("ALTER TABLE".into())
 }
 
+/// `create_foreign_key` の親の解決結果（07 §4.6）。
+#[derive(Clone, Copy, Debug)]
+pub enum ResolvedParent<'a> {
+    Existing(&'a TableDef),
+    /// 作成中の表自身（`child` の `indexes` に作成済みの PK / UNIQUE の索引が入っていること）。
+    SelfTable,
+}
+
+/// `parent_cols` の attnum の集合に一致する一意インデックス（部分・式でない。OID 昇順で最初）。
+fn matching_unique_index(parent: &TableDef, parent_cols: &[i16]) -> Option<Oid> {
+    let want: std::collections::BTreeSet<i16> = parent_cols.iter().copied().collect();
+    parent
+        .indexes
+        .iter()
+        .filter(|i| i.unique && i.columns.len() == want.len())
+        .filter(|i| {
+            i.columns
+                .iter()
+                .map(|c| c.attnum)
+                .collect::<std::collections::BTreeSet<_>>()
+                == want
+        })
+        .map(|i| i.oid)
+        .min()
+}
+
+/// `CREATE TABLE` と `ALTER TABLE ADD FOREIGN KEY` の共通部分。`pg_constraint` と `pg_depend` の行を書き、
+/// カタログのキャッシュの無効化を予約する（07 §6.6）。
+///
+/// `check_existing`（既存の行の検査。`initial_check`）は RI エンジン（FK-2）の完成まで未対応で、真なら 0A000。
+pub fn create_foreign_key(
+    ctx: &mut DdlCtx<'_>,
+    child: &TableDef,
+    fk: &BoundForeignKey,
+    resolved_parent: ResolvedParent<'_>,
+    check_existing: bool,
+) -> Result<ForeignKeyDef> {
+    if check_existing {
+        return Err(Error::not_supported(
+            "checking existing rows when adding a foreign key is not supported yet",
+        ));
+    }
+    if fk.child_cols.is_empty() || fk.child_cols.len() != fk.parent_cols.len() {
+        return Err(Error::new(
+            sqlstate::INVALID_FOREIGN_KEY,
+            "number of referencing and referenced columns for foreign key disagree",
+        ));
+    }
+    if fk.eq_ops.len() != fk.child_cols.len() {
+        return Err(Error::internal("foreign key without equality operators"));
+    }
+    let (parent_oid, parent_index) = match (resolved_parent, &fk.parent) {
+        (ResolvedParent::Existing(p), BoundFkParent::Existing { index, .. }) => (p.oid, *index),
+        (ResolvedParent::Existing(p), BoundFkParent::SelfTable { .. }) => (
+            p.oid,
+            matching_unique_index(p, &fk.parent_cols).ok_or_else(no_matching_unique(&p.name))?,
+        ),
+        (ResolvedParent::SelfTable, _) => (
+            child.oid,
+            matching_unique_index(child, &fk.parent_cols)
+                .ok_or_else(no_matching_unique(&child.name))?,
+        ),
+    };
+    let oid = ctx
+        .db
+        .catalog
+        .get_new_oid(ctx.cluster.oid_allocator(), oids::PG_CONSTRAINT)?;
+    let def = ForeignKeyDef {
+        oid,
+        name: fk.name.clone(),
+        child: child.oid,
+        parent: parent_oid,
+        parent_index,
+        child_cols: fk.child_cols.clone(),
+        parent_cols: fk.parent_cols.clone(),
+        match_type: fk.match_type,
+        on_update: fk.on_update,
+        on_delete: fk.on_delete,
+        set_cols: fk.set_cols.clone(),
+        eq_ops: fk.eq_ops.clone(),
+    };
+    let w = ctx.write_ctx()?;
+    ctx.db
+        .catalog
+        .insert_foreign_key(&w, ctx.snapshot, &def, child.namespace)?;
+    ctx.mark_catalog_dirty();
+    Ok(def)
+}
+
+fn no_matching_unique(table: &str) -> impl FnOnce() -> Error + '_ {
+    move || {
+        Error::new(
+            sqlstate::INVALID_FOREIGN_KEY,
+            format!(
+                "there is no unique constraint matching given keys for referenced table \"{table}\""
+            ),
+        )
+    }
+}
+
+/// FK を 1 つ消す（`pg_constraint` と `pg_depend` の行を消し、`catalog_dirty` を立てる）。
+/// CASCADE の NOTICE は呼び出し側が出す。
+pub fn drop_foreign_key(ctx: &mut DdlCtx<'_>, fk: &ForeignKeyDef) -> Result<()> {
+    let w = ctx.write_ctx()?;
+    ctx.db
+        .catalog
+        .delete_foreign_key(&w, ctx.snapshot, fk.oid)?;
+    ctx.mark_catalog_dirty();
+    Ok(())
+}
+
+/// `dropping` を参照している FK のうち、子の表が `dropping` に含まれないもの（OID 昇順、重複なし）。
+/// 空でなければ DROP TABLE は 2BP01、CASCADE なら `drop_foreign_key` で消す（07 §6.7）。
+pub fn fks_blocking_drop_tables(
+    ctx: &DdlCtx<'_>,
+    dropping: &[Oid],
+) -> Result<Vec<Arc<ForeignKeyDef>>> {
+    let mut out: Vec<Arc<ForeignKeyDef>> = Vec::new();
+    for &t in dropping {
+        for fk in ctx.catalog.foreign_keys_referencing(t)? {
+            if !dropping.contains(&fk.child) && !out.iter().any(|o| o.oid == fk.oid) {
+                out.push(fk);
+            }
+        }
+    }
+    out.sort_by_key(|f| f.oid);
+    Ok(out)
+}
+
+/// 一意インデックス `index`（`conindid`）に依存する FK。DROP INDEX と DROP CONSTRAINT（PK / UNIQUE）が使う。
+pub fn fks_depending_on_index(ctx: &DdlCtx<'_>, index: Oid) -> Result<Vec<Arc<ForeignKeyDef>>> {
+    let Some(idx) = ctx.catalog.index_by_oid(index)? else {
+        return Ok(Vec::new());
+    };
+    Ok(ctx
+        .catalog
+        .foreign_keys_referencing(idx.table_oid)?
+        .into_iter()
+        .filter(|f| f.parent_index == index)
+        .collect())
+}
+
+/// DROP の DETAIL の 1 行の前半: `constraint c_pid_fkey on table c`（`depends on ...` は呼び出し側が付ける）。
+pub fn describe_dependent(fk: &ForeignKeyDef, child_name: &str) -> String {
+    format!("constraint {} on table {child_name}", fk.name)
+}
+
+/// TRUNCATE の対象（`rels`）に対する拒否（07 §6.7）。最初の 1 件だけ報告する。表が空でも拒否する。
+pub fn check_truncate_fks(ctx: &DdlCtx<'_>, rels: &[Oid], cascade: bool) -> Result<()> {
+    for &rel in rels {
+        for fk in ctx.catalog.foreign_keys_referencing(rel)? {
+            if rels.contains(&fk.child) {
+                continue;
+            }
+            if cascade {
+                return Err(Error::not_supported(
+                    "TRUNCATE ... CASCADE is not supported",
+                ));
+            }
+            let name = |oid: Oid| -> Result<String> {
+                Ok(ctx
+                    .catalog
+                    .table_by_oid(oid)?
+                    .map_or_else(|| oid.to_string(), |t| t.name.clone()))
+            };
+            let (child, parent) = (name(fk.child)?, name(fk.parent)?);
+            return Err(Error::not_supported(
+                "cannot truncate a table referenced in a foreign key constraint",
+            )
+            .with_detail(format!("Table \"{child}\" references \"{parent}\"."))
+            .with_hint(format!(
+                "Truncate table \"{child}\" at the same time, or use TRUNCATE ... CASCADE."
+            )));
+        }
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +775,354 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.sqlstate, sqlstate::INSUFFICIENT_PRIVILEGE);
         h.rollback();
+    }
+}
+
+#[cfg(test)]
+mod fk_tests {
+    use super::*;
+    use crate::analyzer::query::{BoundCreateTable, BoundDdl};
+    use crate::catalog::fk::{FkAction, FkEqOps, FkMatch, FkNames, fk_constraint_def};
+    use crate::catalog::schema::oids;
+    use crate::ddl::testkit::{Harness, col, create_table_ddl, drop_ddl, key};
+    use crate::types::{Datum, SqlType};
+    use std::sync::Arc;
+
+    fn make(h: &mut Harness, ct: BoundCreateTable) -> Arc<TableDef> {
+        let name = ct.name.clone();
+        h.exec_w(BoundDdl::CreateTable(ct)).unwrap();
+        h.table(&name).unwrap()
+    }
+
+    fn parent(h: &mut Harness) -> Arc<TableDef> {
+        let mut ct = create_table_ddl(
+            "p",
+            vec![col("id", 1, SqlType::INT4), col("k", 2, SqlType::INT4)],
+        );
+        ct.constraints = vec![key(IndexConstraintKind::PrimaryKey, None, &[1, 2])];
+        make(h, ct)
+    }
+
+    fn child(h: &mut Harness) -> Arc<TableDef> {
+        make(
+            h,
+            create_table_ddl(
+                "c",
+                vec![
+                    col("id", 1, SqlType::INT4),
+                    col("a", 2, SqlType::INT4),
+                    col("b", 3, SqlType::INT4),
+                ],
+            ),
+        )
+    }
+
+    fn bound(p: &TableDef, child_cols: &[i16], parent_cols: &[i16]) -> BoundForeignKey {
+        BoundForeignKey {
+            name: "c_a_b_fkey".into(),
+            child_cols: child_cols.to_vec(),
+            parent: BoundFkParent::Existing {
+                oid: p.oid,
+                schema: "public".into(),
+                name: p.name.clone(),
+                index: p.indexes[0].oid,
+            },
+            parent_cols: parent_cols.to_vec(),
+            match_type: FkMatch::Simple,
+            on_update: FkAction::NoAction,
+            on_delete: FkAction::NoAction,
+            set_cols: Vec::new(),
+            eq_ops: vec![
+                FkEqOps {
+                    pf: 96,
+                    pp: 96,
+                    ff: 96
+                };
+                child_cols.len()
+            ],
+            span: crate::error::Span::default(),
+        }
+    }
+
+    fn depend_rows(h: &Harness, constraint: Oid) -> Vec<(Oid, i32, char)> {
+        use crate::catalog::rows::column_index;
+        let snap = h.tc.cluster.txn_manager().snapshot(h.txn.xid, h.txn.cid);
+        let (o, rid, rsub, ty) = (
+            column_index(oids::PG_DEPEND, "objid"),
+            column_index(oids::PG_DEPEND, "refobjid"),
+            column_index(oids::PG_DEPEND, "refobjsubid"),
+            column_index(oids::PG_DEPEND, "deptype"),
+        );
+        let mut v: Vec<_> =
+            h.db.catalog
+                .scan(&snap, oids::PG_DEPEND, |r| {
+                    Ok(r[o] == Datum::Oid(constraint))
+                })
+                .unwrap()
+                .iter()
+                .map(|t| {
+                    let (Datum::Oid(rid), Datum::Int4(sub), Datum::Char(c)) =
+                        (&t.row[rid], &t.row[rsub], &t.row[ty])
+                    else {
+                        panic!("unexpected pg_depend row")
+                    };
+                    (*rid, *sub, char::from(*c))
+                })
+                .collect();
+        v.sort_unstable();
+        v
+    }
+
+    struct Names<'a>(&'a Harness);
+    impl FkNames for Names<'_> {
+        fn column_name(&self, table: Oid, attnum: i16) -> Option<String> {
+            self.0.reader(|c| {
+                c.table_by_oid(table)
+                    .unwrap()?
+                    .columns
+                    .iter()
+                    .find(|x| x.attnum == attnum)
+                    .map(|x| x.name.clone())
+            })
+        }
+        fn relation_name(&self, table: Oid) -> Option<String> {
+            self.0.reader(|c| c.relation_name(table).unwrap())
+        }
+    }
+
+    #[test]
+    fn create_writes_constraint_and_dependency_rows() {
+        let mut h = Harness::new();
+        let p = parent(&mut h);
+        let c = child(&mut h);
+        // 親のキー (id, k) を (b, a) の順の列で参照する。
+        let mut fk = bound(&p, &[3, 2], &[2, 1]);
+        fk.on_update = FkAction::Cascade;
+        fk.on_delete = FkAction::SetNull;
+        fk.set_cols = vec![2];
+        fk.match_type = FkMatch::Full;
+        let def = h
+            .run(|ctx| create_foreign_key(ctx, &c, &fk, ResolvedParent::Existing(&p), false))
+            .unwrap();
+        assert!(h.txn.catalog_dirty);
+        assert_eq!(def.parent_index, p.indexes[0].oid);
+        assert_eq!(depend_rows(&h, def.oid), {
+            let mut v = vec![
+                (c.oid, 2, 'a'),
+                (c.oid, 3, 'a'),
+                (p.indexes[0].oid, 0, 'n'),
+                (p.oid, 1, 'n'),
+                (p.oid, 2, 'n'),
+            ];
+            v.sort_unstable();
+            v
+        });
+        h.commit();
+
+        let c2 = h.table("c").unwrap();
+        let p2 = h.table("p").unwrap();
+        assert_eq!(c2.foreign_keys.len(), 1);
+        assert!(c2.referenced_by.is_empty());
+        assert_eq!(p2.referenced_by.len(), 1);
+        assert!(p2.foreign_keys.is_empty());
+        assert_eq!(*c2.foreign_keys[0], def);
+        assert_eq!(
+            h.reader(|r| r.foreign_keys_of(c.oid).unwrap()),
+            c2.foreign_keys
+        );
+        assert_eq!(
+            h.reader(|r| r.foreign_keys_referencing(p.oid).unwrap()),
+            p2.referenced_by
+        );
+        assert!(h.reader(|r| r.constraint_name_exists(c.namespace, "c_a_b_fkey").unwrap()));
+        assert!(!h.reader(|r| r.constraint_name_exists(c.namespace, "nope").unwrap()));
+        assert_eq!(
+            fk_constraint_def(&def, &Names(&h)),
+            "FOREIGN KEY (b, a) REFERENCES p(k, id) MATCH FULL ON UPDATE CASCADE ON DELETE SET NULL (a)"
+        );
+        // pg_get_constraintdef 側の経路（ConstraintDef は contype f を読める）。
+        let cd = h.reader(|r| r.constraint_by_oid(def.oid).unwrap()).unwrap();
+        assert_eq!(cd.kind, crate::catalog::ConstraintKind::ForeignKey);
+        assert_eq!(cd.columns, vec![3, 2]);
+        assert_eq!(cd.table_oid, c.oid);
+        assert!(h.check().is_empty(), "{:?}", h.check());
+    }
+
+    #[test]
+    fn self_reference_lands_in_both_lists() {
+        let mut h = Harness::new();
+        let mut ct = create_table_ddl(
+            "s",
+            vec![col("id", 1, SqlType::INT4), col("parent", 2, SqlType::INT4)],
+        );
+        ct.constraints = vec![key(IndexConstraintKind::PrimaryKey, None, &[1])];
+        let s = make(&mut h, ct);
+        let mut fk = bound(&s, &[2], &[1]);
+        fk.name = "s_parent_fkey".into();
+        fk.parent = BoundFkParent::SelfTable {
+            index_constraint: 0,
+        };
+        let def = h
+            .run(|ctx| create_foreign_key(ctx, &s, &fk, ResolvedParent::SelfTable, false))
+            .unwrap();
+        assert!(def.is_self_referencing());
+        assert_eq!(def.parent_index, s.indexes[0].oid);
+        h.commit();
+        let s2 = h.table("s").unwrap();
+        assert_eq!(s2.foreign_keys.len(), 1);
+        assert_eq!(s2.referenced_by.len(), 1);
+        assert_eq!(
+            depend_rows(&h, def.oid),
+            vec![(s.oid, 1, 'n'), (s.oid, 2, 'a'), (s.indexes[0].oid, 0, 'n')]
+        );
+        // 自己参照の表の DROP は通る。
+        h.begin();
+        h.exec(drop_ddl(
+            vec![s2],
+            crate::catalog::depend::DropBehavior::Restrict,
+        ))
+        .unwrap();
+        h.commit();
+        assert!(h.table("s").is_none());
+        assert_eq!(h.rows_mentioning(def.oid), 0);
+        assert!(h.check().is_empty());
+    }
+
+    #[test]
+    fn no_matching_unique_index_is_42830_and_existing_check_is_unsupported() {
+        let mut h = Harness::new();
+        let p = parent(&mut h);
+        let c = child(&mut h);
+        let mut fk = bound(&p, &[2], &[1]);
+        fk.parent = BoundFkParent::SelfTable {
+            index_constraint: 0,
+        };
+        let e = h
+            .run(|ctx| create_foreign_key(ctx, &c, &fk, ResolvedParent::Existing(&p), false))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INVALID_FOREIGN_KEY);
+        let fk = bound(&p, &[2], &[1, 2]);
+        let e = h
+            .run(|ctx| create_foreign_key(ctx, &c, &fk, ResolvedParent::Existing(&p), false))
+            .unwrap_err();
+        assert_eq!(
+            e.message,
+            "number of referencing and referenced columns for foreign key disagree"
+        );
+        let fk = bound(&p, &[2, 3], &[1, 2]);
+        let e = h
+            .run(|ctx| create_foreign_key(ctx, &c, &fk, ResolvedParent::Existing(&p), true))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::FEATURE_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn drop_and_peers_and_truncate_checks() {
+        let mut h = Harness::new();
+        let p = parent(&mut h);
+        let c = child(&mut h);
+        let fk = bound(&p, &[2, 3], &[1, 2]);
+        let def = h
+            .run(|ctx| create_foreign_key(ctx, &c, &fk, ResolvedParent::Existing(&p), false))
+            .unwrap();
+        h.commit();
+
+        let snap = h.tc.cluster.txn_manager().snapshot(None, 0);
+        assert_eq!(
+            h.db.catalog.fk_peer_tables(&snap, p.oid, None).unwrap(),
+            vec![c.oid]
+        );
+        assert_eq!(
+            h.db.catalog
+                .fk_peer_tables(&snap, c.oid, Some("c_a_b_fkey"))
+                .unwrap(),
+            vec![p.oid]
+        );
+        assert!(
+            h.db.catalog
+                .fk_peer_tables(&snap, c.oid, Some("other"))
+                .unwrap()
+                .is_empty()
+        );
+
+        h.begin();
+        let blockers = h
+            .run(|ctx| fks_blocking_drop_tables(ctx, &[p.oid]))
+            .unwrap();
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(
+            describe_dependent(&blockers[0], "c"),
+            "constraint c_a_b_fkey on table c"
+        );
+        assert!(
+            h.run(|ctx| fks_blocking_drop_tables(ctx, &[p.oid, c.oid]))
+                .unwrap()
+                .is_empty()
+        );
+        let by_index = h
+            .run(|ctx| fks_depending_on_index(ctx, p.indexes[0].oid))
+            .unwrap();
+        assert_eq!(by_index.len(), 1);
+
+        // TRUNCATE: 親だけは拒否、子も一緒なら通る、CASCADE は 0A000。
+        let e = h
+            .run(|ctx| check_truncate_fks(ctx, &[p.oid], false))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::FEATURE_NOT_SUPPORTED);
+        assert_eq!(
+            e.message,
+            "cannot truncate a table referenced in a foreign key constraint"
+        );
+        assert_eq!(e.detail.as_deref(), Some("Table \"c\" references \"p\"."));
+        assert_eq!(
+            e.hint.as_deref(),
+            Some("Truncate table \"c\" at the same time, or use TRUNCATE ... CASCADE.")
+        );
+        let e = h
+            .run(|ctx| check_truncate_fks(ctx, &[p.oid], true))
+            .unwrap_err();
+        assert_eq!(e.message, "TRUNCATE ... CASCADE is not supported");
+        h.run(|ctx| check_truncate_fks(ctx, &[p.oid, c.oid], false))
+            .unwrap();
+        h.run(|ctx| check_truncate_fks(ctx, &[c.oid], false))
+            .unwrap();
+
+        // DROP TABLE の親は 2BP01（依存行 n による）。FK を消せば通る。
+        let p2 = h.table("p").unwrap();
+        let e = h
+            .exec(drop_ddl(
+                vec![p2.clone()],
+                crate::catalog::depend::DropBehavior::Restrict,
+            ))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::DEPENDENT_OBJECTS_STILL_EXIST);
+        h.run(|ctx| drop_foreign_key(ctx, &def)).unwrap();
+        assert_eq!(h.rows_mentioning(def.oid), 0);
+        h.commit();
+        assert!(h.table("c").unwrap().foreign_keys.is_empty());
+        assert!(h.table("p").unwrap().referenced_by.is_empty());
+        assert!(h.check().is_empty());
+    }
+
+    #[test]
+    fn dropping_the_child_removes_the_constraint() {
+        let mut h = Harness::new();
+        let p = parent(&mut h);
+        let c = child(&mut h);
+        let fk = bound(&p, &[2, 3], &[1, 2]);
+        let def = h
+            .run(|ctx| create_foreign_key(ctx, &c, &fk, ResolvedParent::Existing(&p), false))
+            .unwrap();
+        h.commit();
+        h.begin();
+        h.exec(drop_ddl(
+            vec![h.table("c").unwrap()],
+            crate::catalog::depend::DropBehavior::Restrict,
+        ))
+        .unwrap();
+        h.commit();
+        assert_eq!(h.rows_mentioning(def.oid), 0);
+        assert!(h.table("p").unwrap().referenced_by.is_empty());
+        assert!(h.check().is_empty());
     }
 }

@@ -298,7 +298,7 @@ create table p(id int4 primary key, v int4);
 delete from t using u where t.a = u.a and u.d = 1
 -- build
 Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
-  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #4:u.a #5:u.d]
     Filter ((#0:t.a = #4:u.a) AND (#5:u.d = 1))
       Join Inner
         Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
@@ -313,7 +313,7 @@ Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
 (unchanged)
 -- pushdown
 Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
-  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #4:u.a #5:u.d]
     Join Inner on (#0:t.a = #4:u.a)
       Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
       Filter (#5:u.d = 1)
@@ -324,9 +324,9 @@ Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
 (unchanged)
 -- prune
 Delete t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid
-  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #4:u.a #5:u.d]
     Join Inner on (#0:t.a = #4:u.a)
       Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
-      Project [#4:u.a]
+      Project [#4:u.a #5:u.d]
         Filter (#5:u.d = 1)
           Get u [#4:u.a #5:u.d #6:u.e]

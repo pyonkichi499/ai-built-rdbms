@@ -158,6 +158,22 @@ impl StorageManager {
         self.rel_seg_blocks
     }
 
+    /// The file layer this manager writes through. REDO (`RedoCtx` has no `vfs`) and
+    /// `dbase.rs` use it.
+    pub fn vfs(&self) -> &Arc<dyn Vfs> {
+        &self.vfs
+    }
+
+    /// Drops the open files, `pending_sync` and `pending_unlink` entries of database
+    /// `db`. The files themselves are not touched (`m5/09` §4.6): DROP DATABASE removes
+    /// the directory after this.
+    pub fn forget_database(&self, db: Oid) -> Result<()> {
+        lock(&self.rels)?.retain(|(r, _), _| r.db_oid != db);
+        lock(&self.pending_sync)?.retain(|(r, _, _), _| r.db_oid != db);
+        lock(&self.pending_unlink)?.retain(|(r, _)| r.db_oid != db);
+        Ok(())
+    }
+
     /// Drains the WARNING messages produced while opening relations (e.g. a
     /// truncated partial block at the end of a file).
     pub fn take_warnings(&self) -> Vec<String> {
@@ -1367,6 +1383,30 @@ mod tests {
         mgr.unlink(r2).unwrap();
         mgr.extend_to(r2, ForkNumber::Main, 0).unwrap();
         assert_eq!(mgr.nblocks(r2, ForkNumber::Main).unwrap(), 1);
+    }
+
+    #[test]
+    fn forget_database_drops_state_but_not_files() {
+        let (vfs, mgr) = setup(4);
+        let other = RelFileLocator {
+            db_oid: 6,
+            ..rel(60)
+        };
+        mgr.create(other, ForkNumber::Main).unwrap();
+        mgr.extend(other, ForkNumber::Main).unwrap();
+        let gone = make_rel(&mgr, 61, 1);
+        let queued = make_rel(&mgr, 62, 1);
+        mgr.unlink(queued).unwrap();
+        mgr.forget_database(5).unwrap();
+        // The files stay; only the in-memory state of database 5 went away.
+        assert_eq!(file_len(&vfs, "base/5/61"), Some(BLCKSZ));
+        assert_eq!(mgr.nblocks(gone, ForkNumber::Main).unwrap(), 1);
+        assert_eq!(mgr.nblocks(other, ForkNumber::Main).unwrap(), 1);
+        // The leftover of the dropped relation is no longer queued for removal.
+        let upto = mgr.begin_unlink_cycle();
+        mgr.finish_pending_unlinks(upto).unwrap();
+        assert_eq!(file_len(&vfs, "base/5/62"), Some(0));
+        assert!(Arc::ptr_eq(mgr.vfs(), mgr.vfs()));
     }
 
     #[test]

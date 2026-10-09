@@ -310,3 +310,46 @@ fn pg_sleep_takes_numeric_literal() {
     let c = cat();
     assert_eq!(types(&c, "SELECT pg_sleep(0.01)"), vec![oid::VOID]);
 }
+
+#[test]
+fn timezone_dependent_cast_functions_become_env_casts() {
+    let c = cat();
+    for (q, ty) in [
+        ("SELECT date(current_timestamp)", oid::DATE),
+        ("SELECT timestamptz(current_date)", oid::TIMESTAMPTZ),
+        ("SELECT timestamptz(localtimestamp)", oid::TIMESTAMPTZ),
+    ] {
+        let e = first(&c, q);
+        assert_eq!(e.ty.oid, ty, "{q}");
+        assert!(
+            matches!(
+                e.kind,
+                BoundExprKind::Cast {
+                    method: CastMethod::Env(_),
+                    ..
+                }
+            ),
+            "{q}"
+        );
+    }
+    // timestamp -> date は TimeZone に依存しないので関数のまま。
+    assert!(matches!(
+        first(&c, "SELECT date(localtimestamp)").kind,
+        BoundExprKind::Function { .. }
+    ));
+}
+
+#[test]
+fn reg_types_assign_to_integers() {
+    let c = cat();
+    for q in [
+        "SELECT '1259'::regclass::int4",
+        "SELECT '23'::regtype::int8",
+        "SELECT '11'::regnamespace::int4",
+    ] {
+        assert!(
+            matches!(first(&c, q).kind, BoundExprKind::Cast { .. }),
+            "{q}"
+        );
+    }
+}

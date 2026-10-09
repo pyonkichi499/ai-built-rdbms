@@ -1,0 +1,318 @@
+# IntervalStyle の 4 形式と入出力
+# 接頭辞: types_intervalstyle_
+
+statement ok
+DROP TABLE IF EXISTS types_intervalstyle_t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+query T
+SHOW IntervalStyle
+----
+postgres
+
+statement ok
+CREATE TABLE types_intervalstyle_t (id int, v interval)
+
+statement ok
+INSERT INTO types_intervalstyle_t VALUES (1, '1 year 2 months 3 days 04:05:06.789'), (2, '-1 year -2 months -3 days -04:05:06'), (3, '1 year -2 months 3 days -04:05:06'), (4, '0'), (5, '00:00:01'), (6, '-00:00:00.5'), (7, '100 days'), (8, '36:00:00'), (9, '-1 mon +1 day'), (10, 'infinity'), (11, '-infinity')
+
+query IT
+SELECT id, v::text FROM types_intervalstyle_t ORDER BY id
+----
+1	1 year 2 mons 3 days 04:05:06.789
+2	-1 years -2 mons -3 days -04:05:06
+3	10 mons 3 days -04:05:06
+4	00:00:00
+5	00:00:01
+6	-00:00:00.5
+7	100 days
+8	36:00:00
+9	-1 mons +1 day
+10	infinity
+11	-infinity
+
+statement ok
+SET IntervalStyle = 'postgres_verbose'
+
+query T
+SHOW IntervalStyle
+----
+postgres_verbose
+
+query IT
+SELECT id, v::text FROM types_intervalstyle_t ORDER BY id
+----
+1	@ 1 year 2 mons 3 days 4 hours 5 mins 6.789 secs
+2	@ 1 year 2 mons 3 days 4 hours 5 mins 6 secs ago
+3	@ 10 mons 3 days -4 hours -5 mins -6 secs
+4	@ 0
+5	@ 1 sec
+6	@ 0.5 secs ago
+7	@ 100 days
+8	@ 36 hours
+9	@ 1 mon -1 days ago
+10	infinity
+11	-infinity
+
+statement ok
+SET IntervalStyle = 'sql_standard'
+
+query T
+SHOW IntervalStyle
+----
+sql_standard
+
+query IT
+SELECT id, v::text FROM types_intervalstyle_t ORDER BY id
+----
+1	+1-2 +3 +4:05:06.789
+2	-1-2 -3 -4:05:06
+3	+0-10 +3 -4:05:06
+4	0
+5	0:00:01
+6	-0:00:00.5
+7	100 0:00:00
+8	36:00:00
+9	-0-1 +1 +0:00:00
+10	infinity
+11	-infinity
+
+statement ok
+SET IntervalStyle = 'iso_8601'
+
+query T
+SHOW IntervalStyle
+----
+iso_8601
+
+query IT
+SELECT id, v::text FROM types_intervalstyle_t ORDER BY id
+----
+1	P1Y2M3DT4H5M6.789S
+2	P-1Y-2M-3DT-4H-5M-6S
+3	P10M3DT-4H-5M-6S
+4	PT0S
+5	PT1S
+6	PT-0.5S
+7	P100D
+8	PT36H
+9	P-1M1D
+10	infinity
+11	-infinity
+
+# 入力は IntervalStyle に影響される
+
+statement ok
+SET IntervalStyle = 'sql_standard'
+
+query T
+SELECT (interval '1-2')::text
+----
+1-2
+
+query T
+SELECT (interval '-1-2')::text
+----
+-1-2
+
+query T
+SELECT (interval '1 2:03:04')::text
+----
+1 2:03:04
+
+query T
+SELECT (interval '-1 2:03:04')::text
+----
+-1 2:03:04
+
+query T
+SELECT (interval '+1-2 -3 +4:05:06')::text
+----
++1-2 -3 +4:05:06
+
+query T
+SELECT (interval '3:04:05')::text
+----
+3:04:05
+
+query T
+SELECT (interval '-3:04:05')::text
+----
+-3:04:05
+
+query T
+SELECT (interval '1-2' year to month)::text
+----
+1-2
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+query T
+SELECT (interval '1-2')::text
+----
+1 year 2 mons
+
+query T
+SELECT (interval '-1-2')::text
+----
+-1 years -2 mons
+
+query T
+SELECT (interval '1 2:03:04')::text
+----
+1 day 02:03:04
+
+query T
+SELECT (interval '-1 2:03:04')::text
+----
+-1 days +02:03:04
+
+query T
+SELECT (interval '3:04:05')::text
+----
+03:04:05
+
+statement ok
+SET IntervalStyle = 'iso_8601'
+
+query T
+SELECT (interval 'P1Y2M3DT4H5M6S')::text
+----
+P1Y2M3DT4H5M6S
+
+query T
+SELECT (interval 'PT1H')::text
+----
+PT1H
+
+query T
+SELECT (interval 'P0D')::text
+----
+PT0S
+
+query T
+SELECT (interval 'PT0S')::text
+----
+PT0S
+
+# SET LOCAL とロールバック
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL IntervalStyle = 'iso_8601'
+
+query T
+SELECT (interval '1 day 2 hours')::text
+----
+P1DT2H
+
+query T
+SHOW IntervalStyle
+----
+iso_8601
+
+statement ok
+ROLLBACK
+
+query T
+SHOW IntervalStyle
+----
+postgres
+
+query T
+SELECT (interval '1 day 2 hours')::text
+----
+1 day 02:00:00
+
+statement ok
+BEGIN
+
+statement ok
+SET IntervalStyle = 'sql_standard'
+
+statement ok
+COMMIT
+
+query T
+SHOW IntervalStyle
+----
+sql_standard
+
+query T
+SELECT (interval '1 day 2 hours')::text
+----
+1 2:00:00
+
+statement ok
+RESET IntervalStyle
+
+query T
+SHOW IntervalStyle
+----
+postgres
+
+statement ok
+SET IntervalStyle TO 'POSTGRES_VERBOSE'
+
+query T
+SHOW IntervalStyle
+----
+postgres_verbose
+
+statement ok
+SET IntervalStyle = iso_8601
+
+query T
+SHOW IntervalStyle
+----
+iso_8601
+
+statement ok
+SET IntervalStyle = DEFAULT
+
+query T
+SHOW IntervalStyle
+----
+postgres
+
+# to_char ではなくキャストでの出力は text と同じ
+
+statement error (22023)
+SET IntervalStyle = 'bogus'
+
+
+statement error (22023)
+SET IntervalStyle = ''
+
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_intervalstyle_t

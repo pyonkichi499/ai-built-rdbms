@@ -9,13 +9,14 @@ use crate::storage::{
     WriteCtx,
 };
 use crate::txn::{CommandId, Xid};
+use crate::types::array::{decode_array, encode_array};
 use crate::types::bpchar::{decode_bpchar, encode_bpchar};
 use crate::types::datetime::{
     decode_date, decode_timestamp, decode_timestamptz, encode_date, encode_timestamp,
     encode_timestamptz,
 };
 use crate::types::numeric::{decode_numeric, encode_numeric};
-use crate::types::{Datum, Row, Tid, oid};
+use crate::types::{Datum, Row, Tid, oid, typeinfo};
 
 pub const HEAP_HASNULL: u16 = 0x0001;
 pub const HEAP_HASVARWIDTH: u16 = 0x0002;
@@ -78,10 +79,14 @@ enum Kind {
     OidVector,
     Numeric,
     BpChar,
+    Bytea,
+    Uuid,
     Date,
     Timestamp,
     TimestampTz,
     Int2Vector,
+    /// Regular array types (not `int2[]`, which stays `Int2Vector` until the catalog migration).
+    Array,
     /// Types that exist only for always-NULL columns.
     NullOnly,
 }
@@ -104,22 +109,30 @@ fn kind_of(type_oid: u32) -> Result<Kind> {
         oid::OIDVECTOR => Kind::OidVector,
         oid::NUMERIC => Kind::Numeric,
         oid::BPCHAR => Kind::BpChar,
+        oid::BYTEA => Kind::Bytea,
+        oid::UUID => Kind::Uuid,
         oid::DATE => Kind::Date,
         oid::TIMESTAMP => Kind::Timestamp,
         oid::TIMESTAMPTZ => Kind::TimestampTz,
         oid::INT2VECTOR | oid::INT2_ARRAY => Kind::Int2Vector,
-        oid::ACLITEM
-        | oid::ANYARRAY
-        | oid::ACLITEM_ARRAY
-        | oid::TEXT_ARRAY
-        | oid::OID_ARRAY
-        | oid::CHAR_ARRAY => Kind::NullOnly,
+        oid::ACLITEM | oid::ANYARRAY | oid::ACLITEM_ARRAY => Kind::NullOnly,
+        other if is_regular_array(other) => Kind::Array,
         other => {
             return Err(Error::not_supported(format!(
                 "type with OID {other} cannot be stored in a heap tuple yet"
             )));
         }
     })
+}
+
+fn is_regular_array(type_oid: u32) -> bool {
+    type_oid != oid::INT2_ARRAY
+        && typeinfo::is_array_type(type_oid)
+        && typeinfo::element_type(type_oid).is_some_and(typeinfo::is_array_element_type)
+}
+
+fn array_elem(type_oid: u32) -> Result<u32> {
+    typeinfo::element_type(type_oid).ok_or_else(|| corrupt("not an array type"))
 }
 
 fn type_mismatch(type_oid: u32, d: &Datum) -> Error {
@@ -513,6 +526,11 @@ fn encode_attr_with(buf: &mut Vec<u8>, attr: &AttrDesc, d: &Datum, compress: boo
             write_varlena(buf, &payload, align, compress);
             return Ok(true);
         }
+        (Kind::Bytea, Datum::Bytea(b)) => {
+            write_varlena(buf, b, align, compress);
+            return Ok(true);
+        }
+        (Kind::Uuid, Datum::Uuid(u)) => buf.extend_from_slice(u),
         (Kind::Numeric, Datum::Numeric(n)) => {
             encode_numeric(n, &mut payload);
             write_varlena(buf, &payload, align, compress);
@@ -529,6 +547,14 @@ fn encode_attr_with(buf: &mut Vec<u8>, attr: &AttrDesc, d: &Datum, compress: boo
             for x in v {
                 payload.extend_from_slice(&x.to_le_bytes());
             }
+            write_varlena(buf, &payload, align, compress);
+            return Ok(true);
+        }
+        (Kind::Array, Datum::Array(a)) => {
+            if Some(a.elem_type) != typeinfo::element_type(attr.type_oid) {
+                return Err(type_mismatch(attr.type_oid, d));
+            }
+            payload = encode_array(a)?;
             write_varlena(buf, &payload, align, compress);
             return Ok(true);
         }
@@ -590,6 +616,8 @@ impl<'a> ColumnCursor<'a> {
             }
             Kind::Text => Datum::Text(utf8(&r.varlena(a)?)?),
             Kind::BpChar => Datum::BpChar(decode_bpchar(&r.varlena(a)?)?),
+            Kind::Bytea => Datum::Bytea(r.varlena(a)?.into_owned()),
+            Kind::Uuid => Datum::Uuid(r.fixed::<16>(a)?),
             Kind::Numeric => Datum::Numeric(decode_numeric(&r.varlena(a)?)?),
             Kind::OidVector => {
                 let b = r.varlena(a)?;
@@ -603,6 +631,10 @@ impl<'a> ColumnCursor<'a> {
                         .map(|c| u32::from_le_bytes(*c))
                         .collect(),
                 )
+            }
+            Kind::Array => {
+                let b = r.varlena(a)?;
+                Datum::Array(Box::new(decode_array(&b, array_elem(attr.type_oid)?)?))
             }
             Kind::Int2Vector => {
                 let b = r.varlena(a)?;

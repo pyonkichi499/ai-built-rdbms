@@ -1,0 +1,67 @@
+# SERIALIZABLE は未対応（PostgreSQL では SSI で通る。yuzhu は 0A000）
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement error (0A000)
+BEGIN ISOLATION LEVEL SERIALIZABLE
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement error (0A000)
+START TRANSACTION ISOLATION LEVEL SERIALIZABLE
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement error (0A000)
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement error (0A000)
+SET default_transaction_isolation = 'serializable'
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement error (0A000)
+SET transaction_isolation = 'serializable'
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement ok
+BEGIN
+
+# KD-3 SERIALIZABLE は 0A000
+onlyif yuzhu
+statement error (0A000)
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE
+
+# KD-3 失敗後のトランザクションは中断状態
+onlyif yuzhu
+statement error (25P02)
+SELECT 1
+
+# KD-3 ブロックの後始末
+onlyif yuzhu
+statement ok
+ROLLBACK
+
+# PostgreSQL では通る
+onlyif pg
+statement ok
+BEGIN ISOLATION LEVEL SERIALIZABLE
+
+onlyif pg
+query T
+SHOW transaction_isolation
+----
+serializable
+
+onlyif pg
+statement ok
+COMMIT
+
+# 失敗後もセッションは使える
+query T
+SHOW transaction_isolation
+----
+read committed

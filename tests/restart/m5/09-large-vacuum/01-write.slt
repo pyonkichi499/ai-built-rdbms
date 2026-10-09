@@ -1,0 +1,25 @@
+# フェーズ 1（yuzhu だけ。--shared-buffers 1MB = 128 ページ）: プールより大きい表で VACUUM（ページが追い出される）して、kill -9 される。
+# 表は 1 行およそ 130 バイト × 30000 行で 700 ページ前後。
+
+statement ok
+DROP TABLE IF EXISTS crm5_09_t
+
+statement ok
+CREATE TABLE crm5_09_t (id int PRIMARY KEY, v int NOT NULL, pad text)
+
+statement count 30000
+INSERT INTO crm5_09_t SELECT g, 0, repeat('p', 100) FROM generate_series(1, 30000) g
+
+statement count 10000
+DELETE FROM crm5_09_t WHERE id % 3 = 0
+
+statement count 10000
+UPDATE crm5_09_t SET v = 1 WHERE id % 3 = 1
+
+statement ok
+VACUUM crm5_09_t
+
+query III
+SELECT count(*), sum(v), sum(id) FROM crm5_09_t
+----
+20000 10000 300000000

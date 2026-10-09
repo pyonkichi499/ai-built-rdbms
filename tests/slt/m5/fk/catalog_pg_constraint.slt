@@ -1,0 +1,114 @@
+# FOREIGN KEY: pg_constraint の行と pg_get_constraintdef（pg_trigger は見ない）
+# 接頭辞: fk_catalog_pg_constraint_
+
+statement ok
+DROP TABLE IF EXISTS fk_catalog_pg_constraint_c
+
+statement ok
+DROP TABLE IF EXISTS fk_catalog_pg_constraint_c2
+
+statement ok
+DROP TABLE IF EXISTS fk_catalog_pg_constraint_p
+
+statement ok
+DROP TABLE IF EXISTS fk_catalog_pg_constraint_q
+
+statement ok
+CREATE TABLE fk_catalog_pg_constraint_p (id int, k int, v text UNIQUE, PRIMARY KEY (id, k))
+
+statement ok
+CREATE TABLE fk_catalog_pg_constraint_c (
+  n int PRIMARY KEY,
+  a int, b int, w text,
+  CONSTRAINT fk_catalog_pg_constraint_f1 FOREIGN KEY (a, b) REFERENCES fk_catalog_pg_constraint_p (id, k) MATCH FULL ON UPDATE SET NULL ON DELETE CASCADE,
+  CONSTRAINT fk_catalog_pg_constraint_f2 FOREIGN KEY (b, a) REFERENCES fk_catalog_pg_constraint_p (k, id),
+  CONSTRAINT fk_catalog_pg_constraint_f3 FOREIGN KEY (w) REFERENCES fk_catalog_pg_constraint_p (v) ON DELETE RESTRICT,
+  CONSTRAINT fk_catalog_pg_constraint_f4 FOREIGN KEY (a, b) REFERENCES fk_catalog_pg_constraint_p ON UPDATE SET DEFAULT ON DELETE SET NULL (b)
+)
+
+query TTTTTTTT
+SELECT conname, contype, condeferrable, condeferred, convalidated, confupdtype, confdeltype, confmatchtype
+FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_catalog_pg_constraint_f1 f f f t n c f
+fk_catalog_pg_constraint_f2 f f f t a a s
+fk_catalog_pg_constraint_f3 f f f t a r s
+fk_catalog_pg_constraint_f4 f f f t d n s
+
+query TTTTT
+SELECT conname, conrelid::regclass, confrelid::regclass, conindid::regclass, conparentid
+FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_catalog_pg_constraint_f1 fk_catalog_pg_constraint_c fk_catalog_pg_constraint_p fk_catalog_pg_constraint_p_pkey 0
+fk_catalog_pg_constraint_f2 fk_catalog_pg_constraint_c fk_catalog_pg_constraint_p fk_catalog_pg_constraint_p_pkey 0
+fk_catalog_pg_constraint_f3 fk_catalog_pg_constraint_c fk_catalog_pg_constraint_p fk_catalog_pg_constraint_p_v_key 0
+fk_catalog_pg_constraint_f4 fk_catalog_pg_constraint_c fk_catalog_pg_constraint_p fk_catalog_pg_constraint_p_pkey 0
+
+query TTTTT
+SELECT conname, conislocal, coninhcount, connoinherit, contypid
+FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c'::regclass AND contype = 'f' AND conname IN ('fk_catalog_pg_constraint_f1')
+----
+fk_catalog_pg_constraint_f1 t 0 t 0
+
+# conkey / confkey / confdelsetcols（attnum の配列）
+query TTTT
+SELECT conname, conkey::text, confkey::text, confdelsetcols::text
+FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_catalog_pg_constraint_f1 {2,3} {1,2} NULL
+fk_catalog_pg_constraint_f2 {3,2} {2,1} NULL
+fk_catalog_pg_constraint_f3 {4} {3} NULL
+fk_catalog_pg_constraint_f4 {2,3} {1,2} {3}
+
+# 演算子（int4 = int4 は 96、text = text は 98）
+query TTTT
+SELECT conname, conpfeqop::text, conppeqop::text, conffeqop::text
+FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_catalog_pg_constraint_f1 {96,96} {96,96} {96,96}
+fk_catalog_pg_constraint_f2 {96,96} {96,96} {96,96}
+fk_catalog_pg_constraint_f3 {98} {98} {98}
+fk_catalog_pg_constraint_f4 {96,96} {96,96} {96,96}
+
+# pg_get_constraintdef
+query TT
+SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_catalog_pg_constraint_f1 FOREIGN KEY (a, b) REFERENCES fk_catalog_pg_constraint_p(id, k) MATCH FULL ON UPDATE SET NULL ON DELETE CASCADE
+fk_catalog_pg_constraint_f2 FOREIGN KEY (b, a) REFERENCES fk_catalog_pg_constraint_p(k, id)
+fk_catalog_pg_constraint_f3 FOREIGN KEY (w) REFERENCES fk_catalog_pg_constraint_p(v) ON DELETE RESTRICT
+fk_catalog_pg_constraint_f4 FOREIGN KEY (a, b) REFERENCES fk_catalog_pg_constraint_p(id, k) ON UPDATE SET DEFAULT ON DELETE SET NULL (b)
+
+statement ok
+CREATE TABLE fk_catalog_pg_constraint_q (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_catalog_pg_constraint_c2 (n bigint REFERENCES fk_catalog_pg_constraint_q (id))
+
+query TTT
+SELECT conpfeqop::text, conppeqop::text, conffeqop::text FROM pg_constraint WHERE conrelid = 'fk_catalog_pg_constraint_c2'::regclass AND contype = 'f'
+----
+{15} {96} {410}
+
+# pg_depend: 子の列（a）、親の一意インデックス（n）、親の列（n）の 3 行
+query TTTT
+SELECT d.refobjid::regclass, d.refobjsubid, d.deptype, d.refclassid::regclass
+FROM pg_depend d JOIN pg_constraint c ON c.oid = d.objid
+WHERE d.classid = 'pg_constraint'::regclass AND c.conrelid = 'fk_catalog_pg_constraint_c2'::regclass AND c.contype = 'f'
+ORDER BY d.deptype, d.refobjid::regclass::text, d.refobjsubid
+----
+fk_catalog_pg_constraint_c2 1 a pg_class
+fk_catalog_pg_constraint_q 1 n pg_class
+fk_catalog_pg_constraint_q_pkey 0 n pg_class
+
+statement ok
+DROP TABLE fk_catalog_pg_constraint_c2
+
+statement ok
+DROP TABLE fk_catalog_pg_constraint_c
+
+statement ok
+DROP TABLE fk_catalog_pg_constraint_q
+
+statement ok
+DROP TABLE fk_catalog_pg_constraint_p

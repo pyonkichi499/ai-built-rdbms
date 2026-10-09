@@ -36,6 +36,7 @@
     clippy::too_many_lines
 )]
 
+mod age;
 mod calendar;
 mod cnum;
 mod date;
@@ -43,25 +44,36 @@ mod error;
 mod fields;
 mod format;
 mod interval;
+mod make;
 mod parse;
 mod settings;
+mod time;
 mod timestamp;
 mod tokens;
+mod typmod;
 mod tz;
 
 pub use calendar::MAX_PRECISION;
 pub use date::Date;
 pub use error::{DateTimeError, Result, sqlstate};
 pub use fields::{
-    NumericValue, date_part_date, date_part_interval, date_part_timestamp, date_part_timestamptz,
-    date_trunc_interval, date_trunc_timestamp, date_trunc_timestamptz, extract_date,
-    extract_interval, extract_timestamp, extract_timestamptz,
+    NumericValue, date_part_date, date_part_interval, date_part_time, date_part_timestamp,
+    date_part_timestamptz, date_trunc_interval, date_trunc_timestamp, date_trunc_timestamptz,
+    extract_date, extract_interval, extract_time, extract_timestamp, extract_timestamptz,
 };
 pub use format::format_float8;
 pub use interval::{Interval, interval_typmod, range as interval_range};
+pub use make::{
+    date_bin_timestamp, date_bin_timestamptz, make_date, make_interval, make_timestamp,
+    make_timestamptz, to_timestamp_float, zone_by_name,
+};
 pub use settings::{
     DateOrder, DateStyle, DateTimeEnv, IntervalStyle, format_datestyle, format_intervalstyle,
     parse_datestyle, parse_intervalstyle, parse_timezone_setting,
 };
+pub use time::{Time, timetz_unsupported};
 pub use timestamp::{MICROS_PER_DAY, Timestamp, TimestampTz};
+pub use typmod::{
+    interval_typmod_in, interval_typmod_out, precision_typmod_in, precision_typmod_out,
+};
 pub use tz::{FsZoneSource, MemZoneSource, TimeZone, ZoneDb, ZoneSource};

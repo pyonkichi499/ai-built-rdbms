@@ -7,8 +7,11 @@
 //! 作ったファイルは `pending_creates` に載っているので、session がアボートで消す。
 
 pub mod constraint;
+pub mod database;
 pub mod depend;
 pub mod index;
+pub mod lock_table;
+pub mod role;
 pub mod sequence;
 pub mod table;
 pub mod truncate;
@@ -17,16 +20,21 @@ pub mod vacuum;
 use std::sync::Arc;
 
 use crate::analyzer::query::{BoundDdl, RelOption};
+use crate::backend::BackendId;
 use crate::catalog::CatalogReader;
 use crate::catalog::naming::NameLookup;
+use crate::catalog::store::RoleRow;
 use crate::engine::{Cluster, DatabaseHandle};
 use crate::error::{Error, Result, Severity, SqlState, sqlstate};
+use crate::executor::SessionInfo;
 use crate::interrupt::InterruptFlag;
 use crate::session::Notice;
 use crate::storage::smgr::{DEFAULTTABLESPACE_OID, RelFileLocator, RelFileNumber};
 use crate::storage::{IndexStore, TableStore, WriteCtx};
+use crate::txn::lock::WaitCtl;
 use crate::txn::{Snapshot, Transaction};
 use crate::types::{Oid, TypeEnv};
+use role::PasswordPolicy;
 
 /// DDL 関数に渡す文脈（00 §14.6。07 §4.7 の 2 フィールド `in_transaction_block` と `interrupts` を含む）。
 pub struct DdlCtx<'a> {
@@ -41,6 +49,19 @@ pub struct DdlCtx<'a> {
     /// 明示ブロックまたは複数文の Simple Query の暗黙のブロックの中か（`CONCURRENTLY` と VACUUM の `25001`）。
     pub in_transaction_block: bool,
     pub interrupts: &'a InterruptFlag,
+    // ----- M5（00 §4.7。F0b-2 が足した）-----
+    /// このセッションのロックの持ち主。
+    pub backend: BackendId,
+    /// 待ちの中断条件（`lock_timeout`・`deadlock_timeout`・キャンセル）。
+    pub wait: &'a WaitCtl<'a>,
+    pub session: &'a SessionInfo,
+    /// 接続しているロール。
+    pub role: &'a RoleRow,
+    /// `password_encryption` と `scram_iterations`。session が文ごとに作る。
+    pub password: PasswordPolicy,
+    /// 暗黙のトランザクションで、この問い合わせの最初で唯一の文であるときだけ真
+    /// （PostgreSQL の `PreventInTransactionBlock`）。
+    pub outside_block: bool,
 }
 
 impl std::fmt::Debug for DdlCtx<'_> {
@@ -253,6 +274,55 @@ pub fn execute(ctx: &mut DdlCtx<'_>, ddl: BoundDdl) -> Result<String> {
         BoundDdl::CreateSequence(b) => sequence::create_sequence(ctx, &b),
         BoundDdl::AlterSequence(b) => sequence::alter_sequence(ctx, &b),
         BoundDdl::DropSequence(b) => sequence::drop_sequence(ctx, &b),
+        // ----- M5（口だけ。持ち主の章が自分の腕を置き換える）-----
+        BoundDdl::Analyze(_) => Err(stub_not_supported("ANALYZE")),
+        BoundDdl::LockTable(b) => lock_table::execute(ctx, &b),
+        BoundDdl::CreateRole(b) => role::create_role(ctx, &b),
+        BoundDdl::AlterRole(b) => role::alter_role(ctx, &b),
+        BoundDdl::DropRole(b) => role::drop_role(ctx, &b),
+        BoundDdl::AlterDatabase(_) => Err(stub_not_supported("ALTER DATABASE")),
+        BoundDdl::AlterTableAddForeignKey(_) => {
+            Err(stub_not_supported("ALTER TABLE ... ADD FOREIGN KEY"))
+        }
+        BoundDdl::AlterTableDropConstraint(_) => {
+            Err(stub_not_supported("ALTER TABLE ... DROP CONSTRAINT"))
+        }
+        // `execute_standalone` が処理する（トランザクションを自分で閉じて開き直す文）。
+        BoundDdl::CreateDatabase(_) | BoundDdl::DropDatabase(_) => Err(Error::internal(
+            "CREATE DATABASE / DROP DATABASE must run through execute_standalone",
+        )),
+    }
+}
+
+fn stub_not_supported(what: &str) -> Error {
+    Error::not_supported(format!("{what} is not supported yet"))
+}
+
+/// 文が自分でトランザクションを閉じて開き直す口（VACUUM はテーブルごとに、CREATE / DROP DATABASE は
+/// コミットの後の手順がある）。`Session` が実装する（`session/txn_ctl.rs`）。
+pub trait TxnControl {
+    /// 現在の暗黙のトランザクションに対する `DdlCtx`（スナップショットと catalog はこの時点のもの）。
+    /// `commit_and_restart` の後は作り直す。
+    fn ddl_ctx(&mut self) -> Result<DdlCtx<'_>>;
+    /// 暗黙のトランザクションをコミットして新しい暗黙のトランザクションを開く。トランザクションスコープの
+    /// ロックは解放され、セッションスコープのロック（`Database(oid)` の AccessShare）は残る。
+    fn commit_and_restart(&mut self) -> Result<()>;
+}
+
+/// `BoundDdl::{Vacuum, CreateDatabase, DropDatabase}` の実行。コマンドタグを返す。
+/// VC・DB が自分の変種の腕を置き換える。それまでは VACUUM は M4 の何もしない実装、
+/// データベースの DDL は 0A000。
+pub fn execute_standalone(ctl: &mut dyn TxnControl, ddl: BoundDdl) -> Result<String> {
+    match ddl {
+        BoundDdl::Vacuum(b) => {
+            let mut ctx = ctl.ddl_ctx()?;
+            vacuum::vacuum(&mut ctx, &b)
+        }
+        BoundDdl::CreateDatabase(b) => database::create_database(ctl, b),
+        BoundDdl::DropDatabase(_) => Err(stub_not_supported("DROP DATABASE")),
+        _ => Err(Error::internal(
+            "execute_standalone called with a statement that runs inside the transaction",
+        )),
     }
 }
 
@@ -266,13 +336,14 @@ pub(crate) mod testkit {
     use crate::catalog::reader::StatementCatalog;
     use crate::catalog::{CheckDef, ColumnDef, TableDef};
     use crate::testing::TestCluster;
-    use crate::txn::{WaitCtl, WriterGuard};
     use crate::types::SqlType;
 
     pub(crate) struct Harness {
         pub(crate) tc: TestCluster,
         pub(crate) db: Arc<DatabaseHandle>,
         pub(crate) role: Oid,
+        pub(crate) role_row: RoleRow,
+        pub(crate) info: SessionInfo,
         pub(crate) txn: Transaction,
         pub(crate) notices: Vec<Notice>,
         pub(crate) intr: InterruptFlag,
@@ -283,12 +354,22 @@ pub(crate) mod testkit {
     impl Harness {
         pub(crate) fn new() -> Harness {
             let tc = TestCluster::new();
-            let (db, role) = tc.cluster.connect("postgres", "postgres").unwrap();
+            let (db, role) = tc.cluster.connect_simple("postgres", "postgres").unwrap();
             let session_id = tc.cluster.next_session_id();
+            tc.cluster
+                .locks()
+                .register_backend(crate::backend::BackendId(session_id), 1);
             Harness {
                 tc,
                 db,
                 role: role.oid,
+                info: SessionInfo {
+                    current_user: role.name.clone(),
+                    session_user: role.name.clone(),
+                    database: "postgres".to_owned(),
+                    current_schema: Some("public".to_owned()),
+                },
+                role_row: role,
                 txn: Transaction::new(),
                 notices: Vec::new(),
                 intr: InterruptFlag::default(),
@@ -297,23 +378,17 @@ pub(crate) mod testkit {
             }
         }
 
-        /// ライターロックを取り、XID を割り当てる（書く文の前。07 §5.0）。
+        /// XID を割り当てる（書く文の前。07 §5.0）。
         pub(crate) fn begin(&mut self) {
-            let (xid, guard): (_, WriterGuard) = self
+            let (xid, guard) = self
                 .tc
                 .cluster
                 .txn_manager()
-                .begin_write(
-                    self.session_id,
-                    &WaitCtl {
-                        lock_timeout: None,
-                        interrupts: &self.intr,
-                    },
-                )
+                .assign_xid(crate::backend::BackendId(self.session_id))
                 .unwrap();
             self.txn = Transaction::new();
             self.txn.xid = Some(xid);
-            self.txn.writer = Some(guard);
+            self.txn.guard = Some(guard);
         }
 
         /// 1 つの文として `f` を流す。成功したら CCI（cid を進める）。
@@ -331,6 +406,11 @@ pub(crate) mod testkit {
                 bypass_cache: true,
                 search_path: &search_path,
             };
+            let wait = crate::txn::lock::WaitCtl {
+                lock_timeout: None,
+                deadlock_timeout: std::time::Duration::from_secs(1),
+                interrupts: &self.intr,
+            };
             let env = TypeEnv::default();
             let mut ctx = DdlCtx {
                 cluster: &self.tc.cluster,
@@ -343,6 +423,12 @@ pub(crate) mod testkit {
                 type_env: &env,
                 in_transaction_block: self.in_block,
                 interrupts: &self.intr,
+                backend: BackendId(self.session_id),
+                wait: &wait,
+                session: &self.info,
+                role: &self.role_row,
+                password: PasswordPolicy::default(),
+                outside_block: !self.in_block,
             };
             let out = f(&mut ctx)?;
             self.txn.command_counter_increment().unwrap();
@@ -372,10 +458,18 @@ pub(crate) mod testkit {
             if txn.catalog_dirty {
                 self.tc.cluster.invalidate_all_catalog_caches();
             }
-            txn.writer = None;
             for l in &txn.pending_unlinks {
                 self.tc.cluster.storage().unlink_storage(*l).unwrap();
             }
+            txn.guard = None;
+            self.release_locks();
+        }
+
+        fn release_locks(&self) {
+            self.tc.cluster.locks().release_all(
+                crate::backend::BackendId(self.session_id),
+                crate::txn::lock::LockScope::Transaction,
+            );
         }
 
         pub(crate) fn rollback(&mut self) {
@@ -386,10 +480,11 @@ pub(crate) mod testkit {
                 .txn_manager()
                 .abort(xid, &txn.pending_creates)
                 .unwrap();
-            txn.writer = None;
             for l in &txn.pending_creates {
                 self.tc.cluster.storage().unlink_storage(*l).unwrap();
             }
+            txn.guard = None;
+            self.release_locks();
         }
 
         /// いまのトランザクション（または何も始めていなければコミット済みの状態）から見える表。
@@ -696,5 +791,46 @@ mod tests {
         let mut h = Harness::new();
         let e = h.run(|ctx| ctx.write_ctx().map(|_| ())).unwrap_err();
         assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+    }
+}
+
+#[cfg(test)]
+mod tests_m5 {
+    use super::testkit::Harness;
+    use super::*;
+    use crate::analyzer::ddl_ext::database::{BoundAlterDatabase, BoundCreateDatabase};
+
+    #[test]
+    fn m5_stub_variants_are_not_supported() {
+        let mut h = Harness::new();
+        let e = h
+            .exec(BoundDdl::AlterDatabase(BoundAlterDatabase::default()))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::FEATURE_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn standalone_statements_are_refused_by_execute() {
+        let mut h = Harness::new();
+        let e = h
+            .exec(BoundDdl::CreateDatabase(BoundCreateDatabase::default()))
+            .unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn ddl_ctx_carries_the_m5_items() {
+        let mut h = Harness::new();
+        let (backend, role, outside) = h
+            .run(|ctx| Ok((ctx.backend, ctx.role.name.clone(), ctx.outside_block)))
+            .unwrap();
+        assert!(backend.0 > 0);
+        assert_eq!(role, "postgres");
+        assert!(outside);
+        h.in_block = true;
+        let outside = h.run(|ctx| Ok(ctx.outside_block)).unwrap();
+        assert!(!outside);
+        let session = h.run(|ctx| Ok(ctx.session.database.clone())).unwrap();
+        assert_eq!(session, "postgres");
     }
 }

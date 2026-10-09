@@ -1,0 +1,13 @@
+# フェーズ 2（crm5_05_tpl に接続）: テンプレートに表とデータを入れる。
+
+statement ok
+CREATE TABLE crm5_05_t (id int PRIMARY KEY, v text)
+
+statement count 3
+INSERT INTO crm5_05_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+CREATE TABLE crm5_05_big (id int, pad text)
+
+statement count 500
+INSERT INTO crm5_05_big SELECT g, repeat('p', 100) FROM generate_series(1, 500) g

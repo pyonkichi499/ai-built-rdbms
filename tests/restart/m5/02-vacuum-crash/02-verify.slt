@@ -1,0 +1,54 @@
+# フェーズ 2: a も b も VACUUM 前後の内容のまま。主キーの索引でも引けて、INSERT も UPDATE も通る。
+
+query III
+SELECT count(*), sum(id), count(*) FILTER (WHERE v = 'u') FROM crm5_02_a
+----
+1000 1000000 333
+
+query III
+SELECT count(*), sum(id), count(*) FILTER (WHERE v = 'u') FROM crm5_02_b
+----
+1000 1000000 333
+
+query IT
+SELECT id, v FROM crm5_02_a WHERE id IN (2, 3, 5) ORDER BY id
+----
+3 u
+5 x
+
+query IT
+SELECT id, v FROM crm5_02_b WHERE id IN (2, 3, 5) ORDER BY id
+----
+3 u
+5 x
+
+statement count 1
+INSERT INTO crm5_02_a VALUES (2, 'again')
+
+statement count 1
+INSERT INTO crm5_02_b VALUES (2, 'again')
+
+statement count 334
+UPDATE crm5_02_a SET v = 'w' WHERE id % 3 = 0 OR id = 2
+
+statement count 334
+UPDATE crm5_02_b SET v = 'w' WHERE id % 3 = 0 OR id = 2
+
+query IT
+SELECT count(*), count(*) FILTER (WHERE v = 'w') FROM crm5_02_a
+----
+1001 334
+
+statement ok
+VACUUM crm5_02_a
+
+query IT
+SELECT count(*), count(*) FILTER (WHERE v = 'w') FROM crm5_02_b
+----
+1001 334
+
+statement ok
+DROP TABLE crm5_02_a
+
+statement ok
+DROP TABLE crm5_02_b

@@ -71,6 +71,29 @@ pub fn hash_datum(d: &Datum, state: &mut dyn Hasher) {
             18u8.hash(&mut h);
             v.hash(&mut h);
         }
+        Datum::Time(v) => (19u8, *v).hash(&mut h),
+        Datum::Interval(v) => {
+            20u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Datum::Bytea(v) => {
+            21u8.hash(&mut h);
+            v.hash(&mut h);
+        }
+        Datum::Uuid(v) => (22u8, *v).hash(&mut h),
+        // 配列のハッシュ演算子クラスは M6。ここでは `cmp_array` の Equal（次元・要素数・下限・要素がすべて同じ）と
+        // 整合させる: 次元数・各次元の要素数と下限・要素ごとの `hash_datum`（NULL 要素はタグだけ）。
+        Datum::Array(a) => {
+            23u8.hash(&mut h);
+            a.elem_type.hash(&mut h);
+            a.dims.len().hash(&mut h);
+            for d in &a.dims {
+                (d.len, d.lbound).hash(&mut h);
+            }
+            for item in &a.items {
+                hash_datum(item, h);
+            }
+        }
     }
 }
 
@@ -107,6 +130,7 @@ mod tests {
     use std::hash::DefaultHasher;
 
     use super::*;
+    use crate::types::array::{ArrayDim, ArrayValue};
 
     fn h(d: &Datum) -> u64 {
         let mut s = DefaultHasher::new();
@@ -163,6 +187,7 @@ mod property_tests {
 
     use super::*;
     use crate::types::Tid;
+    use crate::types::array::{ArrayDim, ArrayValue};
 
     fn hash_of(d: &Datum) -> u64 {
         let mut s = DefaultHasher::new();
@@ -258,6 +283,21 @@ mod property_tests {
             Datum::Int4Array(vec![Some(1)]),
             Datum::Int4Array(vec![]),
             Datum::Void,
+            Datum::Bytea(vec![]),
+            Datum::Bytea(vec![0, 1]),
+            Datum::Uuid([0; 16]),
+            Datum::Uuid([1; 16]),
+            Datum::Array(Box::new(ArrayValue::one_dim(23, vec![]))),
+            Datum::Array(Box::new(ArrayValue::one_dim(
+                23,
+                vec![Datum::Int4(1), Datum::Null],
+            ))),
+            Datum::Array(Box::new(ArrayValue::one_dim(23, vec![Datum::Int4(1)]))),
+            Datum::Array(Box::new(ArrayValue {
+                elem_type: 23,
+                dims: vec![ArrayDim { len: 1, lbound: 0 }],
+                items: vec![Datum::Int4(1)],
+            })),
         ]
     }
 

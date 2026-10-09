@@ -1,0 +1,108 @@
+# 外部キーから参照されている表の TRUNCATE は 0A000。参照元を同じ文に並べれば成功する（PostgreSQL の挙動）。
+# CASCADE は yuzhu が 0A000（vacuum_full_unsupported 側の対象）なので、この共有テストには入れない
+
+statement ok
+DROP TABLE IF EXISTS vacuum_truncate_referenced_c
+
+statement ok
+DROP TABLE IF EXISTS vacuum_truncate_referenced_p
+
+statement ok
+DROP TABLE IF EXISTS vacuum_truncate_referenced_self
+
+statement ok
+CREATE TABLE vacuum_truncate_referenced_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE vacuum_truncate_referenced_c (id int, pid int REFERENCES vacuum_truncate_referenced_p (id))
+
+statement ok
+INSERT INTO vacuum_truncate_referenced_p VALUES (1), (2)
+
+statement ok
+INSERT INTO vacuum_truncate_referenced_c VALUES (10, 1), (20, 2)
+
+statement error (0A000)
+TRUNCATE vacuum_truncate_referenced_p
+
+statement error (?s)cannot truncate a table referenced in a foreign key constraint
+TRUNCATE vacuum_truncate_referenced_p
+
+# 拒否された TRUNCATE は何も変えない
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_p
+----
+2
+
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_c
+----
+2
+
+# 参照元（子）だけの TRUNCATE は通る
+statement ok
+TRUNCATE vacuum_truncate_referenced_c
+
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_c
+----
+0
+
+statement ok
+INSERT INTO vacuum_truncate_referenced_c VALUES (10, 1)
+
+# 参照元を同じ文に含めれば通る
+statement ok
+TRUNCATE vacuum_truncate_referenced_p, vacuum_truncate_referenced_c
+
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_p
+----
+0
+
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_c
+----
+0
+
+# トランザクションの中でも 0A000。ROLLBACK で終わる
+statement ok
+INSERT INTO vacuum_truncate_referenced_p VALUES (1)
+
+statement ok
+BEGIN
+
+statement error (0A000)
+TRUNCATE vacuum_truncate_referenced_p
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_p
+----
+1
+
+# 自己参照の表は単独で TRUNCATE できる
+statement ok
+CREATE TABLE vacuum_truncate_referenced_self (id int PRIMARY KEY, parent int REFERENCES vacuum_truncate_referenced_self (id))
+
+statement ok
+INSERT INTO vacuum_truncate_referenced_self VALUES (1, NULL), (2, 1)
+
+statement ok
+TRUNCATE vacuum_truncate_referenced_self
+
+query I
+SELECT count(*) FROM vacuum_truncate_referenced_self
+----
+0
+
+statement ok
+DROP TABLE vacuum_truncate_referenced_c
+
+statement ok
+DROP TABLE vacuum_truncate_referenced_p
+
+statement ok
+DROP TABLE vacuum_truncate_referenced_self

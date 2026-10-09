@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::control::{ControlFileHandle, DbState};
 use crate::datadir::OidAllocator;
 use crate::error::{Error, Result, Severity, sqlstate};
-use crate::storage::buffer::BufferPool;
+use crate::storage::buffer::{BufferPool, track};
 use crate::storage::smgr::StorageManager;
 use crate::txn::TxnManager;
 use crate::txn::clog::Clog;
@@ -101,10 +101,42 @@ pub fn due(
     }
 }
 
+/// Reports `checkpoint_lock` to the rule-1 tracking (`track.rs`) while alive.
+struct TrackedCheckpointLock;
+
+impl TrackedCheckpointLock {
+    fn new() -> Self {
+        track::checkpoint_lock_acquired();
+        TrackedCheckpointLock
+    }
+}
+
+impl Drop for TrackedCheckpointLock {
+    fn drop(&mut self) {
+        track::checkpoint_lock_released();
+    }
+}
+
+/// Reports the shared storage barrier (LK-D23) while alive.
+struct TrackedBarrier;
+
+impl TrackedBarrier {
+    fn new() -> Self {
+        track::barrier_acquired();
+        TrackedBarrier
+    }
+}
+
+impl Drop for TrackedBarrier {
+    fn drop(&mut self) {
+        track::barrier_released();
+    }
+}
+
 /// Runs one checkpoint (§5.6). One checkpoint runs at a time.
 ///
 /// The caller must not hold the storage barrier (shared or exclusive) nor
-/// the `proc` / control file mutexes; the writer lock does not matter.
+/// the `ProcArray` / control file mutexes.
 ///
 /// An error from the buffer flush, `sync_pending` or the WAL is already
 /// `Severity::Panic` (they own the fsync policy); this function returns it
@@ -112,6 +144,7 @@ pub fn due(
 /// shutdown checkpoint never marks the cluster `ShutDown`.
 pub fn run(parts: &CheckpointParts<'_>, kind: CheckpointKind) -> Result<CheckpointResult> {
     let _serial = lock(parts.checkpoint_lock)?;
+    let _tracked = TrackedCheckpointLock::new();
 
     // After a failed write or fsync the dirty/pending sets were already
     // discarded, so a retry would find nothing to write and look durable.
@@ -197,6 +230,7 @@ fn run_locked(parts: &CheckpointParts<'_>, kind: CheckpointKind) -> Result<Check
     // cleanup from removing files under the flush.
     let stats = {
         let _barrier = parts.txn.statement_barrier()?;
+        let _tracked = TrackedBarrier::new();
         parts.pool.flush_all_for_checkpoint()?
     };
 
@@ -366,16 +400,18 @@ mod tests {
 
     // ---- run() ----
 
+    use crate::backend::BackendId;
     use crate::control::ControlData;
     use crate::debug_knobs::DebugKnobs;
-    use crate::interrupt::InterruptFlag;
     use crate::storage::buffer::WalFlush;
     use crate::storage::smgr::{
         BufferTag, DEFAULTTABLESPACE_OID, ForkNumber, RelFileLocator, RelFileNumber,
     };
     use crate::storage::vfs::{CrashMode, FaultEffect, FaultOp, FaultPlan, FaultRule, SimVfs, Vfs};
     use crate::txn::clog::XidStatus;
-    use crate::txn::{WaitCtl, Xid};
+    use crate::txn::lock::{LockManager, LockScope};
+    use crate::txn::multixact::MultiXactTable;
+    use crate::txn::{ProcArray, Xid};
     use crate::wal::xlog::{XLOG_CHECKPOINT_ONLINE, XLOG_CHECKPOINT_REDO, XLOG_NOOP};
     use crate::wal::{DecodedRecord, MIN_WAL_SEGMENT_SIZE, RecordBuilder, RmgrId, WalConfig};
     use crate::wal::{WalReader, segment};
@@ -385,7 +421,7 @@ mod tests {
 
     fn control_data() -> ControlData {
         ControlData {
-            format_version: 2,
+            format_version: crate::control::CONTROL_FORMAT_VERSION,
             catalog_version: 1,
             system_identifier: 1,
             state: DbState::InProduction,
@@ -403,6 +439,8 @@ mod tests {
             rel_seg_blocks: 131_072,
             data_layout_version: 1,
             builtin_hash: 0,
+            next_multi: 1,
+            mock_auth_nonce: [0; 32],
         }
     }
 
@@ -440,7 +478,7 @@ mod tests {
         control: Arc<ControlFileHandle>,
         oids: OidAllocator,
         lock: Mutex<()>,
-        irq: InterruptFlag,
+        locks: Arc<LockManager>,
     }
 
     impl Rig {
@@ -466,12 +504,15 @@ mod tests {
             vfs.sync_dir(Path::new("")).unwrap();
             let flush: Arc<dyn WalFlush> = wal.clone();
             let pool = BufferPool::new(16, Arc::clone(&smgr), flush, knobs);
-            let clog = Arc::new(Clog::open(Arc::clone(&vfs), Xid(3)).unwrap());
+            let clog = Arc::new(Clog::open(Arc::clone(&vfs), Xid(3), Xid(3)).unwrap());
+            let locks = LockManager::new();
             let txn = TxnManager::new(
+                ProcArray::new(Xid(3)),
                 Arc::clone(&clog),
                 Arc::clone(&control),
                 Arc::clone(&wal),
-                Xid(3),
+                Arc::clone(&locks),
+                Arc::new(MultiXactTable::new(Arc::clone(&control))),
                 knobs,
             );
             let oids = OidAllocator::new(Arc::clone(&control));
@@ -486,7 +527,7 @@ mod tests {
                 control,
                 oids,
                 lock: Mutex::new(()),
-                irq: InterruptFlag::default(),
+                locks,
             }
         }
 
@@ -503,17 +544,14 @@ mod tests {
             }
         }
 
-        fn wc(&self) -> WaitCtl<'_> {
-            WaitCtl {
-                lock_timeout: None,
-                interrupts: &self.irq,
-            }
-        }
-
         fn commit_one(&self) -> Xid {
-            let (x, g) = self.txn.begin_write(1, &self.wc()).unwrap();
+            let b = BackendId(1);
+            self.locks.register_backend(b, 1);
+            let (x, g) = self.txn.assign_xid(b).unwrap();
             self.txn.commit(x, &[]).unwrap();
+            self.locks.release_all(b, LockScope::Transaction);
             drop(g);
+            self.locks.unregister_backend(b);
             x
         }
 
@@ -570,7 +608,7 @@ mod tests {
         );
         assert!(res.redo < res.checkpoint_lsn);
         assert!(r.sim.exists(Path::new("pg_xact/000000000000")).unwrap());
-        let reopened = Clog::open(Arc::clone(&r.vfs), Xid(4)).unwrap();
+        let reopened = Clog::open(Arc::clone(&r.vfs), Xid(4), Xid(3)).unwrap();
         assert_eq!(reopened.status(x).unwrap(), XidStatus::Committed);
         // WAL: CHECKPOINT_REDO at the REDO point, then the checkpoint record.
         let recs = records_from(&r.vfs, res.redo);
@@ -695,16 +733,15 @@ mod tests {
             .map(|sid| {
                 let (r, stop) = (Arc::clone(&r), Arc::clone(&stop));
                 std::thread::spawn(move || {
-                    let irq = InterruptFlag::default();
-                    let wc = WaitCtl {
-                        lock_timeout: None,
-                        interrupts: &irq,
-                    };
+                    let b = BackendId(sid + 1);
+                    r.locks.register_backend(b, 1);
                     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                        let (x, g) = r.txn.begin_write(sid, &wc).unwrap();
+                        let (x, g) = r.txn.assign_xid(b).unwrap();
                         r.txn.commit(x, &[]).unwrap();
+                        r.locks.release_all(b, LockScope::Transaction);
                         drop(g);
                     }
+                    r.locks.unregister_backend(b);
                 })
             })
             .collect();
@@ -721,7 +758,7 @@ mod tests {
         let crashed: Arc<dyn Vfs> = Arc::new(r.sim.crash(CrashMode::DropUnsynced));
         let c = ControlFileHandle::open(&crashed).unwrap().get();
         let start = Lsn(u64::from(SEG) + 32);
-        let on_disk = Clog::open(Arc::clone(&crashed), Xid(c.next_xid)).unwrap();
+        let on_disk = Clog::open(Arc::clone(&crashed), Xid(c.next_xid), Xid(3)).unwrap();
         let mut checked = 0;
         for rec in records_from(&crashed, start) {
             if rec.rmgr == RmgrId::Xact && rec.end.0 <= c.redo_lsn {
@@ -732,6 +769,21 @@ mod tests {
         assert!(checked > 0, "no commit preceded the REDO point");
     }
 
+    #[test]
+    fn run_reports_and_clears_rule_one_tracking() {
+        let r = Rig::new();
+        run(&r.parts(), CheckpointKind::Explicit).unwrap();
+        assert!(!track::checkpoint_lock_held());
+        assert!(!track::barrier_held());
+        assert!(!track::gate_held());
+        // Also after a failure.
+        r.fail_syncs("pg_wal");
+        r.noop(100);
+        let _ = run(&r.parts(), CheckpointKind::Explicit);
+        assert!(!track::checkpoint_lock_held());
+        assert!(!track::barrier_held());
+        assert!(!track::gate_held());
+    }
     #[test]
     fn due_picks_wal_volume_before_timeout() {
         let r = Rig::new();

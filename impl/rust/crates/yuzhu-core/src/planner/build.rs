@@ -14,8 +14,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::logical::{
-    ColumnArena, ColumnInfo, JoinKind, LAggCall, LExpr, LSortKey, LogicalCte, LogicalPlan,
-    LogicalQuery, LogicalSubquery,
+    ColumnArena, ColumnInfo, JoinKind, LAggCall, LExpr, LRecheck, LRowMark, LSortKey, LogicalCte,
+    LogicalPlan, LogicalQuery, LogicalSubquery,
 };
 use super::physical::{PhysCheck, PhysExpr};
 use super::util::{self, ColSet, Volatility};
@@ -31,7 +31,8 @@ use crate::expr::{
     AggCall, AggOrderKey, ColId, CteId, ExprKind, RteId, SYSTEM_COL_BASE, SubLinkKind,
     lower_single_rel, system_col_from_index,
 };
-use crate::storage::RelHandle;
+use crate::storage::{RelHandle, RowWait};
+use crate::txn::LockTupleMode;
 use crate::types::{SqlType, oid};
 
 /// `Bound` を論理プランにする。
@@ -199,6 +200,15 @@ impl Builder {
     }
 
     fn build_query_inner(&mut self, q: &BoundQuery) -> Result<Built> {
+        if let BoundSetExpr::Select(s) = &q.body
+            && !s.locking.is_empty()
+            && matches!(s.distinct, BoundDistinct::None)
+            && !s.has_agg
+            && s.group_by.is_empty()
+            && s.having.is_none()
+        {
+            return self.build_locking_query(q, s);
+        }
         let (projected, n_visible, distinct) = match &q.body {
             BoundSetExpr::Select(s) => {
                 let p = self.build_select(s, &q.columns)?;
@@ -483,6 +493,25 @@ impl Builder {
 
         // Project。
         let input_cols: HashSet<ColId> = plan.output_cols().into_iter().collect();
+        let exprs = self.project_targets(&input_cols, lowered, s.n_visible, columns)?;
+        let cols = exprs.iter().map(|(c, _)| *c).collect();
+        Ok(Projected {
+            plan: LogicalPlan::Project {
+                input: Box::new(plan),
+                exprs,
+            },
+            cols,
+        })
+    }
+
+    /// 出力式に `ColId` を振って `Project` の式の並びにする（可視列の名前は `columns`）。
+    fn project_targets(
+        &mut self,
+        input_cols: &HashSet<ColId>,
+        lowered: Vec<LExpr>,
+        n_visible: usize,
+        columns: &[OutputColumn],
+    ) -> Result<Vec<(ColId, LExpr)>> {
         let mut used: HashSet<ColId> = HashSet::new();
         let mut exprs: Vec<(ColId, LExpr)> = Vec::with_capacity(lowered.len());
         for (i, e) in lowered.into_iter().enumerate() {
@@ -494,7 +523,7 @@ impl Builder {
                         ExprKind::Column(c) => self.arena.get(*c).origin,
                         _ => None,
                     };
-                    let name = if i < s.n_visible {
+                    let name = if i < n_visible {
                         columns.get(i).map(|c| c.name.clone())
                     } else {
                         None
@@ -504,14 +533,144 @@ impl Builder {
             };
             exprs.push((id, e));
         }
-        let cols = exprs.iter().map(|(c, _)| *c).collect();
-        Ok(Projected {
+        Ok(exprs)
+    }
+
+    // ----- FOR UPDATE など（RW-3b。m5/02 §6.5）------------------------------------------
+
+    /// `FOR` 句つきの SELECT: `Project ← Limit ← LockRows ← Sort ← Filter / Join / Get`（RW-D8）。
+    /// 集約・DISTINCT・GROUP BY・ウィンドウは解析が断っているので来ない。
+    fn build_locking_query(&mut self, q: &BoundQuery, s: &BoundSelect) -> Result<Built> {
+        self.enter()?;
+        let mut locked: Vec<(RteId, LockTupleMode, RowWait)> = s
+            .locking
+            .iter()
+            .flat_map(|c| c.rtes.iter().map(|r| (*r, c.strength, c.wait)))
+            .collect();
+        locked.sort_by_key(|(r, _, _)| *r);
+        locked.dedup_by_key(|(r, _, _)| *r);
+        let mut sys = Vec::new();
+        s.walk_exprs(0, &mut |e, depth| collect_system(e, depth, &mut sys));
+        for (rte, _, _) in &locked {
+            if !sys
+                .iter()
+                .any(|r| r.rte == *rte && r.col == SYSTEM_COL_BASE)
+            {
+                sys.push(SysRef {
+                    rte: *rte,
+                    col: SYSTEM_COL_BASE,
+                    ty: SqlType::of(oid::TID),
+                });
+            }
+        }
+        self.scopes.push(SelectScope {
+            rte_cols: vec![Vec::new(); s.rtable.len()],
+            sys_cols: HashMap::new(),
+        });
+        let r = self.build_locking_in_scope(q, s, &sys, &locked);
+        self.scopes.pop();
+        self.leave();
+        let (plan, targets) = r?;
+        // LIMIT / OFFSET は LockRows の上（数えるのは再評価を通った行）。式は SELECT のスコープの外で下ろす。
+        let plan = self.build_limit(plan, q)?;
+        let input_cols: HashSet<ColId> = plan.output_cols().into_iter().collect();
+        let exprs = self.project_targets(&input_cols, targets, s.n_visible, &q.columns)?;
+        let output: Vec<ColId> = exprs.iter().map(|(c, _)| *c).collect();
+        Ok(Built {
             plan: LogicalPlan::Project {
                 input: Box::new(plan),
                 exprs,
             },
-            cols,
+            output,
+            columns: q.columns.clone(),
         })
+    }
+
+    /// `Sort ← Filter / Join / Get` の上に `LockRows` を載せる。戻り値は（`LockRows` を根とする木,
+    /// 可視 targets を下ろした式）。
+    fn build_locking_in_scope(
+        &mut self,
+        q: &BoundQuery,
+        s: &BoundSelect,
+        sys: &[SysRef],
+        locked: &[(RteId, LockTupleMode, RowWait)],
+    ) -> Result<(LogicalPlan, Vec<LExpr>)> {
+        let mut plan = self.build_from_list(&s.from, &s.rtable, sys)?;
+        if let Some(f) = &s.filter {
+            let predicate = self.lower(f)?;
+            plan = LogicalPlan::Filter {
+                input: Box::new(plan),
+                predicate,
+            };
+        }
+        let targets = s.targets[..s.n_visible]
+            .iter()
+            .map(|t| self.lower(t))
+            .collect::<Result<Vec<_>>>()?;
+        // 整列キーは入力（生の列）の式。resjunk の列は要らない。
+        if !q.order_by.is_empty() {
+            let mut keys = Vec::with_capacity(q.order_by.len());
+            for k in &q.order_by {
+                let t = s
+                    .targets
+                    .get(k.target)
+                    .ok_or_else(|| Error::internal("an ORDER BY key is out of range"))?;
+                keys.push(LSortKey {
+                    expr: self.lower(t)?,
+                    descending: k.descending,
+                    nulls_first: k.nulls_first,
+                });
+            }
+            plan = LogicalPlan::Sort {
+                input: Box::new(plan),
+                keys,
+            };
+        }
+        let mut marks = Vec::with_capacity(locked.len());
+        for (rte_id, mode, wait) in locked {
+            let rte = s
+                .rtable
+                .get(usize::from(rte_id.0))
+                .ok_or_else(|| Error::internal("a locked RTE is out of range"))?;
+            let RteKind::Table { table } = &rte.kind else {
+                return Err(Error::internal("a locked RTE is not a table"));
+            };
+            let scope = self
+                .scopes
+                .last()
+                .ok_or_else(|| Error::internal("no scope for a locking SELECT"))?;
+            let cols = scope
+                .rte_cols
+                .get(usize::from(rte_id.0))
+                .into_iter()
+                .flatten()
+                .map(|e| match &e.kind {
+                    ExprKind::Column(c) => Ok(*c),
+                    _ => Err(Error::internal("a locked table column is not a column")),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let tid = *scope
+                .sys_cols
+                .get(&(*rte_id, SYSTEM_COL_BASE))
+                .ok_or_else(|| Error::internal("a locked table has no ctid"))?;
+            marks.push(LRowMark {
+                rel: RelHandle::from_table(table),
+                tid,
+                cols,
+                mode: *mode,
+                wait: *wait,
+                table_name: table.name.clone(),
+            });
+        }
+        let recheck = self.lower_recheck_qual(s.filter.as_ref(), &s.from)?;
+        Ok((
+            LogicalPlan::LockRows {
+                input: Box::new(plan),
+                marks,
+                recheck,
+            },
+            targets,
+        ))
     }
 
     // ----- FROM ---------------------------------------------------------------------------
@@ -898,7 +1057,11 @@ impl Builder {
                     "a scalar subquery must have exactly one column",
                 ));
             }
-            SubLinkKind::Exists | SubLinkKind::Scalar | SubLinkKind::Any | SubLinkKind::All => {}
+            SubLinkKind::Exists
+            | SubLinkKind::Scalar
+            | SubLinkKind::Any
+            | SubLinkKind::All
+            | SubLinkKind::Array => {}
         }
         let test = match (test, agg) {
             (Some(t), Some(st)) => Some(Box::new(self.lower_post_agg(t, st)?)),
@@ -1231,9 +1394,21 @@ impl Builder {
         let dml = self.build_dml_scan(&u.rtable, &u.from, u.filter.as_ref(), sys)?;
         let table = dml.table;
 
-        let r = self.build_update_project(u, &table, &dml.old_cols, dml.ctid);
+        let r = self
+            .build_update_project(u, &table, &dml.old_cols, dml.ctid)
+            .and_then(|(mut project, new_values)| {
+                let recheck = self.lower_dml_recheck(
+                    u.filter.as_ref(),
+                    &u.from,
+                    Some((&table, &u.assignments)),
+                    &dml.old_cols,
+                    dml.ctid,
+                )?;
+                self.append_extra_cols(&mut project, &recheck);
+                Ok((project, new_values, Some(recheck)))
+            });
         self.scopes.pop();
-        let (project, new_values) = r?;
+        let (project, new_values, recheck) = r?;
         let (returning, columns) = lower_returning(u.returning.as_ref())?;
         Ok(Built {
             plan: LogicalPlan::Update {
@@ -1248,6 +1423,7 @@ impl Builder {
                 checks: lower_checks(&u.checks)?,
                 not_null: u.not_null.clone(),
                 returning,
+                recheck,
                 table,
             },
             output: Vec::new(),
@@ -1272,15 +1448,112 @@ impl Builder {
                 .columns
                 .get(*attno)
                 .ok_or_else(|| Error::internal("assignment target is out of range"))?;
-            let value = match source {
-                UpdateSource::Expr(e) | UpdateSource::Default(Some(e)) => self.lower(e)?,
-                UpdateSource::Default(None) => LExpr::null_of(def.ty),
-            };
+            let value = self.lower_assignment(def.ty, source)?;
             let id = self.new_col(&def.name, None, def.ty, None)?;
             project.push((id, value));
             new_values.push((*attno, id));
         }
         Ok((project, new_values))
+    }
+
+    fn lower_assignment(&mut self, ty: SqlType, source: &UpdateSource) -> Result<LExpr> {
+        Ok(match source {
+            UpdateSource::Expr(e) | UpdateSource::Default(Some(e)) => self.lower(e)?,
+            UpdateSource::Default(None) => LExpr::null_of(ty),
+        })
+    }
+
+    /// `EvalPlanQual` の再評価に使う式（`m5/02` §6.5）。WHERE と内部結合の ON を AND にし、代入式と一緒に
+    /// 元の Bound の式から下ろし直す（述語の押し下げ・結合の並べ替えの前の形）。DML のスコープを積んだまま呼ぶ。
+    fn lower_dml_recheck(
+        &mut self,
+        filter: Option<&BoundExpr>,
+        from: &[FromItem],
+        assignments: Option<Assignments<'_>>,
+        old_cols: &[ColId],
+        ctid: ColId,
+    ) -> Result<LRecheck> {
+        let qual = self.lower_recheck_qual(filter, from)?;
+        let mut new_values = Vec::new();
+        if let Some((table, assignments)) = assignments {
+            for (attno, source) in assignments {
+                let def = table
+                    .columns
+                    .get(*attno)
+                    .ok_or_else(|| Error::internal("assignment target is out of range"))?;
+                new_values.push(self.lower_assignment(def.ty, source)?);
+            }
+        }
+        let mut refs = ColSet::new();
+        for e in qual.iter().chain(new_values.iter()) {
+            refs.extend(util::expr_refs(e));
+        }
+        for c in old_cols {
+            refs.remove(c);
+        }
+        refs.remove(&ctid);
+        Ok(LRecheck {
+            qual,
+            new_values,
+            extra_cols: refs.into_iter().collect(),
+        })
+    }
+
+    /// 再評価する条件: WHERE と内部結合の ON の AND（Bound の式から下ろし直す）。
+    fn lower_recheck_qual(
+        &mut self,
+        filter: Option<&BoundExpr>,
+        from: &[FromItem],
+    ) -> Result<Option<LExpr>> {
+        let mut parts = Vec::new();
+        if let Some(f) = filter {
+            parts.push(self.lower(f)?);
+        }
+        for item in from {
+            self.collect_inner_on(item, &mut parts)?;
+        }
+        Ok(util::and_all(parts))
+    }
+
+    /// 内部結合の ON を集める。外部結合の NULL 側の中は含めない（外側の行が差し替わっても、外部結合の
+    /// 結果の形は元のまま。RW-K8）。
+    fn collect_inner_on(&mut self, item: &FromItem, out: &mut Vec<LExpr>) -> Result<()> {
+        self.enter()?;
+        let r = self.collect_inner_on_inner(item, out);
+        self.leave();
+        r
+    }
+
+    fn collect_inner_on_inner(&mut self, item: &FromItem, out: &mut Vec<LExpr>) -> Result<()> {
+        let FromItem::Join {
+            kind,
+            left,
+            right,
+            on,
+            ..
+        } = item
+        else {
+            return Ok(());
+        };
+        if *kind == JoinType::Inner
+            && let Some(on) = on
+        {
+            out.push(self.lower(on)?);
+        }
+        if matches!(kind, JoinType::Inner | JoinType::Cross | JoinType::Left) {
+            self.collect_inner_on(left, out)?;
+        }
+        if matches!(kind, JoinType::Inner | JoinType::Cross | JoinType::Right) {
+            self.collect_inner_on(right, out)?;
+        }
+        Ok(())
+    }
+
+    /// `recheck.extra_cols` を、DML の入力の `Project` の末尾にパススルーで足す。
+    fn append_extra_cols(&self, project: &mut Vec<(ColId, LExpr)>, recheck: &LRecheck) {
+        for c in &recheck.extra_cols {
+            project.push((*c, self.col_expr(*c)));
+        }
     }
 
     fn build_delete(&mut self, d: &BoundDelete) -> Result<Built> {
@@ -1293,6 +1566,16 @@ impl Builder {
             visit_dml_from(&d.rtable, &d.from, &mut visit);
         }
         let dml = self.build_dml_scan(&d.rtable, &d.from, d.filter.as_ref(), sys)?;
+        let recheck = if d.filter.is_some() || !d.from.is_empty() {
+            let r =
+                self.lower_dml_recheck(d.filter.as_ref(), &d.from, None, &dml.old_cols, dml.ctid);
+            if r.is_err() {
+                self.scopes.pop();
+            }
+            Some(r?)
+        } else {
+            None
+        };
         self.scopes.pop();
         let mut project: Vec<(ColId, LExpr)> = dml
             .old_cols
@@ -1300,6 +1583,9 @@ impl Builder {
             .map(|c| (*c, self.col_expr(*c)))
             .collect();
         project.push((dml.ctid, self.col_expr(dml.ctid)));
+        if let Some(r) = &recheck {
+            self.append_extra_cols(&mut project, r);
+        }
         let (returning, columns) = lower_returning(d.returning.as_ref())?;
         let table = dml.table;
         Ok(Built {
@@ -1312,6 +1598,7 @@ impl Builder {
                 old_cols: dml.old_cols,
                 ctid: dml.ctid,
                 returning,
+                recheck,
                 table,
             },
             output: Vec::new(),
@@ -1396,6 +1683,9 @@ impl Builder {
         })
     }
 }
+
+/// 再評価する代入（対象表と `(attnum - 1, 代入元)`）。
+type Assignments<'a> = (&'a Arc<TableDef>, &'a [(usize, UpdateSource)]);
 
 /// `build_dml_scan` の結果。
 struct DmlScan {
@@ -1682,5 +1972,101 @@ mod tests {
                 "{sql}\n{text}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod locking_tests {
+    use super::super::physical::PhysicalPlan;
+    use super::super::print::print_logical;
+    use super::super::rules::testutil::Fixture;
+
+    fn fx() -> Fixture {
+        Fixture::new(
+            "create table t(a int4, b int4, c text); \
+             create table u(a int4, d int4, e text);",
+        )
+        .unwrap()
+    }
+
+    fn physical(f: &Fixture, sql: &str) -> PhysicalPlan {
+        let stmt = f.analyze(sql).unwrap();
+        f.with_env(|env| crate::planner::plan(&stmt, env))
+            .unwrap()
+            .root
+    }
+
+    /// RW-D8: `Project ← Limit ← LockRows ← Sort ← Filter / Get`。
+    #[test]
+    fn locking_select_has_the_documented_shape() {
+        let f = fx();
+        let q = f
+            .build("select a, c from t where b > 1 order by a limit 1 for update")
+            .unwrap();
+        crate::planner::validate::validate_logical(&q, "build").unwrap();
+        let p = print_logical(&q);
+        let pos = |s: &str| p.find(s).unwrap_or_else(|| panic!("{s} missing\n{p}"));
+        assert!(pos("Project") < pos("Limit"), "{p}");
+        assert!(pos("Limit") < pos("LockRows"), "{p}");
+        assert!(pos("LockRows") < pos("Sort"), "{p}");
+        assert!(pos("Sort") < pos("Filter"), "{p}");
+        assert!(p.contains("recheck="), "{p}");
+    }
+
+    #[test]
+    fn locked_columns_survive_pruning() {
+        let f = fx();
+        let q = f
+            .plan_all("select t.a from t join u on t.a = u.a for update of t")
+            .unwrap();
+        crate::planner::validate::validate_logical(&q, "prune").unwrap();
+        let p = print_logical(&q);
+        assert!(p.contains("LockRows [t:"), "{p}");
+        let PhysicalPlan::Project { input, .. } =
+            physical(&f, "select t.a from t join u on t.a = u.a for update of t")
+        else {
+            panic!("expected Project at the root");
+        };
+        let PhysicalPlan::LockRows { marks, .. } = *input else {
+            panic!("expected LockRows");
+        };
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].cols.len(), 3);
+        assert_eq!(marks[0].table_name, "t");
+    }
+
+    #[test]
+    fn update_from_has_extra_cols_and_delete_all_has_no_recheck() {
+        let f = fx();
+        let PhysicalPlan::Update { recheck, input, .. } =
+            physical(&f, "update t set b = u.d from u where t.a = u.a")
+        else {
+            panic!("expected Update");
+        };
+        let r = recheck.expect("UPDATE always rechecks");
+        assert!(r.qual.is_some());
+        assert_eq!(r.new_values.len(), 1);
+        // t(3 列) + ctid + 新しい値 1 + extra（u.a と u.d）。
+        assert_eq!(input.width(&[]), 3 + 1 + 1 + 2);
+        let PhysicalPlan::Delete { recheck, .. } = physical(&f, "delete from t") else {
+            panic!("expected Delete");
+        };
+        assert!(recheck.is_none());
+        let PhysicalPlan::Delete { recheck, .. } = physical(&f, "delete from t where a = 1") else {
+            panic!("expected Delete");
+        };
+        assert!(recheck.is_some_and(|r| r.qual.is_some()));
+    }
+
+    #[test]
+    fn outer_join_on_is_not_rechecked() {
+        let f = fx();
+        let q = f
+            .build("select * from t left join u on t.a = u.a where t.b > 0 for update of t")
+            .unwrap();
+        let p = print_logical(&q);
+        let line = p.lines().find(|l| l.contains("LockRows")).unwrap();
+        assert!(line.contains("recheck="), "{p}");
+        assert!(!line.contains("u.a"), "{p}");
     }
 }

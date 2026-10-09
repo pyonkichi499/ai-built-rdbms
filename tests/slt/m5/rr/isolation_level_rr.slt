@@ -1,0 +1,155 @@
+# REPEATABLE READ の指定と SHOW、SET TRANSACTION の 25001
+
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+statement ok
+COMMIT
+
+# 次のトランザクションは既定に戻る
+query T
+SHOW transaction_isolation
+----
+read committed
+
+statement ok
+START TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+query T
+SHOW transaction_read_only
+----
+on
+
+statement ok
+COMMIT
+
+# 最初の文としての SET TRANSACTION
+statement ok
+BEGIN
+
+statement ok
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+statement ok
+ROLLBACK
+
+# 問い合わせのあとに別のレベルへ変えると 25001
+statement ok
+BEGIN
+
+query I
+SELECT 1
+----
+1
+
+statement error (25001)
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+query I
+SELECT 1
+----
+1
+
+statement error (25001)
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED
+
+# 現在と同じレベルは通る
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+query I
+SELECT 1
+----
+1
+
+statement ok
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+statement ok
+COMMIT
+
+# セッションの既定
+statement ok
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+query T
+SHOW default_transaction_isolation
+----
+repeatable read
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+statement ok
+BEGIN
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+statement ok
+COMMIT
+
+# BEGIN で明示すれば既定を上書きできる
+statement ok
+BEGIN ISOLATION LEVEL READ COMMITTED
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+statement ok
+COMMIT
+
+statement ok
+SET default_transaction_isolation = 'repeatable read'
+
+query T
+SHOW default_transaction_isolation
+----
+repeatable read
+
+statement ok
+RESET default_transaction_isolation
+
+query T
+SHOW default_transaction_isolation
+----
+read committed
+
+statement ok
+RESET ALL
+
+
+query T
+SHOW transaction_isolation
+----
+read committed

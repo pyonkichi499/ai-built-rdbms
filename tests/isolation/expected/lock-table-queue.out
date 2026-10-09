@@ -1,0 +1,67 @@
+Parsed test spec with 3 sessions
+
+starting permutation: a_b a_sel b_drop c_sel a_c
+step a_b: BEGIN;
+step a_sel: SELECT count(*) FROM ltq_t;
+count
+-----
+    1
+(1 row)
+
+step b_drop: DROP TABLE ltq_t; <waiting ...>
+step c_sel: SELECT count(*) FROM ltq_t; <waiting ...>
+step a_c: COMMIT;
+step b_drop: <... completed>
+step c_sel: <... completed>
+ERROR:  relation "ltq_t" does not exist
+
+starting permutation: a_b a_drop b_sel a_c
+step a_b: BEGIN;
+step a_drop: DROP TABLE ltq_t;
+step b_sel: SELECT count(*) FROM ltq_t; <waiting ...>
+step a_c: COMMIT;
+step b_sel: <... completed>
+ERROR:  relation "ltq_t" does not exist
+
+starting permutation: a_b a_alter b_ins a_r c_sel
+step a_b: BEGIN;
+step a_alter: ALTER TABLE ltq_t ADD COLUMN w int;
+step b_ins: INSERT INTO ltq_t VALUES (2, 20); <waiting ...>
+step a_r: ROLLBACK;
+step b_ins: <... completed>
+step c_sel: SELECT count(*) FROM ltq_t;
+count
+-----
+    2
+(1 row)
+
+
+starting permutation: b_lock
+step b_lock: LOCK TABLE ltq_t;
+ERROR:  LOCK TABLE can only be used in transaction blocks
+
+starting permutation: a_b a_sel b_set_lt b_truncate b_sel2 a_c c_sel
+step a_b: BEGIN;
+step a_sel: SELECT count(*) FROM ltq_t;
+count
+-----
+    1
+(1 row)
+
+step b_set_lt: SET lock_timeout = '300ms';
+step b_truncate: TRUNCATE ltq_t; <waiting ...>
+step b_truncate: <... completed>
+ERROR:  canceling statement due to lock timeout
+step b_sel2: SELECT count(*) FROM ltq_t;
+count
+-----
+    1
+(1 row)
+
+step a_c: COMMIT;
+step c_sel: SELECT count(*) FROM ltq_t;
+count
+-----
+    1
+(1 row)
+

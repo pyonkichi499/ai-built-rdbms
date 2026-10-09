@@ -273,6 +273,32 @@ mod logical_print {
                     }
                 }
                 ExprKind::SubLinkOutput(i) => format!("out{i}"),
+                ExprKind::ExternParam(i) => format!("${}", u32::from(*i) + 1),
+                ExprKind::ArrayCtor { elems, .. } => {
+                    format!("ARRAY[{}]", self.args(elems, subs))
+                }
+                ExprKind::ArraySubscript { array, indexes } => {
+                    format!("({})[{}]", self.expr(array, subs), self.args(indexes, subs))
+                }
+                ExprKind::ArrayCoerce { expr, .. } => {
+                    format!(
+                        "ARRAYCOERCE({} AS {})",
+                        self.expr(expr, subs),
+                        format_type(e.ty)
+                    )
+                }
+                ExprKind::ScalarArrayOp {
+                    op,
+                    use_or,
+                    left,
+                    array,
+                } => format!(
+                    "({} {} {} ({}))",
+                    self.expr(left, subs),
+                    op.name,
+                    if *use_or { "ANY" } else { "ALL" },
+                    self.expr(array, subs)
+                ),
             }
         }
 
@@ -380,6 +406,26 @@ mod logical_print {
                     }
                     if let Some(o) = offset {
                         let _ = write!(s, " offset={}", self.expr(o, subs));
+                    }
+                    s
+                }
+                L::LockRows { marks, recheck, .. } => {
+                    let m: Vec<String> = marks
+                        .iter()
+                        .map(|m| {
+                            format!(
+                                "{}:{:?}/{:?} tid={} cols={}",
+                                m.table_name,
+                                m.mode,
+                                m.wait,
+                                self.col(m.tid),
+                                self.cols(&m.cols)
+                            )
+                        })
+                        .collect();
+                    let mut s = format!("LockRows [{}]", m.join(", "));
+                    if let Some(r) = recheck {
+                        let _ = write!(s, " recheck={}", self.expr(r, subs));
                     }
                     s
                 }
@@ -666,6 +712,18 @@ mod physical_print {
                 sys(system_columns),
                 opt(filter.as_ref())
             ),
+            P::VirtualScan {
+                rel_oid,
+                columns,
+                system_columns,
+                filter,
+            } => format!(
+                "VirtualScan {} cols={}{} filter={}",
+                rel_oid,
+                columns.len(),
+                sys(system_columns),
+                opt(filter.as_ref())
+            ),
             P::IndexScan {
                 index,
                 keys,
@@ -787,6 +845,22 @@ mod physical_print {
                 ..
             } => format!("Update {table_name} assigned={assigned:?}"),
             P::Delete { n_user_cols, .. } => format!("Delete cols={n_user_cols}"),
+            P::LockRows { marks, recheck, .. } => {
+                let m: Vec<String> = marks
+                    .iter()
+                    .map(|m| {
+                        format!(
+                            "{}:{:?}/{:?} tid=#{} cols={}..{}",
+                            m.table_name, m.mode, m.wait, m.tid_col, m.cols.start, m.cols.end
+                        )
+                    })
+                    .collect();
+                format!(
+                    "LockRows [{}] recheck={}",
+                    m.join(", "),
+                    opt(recheck.as_ref())
+                )
+            }
         };
         let _ = writeln!(out, "{}{line}", "  ".repeat(depth));
         for c in p.children() {

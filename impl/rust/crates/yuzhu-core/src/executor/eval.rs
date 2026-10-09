@@ -120,6 +120,7 @@ fn call_function(func: &BuiltinFunction, vals: &[Datum], ctx: &EvalCtx<'_>) -> R
         FnKind::Pure(f) => f(vals),
         FnKind::Context(f) => f(vals, ctx.catalog, ctx.session),
         FnKind::Runtime(f) => f(vals, ctx.runtime),
+        FnKind::Env(f) => f(vals, ctx.type_env),
         FnKind::Set(_) => Err(crate::error::Error::internal(
             "set-returning function called as a scalar (FROM-clause only)",
         )),
@@ -162,6 +163,17 @@ impl<'a> Evaluator<'_, 'a> {
             ExprKind::Aggregate(_) => {
                 Err(Error::internal("aggregate expression in a physical plan"))
             }
+            // M5: $n は XQ-2 が `ExecCtx.bind_params` から読む。配列の 4 変種は TY が `eval_array` を呼ぶ。
+            ExprKind::ExternParam(i) => Err(Error::internal(format!(
+                "bind parameter ${} is not available yet",
+                u32::from(*i) + 1
+            ))),
+            ExprKind::ArrayCtor { .. }
+            | ExprKind::ArraySubscript { .. }
+            | ExprKind::ArrayCoerce { .. }
+            | ExprKind::ScalarArrayOp { .. } => Err(Error::not_supported(
+                "array expressions are not supported yet",
+            )),
             ExprKind::SubLinkOutput(i) => self
                 .sub
                 .and_then(|s| s.get(usize::from(*i)))

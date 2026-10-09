@@ -1,0 +1,35 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_rr a_sel b_del b_vacuum b_ins b_ctid a_c
+step a_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step a_sel: SELECT count(*) FROM vlp_t;
+count
+-----
+    3
+(1 row)
+
+step b_del: DELETE FROM vlp_t WHERE id = 3;
+step b_vacuum: VACUUM vlp_t;
+step b_ins: INSERT INTO vlp_t VALUES (4, 40);
+step b_ctid: SELECT id, ctid FROM vlp_t ORDER BY id;
+id|ctid 
+--+-----
+ 1|(0,1)
+ 2|(0,2)
+ 4|(0,4)
+(3 rows)
+
+step a_c: COMMIT;
+
+starting permutation: b_del b_vacuum b_ins b_ctid
+step b_del: DELETE FROM vlp_t WHERE id = 3;
+step b_vacuum: VACUUM vlp_t;
+step b_ins: INSERT INTO vlp_t VALUES (4, 40);
+step b_ctid: SELECT id, ctid FROM vlp_t ORDER BY id;
+id|ctid 
+--+-----
+ 1|(0,1)
+ 2|(0,2)
+ 4|(0,3)
+(3 rows)
+

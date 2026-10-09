@@ -1,0 +1,2 @@
+alice  postgres  127.0.0.1  alice-pw   28000
+bob    app       127.0.0.2  bob-pw     28000

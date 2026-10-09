@@ -18,6 +18,7 @@
 //! The output is [`bound::BoundStatement`] (`m4/00-contracts.md` §7).
 
 mod agg;
+mod array_expr;
 pub mod bound;
 mod coerce;
 mod cte;
@@ -27,6 +28,7 @@ mod ddl_index;
 mod dml;
 mod expr;
 mod from;
+pub mod locking;
 /// 旧名（P0-d まで）。他担当の `analyzer::query::` の参照が残る間だけの別名。統合で `bound` に置き換えて消す。
 pub use bound as query;
 mod resolve;
@@ -35,10 +37,14 @@ mod select;
 mod setop;
 mod sublink;
 
+pub mod ddl_ext;
+pub mod params;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_agg;
+#[cfg(test)]
+mod tests_array;
 #[cfg(test)]
 mod tests_from;
 #[cfg(test)]
@@ -47,6 +53,7 @@ mod tests_sub;
 mod tests_types;
 
 pub use bound::*;
+pub use params::{ParamCtx, analyze_execute_param, analyze_with_params};
 
 use crate::catalog::CatalogReader;
 use crate::error::{Error, Result, Span};
@@ -64,7 +71,10 @@ pub(crate) fn not_supported(what: &str, span: Span) -> Error {
 ///
 /// デバッグビルドでは出力に `BoundStatement::validate`（B1〜B11）を通す。
 pub fn analyze(stmt: &Statement, catalog: &dyn CatalogReader) -> Result<bound::BoundStatement> {
-    let a = Analyzer { catalog };
+    let a = Analyzer {
+        catalog,
+        params: None,
+    };
     let bound = a.analyze_statement(stmt)?;
     if cfg!(debug_assertions) {
         bound.validate()?;
@@ -80,7 +90,7 @@ impl Analyzer<'_> {
                 let root = cte::CteScope::root();
                 let env = scope::QueryEnv::root(true, &root);
                 Ok(BoundStatement::Select(Box::new(
-                    self.analyze_query(q, &env)?,
+                    self.analyze_top_query(q, &env)?,
                 )))
             }
             Statement::Insert(ins) => self.analyze_insert(ins).map(BoundStatement::Insert),
@@ -134,6 +144,22 @@ impl Analyzer<'_> {
                 .analyze_vacuum(c)
                 .map(|b| BoundStatement::Ddl(BoundDdl::Vacuum(b))),
             Statement::Copy(_) => Err(not_supported("this statement", stmt.span())),
+            Statement::Analyze(_)
+            | Statement::LockTable(_)
+            | Statement::CreateRole(_)
+            | Statement::AlterRole(_)
+            | Statement::DropRole(_)
+            | Statement::CreateDatabase(_)
+            | Statement::DropDatabase(_)
+            | Statement::AlterDatabase(_) => {
+                ddl_ext::analyze(self.catalog, stmt).map(BoundStatement::Ddl)
+            }
+            Statement::Prepare(_)
+            | Statement::ExecutePrepared(_)
+            | Statement::Deallocate(_)
+            | Statement::Discard(_) => Err(Error::internal(
+                "PREPARE-family statement passed to the analyzer",
+            )),
             Statement::Transaction(_)
             | Statement::Set(_)
             | Statement::Reset(_)
@@ -151,7 +177,11 @@ pub fn analyze_column_default_bound(
     catalog: &dyn CatalogReader,
     column: &crate::catalog::ColumnDef,
 ) -> Result<Option<bound::BoundExpr>> {
-    Analyzer { catalog }.column_default(column)
+    Analyzer {
+        catalog,
+        params: None,
+    }
+    .column_default(column)
 }
 
 /// [`analyze_column_default_bound`] に、IDENTITY 列の暗黙の `nextval(...)` を加えたもの（COPY 用）。
@@ -160,7 +190,11 @@ pub fn analyze_column_default_in_table(
     table: &crate::catalog::TableDef,
     column: &crate::catalog::ColumnDef,
 ) -> Result<Option<bound::BoundExpr>> {
-    Analyzer { catalog }.column_default_in(table, column)
+    Analyzer {
+        catalog,
+        params: None,
+    }
+    .column_default_in(table, column)
 }
 
 /// Analyzes the CHECK constraints of a table over its full row.
@@ -168,10 +202,16 @@ pub fn analyze_table_checks_bound(
     catalog: &dyn CatalogReader,
     table: &crate::catalog::TableDef,
 ) -> Result<Vec<bound::BoundCheck>> {
-    Analyzer { catalog }.table_checks(table)
+    Analyzer {
+        catalog,
+        params: None,
+    }
+    .table_checks(table)
 }
 
 /// Shared analysis state: the catalog view.
 pub(crate) struct Analyzer<'a> {
     pub(crate) catalog: &'a dyn CatalogReader,
+    /// `$n` の型推論の状態。`None`（Simple Query、DEFAULT・CHECK）では `$n` は 42P02。
+    pub(crate) params: Option<&'a params::ParamCtx>,
 }

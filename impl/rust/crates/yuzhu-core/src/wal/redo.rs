@@ -15,6 +15,7 @@ use crate::error::{Error, Result, Severity, sqlstate};
 use crate::storage::buffer::{BufferPool, PinnedBuffer, assert_no_pins};
 use crate::storage::smgr::{BlockNumber, ForkNumber, RelFileLocator, StorageManager};
 use crate::txn::Xid;
+use crate::types::Oid;
 
 /// REDO 関数に渡す文脈。`recovery.rs` が作る。
 ///
@@ -143,6 +144,11 @@ impl InvalidPages {
         self.pages.retain(|(r, _), _| *r != rel);
     }
 
+    /// データベースごと消えた（DROP DATABASE の REDO。PostgreSQL の `forget_invalid_pages_db`）。
+    pub fn forget_database(&mut self, db: Oid) {
+        self.pages.retain(|(r, _), _| r.db_oid != db);
+    }
+
     /// `nblocks` 以降が消えた（truncate の REDO）。
     pub fn forget_from(&mut self, rel: RelFileLocator, fork: ForkNumber, nblocks: BlockNumber) {
         if let Some(set) = self.pages.get_mut(&(rel, fork)) {
@@ -262,6 +268,23 @@ mod tests {
         assert_eq!(e.severity, Severity::Panic);
         assert_eq!(e.sqlstate, sqlstate::DATA_CORRUPTED);
         assert!(e.detail.as_deref().unwrap().contains("blk 7"));
+    }
+
+    #[test]
+    fn forget_database_drops_only_that_database() {
+        let at = |db_oid, n| RelFileLocator {
+            spc_oid: 1663,
+            db_oid,
+            rel_number: crate::storage::smgr::RelFileNumber(n),
+        };
+        let mut ip = InvalidPages::default();
+        ip.record(at(5, 1), ForkNumber::Main, 0);
+        ip.record(at(5, 2), ForkNumber::Fsm, 3);
+        ip.record(at(6, 1), ForkNumber::Main, 0);
+        ip.forget_database(5);
+        assert!(!ip.is_empty());
+        ip.forget_database(6);
+        assert!(ip.is_empty());
     }
 
     #[test]

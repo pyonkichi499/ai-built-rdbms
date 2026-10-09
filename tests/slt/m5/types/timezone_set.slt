@@ -1,0 +1,565 @@
+# SET TIME ZONE の構文・SHOW・SET LOCAL・RESET・不正値
+# 接頭辞: types_timezone_set_
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+query T
+SHOW time zone
+----
+UTC
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SHOW TimeZone
+----
+America/New_York
+
+statement ok
+SET TimeZone = 'Europe/London'
+
+query T
+SHOW TimeZone
+----
+Europe/London
+
+statement ok
+SET TimeZone TO 'Asia/Kolkata'
+
+query T
+SHOW TimeZone
+----
+Asia/Kolkata
+
+statement error (42601)
+SET timezone TO Asia/Tokyo
+
+statement ok
+SET TIME ZONE '+09'
+
+query T
+SHOW TimeZone
+----
+<+09>-09
+
+statement ok
+SET TIME ZONE '-05:30'
+
+query T
+SHOW TimeZone
+----
+-05:30
+
+statement ok
+SET TIME ZONE 'UTC+3'
+
+query T
+SHOW TimeZone
+----
+UTC+3
+
+statement ok
+SET TIME ZONE 9
+
+query T
+SHOW TimeZone
+----
+<+09>-09
+
+statement ok
+SET TIME ZONE -5
+
+query T
+SHOW TimeZone
+----
+<-05>+05
+
+statement ok
+SET TIME ZONE 5.5
+
+query T
+SHOW TimeZone
+----
+<+05:30>-05:30
+
+statement ok
+SET TIME ZONE INTERVAL '+09:00' HOUR TO MINUTE
+
+query T
+SHOW TimeZone
+----
+<+09>-09
+
+statement ok
+SET TIME ZONE INTERVAL '-08:00' HOUR TO MINUTE
+
+query T
+SHOW TimeZone
+----
+<-08>+08
+
+statement ok
+SET TIME ZONE LOCAL
+
+statement ok
+SET TIME ZONE DEFAULT
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+SET TIME ZONE 'utc'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+SET TIME ZONE 'asia/tokyo'
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+statement error (22023)
+SET TIME ZONE 'JST'
+
+statement ok
+SET TIME ZONE 'PST8PDT'
+
+query T
+SHOW TimeZone
+----
+PST8PDT
+
+statement ok
+SET TIME ZONE 'Etc/GMT-9'
+
+query T
+SHOW TimeZone
+----
+Etc/GMT-9
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# 出力が設定に従う
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 05:06:07+00
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 14:06:07+09
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 00:06:07-05
+
+query T
+SELECT (timestamptz '2024-07-04 05:06:07+00')::text
+----
+2024-07-04 01:06:07-04
+
+statement ok
+SET TIME ZONE '+05:30'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-03 23:36:07-05:30
+
+statement ok
+SET TIME ZONE 'Asia/Kolkata'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 10:36:07+05:30
+
+statement ok
+SET TIME ZONE 'Australia/Lord_Howe'
+
+query T
+SELECT (timestamptz '2024-01-04 05:06:07+00')::text
+----
+2024-01-04 16:06:07+11
+
+query T
+SELECT (timestamptz '2024-07-04 05:06:07+00')::text
+----
+2024-07-04 15:36:07+10:30
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# 入力が設定に従う
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07')::text
+----
+2024-03-04 05:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 14:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07-05')::text
+----
+2024-03-04 19:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07 America/New_York')::text
+----
+2024-03-04 19:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07 EST')::text
+----
+2024-03-04 19:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07 UTC')::text
+----
+2024-03-04 14:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+05:30')::text
+----
+2024-03-04 08:36:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07 +0900')::text
+----
+2024-03-04 05:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07.5 PST')::text
+----
+2024-03-04 22:06:07.5+09
+
+query T
+SELECT ('2024-03-04 05:06:07'::timestamp::timestamptz)::text
+----
+2024-03-04 05:06:07+09
+
+query T
+SELECT ('2024-03-04 05:06:07+00'::timestamptz::timestamp)::text
+----
+2024-03-04 14:06:07
+
+query T
+SELECT ('2024-03-04 05:06:07+00'::timestamptz::date)::text
+----
+2024-03-04
+
+query T
+SELECT ('2024-03-04 20:00:00+00'::timestamptz::date)::text
+----
+2024-03-05
+
+query T
+SELECT (date '2024-03-04'::timestamptz)::text
+----
+2024-03-04 00:00:00+09
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SELECT ('2024-03-04 05:06:07'::timestamp::timestamptz)::text
+----
+2024-03-04 05:06:07-05
+
+query T
+SELECT ('2024-03-04 05:06:07+00'::timestamptz::timestamp)::text
+----
+2024-03-04 00:06:07
+
+query T
+SELECT (date '2024-03-04'::timestamptz)::text
+----
+2024-03-04 00:00:00-05
+
+query T
+SELECT (date '2024-07-04'::timestamptz)::text
+----
+2024-07-04 00:00:00-04
+
+# SET LOCAL とロールバック
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL TIME ZONE 'Asia/Tokyo'
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 14:06:07+09
+
+statement ok
+ROLLBACK
+
+query T
+SHOW TimeZone
+----
+UTC
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 05:06:07+00
+
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL TimeZone = 'Asia/Tokyo'
+
+statement ok
+COMMIT
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+BEGIN
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+statement ok
+ROLLBACK
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+BEGIN
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+statement ok
+COMMIT
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+statement ok
+BEGIN
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+statement ok
+SET LOCAL TIME ZONE 'America/New_York'
+
+query T
+SHOW TimeZone
+----
+America/New_York
+
+statement ok
+COMMIT
+
+query T
+SHOW TimeZone
+----
+Asia/Tokyo
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# RESET / RESET ALL
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+statement ok
+SET DateStyle = 'SQL, DMY'
+
+statement ok
+SET IntervalStyle = 'iso_8601'
+
+statement ok
+SET extra_float_digits = 0
+
+query T
+SHOW IntervalStyle
+----
+iso_8601
+
+query T
+SHOW DateStyle
+----
+SQL, DMY
+
+statement ok
+RESET ALL
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+query T
+SHOW IntervalStyle
+----
+postgres
+
+query T
+SHOW extra_float_digits
+----
+1
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+statement ok
+RESET TimeZone
+
+query T
+SELECT current_setting('TimeZone') = current_setting('TimeZone')
+----
+t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+# current_setting / set_config
+
+query T
+SELECT set_config('TimeZone', 'Asia/Tokyo', false)
+----
+Asia/Tokyo
+
+query T
+SELECT current_setting('TimeZone')
+----
+Asia/Tokyo
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00')::text
+----
+2024-03-04 14:06:07+09
+
+query T
+SELECT set_config('TimeZone', 'UTC', false)
+----
+UTC
+
+query T
+SELECT current_setting('timezone')
+----
+UTC
+
+# 不正値
+
+statement error (22023)
+SET TIME ZONE 'Nowhere/Land'
+
+statement error (22023)
+SET TIME ZONE 'foo'
+
+statement error (22023)
+SET TIME ZONE ''
+
+statement error (22023)
+SET TimeZone = 'Asia/Tokio'
+
+statement error (22023)
+SELECT set_config('TimeZone', 'Nowhere/Land', false)
+
+statement error (22023)
+SELECT timestamptz '2024-03-04 05:06:07' AT TIME ZONE 'Nowhere/Land'
+
+query T
+SHOW TimeZone
+----
+UTC
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE

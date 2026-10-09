@@ -1,0 +1,53 @@
+# pg_blocking_pids: 待ちがない形で、空配列であることと型を確かめる。
+# 待ちが起きる確認は isolation spec で行う。
+# 接頭辞: lock_pg_blocking_pids_
+
+statement ok
+DROP TABLE IF EXISTS lock_pg_blocking_pids_t
+
+statement ok
+CREATE TABLE lock_pg_blocking_pids_t (id int)
+
+query T
+SELECT pg_blocking_pids(pg_backend_pid())
+----
+{}
+
+query T
+SELECT pg_typeof(pg_blocking_pids(pg_backend_pid()))
+----
+integer[]
+
+# ロックを保持しているだけでは待っていない
+connection a
+statement ok
+BEGIN
+
+connection a
+statement ok
+LOCK TABLE lock_pg_blocking_pids_t IN ACCESS EXCLUSIVE MODE
+
+connection a
+query T
+SELECT pg_blocking_pids(pg_backend_pid())
+----
+{}
+
+connection b
+query T
+SELECT pg_blocking_pids(pg_backend_pid())
+----
+{}
+
+# 存在しない pid
+query T
+SELECT pg_blocking_pids(0)
+----
+{}
+
+connection a
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE lock_pg_blocking_pids_t

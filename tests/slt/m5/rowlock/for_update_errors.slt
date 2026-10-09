@@ -1,0 +1,110 @@
+# FOR UPDATE / SHARE を付けられない問い合わせ（0A000。文言も PostgreSQL に合わせる）
+
+statement ok
+DROP TABLE IF EXISTS rowlock_for_update_errors_t
+
+statement ok
+CREATE TABLE rowlock_for_update_errors_t (id int PRIMARY KEY, g int)
+
+statement ok
+INSERT INTO rowlock_for_update_errors_t VALUES (1, 1), (2, 1)
+
+statement error (0A000)
+SELECT DISTINCT g FROM rowlock_for_update_errors_t FOR UPDATE
+
+statement error (?s)FOR UPDATE is not allowed with DISTINCT clause
+SELECT DISTINCT g FROM rowlock_for_update_errors_t FOR UPDATE
+
+statement error (0A000)
+SELECT g FROM rowlock_for_update_errors_t GROUP BY g FOR UPDATE
+
+statement error (?s)FOR UPDATE is not allowed with GROUP BY clause
+SELECT g FROM rowlock_for_update_errors_t GROUP BY g FOR UPDATE
+
+statement error (0A000)
+SELECT count(*) FROM rowlock_for_update_errors_t FOR UPDATE
+
+statement error (?s)FOR UPDATE is not allowed with aggregate functions
+SELECT count(*) FROM rowlock_for_update_errors_t FOR UPDATE
+
+statement error (0A000)
+SELECT max(id) FROM rowlock_for_update_errors_t FOR SHARE
+
+statement error (?s)FOR SHARE is not allowed with aggregate functions
+SELECT max(id) FROM rowlock_for_update_errors_t FOR SHARE
+
+statement error (0A000)
+SELECT id FROM rowlock_for_update_errors_t UNION SELECT id FROM rowlock_for_update_errors_t FOR UPDATE
+
+statement error (?s)FOR UPDATE is not allowed with UNION/INTERSECT/EXCEPT
+SELECT id FROM rowlock_for_update_errors_t UNION SELECT id FROM rowlock_for_update_errors_t FOR UPDATE
+
+statement error (0A000)
+SELECT id FROM rowlock_for_update_errors_t EXCEPT SELECT id FROM rowlock_for_update_errors_t FOR NO KEY UPDATE
+
+statement error (?s)FOR NO KEY UPDATE is not allowed with UNION/INTERSECT/EXCEPT
+SELECT id FROM rowlock_for_update_errors_t EXCEPT SELECT id FROM rowlock_for_update_errors_t FOR NO KEY UPDATE
+
+statement error (0A000)
+SELECT DISTINCT id FROM rowlock_for_update_errors_t FOR KEY SHARE
+
+statement error (?s)FOR KEY SHARE is not allowed with DISTINCT clause
+SELECT DISTINCT id FROM rowlock_for_update_errors_t FOR KEY SHARE
+
+statement error (0A000)
+SELECT g FROM rowlock_for_update_errors_t GROUP BY g HAVING count(*) > 0 FOR UPDATE
+
+statement error (?s)FOR UPDATE is not allowed with GROUP BY clause
+SELECT g FROM rowlock_for_update_errors_t GROUP BY g HAVING count(*) > 0 FOR UPDATE
+
+# 関数は 0A000
+statement error (0A000)
+SELECT * FROM generate_series(1, 2) g FOR UPDATE OF g
+
+statement error (?s)FOR UPDATE cannot be applied to a function
+SELECT * FROM generate_series(1, 2) g FOR UPDATE OF g
+
+# 副問い合わせ・導出表の列を OF で指定するのは通るが、FROM の副問い合わせ自体は再帰的にロックする
+query I
+SELECT id FROM (SELECT id FROM rowlock_for_update_errors_t) s ORDER BY id FOR UPDATE
+----
+1
+2
+
+# OF の表が存在しない（42P01）
+statement error (42P01)
+SELECT id FROM rowlock_for_update_errors_t FOR UPDATE OF zzz
+
+statement error (?s)relation "zzz" in FOR UPDATE clause not found in FROM clause
+SELECT id FROM rowlock_for_update_errors_t FOR UPDATE OF zzz
+
+# 構文エラー
+statement error (42601)
+SELECT id FROM rowlock_for_update_errors_t FOR UPDATE NOWAIT SKIP LOCKED
+
+statement error (42601)
+SELECT id FROM rowlock_for_update_errors_t FOR
+
+# 同じ文に NOWAIT と SKIP LOCKED が別々の FOR 句で混在するのは 0A000 ではなく構文上通る
+query I
+SELECT id FROM rowlock_for_update_errors_t ORDER BY id FOR UPDATE NOWAIT FOR SHARE SKIP LOCKED
+----
+1
+2
+
+# 外部結合の NULL 側の表のロックは 0A000
+statement error (0A000)
+SELECT a.id FROM rowlock_for_update_errors_t a LEFT JOIN rowlock_for_update_errors_t b ON a.id = b.id + 5 FOR UPDATE
+
+statement error (?s)FOR UPDATE cannot be applied to the nullable side of an outer join
+SELECT a.id FROM rowlock_for_update_errors_t a LEFT JOIN rowlock_for_update_errors_t b ON a.id = b.id + 5 FOR UPDATE
+
+# OF で NULL 側を除外すれば通る
+query I
+SELECT a.id FROM rowlock_for_update_errors_t a LEFT JOIN rowlock_for_update_errors_t b ON a.id = b.id + 5 ORDER BY a.id FOR UPDATE OF a
+----
+1
+2
+
+statement ok
+DROP TABLE rowlock_for_update_errors_t

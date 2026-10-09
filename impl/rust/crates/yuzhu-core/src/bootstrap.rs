@@ -17,6 +17,7 @@ use crate::control::{
 use crate::datadir::{copy_database_dir, write_version_file};
 use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result, sqlstate};
+use crate::sql::ast::Secret;
 use crate::storage::stack::{StackConfig, StorageStack};
 use crate::storage::vfs::Vfs;
 use crate::storage::{TableStore, WriteCtx};
@@ -42,6 +43,55 @@ pub struct InitdbOptions {
     pub rel_seg_blocks: u32,
     /// WAL segment size in bytes (a power of two in 2 MiB..=1 GiB).
     pub wal_segment_size: u32,
+    /// The method of the `host` lines of `yuzhu_hba.conf` (`m5/08` §5.11). AU-2 writes the file.
+    pub auth_host: InitAuth,
+    /// The superuser's password (`--pwfile`). `Debug` does not show it.
+    pub superuser_password: Option<Secret>,
+}
+
+/// `yuzhu-initdb --auth-host`: the method for `host` connections.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum InitAuth {
+    #[default]
+    Trust,
+    ScramSha256,
+    Password,
+}
+
+impl InitAuth {
+    /// The method name used in `yuzhu_hba.conf`.
+    pub fn method_name(self) -> &'static str {
+        match self {
+            InitAuth::Trust => "trust",
+            InitAuth::ScramSha256 => "scram-sha-256",
+            InitAuth::Password => "password",
+        }
+    }
+}
+
+/// The content of the `yuzhu_hba.conf` that initdb writes.
+pub fn default_hba(auth: InitAuth) -> String {
+    let m = auth.method_name();
+    format!(
+        "# yuzhu_hba.conf: client authentication (see spec/design/m5/08-auth-roles.md)\n\
+         # TYPE  DATABASE  USER  ADDRESS       METHOD\n\
+         host    all       all   127.0.0.1/32  {m}\n\
+         host    all       all   ::1/128       {m}\n"
+    )
+}
+
+fn write_hba_file(vfs: &dyn Vfs, auth: InitAuth, sync: bool) -> Result<()> {
+    let path = Path::new("yuzhu_hba.conf");
+    let write = || -> std::io::Result<()> {
+        let f = vfs.open(path, crate::storage::vfs::OpenMode::CreateNew)?;
+        f.write_all_at(default_hba(auth).as_bytes(), 0)?;
+        if sync {
+            f.sync_all()?;
+            vfs.sync_dir(Path::new(""))?;
+        }
+        Ok(())
+    };
+    write().map_err(|e| Error::from_io(&e, "could not write \"yuzhu_hba.conf\""))
 }
 
 impl InitdbOptions {
@@ -52,7 +102,16 @@ impl InitdbOptions {
             no_sync: false,
             rel_seg_blocks: crate::storage::DEFAULT_RELSEG_SIZE,
             wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
+            auth_host: InitAuth::Trust,
+            superuser_password: None,
         }
+    }
+}
+
+impl Default for InitdbOptions {
+    /// Superuser `postgres`, everything else as in [`InitdbOptions::new`].
+    fn default() -> Self {
+        InitdbOptions::new("postgres")
     }
 }
 
@@ -62,6 +121,15 @@ pub fn initdb(vfs: Arc<dyn Vfs>, opts: &InitdbOptions) -> Result<()> {
         return Err(Error::new(
             sqlstate::INVALID_PARAMETER_VALUE,
             "the superuser name must not be empty",
+        ));
+    }
+    if opts.auth_host != InitAuth::Trust && opts.superuser_password.is_none() {
+        return Err(Error::new(
+            sqlstate::INVALID_PARAMETER_VALUE,
+            format!(
+                "must specify a password for the superuser to enable {} authentication",
+                opts.auth_host.method_name()
+            ),
         ));
     }
     if opts.rel_seg_blocks == 0 {
@@ -134,17 +202,21 @@ fn run(vfs: &Arc<dyn Vfs>, opts: &InitdbOptions) -> Result<()> {
     // WAL) with xmin = BOOTSTRAP (visible to every snapshot).
     let stack = StorageStack::new(
         Arc::clone(vfs),
-        &StackConfig {
-            rel_seg_blocks: opts.rel_seg_blocks,
-            nframes: BOOTSTRAP_FRAMES,
-            knobs: DebugKnobs::default(),
-        },
+        &StackConfig::new(opts.rel_seg_blocks, BOOTSTRAP_FRAMES, DebugKnobs::default()),
         Arc::clone(&wal),
         Xid::FIRST_NORMAL,
     )?;
     let storage: Arc<dyn TableStore> = stack.heap.clone();
+    let superuser_secret = match &opts.superuser_password {
+        Some(p) if !p.0.is_empty() => Some(
+            yuzhu_auth::scram::make_secret(&p.0, yuzhu_auth::scram::DEFAULT_ITERATIONS)
+                .map_err(|e| Error::new(sqlstate::INVALID_PARAMETER_VALUE, e.to_string()))?,
+        ),
+        _ => None,
+    };
     let params = InitParams {
         superuser: opts.superuser.clone(),
+        superuser_secret,
     };
     let w = WriteCtx {
         xid: Xid::BOOTSTRAP,
@@ -195,10 +267,19 @@ fn run(vfs: &Arc<dyn Vfs>, opts: &InitdbOptions) -> Result<()> {
     copy_database_dir(&**vfs, TEMPLATE1_OID, TEMPLATE0_OID, sync)?;
     copy_database_dir(&**vfs, TEMPLATE1_OID, POSTGRES_OID, sync)?;
 
+    // 6a. yuzhu_hba.conf (`m5/08` 5.11).
+    write_hba_file(&**vfs, opts.auth_host, sync)?;
+
     // 7. pg_xact/ stays empty. The control file marks the end.
     let mut data =
         ControlData::initial(system_identifier, rows::builtin_hash(), opts.rel_seg_blocks);
     data.wal_segment_size = opts.wal_segment_size;
+    data.mock_auth_nonce = yuzhu_auth::random::bytes::<32>().map_err(|e| {
+        Error::new(
+            sqlstate::INTERNAL_ERROR,
+            format!("could not generate random numbers: {e}"),
+        )
+    })?;
     data.checkpoint_lsn = inserted.start.0;
     data.redo_lsn = redo.0;
     ControlFileHandle::create(vfs, &data)?;

@@ -10,8 +10,8 @@ use super::btree::{BtCtx, build, insert as bt_insert, meta, scan};
 use super::buffer::BufferPool;
 use super::smgr::ForkNumber;
 use super::{
-    BuildStats, BuildUnique, IndexHandle, IndexScan, IndexStore, ResolvedScanKeys, ScanDirection,
-    UniqueCheck, WriteCtx,
+    BuildStats, BuildUnique, IndexHandle, IndexScan, IndexStore, InsertOutcome, ResolvedScanKeys,
+    ScanDirection, UniqueCheck, WriteCtx,
 };
 use crate::debug_knobs::DebugKnobs;
 use crate::error::Result;
@@ -56,7 +56,7 @@ impl IndexStore for BtreeStore {
         key: &[Datum],
         tid: Tid,
         check: UniqueCheck<'_>,
-    ) -> Result<()> {
+    ) -> Result<InsertOutcome> {
         let ctx = BtCtx {
             pool: &self.pool,
             wal: &self.wal,
@@ -67,7 +67,7 @@ impl IndexStore for BtreeStore {
             && (self.inserts.fetch_add(1, Ordering::Relaxed) + 1)
                 .is_multiple_of(self.knobs.btree_lossy_insert_every)
         {
-            return Ok(());
+            return Ok(InsertOutcome::Inserted);
         }
         bt_insert::insert(&ctx, w, key, tid, check)
     }

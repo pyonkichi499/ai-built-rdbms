@@ -29,6 +29,7 @@ pub mod split;
 pub(crate) mod testing;
 pub mod tuple;
 pub mod unique;
+pub mod vacuum;
 pub mod wal;
 
 // ----- 00 §15.1 -------------------------------------------------------------

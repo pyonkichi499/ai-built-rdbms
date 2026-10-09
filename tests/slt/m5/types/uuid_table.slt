@@ -1,0 +1,288 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# uuid 列: PRIMARY KEY / UNIQUE / ORDER BY / インデックス / DEFAULT gen_random_uuid()
+
+# 接頭辞: types_uuid_table_
+
+statement ok
+DROP TABLE IF EXISTS types_uuid_table_pk
+
+statement ok
+DROP TABLE IF EXISTS types_uuid_table_u
+
+statement ok
+DROP TABLE IF EXISTS types_uuid_table_d
+
+statement ok
+DROP TABLE IF EXISTS types_uuid_table_g
+
+statement ok
+CREATE TABLE types_uuid_table_pk (id uuid PRIMARY KEY, n int)
+
+statement ok
+INSERT INTO types_uuid_table_pk VALUES ('00000000-0000-0000-0000-000000000002', 1), ('10000000-0000-0000-0000-000000000000', 2), ('00000000-0000-0000-0000-000000000001', 3), ('ffffffff-ffff-ffff-ffff-ffffffffffff', 4), ('80000000-0000-0000-0000-000000000000', 5), ('7fffffff-ffff-ffff-ffff-ffffffffffff', 6), ('a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 7)
+
+statement error (23505)
+INSERT INTO types_uuid_table_pk VALUES ('00000000-0000-0000-0000-000000000002', 9)
+
+statement error (23505)
+INSERT INTO types_uuid_table_pk VALUES ('00000000000000000000000000000002', 9)
+
+statement error (23505)
+INSERT INTO types_uuid_table_pk VALUES ('{00000000-0000-0000-0000-000000000002}', 9)
+
+statement error (23502)
+INSERT INTO types_uuid_table_pk VALUES (NULL, 9)
+
+statement error (22P02)
+INSERT INTO types_uuid_table_pk VALUES ('not-a-uuid', 9)
+
+query T
+SELECT n::text FROM types_uuid_table_pk ORDER BY id
+----
+3
+1
+2
+6
+5
+7
+4
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk ORDER BY id DESC
+----
+4
+7
+5
+6
+2
+1
+3
+
+
+query T
+SELECT id::text FROM types_uuid_table_pk ORDER BY id
+----
+00000000-0000-0000-0000-000000000001
+00000000-0000-0000-0000-000000000002
+10000000-0000-0000-0000-000000000000
+7fffffff-ffff-ffff-ffff-ffffffffffff
+80000000-0000-0000-0000-000000000000
+a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+ffffffff-ffff-ffff-ffff-ffffffffffff
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id = 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'
+----
+7
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id = 'a0eebc999c0b4ef8bb6d6bb9bd380a11'
+----
+7
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id > '7fffffff-ffff-ffff-ffff-ffffffffffff' ORDER BY id
+----
+5
+7
+4
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id < '00000000-0000-0000-0000-000000000002' ORDER BY id
+----
+3
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id BETWEEN '00000000-0000-0000-0000-000000000001' AND '10000000-0000-0000-0000-000000000000' ORDER BY id
+----
+3
+1
+2
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id IN ('ffffffff-ffff-ffff-ffff-ffffffffffff', '80000000-0000-0000-0000-000000000000') ORDER BY id
+----
+5
+4
+
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id = ANY(ARRAY['ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid, '00000000-0000-0000-0000-000000000001'::uuid]) ORDER BY id
+----
+3
+4
+
+
+statement ok
+UPDATE types_uuid_table_pk SET n = n * 10 WHERE id = '80000000-0000-0000-0000-000000000000'
+
+query T
+SELECT n::text FROM types_uuid_table_pk WHERE id = '80000000-0000-0000-0000-000000000000'
+----
+50
+
+
+statement ok
+DELETE FROM types_uuid_table_pk WHERE id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+
+query T
+SELECT count(*)::text FROM types_uuid_table_pk
+----
+6
+
+
+statement ok
+CREATE TABLE types_uuid_table_u (id int, u uuid UNIQUE)
+
+statement ok
+INSERT INTO types_uuid_table_u VALUES (1, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'), (2, NULL), (3, NULL), (4, '00000000-0000-0000-0000-000000000000')
+
+statement error (23505)
+INSERT INTO types_uuid_table_u VALUES (5, 'A0EEBC999C0B4EF8BB6D6BB9BD380A11')
+
+query T
+SELECT id::text FROM types_uuid_table_u ORDER BY u NULLS LAST, id
+----
+4
+1
+2
+3
+
+
+query T
+SELECT count(*)::text FROM types_uuid_table_u WHERE u IS NULL
+----
+2
+
+
+query T
+SELECT count(DISTINCT u)::text FROM types_uuid_table_u
+----
+2
+
+
+statement ok
+CREATE INDEX types_uuid_table_u_idx ON types_uuid_table_u (u, id)
+
+query T
+SELECT id::text FROM types_uuid_table_u WHERE u = '00000000-0000-0000-0000-000000000000'
+----
+4
+
+
+# DEFAULT gen_random_uuid()
+
+statement ok
+CREATE TABLE types_uuid_table_d (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), n int)
+
+statement ok
+INSERT INTO types_uuid_table_d (n) SELECT g FROM generate_series(1, 1000) g
+
+query T
+SELECT count(*)::text FROM types_uuid_table_d
+----
+1000
+
+
+query T
+SELECT count(DISTINCT id)::text FROM types_uuid_table_d
+----
+1000
+
+
+query T
+SELECT count(*)::text FROM types_uuid_table_d WHERE id IS NOT NULL
+----
+1000
+
+
+query T
+SELECT count(*)::text FROM types_uuid_table_d WHERE substr(id::text, 15, 1) = '4' AND substr(id::text, 20, 1) IN ('8','9','a','b')
+----
+1000
+
+
+query T
+SELECT pg_typeof(id)::text FROM types_uuid_table_d LIMIT 1
+----
+uuid
+
+
+query T
+SELECT count(*)::text FROM types_uuid_table_d a JOIN types_uuid_table_d b ON a.id = b.id
+----
+1000
+
+
+query T
+SELECT (count(*) = count(DISTINCT id))::text FROM types_uuid_table_d
+----
+true
+
+
+statement ok
+CREATE TABLE types_uuid_table_g (id int, u uuid DEFAULT gen_random_uuid())
+
+statement ok
+INSERT INTO types_uuid_table_g (id) VALUES (1), (2), (3)
+
+statement ok
+INSERT INTO types_uuid_table_g (id, u) VALUES (4, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11')
+
+query T
+SELECT count(DISTINCT u)::text FROM types_uuid_table_g
+----
+4
+
+
+query T
+SELECT (u = 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11')::text FROM types_uuid_table_g WHERE id = 4
+----
+true
+
+
+query T
+SELECT id::text FROM types_uuid_table_g WHERE u IS NOT NULL ORDER BY id
+----
+1
+2
+3
+4
+
+
+statement ok
+DROP TABLE types_uuid_table_pk
+
+statement ok
+DROP TABLE types_uuid_table_u
+
+statement ok
+DROP TABLE types_uuid_table_d
+
+statement ok
+DROP TABLE types_uuid_table_g
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

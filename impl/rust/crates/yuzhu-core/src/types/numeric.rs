@@ -124,6 +124,238 @@ pub fn numeric_div_trunc(args: &[Datum]) -> Result<Datum> {
     ))
 }
 
+// ---------------------------------------------------------------------------
+// M5 TY-2: 穴埋めの関数（gcd lcm min_scale trim_scale width_bucket factorial pow）とバイナリの橋渡し
+// ---------------------------------------------------------------------------
+
+fn num_at(args: &[Datum], i: usize) -> Result<&Numeric> {
+    numeric_arg(args, i)
+}
+
+/// ユークリッドの互除法（引数は有限）。
+fn gcd_finite(a: &Numeric, b: &Numeric) -> Result<Numeric> {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while !b.is_zero() {
+        let r = a.checked_rem(&b)?;
+        a = b;
+        b = r;
+    }
+    Ok(a)
+}
+
+/// 二つの引数の scale の大きい方（有限のときだけ呼ぶ）。
+fn max_scale(a: &Numeric, b: &Numeric) -> i32 {
+    a.scale().unwrap_or(0).max(b.scale().unwrap_or(0))
+}
+
+/// `gcd(numeric, numeric)`（OID 5048）。NaN と ±Infinity は NaN。結果の scale は二つの大きい方。
+pub fn numeric_gcd(args: &[Datum]) -> Result<Datum> {
+    let (a, b) = (num_at(args, 0)?, num_at(args, 1)?);
+    if a.is_nan() || b.is_nan() || a.is_infinite() || b.is_infinite() {
+        return Ok(Datum::Numeric(Numeric::NaN));
+    }
+    let g = gcd_finite(a, b)?;
+    Ok(Datum::Numeric(g.trunc(max_scale(a, b))?))
+}
+
+/// `lcm(numeric, numeric)`（OID 5049）。どちらかが 0 なら 0。
+pub fn numeric_lcm(args: &[Datum]) -> Result<Datum> {
+    let (a, b) = (num_at(args, 0)?, num_at(args, 1)?);
+    if a.is_nan() || b.is_nan() || a.is_infinite() || b.is_infinite() {
+        return Ok(Datum::Numeric(Numeric::NaN));
+    }
+    let scale = max_scale(a, b);
+    if a.is_zero() || b.is_zero() {
+        return Ok(Datum::Numeric(Numeric::zero().trunc(scale)?));
+    }
+    let g = gcd_finite(a, b)?;
+    let l = a.div_trunc(&g)?.checked_mul(b)?.abs();
+    Ok(Datum::Numeric(l.trunc(scale)?))
+}
+
+/// 末尾のゼロを除いた scale（有限値）。
+fn min_scale_of(n: &Numeric) -> i32 {
+    let s = n.to_string();
+    s.split_once('.').map_or(0, |(_, frac)| {
+        i32::try_from(frac.trim_end_matches('0').len()).unwrap_or(i32::MAX)
+    })
+}
+
+/// `min_scale(numeric)`（OID 5042）。NaN と ±Infinity は NULL。
+pub fn numeric_min_scale(args: &[Datum]) -> Result<Datum> {
+    let n = num_at(args, 0)?;
+    if n.is_nan() || n.is_infinite() {
+        return Ok(Datum::Null);
+    }
+    Ok(Datum::Int4(min_scale_of(n)))
+}
+
+/// `trim_scale(numeric)`（OID 5043）。NaN と ±Infinity はそのまま。
+pub fn numeric_trim_scale(args: &[Datum]) -> Result<Datum> {
+    let n = num_at(args, 0)?;
+    if n.is_nan() || n.is_infinite() {
+        return Ok(Datum::Numeric(n.clone()));
+    }
+    Ok(Datum::Numeric(n.trunc(min_scale_of(n))?))
+}
+
+fn width_bucket_error(msg: &str) -> Error {
+    Error::new(
+        crate::error::sqlstate::INVALID_ARGUMENT_FOR_WIDTH_BUCKET_FUNCTION,
+        msg,
+    )
+}
+
+fn int4_out_of_range() -> Error {
+    Error::new(
+        crate::error::sqlstate::NUMERIC_VALUE_OUT_OF_RANGE,
+        "integer out of range",
+    )
+}
+
+/// `width_bucket(numeric, numeric, numeric, int4)`（OID 2170）。
+pub fn numeric_width_bucket(args: &[Datum]) -> Result<Datum> {
+    let (op, b1, b2) = (num_at(args, 0)?, num_at(args, 1)?, num_at(args, 2)?);
+    let Some(Datum::Int4(count)) = args.get(3) else {
+        return Err(Error::internal("width_bucket: bad argument"));
+    };
+    let count = *count;
+    if count <= 0 {
+        return Err(width_bucket_error("count must be greater than zero"));
+    }
+    if op.is_nan() || b1.is_nan() || b2.is_nan() {
+        return Err(width_bucket_error(
+            "operand, lower bound, and upper bound cannot be NaN",
+        ));
+    }
+    if b1.is_infinite() || b2.is_infinite() {
+        return Err(width_bucket_error("lower and upper bounds must be finite"));
+    }
+    let ascending = match b1.cmp(b2) {
+        std::cmp::Ordering::Equal => {
+            return Err(width_bucket_error("lower bound cannot equal upper bound"));
+        }
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+    };
+    let (lo, hi) = if ascending { (b1, b2) } else { (b2, b1) };
+    let result = if ascending {
+        if op < b1 {
+            0
+        } else if op >= b2 {
+            count.checked_add(1).ok_or_else(int4_out_of_range)?
+        } else {
+            bucket_inner(op.checked_sub(lo)?, hi.checked_sub(lo)?, count)?
+        }
+    } else if op > b1 {
+        0
+    } else if op <= b2 {
+        count.checked_add(1).ok_or_else(int4_out_of_range)?
+    } else {
+        bucket_inner(b1.checked_sub(op)?, b1.checked_sub(b2)?, count)?
+    };
+    Ok(Datum::Int4(result))
+}
+
+/// `width_bucket(float8, float8, float8, int4)`（OID 320）。numeric 版の引数が整数・float8 のときの解決先。
+pub fn float8_width_bucket(args: &[Datum]) -> Result<Datum> {
+    let f = |i: usize| match args.get(i) {
+        Some(Datum::Float8(v)) => Ok(*v),
+        _ => Err(Error::internal("width_bucket: bad argument")),
+    };
+    let (op, b1, b2) = (f(0)?, f(1)?, f(2)?);
+    let Some(Datum::Int4(count)) = args.get(3) else {
+        return Err(Error::internal("width_bucket: bad argument"));
+    };
+    let count = *count;
+    if count <= 0 {
+        return Err(width_bucket_error("count must be greater than zero"));
+    }
+    if op.is_nan() || b1.is_nan() || b2.is_nan() {
+        return Err(width_bucket_error(
+            "operand, lower bound, and upper bound cannot be NaN",
+        ));
+    }
+    if b1.is_infinite() || b2.is_infinite() {
+        return Err(width_bucket_error("lower and upper bounds must be finite"));
+    }
+    #[allow(clippy::float_cmp)]
+    if b1 == b2 {
+        return Err(width_bucket_error("lower bound cannot equal upper bound"));
+    }
+    let (below, above, num, den) = if b1 < b2 {
+        (op < b1, op >= b2, op - b1, b2 - b1)
+    } else {
+        (op > b1, op <= b2, b1 - op, b1 - b2)
+    };
+    let r = if below {
+        0
+    } else if above {
+        count.checked_add(1).ok_or_else(int4_out_of_range)?
+    } else {
+        let x = if den.is_infinite() {
+            let (a, b) = if b1 < b2 { (op, b1) } else { (b1, op) };
+            let (hi, lo) = if b1 < b2 { (b2, b1) } else { (b1, b2) };
+            f64::from(count) * (a / 2.0 - b / 2.0) / (hi / 2.0 - lo / 2.0)
+        } else {
+            f64::from(count) * (num / den)
+        };
+        // 丸め誤差で count に届いたら count - 1 に戻す（PG と同じ）。
+        #[allow(clippy::cast_possible_truncation)]
+        let i = x as i32;
+        i.min(count - 1) + 1
+    };
+    Ok(Datum::Int4(r))
+}
+
+/// `floor(count * num / den) + 1`。
+fn bucket_inner(num: Numeric, den: Numeric, count: i32) -> Result<i32> {
+    let q = num
+        .checked_mul(&Numeric::from(count))?
+        .checked_div(&den)?
+        .floor()?;
+    q.to_i32()?.checked_add(1).ok_or_else(int4_out_of_range)
+}
+
+/// `factorial(int8)`（OID 1376）。
+pub fn numeric_factorial(args: &[Datum]) -> Result<Datum> {
+    let Some(n) = args.first().and_then(Datum::as_i64) else {
+        return Err(Error::internal("factorial: bad argument"));
+    };
+    if n < 0 {
+        return Err(Error::new(
+            crate::error::sqlstate::NUMERIC_VALUE_OUT_OF_RANGE,
+            "factorial of a negative number is undefined",
+        ));
+    }
+    if n > 32177 {
+        return Err(Error::new(
+            crate::error::sqlstate::NUMERIC_VALUE_OUT_OF_RANGE,
+            "value overflows numeric format",
+        ));
+    }
+    let mut acc = Numeric::from(1_i64);
+    for i in 2..=n {
+        acc = acc.checked_mul(&Numeric::from(i))?;
+    }
+    Ok(Datum::Numeric(acc))
+}
+
+/// `pow(numeric, numeric)`（OID 1738）: M6（TY-D15）。
+pub fn numeric_pow(_args: &[Datum]) -> Result<Datum> {
+    Err(Error::not_supported("numeric pow is not supported yet"))
+}
+
+/// `numeric_send`: ネットワークバイト順のバイナリ形式。
+pub fn numeric_send(n: &Numeric) -> Vec<u8> {
+    n.to_binary()
+}
+
+/// `numeric_recv`: バイナリ形式を読み、`typmod` を適用する（入力は 1 個の値ちょうど）。
+pub fn numeric_recv(buf: &[u8], typmod: i32) -> Result<Datum> {
+    Ok(Datum::Numeric(Numeric::from_binary(buf, typmod)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +752,149 @@ mod bridge_corpus {
     #[test]
     fn numeric_bridge_regress() {
         check("regress", REGRESS, 4_000);
+    }
+}
+
+/// TY-2 の関数の単体テスト（期待値は PostgreSQL 17 の実機）。
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn d(s: &str) -> Datum {
+        Datum::Numeric(s.parse().unwrap())
+    }
+
+    fn s(r: Result<Datum>) -> String {
+        match r.unwrap() {
+            Datum::Numeric(n) => n.to_string(),
+            Datum::Int4(i) => i.to_string(),
+            Datum::Null => "NULL".into(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn gcd_lcm() {
+        for (a, b, g, l) in [
+            ("12", "18", "6", "36"),
+            ("-12", "18", "6", "36"),
+            ("0", "0", "0", "0"),
+            ("0", "5", "5", "0"),
+            ("1.5", "3", "1.5", "3.0"),
+            ("12.00", "18", "6.00", "36.00"),
+            ("NaN", "1", "NaN", "NaN"),
+            ("Infinity", "1", "NaN", "NaN"),
+            ("1", "-Infinity", "NaN", "NaN"),
+        ] {
+            assert_eq!(s(numeric_gcd(&[d(a), d(b)])), g, "gcd({a},{b})");
+            assert_eq!(s(numeric_lcm(&[d(a), d(b)])), l, "lcm({a},{b})");
+        }
+        assert_eq!(s(numeric_gcd(&[d("0.5"), d("0.3")])), "0.1");
+        assert_eq!(
+            s(numeric_gcd(&[d("12345678901234567890"), d("9876543210")])),
+            "90"
+        );
+        assert_eq!(
+            s(numeric_lcm(&[d("1e100"), d("3")])),
+            format!("3{}", "0".repeat(100))
+        );
+    }
+
+    #[test]
+    fn scales() {
+        assert_eq!(s(numeric_min_scale(&[d("1.500")])), "1");
+        assert_eq!(s(numeric_min_scale(&[d("0.00")])), "0");
+        assert_eq!(s(numeric_min_scale(&[d("100")])), "0");
+        assert_eq!(s(numeric_min_scale(&[d("NaN")])), "NULL");
+        assert_eq!(s(numeric_min_scale(&[d("-Infinity")])), "NULL");
+        assert_eq!(s(numeric_trim_scale(&[d("0.0010")])), "0.001");
+        assert_eq!(s(numeric_trim_scale(&[d("100.00")])), "100");
+        assert_eq!(s(numeric_trim_scale(&[d("NaN")])), "NaN");
+        assert_eq!(s(numeric_trim_scale(&[d("Infinity")])), "Infinity");
+    }
+
+    #[test]
+    fn width_bucket() {
+        let wb = |op: &str, b1: &str, b2: &str, c: i32| {
+            numeric_width_bucket(&[d(op), d(b1), d(b2), Datum::Int4(c)])
+        };
+        assert_eq!(s(wb("5.35", "0.024", "10.06", 5)), "3");
+        assert_eq!(s(wb("-1", "0", "10", 5)), "0");
+        assert_eq!(s(wb("10", "0", "10", 5)), "6");
+        assert_eq!(s(wb("5", "10", "0", 5)), "3");
+        assert_eq!(s(wb("11", "10", "0", 5)), "0");
+        assert_eq!(s(wb("0", "10", "0", 5)), "6");
+        assert_eq!(s(wb("Infinity", "0", "10", 5)), "6");
+        for (r, st) in [
+            (wb("1", "0", "10", 0), "2201G"),
+            (wb("NaN", "0", "10", 3), "2201G"),
+            (wb("1", "5", "5", 3), "2201G"),
+            (wb("1", "0", "Infinity", 3), "2201G"),
+            (wb("10", "0", "10", i32::MAX), "22003"),
+        ] {
+            assert_eq!(r.unwrap_err().sqlstate.code(), st);
+        }
+    }
+
+    #[test]
+    fn factorial() {
+        let f = |n: i64| numeric_factorial(&[Datum::Int8(n)]);
+        assert_eq!(s(f(0)), "1");
+        assert_eq!(s(f(5)), "120");
+        assert_eq!(s(f(20)), "2432902008176640000");
+        assert_eq!(s(f(25)), "15511210043330985984000000");
+        assert_eq!(f(-1).unwrap_err().sqlstate.code(), "22003");
+        assert_eq!(f(32178).unwrap_err().sqlstate.code(), "22003");
+    }
+
+    #[test]
+    fn pow_is_not_supported() {
+        let e = numeric_pow(&[d("2"), d("3")]).unwrap_err();
+        assert_eq!(e.sqlstate.code(), "0A000");
+    }
+
+    #[test]
+    fn binary_roundtrip() {
+        for v in [
+            "0",
+            "1.50",
+            "-12345.6789",
+            "NaN",
+            "Infinity",
+            "-Infinity",
+            "1e100",
+        ] {
+            let n: Numeric = v.parse().unwrap();
+            let b = numeric_send(&n);
+            assert_eq!(
+                numeric_recv(&b, -1).unwrap(),
+                Datum::Numeric(n.clone()),
+                "{v}"
+            );
+            assert_eq!(
+                numeric_send(&match numeric_recv(&b, -1).unwrap() {
+                    Datum::Numeric(x) => x,
+                    _ => unreachable!(),
+                }),
+                b
+            );
+        }
+        // typmod は recv で適用される
+        let b = numeric_send(&"1.2345".parse().unwrap());
+        assert_eq!(
+            s(numeric_recv(&b, (6 << 16) + 2 + 4).map_err(|e| e)),
+            "1.23"
+        );
+        assert_eq!(
+            numeric_recv(&b[..3], -1).unwrap_err().sqlstate.code(),
+            "08P01"
+        );
+        assert_eq!(
+            numeric_recv(&[0, 0, 0, 0, 0x12, 0x34, 0, 0], -1)
+                .unwrap_err()
+                .sqlstate
+                .code(),
+            "22P03"
+        );
     }
 }

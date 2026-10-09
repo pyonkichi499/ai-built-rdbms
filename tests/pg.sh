@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 # 本物の PostgreSQL 17（C ロケール、trust 認証）を docker で起動・停止する補助スクリプト。
 #
-#   tests/pg.sh start|stop|restart|crash|status [--port N] [--name NAME] [--image IMAGE]
+#   tests/pg.sh start|stop|restart|crash|status [--port N] [--name NAME] [--image IMAGE] [--auth trust|scram]
 #
+# --auth scram: ユーザー postgres のパスワード yuzhu-test-pw、TCP を scram-sha-256 で認証する（既定は trust）。
+#   ランナーは tests/run.sh --password yuzhu-test-pw で流す。start のたびに、サーバの server_version を tests/PG_VERSION に記録する。
 # restart はデータを残したまま再起動する（smart shutdown）。
 # crash はデータを残したまま kill -9 で落として起動し直す（クラッシュリカバリを通す）。
 #   docker のコンテナがあれば docker kill -s KILL + docker start。なければ（claude-sandbox のコンテナ内）
 #   sandbox/pg.sh が起動した PostgreSQL（$PG_DATA、既定 /tmp/yuzhu-pg17）のプロセスを kill -9 して pg_ctl start する。
 # 環境変数でも指定できる: PG_PORT（既定 55432）、PG_CONTAINER（既定 yuzhu-test-pg）、
-# PG_IMAGE（既定 postgres:17）。
+# PG_IMAGE（既定 postgres:17。タグを変えて別バージョンを試せる）、PG_AUTH（trust | scram）。
 set -euo pipefail
 
 PORT="${PG_PORT:-55432}"
 NAME="${PG_CONTAINER:-yuzhu-test-pg}"
 IMAGE="${PG_IMAGE:-postgres:17}"
+AUTH="${PG_AUTH:-trust}"
+PG_PASSWORD="yuzhu-test-pw"
+VERSION_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/PG_VERSION"
 LOCAL_DATA="${PG_DATA:-/tmp/yuzhu-pg17}"
 
 usage() {
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -28,6 +33,7 @@ while [ $# -gt 0 ]; do
         --port) PORT="$2"; shift 2 ;;
         --name) NAME="$2"; shift 2 ;;
         --image) IMAGE="$2"; shift 2 ;;
+        --auth) AUTH="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "unknown option: $1" >&2; usage ;;
     esac
@@ -41,7 +47,7 @@ wait_ready() {
     # 応答してしまうので、TCP（-h 127.0.0.1）で確認し、さらに実際のクエリを投げて確かめる。
     for _ in $(seq 1 120); do
         if docker exec "$NAME" pg_isready -q -h 127.0.0.1 -U postgres >/dev/null 2>&1 &&
-           docker exec "$NAME" psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null 2>&1; then
+           docker exec -e PGPASSWORD="$PG_PASSWORD" "$NAME" psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null 2>&1; then
             echo "PostgreSQL is ready on port $PORT (container $NAME)"
             return 0
         fi
@@ -82,7 +88,7 @@ local_crash() {
     "${env_cmd[@]}" pg_ctl -D "$LOCAL_DATA" -l "$LOCAL_DATA/server.log" -o "-p $PORT" -w -t 120 start >/dev/null || rc=$?
     rm -f $passwd $group
     [ "$rc" -eq 0 ] || { tail -n 50 "$LOCAL_DATA/server.log" >&2 || true; return "$rc"; }
-    psql -h 127.0.0.1 -p "$PORT" -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null
+    PGPASSWORD="$PG_PASSWORD" psql -h 127.0.0.1 -p "$PORT" -U postgres -d postgres -Atqc 'SELECT 1' >/dev/null
     echo "PostgreSQL crashed (SIGKILL) and restarted on 127.0.0.1:$PORT (data $LOCAL_DATA)"
 }
 
@@ -92,13 +98,25 @@ case "$CMD" in
             echo "container $NAME is already running"
         else
             if exists; then docker rm -f "$NAME" >/dev/null; fi
-            docker run -d --name "$NAME" \
-                -e POSTGRES_HOST_AUTH_METHOD=trust \
-                -e POSTGRES_INITDB_ARGS='--locale=C --encoding=UTF8' \
+            case "$AUTH" in
+                trust)
+                    auth_args=(-e POSTGRES_HOST_AUTH_METHOD=trust
+                        -e POSTGRES_INITDB_ARGS='--locale=C --encoding=UTF8')
+                    ;;
+                scram)
+                    auth_args=(-e POSTGRES_PASSWORD="$PG_PASSWORD"
+                        -e POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+                        -e POSTGRES_INITDB_ARGS='--auth-host=scram-sha-256 --locale=C --encoding=UTF8')
+                    ;;
+                *) echo "--auth trust|scram: got '$AUTH'" >&2; exit 2 ;;
+            esac
+            docker run -d --name "$NAME" "${auth_args[@]}" \
                 -p "127.0.0.1:${PORT}:5432" \
                 "$IMAGE" >/dev/null
         fi
         wait_ready
+        # サーバのバージョンを tests/PG_VERSION に記録する（期待値の検証元）。
+        docker exec -e PGPASSWORD="$PG_PASSWORD" "$NAME" psql -h 127.0.0.1 -U postgres -d postgres -Atqc 'SHOW server_version' > "$VERSION_FILE" || true
         ;;
     restart)
         # データを残したまま PostgreSQL を再起動する（docker restart。コンテナ内で smart shutdown して起動し直す）。

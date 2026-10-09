@@ -1311,6 +1311,8 @@ mod tests {
             _w: &WriteCtx,
             _s: &Snapshot,
             _t: Tid,
+            _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+            _crosscheck: Option<&Snapshot>,
         ) -> Result<TmResult> {
             unsupported()
         }
@@ -1321,6 +1323,8 @@ mod tests {
             _s: &Snapshot,
             _t: Tid,
             _n: &[Datum],
+            _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+            _crosscheck: Option<&Snapshot>,
         ) -> Result<UpdateOutcome> {
             unsupported()
         }
@@ -1357,6 +1361,8 @@ mod tests {
             locator: test_rel(1),
             desc: Arc::new(TupleDesc { attrs: vec![] }),
             indexes: Arc::from(Vec::new()),
+            key_columns: Arc::from(Vec::new()),
+            ri: Arc::default(),
         }
     }
 

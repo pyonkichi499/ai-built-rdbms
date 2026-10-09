@@ -534,6 +534,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbkdf2"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
+dependencies = [
+ "digest",
+ "hmac",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -901,6 +911,12 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
@@ -1297,10 +1313,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
+name = "yuzhu-auth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.4.3",
+ "hmac",
+ "pbkdf2",
+ "proptest",
+ "sha2",
+ "stringprep",
+ "subtle",
+]
+
+[[package]]
 name = "yuzhu-core"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "yuzhu-auth",
  "yuzhu-datetime",
  "yuzhu-numeric",
 ]
@@ -1324,6 +1355,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "yuzhu-auth",
  "yuzhu-core",
 ]
 

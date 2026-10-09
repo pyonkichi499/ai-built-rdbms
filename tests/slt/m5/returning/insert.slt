@@ -1,0 +1,102 @@
+# INSERT ... RETURNING
+
+statement ok
+DROP TABLE IF EXISTS returning_insert_t
+
+statement ok
+DROP TABLE IF EXISTS returning_insert_src
+
+statement ok
+CREATE TABLE returning_insert_t (id int PRIMARY KEY, a int, b text DEFAULT 'dflt')
+
+statement ok
+CREATE TABLE returning_insert_src (id int, w text)
+
+statement ok
+INSERT INTO returning_insert_src VALUES (1, 'w1'), (2, 'w2')
+
+query ITT
+INSERT INTO returning_insert_t VALUES (1, 10, 'x') RETURNING id, a, b
+----
+1 10 x
+
+# 複数行
+query IIT rowsort
+INSERT INTO returning_insert_t VALUES (2, 20, 'y'), (3, NULL, NULL) RETURNING id, a, b
+----
+2 20 y
+3 NULL NULL
+
+# *、DEFAULT が入った列
+query IIT
+INSERT INTO returning_insert_t (id, a) VALUES (4, 40) RETURNING *
+----
+4 40 dflt
+
+query IIT
+INSERT INTO returning_insert_t (id) VALUES (5) RETURNING returning_insert_t.*
+----
+5 NULL dflt
+
+# 式と別名
+query IIT
+INSERT INTO returning_insert_t (id, a) VALUES (6, 60) RETURNING id * 2 AS dbl, a + 1, upper(b)
+----
+12 61 DFLT
+
+query T
+INSERT INTO returning_insert_t (id, a) VALUES (7, 70) RETURNING pg_typeof(a)
+----
+integer
+
+# INSERT ... SELECT RETURNING
+query IT rowsort
+INSERT INTO returning_insert_t (id, a, b) SELECT id + 100, id, w FROM returning_insert_src RETURNING id, b
+----
+101 w1
+102 w2
+
+# 件数
+statement count 3
+INSERT INTO returning_insert_t SELECT 200 + n, n, 'g' FROM generate_series(1, 3) n RETURNING id
+
+# テーブルの別名
+query I
+INSERT INTO returning_insert_t AS t (id, a) VALUES (8, 80) RETURNING t.id
+----
+8
+
+# 制約違反のとき RETURNING は何も返さず、行も入らない
+statement error (23505)
+INSERT INTO returning_insert_t VALUES (2, 1, 'dup') RETURNING id
+
+statement error (23505)
+INSERT INTO returning_insert_t VALUES (9, 1, 'ok'), (2, 1, 'dup') RETURNING id
+
+query I
+SELECT count(*) FROM returning_insert_t WHERE id = 9
+----
+0
+
+# トランザクション内（ロールバックで消える）
+statement ok
+BEGIN
+
+query I
+INSERT INTO returning_insert_t (id) VALUES (10) RETURNING id
+----
+10
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM returning_insert_t WHERE id = 10
+----
+0
+
+statement ok
+DROP TABLE returning_insert_t
+
+statement ok
+DROP TABLE returning_insert_src

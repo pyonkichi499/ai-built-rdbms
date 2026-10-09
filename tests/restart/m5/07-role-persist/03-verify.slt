@@ -1,0 +1,13 @@
+# フェーズ 3: 2 回目の変更も反映されている。
+
+query TT
+SELECT rolname, rolcanlogin::text FROM pg_roles WHERE rolname LIKE 'crm5_07_%' ORDER BY rolname
+----
+crm5_07_b true
+crm5_07_d true
+
+statement ok
+DROP ROLE crm5_07_b
+
+statement ok
+DROP ROLE crm5_07_d

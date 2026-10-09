@@ -25,6 +25,10 @@ const C_COLLATION: Oid = 950;
 
 /// `relfrozenxid` / `datfrozenxid` of rows created by initdb.
 const FROZEN_XID: u32 = 3;
+/// `yz_datxid.datfrozenxid8` of a database nothing has been written to (template0; 03 VC-D13). Frozen.
+pub const DATFROZEN_PRISTINE: i64 = i64::MAX;
+/// `relfrozenxid8` / `datfrozenxid8` of the initial rows (`Xid::FIRST_NORMAL`).
+const FROZEN_XID8: i64 = 3;
 
 /// Builds a catalog row by column name. Columns that are not set are NULL.
 #[derive(Debug)]
@@ -139,7 +143,7 @@ fn relam_of(kind: RelKind) -> Oid {
     match kind {
         RelKind::Table => oids::HEAP_TABLE_AM,
         RelKind::Index => oids::BTREE_AM,
-        RelKind::Sequence => 0,
+        RelKind::Sequence | RelKind::Virtual => 0,
     }
 }
 
@@ -147,7 +151,7 @@ pub fn class_row(s: &ClassSpec<'_>) -> Row {
     // 表だけが凍結 XID を持つ（索引・シーケンスは 0）。
     let (frozen, minmxid) = match s.kind {
         RelKind::Table => (FROZEN_XID, 1),
-        RelKind::Index | RelKind::Sequence => (0, 0),
+        RelKind::Index | RelKind::Sequence | RelKind::Virtual => (0, 0),
     };
     RowBuilder::new(oids::PG_CLASS)
         .set("oid", Datum::Oid(s.oid))
@@ -356,6 +360,7 @@ fn constraint_type_char(kind: ConstraintKind) -> char {
         ConstraintKind::Check => 'c',
         ConstraintKind::PrimaryKey => 'p',
         ConstraintKind::Unique => 'u',
+        ConstraintKind::ForeignKey => 'f',
     }
 }
 
@@ -475,6 +480,8 @@ pub fn sequence_attribute_rows(relid: Oid) -> Vec<Row> {
 pub struct InitParams {
     /// `initdb -U`: the name of role 10.
     pub superuser: String,
+    /// `rolpassword` of the bootstrap superuser (`--pwfile`; a SCRAM secret string).
+    pub superuser_secret: Option<String>,
 }
 
 /// The initial rows of one catalog, in the order they are inserted. The
@@ -483,7 +490,7 @@ pub struct InitParams {
 pub fn initial_rows(catalog_oid: Oid, params: &InitParams) -> Vec<Row> {
     match catalog_oid {
         oids::PG_NAMESPACE => namespace_rows(),
-        oids::PG_AUTHID => authid_rows(&params.superuser),
+        oids::PG_AUTHID => authid_rows(&params.superuser, params.superuser_secret.as_deref()),
         oids::PG_TABLESPACE => tablespace_rows(),
         oids::PG_AM => am_rows(),
         oids::PG_DATABASE => database_rows(),
@@ -491,13 +498,24 @@ pub fn initial_rows(catalog_oid: Oid, params: &InitParams) -> Vec<Row> {
         oids::PG_PROC => proc_rows(),
         oids::PG_OPERATOR => operator_rows(),
         oids::PG_CAST => cast_rows(),
-        oids::PG_CLASS => schema::CATALOGS.iter().map(catalog_class_row).collect(),
-        oids::PG_ATTRIBUTE => catalog_attribute_rows(),
+        // 仮想リレーション（`pg_locks` など。relkind `v`）の行は `virtual_rel` が作る（M5 LK-5）。
+        oids::PG_CLASS => schema::CATALOGS
+            .iter()
+            .map(catalog_class_row)
+            .chain(super::virtual_rel::bootstrap_catalog_rows(0).class)
+            .collect(),
+        oids::PG_ATTRIBUTE => {
+            let mut rows = catalog_attribute_rows();
+            rows.extend(super::virtual_rel::bootstrap_catalog_rows(0).attribute);
+            rows
+        }
         oids::PG_LANGUAGE => language_rows(),
         oids::PG_OPFAMILY => opfamily_rows(),
         oids::PG_OPCLASS => opclass_rows(),
         oids::PG_AMOP => amop_rows(),
         oids::PG_AMPROC => amproc_rows(),
+        oids::YZ_RELXID => relxid_rows(),
+        oids::YZ_DATXID => datxid_rows(),
         // pg_index / pg_depend / pg_sequence / pg_description は空（行は DDL が書く）。
         _ => Vec::new(),
     }
@@ -533,10 +551,18 @@ fn namespace_rows() -> Vec<Row> {
     .collect()
 }
 
-fn authid_rows(superuser: &str) -> Vec<Row> {
+fn authid_rows(superuser: &str, secret: Option<&str>) -> Vec<Row> {
     let role = |oid: Oid, name: &str, privileged: bool, inherit: bool, login: bool| {
-        RowBuilder::new(oids::PG_AUTHID)
-            .set("oid", Datum::Oid(oid))
+        let password = if oid == oids::BOOTSTRAP_SUPERUSER {
+            secret
+        } else {
+            None
+        };
+        let mut b = RowBuilder::new(oids::PG_AUTHID);
+        if let Some(p) = password {
+            b = b.set("rolpassword", text(p));
+        }
+        b.set("oid", Datum::Oid(oid))
             .set("rolname", text(name))
             .set("rolsuper", Datum::Bool(privileged))
             .set("rolinherit", Datum::Bool(inherit))
@@ -617,6 +643,32 @@ fn database_rows() -> Vec<Row> {
             .build()
     })
     .collect()
+}
+
+/// `yz_relxid`: every heap catalog (itself included; the shared ones too, once per database) gets `(oid, 3)` (03 §3.4).
+fn relxid_rows() -> Vec<Row> {
+    schema::CATALOGS
+        .iter()
+        .map(|def| {
+            RowBuilder::new(oids::YZ_RELXID)
+                .set("relid", Datum::Oid(def.oid))
+                .set("relfrozenxid8", Datum::Int8(FROZEN_XID8))
+                .build()
+        })
+        .collect()
+}
+
+/// `yz_datxid`: template1 and postgres `3`, template0 `DATFROZEN_PRISTINE` (03 §3.4, VC-D13).
+fn datxid_rows() -> Vec<Row> {
+    [(1, FROZEN_XID8), (4, DATFROZEN_PRISTINE), (5, FROZEN_XID8)]
+        .into_iter()
+        .map(|(datid, frozen)| {
+            RowBuilder::new(oids::YZ_DATXID)
+                .set("datid", Datum::Oid(datid))
+                .set("datfrozenxid8", Datum::Int8(frozen))
+                .build()
+        })
+        .collect()
 }
 
 /// `typarray` as the row shows it: the array type only if it has a row.
@@ -917,6 +969,7 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 
 /// The canonical bytes of one value: a type tag, then the value in
 /// little-endian form.
+#[allow(clippy::too_many_lines)]
 fn put_datum(out: &mut Vec<u8>, d: &Datum) {
     match d {
         Datum::Null => out.push(0),
@@ -1008,6 +1061,45 @@ fn put_datum(out: &mut Vec<u8>, d: &Datum) {
                 out.extend(e.to_le_bytes());
             }
         }
+        Datum::Time(v) => {
+            out.push(22);
+            out.extend(v.to_le_bytes());
+        }
+        Datum::Interval(v) => {
+            out.push(23);
+            out.extend(v.months.to_le_bytes());
+            out.extend(v.days.to_le_bytes());
+            out.extend(v.micros.to_le_bytes());
+        }
+        Datum::Bytea(v) => {
+            out.push(24);
+            put_bytes(out, v);
+        }
+        Datum::Uuid(v) => {
+            out.push(25);
+            out.extend(v);
+        }
+        Datum::Array(a) => {
+            out.push(26);
+            out.extend(a.elem_type.to_le_bytes());
+            out.extend(
+                u32::try_from(a.dims.len())
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            for d in &a.dims {
+                out.extend(d.len.to_le_bytes());
+                out.extend(d.lbound.to_le_bytes());
+            }
+            out.extend(
+                u32::try_from(a.items.len())
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            for item in &a.items {
+                put_datum(out, item);
+            }
+        }
     }
 }
 
@@ -1021,6 +1113,7 @@ fn put_datum(out: &mut Vec<u8>, d: &Datum) {
 pub fn builtin_canonical_bytes() -> Vec<u8> {
     let params = InitParams {
         superuser: String::new(),
+        superuser_secret: None,
     };
     let mut out = Vec::new();
     for catalog in [
@@ -1060,7 +1153,8 @@ pub fn builtin_hash() -> u64 {
 /// (NULL always is).
 pub fn datum_matches_type(d: &Datum, type_oid: Oid) -> bool {
     match d {
-        Datum::Null => true,
+        // どの配列型かは TY が `typelem` で確かめる（ここでは配列型の検査をしない）。
+        Datum::Null | Datum::Array(_) => true,
         Datum::Bool(_) => type_oid == oid::BOOL,
         Datum::Int2(_) => type_oid == oid::INT2,
         Datum::Int4(_) => type_oid == oid::INT4,
@@ -1085,6 +1179,10 @@ pub fn datum_matches_type(d: &Datum, type_oid: Oid) -> bool {
         Datum::Timestamp(_) => type_oid == oid::TIMESTAMP,
         Datum::TimestampTz(_) => type_oid == oid::TIMESTAMPTZ,
         Datum::Int2Vector(_) => matches!(type_oid, oid::INT2VECTOR | oid::INT2_ARRAY),
+        Datum::Time(_) => type_oid == oid::TIME,
+        Datum::Interval(_) => type_oid == oid::INTERVAL,
+        Datum::Bytea(_) => type_oid == oid::BYTEA,
+        Datum::Uuid(_) => type_oid == oid::UUID,
     }
 }
 
@@ -1207,6 +1305,7 @@ mod tests {
     fn params() -> InitParams {
         InitParams {
             superuser: "postgres".into(),
+            superuser_secret: None,
         }
     }
 
@@ -1256,7 +1355,12 @@ mod tests {
         assert_eq!(n(oids::PG_TABLESPACE), 2);
         assert_eq!(n(oids::PG_AM), 2);
         assert_eq!(n(oids::PG_DATABASE), 3);
-        assert_eq!(n(oids::PG_CLASS), 22);
+        assert_eq!(
+            n(oids::PG_CLASS),
+            24 + crate::catalog::virtual_rel::registry().len()
+        );
+        assert_eq!(n(oids::YZ_RELXID), 24);
+        assert_eq!(n(oids::YZ_DATXID), 3);
         assert_eq!(n(oids::PG_ATTRDEF), 0);
         assert_eq!(n(oids::PG_CONSTRAINT), 0);
         assert_eq!(n(oids::PG_TYPE), builtin::TYPES.len());
@@ -1276,7 +1380,16 @@ mod tests {
         ] {
             assert_eq!(n(empty), 0);
         }
-        let natts: usize = schema::CATALOGS.iter().map(|c| c.natts() + 6).sum();
+        // 仮想リレーション（ビュー）は列だけで、システム列を持たない。
+        let virtual_natts: usize = crate::catalog::virtual_rel::registry()
+            .iter()
+            .map(|r| r.columns().len())
+            .sum();
+        let natts: usize = schema::CATALOGS
+            .iter()
+            .map(|c| c.natts() + 6)
+            .sum::<usize>()
+            + virtual_natts;
         assert_eq!(n(oids::PG_ATTRIBUTE), natts);
     }
 
@@ -1408,6 +1521,7 @@ mod tests {
             oids::PG_AUTHID,
             &InitParams {
                 superuser: "alice".into(),
+                superuser_secret: None,
             },
         );
         assert_eq!(get(&other[0], oids::PG_AUTHID, "rolname"), &text("alice"));
@@ -1754,6 +1868,7 @@ mod tests_m4 {
     fn language_and_generated_rows() {
         let p = InitParams {
             superuser: "postgres".into(),
+            superuser_secret: None,
         };
         let langs = initial_rows(oids::PG_LANGUAGE, &p);
         let names: Vec<_> = langs

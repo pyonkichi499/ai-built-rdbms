@@ -1,0 +1,344 @@
+# interval の入力形式・出力・無限・エラー
+# 接頭辞: types_interval_io_
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+# postgres 形式
+
+query T
+SELECT (interval '1 year 2 months 3 days')::text
+----
+1 year 2 mons 3 days
+
+query T
+SELECT (interval '1 day 02:03:04.5')::text
+----
+1 day 02:03:04.5
+
+query T
+SELECT (interval '-1 day +02:03:04')::text
+----
+-1 days +02:03:04
+
+query T
+SELECT (interval '1 year 2 mons -3 days 4 hours 5 mins 6 secs')::text
+----
+1 year 2 mons -3 days +04:05:06
+
+query T
+SELECT (interval '1.5 years')::text
+----
+1 year 6 mons
+
+query T
+SELECT (interval '1.5 months')::text
+----
+1 mon 15 days
+
+query T
+SELECT (interval '0.5 days')::text
+----
+12:00:00
+
+query T
+SELECT (interval '1.25 hours')::text
+----
+01:15:00
+
+query T
+SELECT (interval '2.5 weeks')::text
+----
+17 days 12:00:00
+
+query T
+SELECT (interval '1 decade 2 centuries')::text
+----
+210 years
+
+query T
+SELECT (interval '1 millennium')::text
+----
+1000 years
+
+query T
+SELECT (interval '0')::text
+----
+00:00:00
+
+query T
+SELECT (interval '00:00:00')::text
+----
+00:00:00
+
+query T
+SELECT (interval '-00:00:01.5')::text
+----
+-00:00:01.5
+
+query T
+SELECT (interval '100:00:00')::text
+----
+100:00:00
+
+query T
+SELECT (interval '1 microsecond')::text
+----
+00:00:00.000001
+
+query T
+SELECT (interval '1.000001 seconds')::text
+----
+00:00:01.000001
+
+query T
+SELECT (interval '12:34')::text
+----
+12:34:00
+
+query T
+SELECT (interval '12:34:56.789012')::text
+----
+12:34:56.789012
+
+query T
+SELECT (interval '1-2')::text
+----
+1 year 2 mons
+
+query T
+SELECT (interval '-1-2')::text
+----
+-1 years -2 mons
+
+query T
+SELECT (interval '1 12:00')::text
+----
+1 day 12:00:00
+
+query T
+SELECT (interval '3 days 4')::text
+----
+3 days 00:00:04
+
+query T
+SELECT (interval '@ 1 day ago')::text
+----
+-1 days
+
+query T
+SELECT (interval '@ 2 hours 3 minutes ago')::text
+----
+-02:03:00
+
+query T
+SELECT (interval '1 day 2 hours ago')::text
+----
+-1 days -02:00:00
+
+# ISO 8601
+
+query T
+SELECT (interval 'P1Y2M3DT4H5M6S')::text
+----
+1 year 2 mons 3 days 04:05:06
+
+query T
+SELECT (interval 'P1.5Y')::text
+----
+1 year 6 mons
+
+query T
+SELECT (interval 'PT0.5S')::text
+----
+00:00:00.5
+
+query T
+SELECT (interval 'P0001-02-03T04:05:06')::text
+----
+1 year 2 mons 3 days 04:05:06
+
+query T
+SELECT (interval 'PT1H30M')::text
+----
+01:30:00
+
+query T
+SELECT (interval 'P1W')::text
+----
+7 days
+
+query T
+SELECT (interval 'P-1D')::text
+----
+-1 days
+
+query T
+SELECT (interval 'PT-1H')::text
+----
+-01:00:00
+
+# 無限
+
+query T
+SELECT (interval 'infinity')::text
+----
+infinity
+
+query T
+SELECT (interval '-infinity')::text
+----
+-infinity
+
+query T
+SELECT (interval '+infinity')::text
+----
+infinity
+
+query T
+SELECT (interval 'infinity' + interval '1 day')::text
+----
+infinity
+
+query T
+SELECT (interval 'infinity' = interval 'infinity')::text
+----
+true
+
+query T
+SELECT (interval 'infinity' > interval '1000 years')::text
+----
+true
+
+query T
+SELECT (isfinite(interval 'infinity'))::text
+----
+false
+
+query T
+SELECT (isfinite(interval '1 day'))::text
+----
+true
+
+# 型修飾子
+
+query T
+SELECT ('1.23456 seconds'::interval(3))::text
+----
+00:00:01.235
+
+query T
+SELECT ('1.23456 seconds'::interval second(3))::text
+----
+00:00:01.235
+
+query T
+SELECT ('1 year 2 months 3 days'::interval year to month)::text
+----
+1 year 2 mons
+
+query T
+SELECT ('1 year 2 months'::interval year)::text
+----
+1 year
+
+query T
+SELECT ('1 year 2 months'::interval month)::text
+----
+1 year 2 mons
+
+query T
+SELECT ('1 day 02:03:04'::interval day to hour)::text
+----
+1 day 02:00:00
+
+query T
+SELECT ('1 day 02:03:04'::interval day to minute)::text
+----
+1 day 02:03:00
+
+query T
+SELECT ('1 day 02:03:04.567'::interval day to second(1))::text
+----
+1 day 02:03:04.6
+
+query T
+SELECT ('02:03:04.567'::interval hour to second(2))::text
+----
+02:03:04.57
+
+query T
+SELECT ('02:03:04'::interval minute to second)::text
+----
+02:03:04
+
+query T
+SELECT ('1 day 2 hours'::interval day)::text
+----
+1 day
+
+query T
+SELECT ('3 days 4 hours'::interval hour)::text
+----
+3 days 04:00:00
+
+query T
+SELECT (interval(2) '1.999 seconds')::text
+----
+00:00:02
+
+# 型
+
+query T
+SELECT (pg_typeof('1 day'::interval))::text
+----
+interval
+
+query T
+SELECT ('1 day'::text::interval)::text
+----
+1 day
+
+# エラー
+
+statement error (22007)
+SELECT interval 'foo'
+
+statement error (22007)
+SELECT interval '1 dya'
+
+statement error (22007)
+SELECT interval ''
+
+statement error (22007)
+SELECT interval '1 day 2 hours foo'
+
+statement error (22015)
+SELECT interval '9999999999 years'
+
+statement error (22007)
+SELECT interval 'P1X'
+
+statement error (42601)
+SELECT '1 day'::interval(-1)
+
+statement error (42601)
+SELECT '1 day'::interval(1,2)
+
+statement error (22008)
+SELECT interval '999999999 years'
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE

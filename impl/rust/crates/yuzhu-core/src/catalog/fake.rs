@@ -200,6 +200,9 @@ impl FakeCatalog {
             indexes,
             sequence: None,
             identity_seqs,
+            key_columns: Vec::new(),
+            foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         });
         self.put_table(Arc::clone(&def));
         for (seq_oid, seq_name, params) in serial_seqs {
@@ -296,6 +299,9 @@ fn sequence_def(seq_oid: Oid, name: &str, params: SequenceParams) -> TableDef {
         indexes: vec![],
         sequence: Some(params),
         identity_seqs: vec![],
+        key_columns: Vec::new(),
+        foreign_keys: Vec::new(),
+        referenced_by: Vec::new(),
     }
 }
 
@@ -482,6 +488,9 @@ pub(crate) fn table_def(
         indexes: Vec::new(),
         sequence: None,
         identity_seqs: Vec::new(),
+        key_columns: Vec::new(),
+        foreign_keys: Vec::new(),
+        referenced_by: Vec::new(),
     }
 }
 

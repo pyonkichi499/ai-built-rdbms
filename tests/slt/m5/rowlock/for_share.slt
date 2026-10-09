@@ -1,0 +1,84 @@
+# SELECT ... FOR SHARE（共有ロック同士は衝突しない。待たない形のみ）
+
+statement ok
+DROP TABLE IF EXISTS rowlock_for_share_t
+
+statement ok
+CREATE TABLE rowlock_for_share_t (id int PRIMARY KEY, v int)
+
+statement ok
+INSERT INTO rowlock_for_share_t VALUES (1, 10), (2, 20)
+
+query II
+SELECT id, v FROM rowlock_for_share_t WHERE id = 1 FOR SHARE
+----
+1 10
+
+connection a
+statement ok
+BEGIN
+
+connection a
+query II
+SELECT id, v FROM rowlock_for_share_t WHERE id = 1 FOR SHARE
+----
+1 10
+
+# 別接続の FOR SHARE は待たずに通る
+connection b
+statement ok
+BEGIN
+
+connection b
+query II
+SELECT id, v FROM rowlock_for_share_t WHERE id = 1 FOR SHARE
+----
+1 10
+
+# FOR UPDATE NOWAIT は共有ロックと衝突する（55P03）
+connection c
+statement error (55P03)
+SELECT id FROM rowlock_for_share_t WHERE id = 1 FOR UPDATE NOWAIT
+
+# 別の行は通る
+connection c
+query I
+SELECT id FROM rowlock_for_share_t WHERE id = 2 FOR UPDATE NOWAIT
+----
+2
+
+# 通常の SELECT は影響を受けない
+connection c
+query II rowsort
+SELECT id, v FROM rowlock_for_share_t
+----
+1 10
+2 20
+
+connection a
+statement ok
+COMMIT
+
+# b がまだ持っているので衝突する
+connection c
+statement error (55P03)
+SELECT id FROM rowlock_for_share_t WHERE id = 1 FOR NO KEY UPDATE NOWAIT
+
+connection b
+statement ok
+COMMIT
+
+connection c
+query I
+SELECT id FROM rowlock_for_share_t WHERE id = 1 FOR NO KEY UPDATE NOWAIT
+----
+1
+
+# FOR KEY SHARE も通る
+query I
+SELECT id FROM rowlock_for_share_t WHERE id = 1 FOR KEY SHARE
+----
+1
+
+statement ok
+DROP TABLE rowlock_for_share_t

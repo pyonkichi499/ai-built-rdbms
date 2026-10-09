@@ -99,7 +99,43 @@ impl Folder<'_> {
         let LExpr { kind, ty, span } = e;
         let mk = |kind| LExpr { kind, ty, span };
         match kind {
-            K::Literal(_) | K::Column(_) | K::SessionValue(_) | K::SubLinkOutput(_) => Ok(mk(kind)),
+            K::Literal(_)
+            | K::Column(_)
+            | K::SessionValue(_)
+            | K::SubLinkOutput(_)
+            // `$n` は実行時に決まるので畳まない（04 C9）。
+            | K::ExternParam(_) => Ok(mk(kind)),
+            // 配列の式は子だけ簡約する（評価による畳み込みは TY が足す）。
+            K::ArrayCtor { elem_type, elems } => Ok(mk(K::ArrayCtor {
+                elem_type,
+                elems: self.many(elems)?,
+            })),
+            K::ArraySubscript { array, indexes } => Ok(mk(K::ArraySubscript {
+                array: self.boxed(array)?,
+                indexes: self.many(indexes)?,
+            })),
+            K::ArrayCoerce {
+                expr,
+                elem_method,
+                elem_ty,
+                explicit,
+            } => Ok(mk(K::ArrayCoerce {
+                expr: self.boxed(expr)?,
+                elem_method,
+                elem_ty,
+                explicit,
+            })),
+            K::ScalarArrayOp {
+                op,
+                use_or,
+                left,
+                array,
+            } => Ok(mk(K::ScalarArrayOp {
+                op,
+                use_or,
+                left: self.boxed(left)?,
+                array: self.boxed(array)?,
+            })),
             K::Operator { op, args } => {
                 let args = self.many(args)?;
                 let all = all_lit(&args);
@@ -347,13 +383,14 @@ impl Folder<'_> {
                 let test = test.map(|t| self.boxed(t)).transpose()?;
                 let p = take_plan(&mut query.plan);
                 query.plan = self.plan(p, 0, false)?;
-                if matches!(query.plan, LogicalPlan::Empty { .. }) {
+                if matches!(query.plan, LogicalPlan::Empty { .. }) && kind != SubLinkKind::Array {
                     return Ok(match kind {
                         SubLinkKind::Exists | SubLinkKind::Any => {
                             mk(K::Literal(Datum::Bool(false)))
                         }
                         SubLinkKind::All => mk(K::Literal(Datum::Bool(true))),
                         SubLinkKind::Scalar => mk(K::Literal(Datum::Null)),
+                        SubLinkKind::Array => unreachable!("excluded by the guard above"),
                     });
                 }
                 Ok(mk(K::SubLink { kind, test, query }))

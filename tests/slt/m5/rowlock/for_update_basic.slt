@@ -1,0 +1,94 @@
+# SELECT ... FOR UPDATE / FOR NO KEY UPDATE の基本（単一接続）
+
+statement ok
+DROP TABLE IF EXISTS rowlock_for_update_basic_t
+
+statement ok
+CREATE TABLE rowlock_for_update_basic_t (id int PRIMARY KEY, v text)
+
+statement ok
+INSERT INTO rowlock_for_update_basic_t VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+# ブロック外でも通る（文ごとの暗黙のトランザクション）
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 2 FOR UPDATE
+----
+2 b
+
+query IT rowsort
+SELECT id, v FROM rowlock_for_update_basic_t FOR UPDATE
+----
+1 a
+2 b
+3 c
+
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 1 FOR NO KEY UPDATE
+----
+1 a
+
+# 0 行
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 99 FOR UPDATE
+----
+
+# トランザクション内で自分が持つロックと更新は衝突しない
+statement ok
+BEGIN
+
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 1 FOR UPDATE
+----
+1 a
+
+statement ok
+UPDATE rowlock_for_update_basic_t SET v = 'a2' WHERE id = 1
+
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 1 FOR UPDATE
+----
+1 a2
+
+statement ok
+COMMIT
+
+# 式・別名・ORDER BY と組み合わせる
+query IT
+SELECT id * 10 AS x, upper(v) FROM rowlock_for_update_basic_t WHERE id <= 2 ORDER BY id FOR UPDATE
+----
+10 A2
+20 B
+
+# 読み取り専用トランザクションでは 25006
+statement ok
+BEGIN READ ONLY
+
+statement error (25006)
+SELECT id FROM rowlock_for_update_basic_t FOR UPDATE
+
+statement ok
+ROLLBACK
+
+# 他接続の FOR UPDATE は、コミット済みの結果を見る
+connection a
+statement ok
+BEGIN
+
+connection a
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 3 FOR UPDATE
+----
+3 c
+
+connection a
+statement ok
+COMMIT
+
+connection b
+query IT
+SELECT id, v FROM rowlock_for_update_basic_t WHERE id = 3 FOR UPDATE
+----
+3 c
+
+statement ok
+DROP TABLE rowlock_for_update_basic_t

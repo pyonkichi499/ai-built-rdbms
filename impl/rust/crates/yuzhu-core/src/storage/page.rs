@@ -11,6 +11,7 @@ use super::checksum::page_checksum;
 use super::smgr::BlockNumber;
 use super::{BLCKSZ, MAX_HEAP_TUPLES_PER_PAGE, MAXALIGN, PAGE_LAYOUT_VERSION, SIZE_OF_PAGE_HEADER};
 use crate::error::Error;
+use crate::txn::Xid;
 
 const OFF_LSN: usize = 0;
 const OFF_CHECKSUM: usize = 8;
@@ -28,6 +29,22 @@ const ITEM_ID_SIZE: usize = 4;
 const PAGESIZE_VERSION: u16 = (BLCKSZ as u16) | (PAGE_LAYOUT_VERSION as u16);
 /// `PD_HAS_FREE_LINES | PD_PAGE_FULL | PD_ALL_VISIBLE`.
 const PD_VALID_FLAG_BITS: u16 = 0x0007;
+/// `pd_flags` bit0: at least one `LP_UNUSED` line pointer exists. Kept equal to
+/// "an `LP_UNUSED` exists" after every operation that changes line pointer states
+/// (`m5/03` VC-D10).
+pub const PD_HAS_FREE_LINES: u16 = 0x0001;
+
+/// Offset of `kind` in an FSM page (`m5/03` §3.3).
+const OFF_FSM_KIND: usize = 24;
+/// Start of `data[8160]` in an FSM page.
+const FSM_DATA_START: usize = 32;
+
+/// `kind` byte of an FSM page (`m5/03` §3.3). The FSM module (VC-2) re-exports this.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FsmPageKind {
+    Root = 1,
+    Leaf = 2,
+}
 
 /// One 8KB page. Frames hold `Box<Page>`.
 #[derive(Clone, Debug)]
@@ -337,12 +354,21 @@ impl Page {
         }
         let raw = u32::from_le_bytes(self.0[pos..pos + 4].try_into().expect("4 bytes"));
         let id = ItemId::decode(raw);
-        if id.flags == LpFlags::Normal {
-            let start = usize::from(id.off);
-            let end = start + usize::from(id.len);
-            if start < usize::from(self.upper()) || end > usize::from(self.special()) {
-                return Err(bad);
+        match id.flags {
+            LpFlags::Normal => {
+                let start = usize::from(id.off);
+                let end = start + usize::from(id.len);
+                if start < usize::from(self.upper()) || end > usize::from(self.special()) {
+                    return Err(bad);
+                }
             }
+            // Canonical form (`m5/03` §3.1): no stray offset or length.
+            LpFlags::Unused | LpFlags::Dead => {
+                if id.off != 0 || id.len != 0 {
+                    return Err(bad);
+                }
+            }
+            LpFlags::Redirect => {}
         }
         Ok(id)
     }
@@ -367,47 +393,309 @@ impl Page {
         Ok(&mut self.0[s..e])
     }
 
-    /// Appends a tuple and returns its 1-based offset number. `None` if it
-    /// does not fit or the page already has `MAX_HEAP_TUPLES_PER_PAGE` line
-    /// pointers. Unused line pointers are never reused (§3.4).
-    pub fn add_item(&mut self, data: &[u8]) -> Option<u16> {
+    fn raw_item_id(&self, off: u16) -> ItemId {
+        let pos = Self::item_id_pos(off);
+        ItemId::decode(u32::from_le_bytes(
+            self.0[pos..pos + ITEM_ID_SIZE].try_into().expect("4 bytes"),
+        ))
+    }
+
+    fn put_item_id(&mut self, off: u16, id: ItemId) {
+        let pos = Self::item_id_pos(off);
+        self.0[pos..pos + ITEM_ID_SIZE].copy_from_slice(&id.encode().to_le_bytes());
+    }
+
+    /// `off` is valid for raw line pointer access: `1..=max_offset` and inside the
+    /// page. `max_offset` derives from `pd_lower`, which is garbage on an
+    /// unverified page.
+    fn off_in_range(&self, off: u16) -> bool {
+        off != 0 && off <= self.max_offset() && Self::item_id_pos(off) + ITEM_ID_SIZE <= BLCKSZ
+    }
+
+    /// Sets line pointer `off` to `LP_DEAD` (`lp_off = 0`, `lp_len = 0`). The caller
+    /// recomputes `PD_HAS_FREE_LINES` at the end of its operation.
+    pub fn mark_dead(&mut self, off: u16) {
+        debug_assert!(self.off_in_range(off), "mark_dead({off}) out of range");
+        if self.off_in_range(off) {
+            self.put_item_id(
+                off,
+                ItemId {
+                    off: 0,
+                    flags: LpFlags::Dead,
+                    len: 0,
+                },
+            );
+        }
+    }
+
+    /// Sets line pointer `off` to `LP_UNUSED` (all zero). See [`mark_dead`](Self::mark_dead).
+    pub fn mark_unused(&mut self, off: u16) {
+        debug_assert!(self.off_in_range(off), "mark_unused({off}) out of range");
+        if self.off_in_range(off) {
+            self.put_item_id(
+                off,
+                ItemId {
+                    off: 0,
+                    flags: LpFlags::Unused,
+                    len: 0,
+                },
+            );
+        }
+    }
+
+    /// Whether any line pointer is `LP_UNUSED` (a scan over the line pointer array).
+    pub fn has_unused_item(&self) -> bool {
+        (1..=self.max_offset())
+            .filter(|&o| self.off_in_range(o))
+            .any(|o| self.raw_item_id(o).flags == LpFlags::Unused)
+    }
+
+    /// Recomputes `PD_HAS_FREE_LINES` from the line pointers.
+    fn refresh_free_lines_flag(&mut self) {
+        let flags = self.flags();
+        let flags = if self.has_unused_item() {
+            flags | PD_HAS_FREE_LINES
+        } else {
+            flags & !PD_HAS_FREE_LINES
+        };
+        self.put_u16(OFF_FLAGS, flags);
+    }
+
+    /// The first `LP_UNUSED` line pointer, if `PD_HAS_FREE_LINES` says there is one.
+    fn first_unused(&self) -> Option<u16> {
+        if self.flags() & PD_HAS_FREE_LINES == 0 {
+            return None;
+        }
+        (1..=self.max_offset())
+            .filter(|&o| self.off_in_range(o))
+            .find(|&o| self.raw_item_id(o).flags == LpFlags::Unused)
+    }
+
+    /// Puts `data` at the bottom of the free space and points line pointer `slot`
+    /// at it. `slot == max_offset + 1` appends a line pointer. The caller checked
+    /// that it fits.
+    fn place_item(&mut self, slot: u16, data: &[u8]) {
         let lower = usize::from(self.lower());
         let upper = usize::from(self.upper());
-        if upper < lower || lower < SIZE_OF_PAGE_HEADER {
-            return None;
-        }
-        let n = usize::from(self.max_offset());
-        if n >= MAX_HEAP_TUPLES_PER_PAGE {
-            return None;
-        }
         let size = align_up(data.len());
-        if size + ITEM_ID_SIZE > upper - lower || data.len() > 0x7FFF {
-            return None;
-        }
         let new_upper = upper - size;
         self.0[new_upper..upper].fill(0);
         self.0[new_upper..new_upper + data.len()].copy_from_slice(data);
-        let id = ItemId {
-            off: new_upper as u16,
-            flags: LpFlags::Normal,
-            len: data.len() as u16,
-        };
-        let pos = lower;
-        self.0[pos..pos + ITEM_ID_SIZE].copy_from_slice(&id.encode().to_le_bytes());
-        self.put_u16(OFF_LOWER, (lower + ITEM_ID_SIZE) as u16);
+        let append = slot > self.max_offset();
+        self.put_item_id(
+            slot,
+            ItemId {
+                off: new_upper as u16,
+                flags: LpFlags::Normal,
+                len: data.len() as u16,
+            },
+        );
+        if append {
+            self.put_u16(OFF_LOWER, (lower + ITEM_ID_SIZE) as u16);
+        }
         self.put_u16(OFF_UPPER, new_upper as u16);
-        Some((n + 1) as u16)
+        self.refresh_free_lines_flag();
     }
 
-    /// Free bytes minus one new line pointer (`PageGetHeapFreeSpace`); 0 when
-    /// no more line pointers may be added.
+    /// Whether a tuple of `len` bytes fits (`append`: it needs a new line pointer).
+    fn item_fits(&self, len: usize, append: bool) -> bool {
+        let lower = usize::from(self.lower());
+        let upper = usize::from(self.upper());
+        if upper < lower || lower < SIZE_OF_PAGE_HEADER || len > 0x7FFF {
+            return false;
+        }
+        if append && usize::from(self.max_offset()) >= MAX_HEAP_TUPLES_PER_PAGE {
+            return false;
+        }
+        let need = align_up(len) + if append { ITEM_ID_SIZE } else { 0 };
+        need <= upper - lower
+    }
+
+    /// Adds a tuple and returns its 1-based offset number: the smallest `LP_UNUSED`
+    /// line pointer is reused, otherwise one is appended. `None` (page untouched) if
+    /// it does not fit. `PD_HAS_FREE_LINES` is recomputed at the end (`m5/03` §6.1).
+    pub fn add_item(&mut self, data: &[u8]) -> Option<u16> {
+        let slot = self.first_unused();
+        if !self.item_fits(data.len(), slot.is_none()) {
+            return None;
+        }
+        let slot = slot.unwrap_or(self.max_offset() + 1);
+        self.place_item(slot, data);
+        Some(slot)
+    }
+
+    /// REDO counterpart of [`add_item`](Self::add_item): puts the tuple at line
+    /// pointer `off`, which must be `LP_UNUSED` or `max_offset + 1`. `false` (page
+    /// untouched) otherwise or if it does not fit. Given the offset `add_item`
+    /// returned on an identical page, the resulting bytes are identical.
+    pub fn add_item_at(&mut self, off: u16, data: &[u8]) -> bool {
+        if off == 0 || self.upper() == 0 {
+            return false;
+        }
+        let n = self.max_offset();
+        let append = if off == n + 1 {
+            true
+        } else if off <= n
+            && self.off_in_range(off)
+            && self.raw_item_id(off).flags == LpFlags::Unused
+        {
+            false
+        } else {
+            return false;
+        };
+        if !self.item_fits(data.len(), append) {
+            return false;
+        }
+        self.place_item(off, data);
+        true
+    }
+
+    /// `PageGetHeapFreeSpace`: the largest `MAXALIGN`ed tuple that can be added. With
+    /// an `LP_UNUSED` line pointer the whole `pd_upper - pd_lower` can be used,
+    /// otherwise one line pointer is deducted; 0 when no line pointer may be
+    /// added (`MAX_HEAP_TUPLES_PER_PAGE` and no `LP_UNUSED`).
     pub fn free_space(&self) -> usize {
         let lower = usize::from(self.lower());
         let upper = usize::from(self.upper());
-        if upper <= lower || usize::from(self.max_offset()) >= MAX_HEAP_TUPLES_PER_PAGE {
+        if upper <= lower {
             return 0;
         }
-        (upper - lower).saturating_sub(ITEM_ID_SIZE)
+        let space = upper - lower;
+        if self.flags() & PD_HAS_FREE_LINES != 0 && self.has_unused_item() {
+            return space;
+        }
+        if usize::from(self.max_offset()) >= MAX_HEAP_TUPLES_PER_PAGE {
+            return 0;
+        }
+        space.saturating_sub(ITEM_ID_SIZE)
+    }
+
+    /// Strips the trailing `LP_UNUSED` line pointers (`pd_lower -= 4` each) and
+    /// recomputes `PD_HAS_FREE_LINES`. Tuples do not move.
+    pub fn finish_unused(&mut self) {
+        let mut n = self.max_offset();
+        while n > 0 && self.off_in_range(n) && self.raw_item_id(n).flags == LpFlags::Unused {
+            n -= 1;
+        }
+        let new_lower = SIZE_OF_PAGE_HEADER + usize::from(n) * ITEM_ID_SIZE;
+        let old_lower = usize::from(self.lower());
+        if new_lower < old_lower {
+            self.put_u16(OFF_LOWER, new_lower as u16);
+            // The stripped line pointers are already zero (`LP_UNUSED`); keep the
+            // hole zero even for a page that was not canonical.
+            self.0[new_lower..old_lower.min(BLCKSZ)].fill(0);
+        }
+        self.refresh_free_lines_flag();
+    }
+
+    /// Defragments the page deterministically (`m5/03` §3.1): `LP_NORMAL` tuples are
+    /// packed against `pd_special` in descending old-offset order, the hole and the
+    /// padding are zeroed, trailing `LP_UNUSED` line pointers are dropped and
+    /// `PD_HAS_FREE_LINES` is recomputed. The same input gives the same bytes, so
+    /// the normal path and REDO agree.
+    pub fn repair_fragmentation(&mut self) -> std::result::Result<(), PageError> {
+        let n = self.max_offset();
+        let special = usize::from(self.special());
+        let lower = usize::from(self.lower());
+        if self.upper() == 0 || lower < SIZE_OF_PAGE_HEADER || special > BLCKSZ {
+            return Err(PageError::BadHeader("cannot defragment this page"));
+        }
+        let mut items: Vec<(u16, ItemId)> = Vec::with_capacity(usize::from(n));
+        for off in 1..=n {
+            let id = self.item_id(off)?;
+            match id.flags {
+                LpFlags::Normal => items.push((off, id)),
+                LpFlags::Redirect => return Err(PageError::BadItem { off }),
+                LpFlags::Unused | LpFlags::Dead => {}
+            }
+        }
+        items.sort_by(|a, b| b.1.off.cmp(&a.1.off).then(a.0.cmp(&b.0)));
+        let mut new_upper = special;
+        for &(off, id) in &items {
+            let size = align_up(usize::from(id.len));
+            if new_upper < lower + size {
+                return Err(PageError::BadItem { off });
+            }
+            new_upper -= size;
+            let (src, len) = (usize::from(id.off), usize::from(id.len));
+            if new_upper < src {
+                // Packing never moves a tuple down unless tuples overlap.
+                return Err(PageError::BadItem { off });
+            }
+            self.0.copy_within(src..src + len, new_upper);
+            self.0[new_upper + len..new_upper + size].fill(0);
+            self.put_item_id(
+                off,
+                ItemId {
+                    off: new_upper as u16,
+                    flags: LpFlags::Normal,
+                    len: id.len,
+                },
+            );
+        }
+        self.0[lower..new_upper].fill(0);
+        self.put_u16(OFF_UPPER, new_upper as u16);
+        self.finish_unused();
+        let (lower, upper) = (usize::from(self.lower()), usize::from(self.upper()));
+        self.0[lower..upper].fill(0);
+        Ok(())
+    }
+
+    /// `PageSetPrunable`: records `xid` in `pd_prune_xid` when there is no hint yet
+    /// or `xid` (low 32 bits) is older than the current one (signed 32-bit difference).
+    pub fn set_prunable(&mut self, xid: Xid) {
+        let new = xid.to_external();
+        let cur = self.prune_xid();
+        if cur == 0 || new.wrapping_sub(cur).cast_signed() < 0 {
+            self.set_prune_xid(new);
+        }
+    }
+
+    /// Writes `pd_prune_xid` (the low 32 bits of an XID; 0 = no hint).
+    pub fn set_prune_xid(&mut self, v32: u32) {
+        self.0[OFF_PRUNE_XID..OFF_PRUNE_XID + 4].copy_from_slice(&v32.to_le_bytes());
+    }
+
+    /// Restores `pd_prune_xid` to 64 bits using `next_xid` (`m5/03` §3.1); `None` for 0.
+    pub fn prune_xid_full(&self, next_xid: Xid) -> Option<Xid> {
+        let h32 = self.prune_xid();
+        if h32 == 0 {
+            return None;
+        }
+        let mut full = (next_xid.0 & !0xFFFF_FFFF) | u64::from(h32);
+        if full > next_xid.0 {
+            full = full.checked_sub(1 << 32)?;
+        }
+        Some(Xid(full))
+    }
+
+    /// Initializes an FSM page of the given kind (`m5/03` §3.3): the standard 24-byte
+    /// header with `pd_lower = 32`, `kind`, and `data` all zero.
+    pub fn init_fsm(&mut self, kind: FsmPageKind) {
+        self.0.fill(0);
+        self.put_u16(OFF_LOWER, FSM_DATA_START as u16);
+        self.put_u16(OFF_UPPER, BLCKSZ as u16);
+        self.put_u16(OFF_SPECIAL, BLCKSZ as u16);
+        self.put_u16(OFF_VERSION, PAGESIZE_VERSION);
+        self.0[OFF_FSM_KIND] = kind as u8;
+    }
+
+    /// The `kind` of an FSM page; `None` for an all-zero page or an unknown value.
+    pub fn fsm_kind(&self) -> Option<FsmPageKind> {
+        match self.0[OFF_FSM_KIND] {
+            1 => Some(FsmPageKind::Root),
+            2 => Some(FsmPageKind::Leaf),
+            _ => None,
+        }
+    }
+
+    /// The 8160 bytes of an FSM page's `data`.
+    pub fn fsm_data(&self) -> &[u8] {
+        &self.0[FSM_DATA_START..]
+    }
+
+    pub fn fsm_data_mut(&mut self) -> &mut [u8] {
+        &mut self.0[FSM_DATA_START..]
     }
 
     /// The hole of a standard page, `(pd_lower, pd_upper - pd_lower)`, that a
@@ -849,5 +1137,373 @@ mod tests {
         let mut p = Page::zeroed();
         assert!(p.special_area().is_empty());
         assert!(p.special_area_mut().is_empty());
+    }
+
+    // ----- M5 VC-1: reuse of LP_UNUSED, defragmentation, prune hint, FSM page -----
+
+    fn tup(len: usize, fill: u8) -> Vec<u8> {
+        vec![fill; len]
+    }
+
+    fn lp_bytes(p: &Page, off: u16) -> [u8; 4] {
+        let pos = 24 + (usize::from(off) - 1) * 4;
+        p.0[pos..pos + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn spec_example_three_states_are_fixed_values() {
+        // m5/03 §3.1: three 51-byte tuples (56 bytes each with MAXALIGN).
+        let mut p = heap_page();
+        for i in 1..=3u8 {
+            assert_eq!(p.add_item(&tup(51, i)), Some(u16::from(i)));
+        }
+        assert_eq!((p.lower(), p.upper()), (36, 8024));
+        assert_eq!(lp_bytes(&p, 1), [0xC8, 0x9F, 0x66, 0x00]);
+        assert_eq!(lp_bytes(&p, 2), [0x90, 0x9F, 0x66, 0x00]);
+        assert_eq!(lp_bytes(&p, 3), [0x58, 0x9F, 0x66, 0x00]);
+
+        // State 2: pruning kills tuple 2; tuple 3 slides up to 8080.
+        p.mark_dead(2);
+        assert_eq!(lp_bytes(&p, 2), [0x00, 0x80, 0x01, 0x00]);
+        p.repair_fragmentation().unwrap();
+        assert_eq!(lp_bytes(&p, 1), [0xC8, 0x9F, 0x66, 0x00]);
+        assert_eq!(lp_bytes(&p, 2), [0x00, 0x80, 0x01, 0x00]);
+        assert_eq!(lp_bytes(&p, 3), [0x90, 0x9F, 0x66, 0x00]);
+        assert_eq!((p.lower(), p.upper()), (36, 8080));
+        assert_eq!(&p.0[12..16], &[0x24, 0x00, 0x90, 0x1F]);
+        assert_eq!(p.flags(), 0);
+        assert_eq!(p.item(3).unwrap(), &tup(51, 3)[..]);
+
+        // State 3: the third stage turns line pointer 2 into LP_UNUSED; it is not
+        // the last one, so it stays in the array.
+        p.mark_unused(2);
+        p.finish_unused();
+        assert_eq!(lp_bytes(&p, 2), [0, 0, 0, 0]);
+        assert_eq!(p.lower(), 36);
+        assert_eq!(p.flags(), 0x0001);
+    }
+
+    #[test]
+    fn add_item_reuses_the_smallest_unused_line_pointer() {
+        let mut p = heap_page();
+        for i in 0..5u8 {
+            p.add_item(&tup(20, i)).unwrap();
+        }
+        assert_eq!(p.flags() & PD_HAS_FREE_LINES, 0);
+        p.mark_dead(2);
+        p.mark_unused(4);
+        p.mark_unused(3);
+        p.finish_unused();
+        assert_eq!(p.flags() & PD_HAS_FREE_LINES, PD_HAS_FREE_LINES);
+        assert_eq!(p.add_item(&tup(20, 9)), Some(3));
+        assert_eq!(p.add_item(&tup(20, 8)), Some(4));
+        // The flag follows "an LP_UNUSED exists" (only LP_DEAD at 2 is left: no).
+        assert_eq!(p.flags() & PD_HAS_FREE_LINES, 0);
+        assert_eq!(p.add_item(&tup(20, 7)), Some(6));
+        assert_eq!(p.max_offset(), 6);
+    }
+
+    #[test]
+    fn max_tuples_with_unused_slots_can_still_be_filled() {
+        let mut p = heap_page();
+        for _ in 0..MAX_HEAP_TUPLES_PER_PAGE {
+            p.add_item(&[1]).unwrap();
+        }
+        assert_eq!(p.add_item(&[1]), None);
+        assert_eq!(p.free_space(), 0);
+        p.mark_unused(50);
+        p.finish_unused();
+        assert!(p.free_space() > 0);
+        assert_eq!(p.add_item(&[2]), Some(50));
+        assert_eq!(p.free_space(), 0);
+        assert_eq!(p.add_item(&[3]), None);
+    }
+
+    #[test]
+    fn add_item_at_places_only_on_unused_or_next() {
+        let mut p = heap_page();
+        for i in 0..4u8 {
+            p.add_item(&tup(10, i)).unwrap();
+        }
+        p.mark_unused(2);
+        p.mark_dead(3);
+        p.refresh_free_lines_flag();
+        let before = p.clone();
+        assert!(!p.add_item_at(0, b"x"));
+        assert!(!p.add_item_at(1, b"x"), "LP_NORMAL");
+        assert!(!p.add_item_at(3, b"x"), "LP_DEAD");
+        assert!(!p.add_item_at(6, b"x"), "beyond max_offset + 1");
+        assert!(!Page::zeroed().add_item_at(1, b"x"), "new page");
+        assert_eq!(
+            p.0[..],
+            before.0[..],
+            "a refused add_item_at leaves the page alone"
+        );
+        assert!(p.add_item_at(2, b"two"));
+        assert_eq!(p.item(2).unwrap(), b"two");
+        assert!(p.add_item_at(5, b"five"));
+        assert_eq!(p.max_offset(), 5);
+        assert_eq!(p.flags() & PD_HAS_FREE_LINES, 0);
+        // Does not fit: nothing changes.
+        let before = p.clone();
+        assert!(!p.add_item_at(6, &vec![0; 9000]));
+        assert_eq!(p.0[..], before.0[..]);
+    }
+
+    #[test]
+    fn free_space_has_three_cases() {
+        let mut p = heap_page();
+        // No LP_UNUSED: one line pointer is deducted.
+        assert_eq!(p.free_space(), 8164);
+        p.add_item(&tup(100, 1)).unwrap();
+        p.add_item(&tup(100, 1)).unwrap();
+        let hole = usize::from(p.upper() - p.lower());
+        assert_eq!(p.free_space(), hole - 4);
+        // With an LP_UNUSED in the middle: the whole hole.
+        p.mark_unused(1);
+        p.refresh_free_lines_flag();
+        assert_eq!(p.free_space(), hole);
+        // 185 line pointers and no LP_UNUSED: 0.
+        let mut q = heap_page();
+        for _ in 0..MAX_HEAP_TUPLES_PER_PAGE {
+            q.add_item(&[1]).unwrap();
+        }
+        assert_eq!(q.free_space(), 0);
+        // A stale PD_HAS_FREE_LINES (no LP_UNUSED actually) does not inflate the answer.
+        let hole = usize::from(p.upper() - p.lower());
+        p.add_item(&tup(8, 2)).unwrap();
+        p.0[10] |= 1;
+        let hole2 = usize::from(p.upper() - p.lower());
+        assert!(hole2 < hole);
+        assert_eq!(p.free_space(), hole2 - 4);
+    }
+
+    #[test]
+    fn item_id_requires_the_canonical_form() {
+        let mut p = heap_page();
+        p.add_item(&[1, 2, 3]).unwrap();
+        p.add_item(&[1, 2, 3]).unwrap();
+        for (flags, ok) in [(LpFlags::Dead, true), (LpFlags::Unused, true)] {
+            let id = ItemId {
+                off: 0,
+                flags,
+                len: 0,
+            };
+            p.put_item_id(1, id);
+            assert_eq!(p.item_id(1).map(|i| i.flags), Ok(flags), "{ok}");
+            for bad in [
+                ItemId {
+                    off: 40,
+                    flags,
+                    len: 0,
+                },
+                ItemId {
+                    off: 0,
+                    flags,
+                    len: 3,
+                },
+            ] {
+                p.put_item_id(1, bad);
+                assert_eq!(p.item_id(1), Err(PageError::BadItem { off: 1 }));
+            }
+        }
+        // mark_dead / mark_unused write the canonical form.
+        p.mark_dead(2);
+        assert_eq!(p.item_id(2).unwrap().flags, LpFlags::Dead);
+        p.mark_unused(2);
+        assert_eq!(lp_bytes(&p, 2), [0; 4]);
+    }
+
+    #[test]
+    fn set_prunable_keeps_the_oldest_in_wraparound_order() {
+        let mut p = heap_page();
+        assert_eq!(p.prune_xid(), 0);
+        p.set_prunable(Xid(500));
+        assert_eq!(p.prune_xid(), 500);
+        p.set_prunable(Xid(600));
+        assert_eq!(p.prune_xid(), 500, "a newer XID does not replace it");
+        p.set_prunable(Xid(400));
+        assert_eq!(p.prune_xid(), 400);
+        // Signed 32-bit comparison: just before the wrap counts as older.
+        p.set_prune_xid(5);
+        p.set_prunable(Xid(0xFFFF_FFF0));
+        assert_eq!(p.prune_xid(), 0xFFFF_FFF0);
+        // The 64-bit XID uses its low 32 bits.
+        let mut q = heap_page();
+        q.set_prunable(Xid(0x1_0000_0007));
+        assert_eq!(q.prune_xid(), 7);
+    }
+
+    #[test]
+    fn prune_xid_full_restores_the_high_bits() {
+        let mut p = heap_page();
+        assert_eq!(p.prune_xid_full(Xid(100)), None);
+        p.set_prune_xid(50);
+        assert_eq!(p.prune_xid_full(Xid(100)), Some(Xid(50)));
+        // next_xid just past a 2^32 boundary, hint from before it.
+        p.set_prune_xid(0xFFFF_FFF0);
+        assert_eq!(p.prune_xid_full(Xid(0x1_0000_0010)), Some(Xid(0xFFFF_FFF0)));
+        // Same epoch.
+        p.set_prune_xid(0x10);
+        assert_eq!(
+            p.prune_xid_full(Xid(0x1_0000_0100)),
+            Some(Xid(0x1_0000_0010))
+        );
+        // A hint above next_xid in epoch 0 cannot be restored.
+        p.set_prune_xid(500);
+        assert_eq!(p.prune_xid_full(Xid(100)), None);
+    }
+
+    #[test]
+    fn fsm_page_header_matches_the_documented_layout() {
+        let mut p = Page::zeroed();
+        assert_eq!(p.fsm_kind(), None);
+        p.init_fsm(FsmPageKind::Leaf);
+        assert_eq!(p.fsm_kind(), Some(FsmPageKind::Leaf));
+        p.fsm_data_mut()[..4].copy_from_slice(&[0xFF, 0x00, 0x03, 0x00]);
+        assert_eq!(p.fsm_data().len(), 8160);
+        assert_eq!(
+            &p.0[12..20],
+            &[0x20, 0x00, 0x00, 0x20, 0x00, 0x20, 0x01, 0x20]
+        );
+        assert_eq!(&p.0[24..36], &[2, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0, 3, 0]);
+        assert!(sealed(p.clone(), 4).verify(4).is_ok());
+        p.init_fsm(FsmPageKind::Root);
+        assert_eq!(p.fsm_kind(), Some(FsmPageKind::Root));
+        assert!(p.fsm_data().iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn repair_fragmentation_rejects_a_corrupt_page() {
+        let mut p = heap_page();
+        p.add_item(&tup(20, 1)).unwrap();
+        // A redirect line pointer is never made in M5.
+        p.put_item_id(
+            1,
+            ItemId {
+                off: 5,
+                flags: LpFlags::Redirect,
+                len: 0,
+            },
+        );
+        assert_eq!(p.repair_fragmentation(), Err(PageError::BadItem { off: 1 }));
+        assert_eq!(
+            Page::zeroed().repair_fragmentation(),
+            Err(PageError::BadHeader("cannot defragment this page"))
+        );
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Clone, Debug)]
+        enum Op {
+            Add(usize),
+            Dead(usize),
+            Unused(usize),
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                (1usize..300).prop_map(Op::Add),
+                (0usize..64).prop_map(Op::Dead),
+                (0usize..64).prop_map(Op::Unused),
+            ]
+        }
+
+        /// Runs `ops` on a fresh page through the public operations.
+        fn build(ops: &[Op]) -> Page {
+            let mut p = heap_page();
+            for (i, o) in ops.iter().enumerate() {
+                let n = usize::from(p.max_offset());
+                match *o {
+                    Op::Add(len) => {
+                        let _ = p.add_item(&tup(len, (i % 250) as u8 + 1));
+                    }
+                    Op::Dead(k) if n > 0 => p.mark_dead((k % n) as u16 + 1),
+                    Op::Unused(k) if n > 0 => p.mark_unused((k % n) as u16 + 1),
+                    _ => {}
+                }
+            }
+            p.refresh_free_lines_flag();
+            p
+        }
+
+        proptest! {
+            /// `add_item_at(add_item's offset)` on an identical page gives identical bytes.
+            #[test]
+            fn add_item_at_agrees_with_add_item(
+                ops in proptest::collection::vec(op(), 0..60),
+                len in 1usize..400,
+            ) {
+                let base = build(&ops);
+                let data = tup(len, 0xEE);
+                let mut a = base.clone();
+                let mut b = base;
+                if let Some(off) = a.add_item(&data) {
+                    prop_assert!(b.add_item_at(off, &data));
+                    prop_assert_eq!(&a.0[..], &b.0[..]);
+                } else {
+                    // add_item found no room: appending (which needs 4 more bytes) cannot fit either.
+                    let n = b.max_offset();
+                    prop_assert!(!b.add_item_at(n + 1, &data));
+                }
+            }
+
+            /// `repair_fragmentation` keeps tuple bytes and line pointer numbers, packs
+            /// the page, zeroes holes and padding, and is idempotent.
+            #[test]
+            fn repair_fragmentation_properties(ops in proptest::collection::vec(op(), 0..80)) {
+                let before = build(&ops);
+                let mut after = before.clone();
+                after.repair_fragmentation().unwrap();
+
+                let n0 = before.max_offset();
+                let mut used = 0usize;
+                let mut last_kept = 0u16;
+                for off in 1..=n0 {
+                    let b = before.item_id(off).unwrap();
+                    if b.flags != LpFlags::Unused {
+                        last_kept = off;
+                    }
+                    if off > after.max_offset() {
+                        prop_assert_eq!(b.flags, LpFlags::Unused);
+                        continue;
+                    }
+                    let a = after.item_id(off).unwrap();
+                    prop_assert_eq!(a.flags, b.flags);
+                    prop_assert_eq!(a.len, b.len);
+                    if b.flags == LpFlags::Normal {
+                        prop_assert_eq!(after.item(off).unwrap(), before.item(off).unwrap());
+                        used += align_up(usize::from(b.len));
+                    }
+                }
+                // Trailing LP_UNUSED are gone; LP_DEAD are not.
+                prop_assert_eq!(after.max_offset(), last_kept);
+                // Packed: pd_upper is as high as it can be.
+                prop_assert_eq!(usize::from(after.upper()), BLCKSZ - used);
+                // Hole and padding are zero.
+                let (lo, up) = (usize::from(after.lower()), usize::from(after.upper()));
+                prop_assert!(after.0[lo..up].iter().all(|&x| x == 0));
+                for off in 1..=after.max_offset() {
+                    let id = after.item_id(off).unwrap();
+                    if id.flags == LpFlags::Normal {
+                        let s = usize::from(id.off) + usize::from(id.len);
+                        let e = usize::from(id.off) + align_up(usize::from(id.len));
+                        prop_assert!(after.0[s..e].iter().all(|&x| x == 0));
+                    }
+                }
+                prop_assert_eq!(
+                    after.flags() & PD_HAS_FREE_LINES != 0,
+                    after.has_unused_item()
+                );
+                prop_assert!(sealed(after.clone(), 1).verify(1).is_ok());
+                // Idempotent.
+                let mut twice = after.clone();
+                twice.repair_fragmentation().unwrap();
+                prop_assert_eq!(&twice.0[..], &after.0[..]);
+            }
+        }
     }
 }

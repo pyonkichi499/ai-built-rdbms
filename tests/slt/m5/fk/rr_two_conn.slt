@@ -1,0 +1,197 @@
+# FOREIGN KEY と REPEATABLE READ（2 接続。相手がコミット済みの状態で検査する。待たない）
+# 接頭辞: fk_rr_two_conn_
+
+statement ok
+DROP TABLE IF EXISTS fk_rr_two_conn_c
+
+statement ok
+DROP TABLE IF EXISTS fk_rr_two_conn_cc
+
+statement ok
+DROP TABLE IF EXISTS fk_rr_two_conn_cn
+
+statement ok
+DROP TABLE IF EXISTS fk_rr_two_conn_p
+
+statement ok
+CREATE TABLE fk_rr_two_conn_p (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE fk_rr_two_conn_c (n int PRIMARY KEY, pid int REFERENCES fk_rr_two_conn_p)
+
+statement ok
+CREATE TABLE fk_rr_two_conn_cc (n int PRIMARY KEY, pid int REFERENCES fk_rr_two_conn_p ON DELETE CASCADE ON UPDATE CASCADE)
+
+statement ok
+CREATE TABLE fk_rr_two_conn_cn (n int PRIMARY KEY, pid int REFERENCES fk_rr_two_conn_p ON DELETE SET NULL)
+
+statement ok
+INSERT INTO fk_rr_two_conn_p VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')
+
+# --- 1. 親が（スナップショットの後に）削除されてコミットされた。子の INSERT は 40001
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM fk_rr_two_conn_p
+----
+5
+
+connection b
+statement ok
+DELETE FROM fk_rr_two_conn_p WHERE id = 1
+
+connection a
+statement error (40001)
+INSERT INTO fk_rr_two_conn_c VALUES (1, 1)
+
+connection a
+statement ok
+ROLLBACK
+
+# --- 2. 子（新）がコミットされた。親の DELETE（NO ACTION）は、スナップショットに無い子も見て 23503
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM fk_rr_two_conn_c
+----
+0
+
+connection b
+statement ok
+INSERT INTO fk_rr_two_conn_c VALUES (2, 2)
+
+connection a
+statement error (?s)update or delete on table "fk_rr_two_conn_p" violates foreign key constraint "fk_rr_two_conn_c_pid_fkey" on table "fk_rr_two_conn_c".*Key \(id\)=\(2\) is still referenced from table "fk_rr_two_conn_c"\.
+DELETE FROM fk_rr_two_conn_p WHERE id = 2
+
+connection a
+statement ok
+ROLLBACK
+
+# --- 3. 親（新）がコミットされた。スナップショットに無いがその親を指す子の INSERT は 23503
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM fk_rr_two_conn_p
+----
+4
+
+connection b
+statement ok
+INSERT INTO fk_rr_two_conn_p VALUES (6, 'f')
+
+connection a
+statement error (?s)violates foreign key constraint "fk_rr_two_conn_c_pid_fkey".*Key \(pid\)=\(6\) is not present in table "fk_rr_two_conn_p"\.
+INSERT INTO fk_rr_two_conn_c VALUES (3, 6)
+
+connection a
+statement ok
+ROLLBACK
+
+# --- 4. 新しい子が CASCADE の対象。親の DELETE は 40001（DELETE / SET NULL / ON UPDATE CASCADE）
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM fk_rr_two_conn_cc
+----
+0
+
+connection b
+statement ok
+INSERT INTO fk_rr_two_conn_cc VALUES (1, 3)
+
+connection a
+statement error (40001)
+DELETE FROM fk_rr_two_conn_p WHERE id = 3
+
+connection a
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM fk_rr_two_conn_cc
+----
+1
+
+connection b
+statement ok
+INSERT INTO fk_rr_two_conn_cc VALUES (2, 4)
+
+connection a
+statement error (40001)
+UPDATE fk_rr_two_conn_p SET id = 40 WHERE id = 4
+
+connection a
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM fk_rr_two_conn_cn
+----
+0
+
+connection b
+statement ok
+INSERT INTO fk_rr_two_conn_cn VALUES (1, 5)
+
+connection a
+statement error (40001)
+DELETE FROM fk_rr_two_conn_p WHERE id = 5
+
+connection a
+statement ok
+ROLLBACK
+
+# --- 5. 何も競合しなければ、RR でも通る
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+statement ok
+INSERT INTO fk_rr_two_conn_c VALUES (10, 4)
+
+connection a
+statement ok
+COMMIT
+
+connection a
+query II
+SELECT n, pid FROM fk_rr_two_conn_c ORDER BY n
+----
+2 2
+10 4
+
+statement ok
+DROP TABLE fk_rr_two_conn_c
+
+statement ok
+DROP TABLE fk_rr_two_conn_cc
+
+statement ok
+DROP TABLE fk_rr_two_conn_cn
+
+statement ok
+DROP TABLE fk_rr_two_conn_p

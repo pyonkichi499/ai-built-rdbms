@@ -1,0 +1,34 @@
+# 正しい例
+statement ok
+DROP TABLE IF EXISTS ok_good_t
+
+statement ok
+CREATE TABLE ok_good_t (a int)
+
+# KD-1 差が出るので yuzhu だけで確かめる
+onlyif yuzhu
+query I
+SELECT 1
+----
+1
+
+# 未実装: 04-XQ-3
+skipif yuzhu
+query I
+SELECT 2
+----
+2
+
+# SQLSTATE で照合する
+statement error (42P01)
+SELECT * FROM ok_good_missing
+
+statement ok
+DROP TABLE ok_good_t
+
+# KD-99 台帳にない
+onlyif yuzhu
+query I
+SELECT 3
+----
+3

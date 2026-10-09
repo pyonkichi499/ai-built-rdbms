@@ -1,0 +1,10 @@
+# フェーズ 1（postgres に接続）: テンプレートのデータベースを作る。
+
+statement ok
+DROP DATABASE IF EXISTS crm5_05_copy
+
+statement ok
+DROP DATABASE IF EXISTS crm5_05_tpl
+
+statement ok
+CREATE DATABASE crm5_05_tpl

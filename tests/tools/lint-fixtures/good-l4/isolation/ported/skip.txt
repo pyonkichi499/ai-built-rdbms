@@ -1,0 +1,2 @@
+# 理由つき
+tuplelock-conflict: KD-1

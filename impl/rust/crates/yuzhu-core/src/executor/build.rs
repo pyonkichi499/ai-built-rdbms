@@ -88,6 +88,16 @@ fn build_node(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> Boxe
             system_columns.clone(),
             filter.clone(),
         )),
+        PhysicalPlan::VirtualScan {
+            rel_oid,
+            system_columns,
+            filter,
+            ..
+        } => Box::new(crate::executor::virtual_scan::VirtualScanExec::new(
+            *rel_oid,
+            system_columns.clone(),
+            filter.clone(),
+        )),
         PhysicalPlan::IndexScan { .. } => index_scan::build(plan),
         PhysicalPlan::FunctionScan { .. } => function_scan::build_in(plan, env, rewindable),
         PhysicalPlan::Filter { input, predicate } => {
@@ -103,6 +113,8 @@ fn build_node(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> Boxe
         )),
         PhysicalPlan::Unique { .. } => unique::build_in(plan, env, rewindable),
         PhysicalPlan::Distinct { input } => Box::new(DistinctExec::new(child(input))),
+        // TODO(RW-3c): LockRowsExec に置き換える。それまでは行ロックを取らず入力をそのまま通す。
+        PhysicalPlan::LockRows { input, .. } => child(input),
         PhysicalPlan::Limit {
             input,
             limit,
@@ -151,6 +163,8 @@ fn build_node(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> Boxe
             not_null,
             table_name,
             returning,
+            recheck,
+            ..
         } => Box::new(UpdateExec::new(
             rel.clone(),
             table_name.clone(),
@@ -160,12 +174,14 @@ fn build_node(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> Boxe
             checks.clone(),
             not_null.clone(),
             returning.clone(),
+            recheck.clone(),
         )),
         PhysicalPlan::Delete {
             rel,
             input,
             n_user_cols,
             returning,
+            ..
         } => Box::new(DeleteExec::with_returning(
             rel.clone(),
             child(input),

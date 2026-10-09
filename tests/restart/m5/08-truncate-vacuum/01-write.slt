@@ -1,0 +1,73 @@
+# フェーズ 1: TRUNCATE → INSERT → VACUUM をコミットし、ロールバックした / 未コミットの TRUNCATE は何も変えない。kill -9 される。
+
+statement ok
+DROP TABLE IF EXISTS crm5_08_a
+
+statement ok
+DROP TABLE IF EXISTS crm5_08_b
+
+statement ok
+DROP TABLE IF EXISTS crm5_08_c
+
+statement ok
+CREATE TABLE crm5_08_a (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE crm5_08_b (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE crm5_08_c (id int PRIMARY KEY, v text)
+
+statement count 500
+INSERT INTO crm5_08_a SELECT g, 'old' FROM generate_series(1, 500) g
+
+statement count 3
+INSERT INTO crm5_08_b VALUES (1, 'b1'), (2, 'b2'), (3, 'b3')
+
+statement count 3
+INSERT INTO crm5_08_c VALUES (1, 'c1'), (2, 'c2'), (3, 'c3')
+
+# a: TRUNCATE をコミットして INSERT、VACUUM
+statement ok
+TRUNCATE crm5_08_a
+
+statement count 3
+INSERT INTO crm5_08_a VALUES (1, 'new1'), (2, 'new2'), (3, 'new3')
+
+statement count 1
+DELETE FROM crm5_08_a WHERE id = 2
+
+statement ok
+VACUUM crm5_08_a
+
+# b: ロールバックした TRUNCATE
+statement ok
+BEGIN
+
+statement ok
+TRUNCATE crm5_08_b
+
+statement count 1
+INSERT INTO crm5_08_b VALUES (9, 'in-txn')
+
+statement ok
+ROLLBACK
+
+# c: 別の接続の未コミットの TRUNCATE（本体は c に触れない）
+connection other
+statement ok
+BEGIN
+
+connection other
+statement ok
+TRUNCATE crm5_08_c
+
+query I
+SELECT count(*) FROM crm5_08_a
+----
+2
+
+query I
+SELECT count(*) FROM crm5_08_b
+----
+3

@@ -268,6 +268,11 @@ fn require_test(def: &SubPlanDef) -> Result<&PhysExpr> {
         .ok_or_else(|| Error::internal("Any/All SubLink without a test expression"))
 }
 
+/// `ARRAY(SELECT ...)`（TY が実装する。それまでは 0A000）。
+fn array_sublink_unsupported() -> Error {
+    Error::not_supported("ARRAY(SELECT ...) is not supported yet")
+}
+
 /// 相関のある副問い合わせ: 外側の行ごとに `params` を設定して `rewind` し、実行する。
 fn eval_rescan(id: SubPlanId, def: &SubPlanDef, row: &Row, ctx: &mut ExecCtx<'_>) -> Result<Datum> {
     // 先に全部評価してから代入する（式が `Param` を読みうる）。
@@ -284,6 +289,7 @@ fn eval_rescan(id: SubPlanId, def: &SubPlanDef, row: &Row, ctx: &mut ExecCtx<'_>
         match def.kind {
             SubLinkKind::Scalar => read_scalar(exec, ctx),
             SubLinkKind::Exists => Ok(Datum::Bool(exec.next(ctx)?.is_some())),
+            SubLinkKind::Array => Err(array_sublink_unsupported()),
             SubLinkKind::Any | SubLinkKind::All => {
                 let test = require_test(def)?;
                 let mut acc = Quantifier::new(def.kind);
@@ -366,6 +372,7 @@ fn eval_init_once(
             Ok(match def.kind {
                 SubLinkKind::Scalar => SubPlanCache::Scalar(read_scalar(exec, ctx)?),
                 SubLinkKind::Exists => SubPlanCache::Exists(exec.next(ctx)?.is_some()),
+                SubLinkKind::Array => return Err(array_sublink_unsupported()),
                 SubLinkKind::Any | SubLinkKind::All => {
                     let mut rows = Vec::new();
                     while let Some(r) = exec.next(ctx)? {

@@ -1,0 +1,31 @@
+# 再起動の後も索引が使え、更新と削除ができる。最後に後始末する。
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM m4r_mb_t WHERE a = 1234
+----
+1
+
+statement count 4999
+UPDATE m4r_mb_t SET a = a + 100000 WHERE a BETWEEN 1 AND 4999
+
+statement count 1000
+DELETE FROM m4r_mb_t WHERE a BETWEEN 29001 AND 30000
+
+query I
+SELECT count(*) FROM m4r_mb_t
+----
+29001
+
+query I
+SELECT count(*) FROM m4r_mb_t WHERE a > 100000
+----
+4999
+
+statement ok
+RESET enable_seqscan
+
+statement ok
+DROP TABLE m4r_mb_t

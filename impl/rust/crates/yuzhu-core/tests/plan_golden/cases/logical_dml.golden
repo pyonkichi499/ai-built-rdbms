@@ -1,0 +1,159 @@
+-- case dml_insert_values
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+insert into t values (1, 2, 'x')
+-- build
+Insert t input=[#0:*VALUES*.column1 #1:*VALUES*.column2 #2:*VALUES*.column3] column_map=[0 1 2]
+  Values rows=1 [#0:*VALUES*.column1 #1:*VALUES*.column2 #2:*VALUES*.column3] (1, 2, 'x')
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case dml_insert_select
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+insert into t select a, d, e from u where d > 3
+-- build
+Insert t input=[#0:u.a #1:u.d #2:u.e] column_map=[0 1 2]
+  Project [#0:u.a #1:u.d #2:u.e]
+    Filter (#1:u.d > 3)
+      Get u [#0:u.a #1:u.d #2:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case dml_update
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+update t set b = b + 1 where a = 3
+-- build
+Update t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid new=[1:=#4:b]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #4 := (#1:t.b + 1)]
+    Filter (#0:t.a = 3)
+      Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case dml_delete_in
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+delete from u where d in (select b from t)
+-- build
+Delete u old=[#0:u.a #1:u.d #2:u.e] ctid=#3:u.ctid
+  Project [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+    Filter {SubLink Any test=(#1:u.d = out0)}
+      ~ Project [#5:t.b]
+          Get t [#4:t.a #5:t.b #6:t.c]
+      Get u [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+-- const_fold
+(unchanged)
+-- sublink
+Delete u old=[#0:u.a #1:u.d #2:u.e] ctid=#3:u.ctid
+  Project [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+    Join Semi on (#1:u.d = #5:t.b)
+      Get u [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+      Project [#5:t.b]
+        Get t [#4:t.a #5:t.b #6:t.c]
+-- subquery_pullup
+Delete u old=[#0:u.a #1:u.d #2:u.e] ctid=#3:u.ctid
+  Project [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+    Join Semi on (#1:u.d = #5:t.b)
+      Get u [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+      Get t [#4:t.a #5:t.b #6:t.c]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+Delete u old=[#0:u.a #1:u.d #2:u.e] ctid=#3:u.ctid
+  Project [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+    Join Semi on (#1:u.d = #5:t.b)
+      Get u [#0:u.a #1:u.d #2:u.e #3:u.ctid]
+      Project [#5:t.b]
+        Get t [#4:t.a #5:t.b #6:t.c]
+-- case dml_update_pk
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+update p set v = 0 where id = 1
+-- build
+Update p old=[#0:p.id #1:p.v] ctid=#2:p.ctid new=[1:=#3:v]
+  Project [#0:p.id #1:p.v #2:p.ctid #3 := 0]
+    Filter (#0:p.id = 1)
+      Get p [#0:p.id #1:p.v #2:p.ctid]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)

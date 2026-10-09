@@ -1,0 +1,32 @@
+psql:<stdin>:2: NOTICE:  role "tsx_plain" does not exist, skipping
+psql:<stdin>:3: NOTICE:  role "tsx_admin" does not exist, skipping
+psql:<stdin>:4: NOTICE:  role "tsx_nologin" does not exist, skipping
+                       List of roles
+  Role name  |                 Attributes                  
+-------------+---------------------------------------------
+ tsx_admin   | Superuser, Create role, Create DB          +
+             | 5 connections
+ tsx_nologin | Cannot login                               +
+             | Password valid until <TIMESTAMP>
+ tsx_plain   | 
+
+            List of roles
+ Role name | Attributes | Description 
+-----------+------------+-------------
+ tsx_plain |            | 
+
+   rolname   | rolsuper | rolinherit | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication | rolconnlimit | rolbypassrls 
+-------------+----------+------------+---------------+-------------+-------------+----------------+--------------+--------------
+ tsx_admin   | t        | t          | t             | t           | t           | f              |            5 | f
+ tsx_nologin | f        | t          | f             | f           | f           | f              |           -1 | f
+ tsx_plain   | f        | t          | f             | f           | t           | f              |           -1 | f
+(3 rows)
+
+            List of roles
+ Role name |       Attributes        
+-----------+-------------------------
+ tsx_plain | Create DB, Cannot login
+
+     List of roles
+ Role name | Attributes 
+-----------+------------

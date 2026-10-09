@@ -1,0 +1,384 @@
+# time の演算・extract・date_trunc・date + time・ORDER BY・B+Tree
+# 接頭辞: types_time_ops_
+
+statement ok
+DROP TABLE IF EXISTS types_time_ops_t
+
+statement ok
+DROP TABLE IF EXISTS types_time_ops_u
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+# time ± interval
+
+query T
+SELECT (time '04:05:06' + interval '1 hour')::text
+----
+05:05:06
+
+query T
+SELECT (time '23:00' + interval '2 hours')::text
+----
+01:00:00
+
+query T
+SELECT (time '01:00' - interval '2 hours')::text
+----
+23:00:00
+
+query T
+SELECT (time '04:05:06' + interval '1 day')::text
+----
+04:05:06
+
+query T
+SELECT (time '04:05:06' + interval '1 month')::text
+----
+04:05:06
+
+query T
+SELECT (time '04:05:06' - interval '-30 minutes')::text
+----
+04:35:06
+
+query T
+SELECT (interval '1 hour' + time '04:05:06')::text
+----
+05:05:06
+
+query T
+SELECT (time '24:00:00' + interval '1 hour')::text
+----
+01:00:00
+
+query T
+SELECT (time '00:00' - interval '1 microsecond')::text
+----
+23:59:59.999999
+
+query T
+SELECT (time '12:00' + interval '36 hours 15 minutes')::text
+----
+00:15:00
+
+# time - time
+
+query T
+SELECT (time '10:00' - time '04:05:06')::text
+----
+05:54:54
+
+query T
+SELECT (time '04:05:06' - time '10:00')::text
+----
+-05:54:54
+
+query T
+SELECT (time '24:00' - time '00:00')::text
+----
+24:00:00
+
+query T
+SELECT (time '12:00:00.5' - time '12:00:00')::text
+----
+00:00:00.5
+
+query T
+SELECT (pg_typeof(time '10:00' - time '09:00'))::text
+----
+interval
+
+# date + time
+
+query T
+SELECT (date '2024-01-02' + time '04:05:06')::text
+----
+2024-01-02 04:05:06
+
+query T
+SELECT (time '04:05:06' + date '2024-01-02')::text
+----
+2024-01-02 04:05:06
+
+query T
+SELECT (date '2024-02-28' + time '24:00:00')::text
+----
+2024-02-29 00:00:00
+
+query T
+SELECT (pg_typeof(date '2024-01-02' + time '04:05:06'))::text
+----
+timestamp without time zone
+
+# make_time
+
+query T
+SELECT (make_time(4, 5, 6))::text
+----
+04:05:06
+
+query T
+SELECT (make_time(4, 5, 6.789))::text
+----
+04:05:06.789
+
+query T
+SELECT (make_time(0, 0, 0))::text
+----
+00:00:00
+
+query T
+SELECT (make_time(23, 59, 59.999999))::text
+----
+23:59:59.999999
+
+query T
+SELECT (make_time(24, 0, 0))::text
+----
+24:00:00
+
+statement error (22008)
+SELECT make_time(1, 60, 0)
+
+query T
+SELECT (make_time(1, 0, 60))::text
+----
+01:01:00
+
+statement error (22008)
+SELECT make_time(-1, 0, 0)
+
+# extract / date_part
+
+query T
+SELECT (extract(hour from time '04:05:06.789'))::text
+----
+4
+
+query T
+SELECT (extract(minute from time '04:05:06.789'))::text
+----
+5
+
+query T
+SELECT (extract(second from time '04:05:06.789'))::text
+----
+6.789000
+
+query T
+SELECT (extract(milliseconds from time '04:05:06.789'))::text
+----
+6789.000
+
+query T
+SELECT (extract(microseconds from time '04:05:06.789'))::text
+----
+6789000
+
+query T
+SELECT (extract(epoch from time '04:05:06.789'))::text
+----
+14706.789000
+
+query T
+SELECT (extract(epoch from time '24:00:00'))::text
+----
+86400.000000
+
+query T
+SELECT (extract(hour from time '24:00:00'))::text
+----
+24
+
+query T
+SELECT (date_part('hour', time '13:14:15'))::text
+----
+13
+
+query T
+SELECT (date_part('second', time '13:14:15.5'))::text
+----
+15.5
+
+query T
+SELECT (pg_typeof(extract(hour from time '13:14:15')))::text
+----
+numeric
+
+statement error (0A000)
+SELECT extract(day from time '04:05:06')
+
+statement error (0A000)
+SELECT extract(month from time '04:05:06')
+
+statement error (0A000)
+SELECT extract(year from time '04:05:06')
+
+# date_trunc は time を interval 経由で受け付ける
+
+query T
+SELECT (date_trunc('hour', time '04:05:06'))::text
+----
+04:00:00
+
+# time の集約
+
+statement ok
+CREATE TABLE types_time_ops_t (id int, t time)
+
+statement ok
+INSERT INTO types_time_ops_t VALUES (1, '12:00'), (2, '04:05:06'), (3, '24:00'), (4, '00:00'), (5, '04:05:06'), (6, NULL), (7, '23:59:59.999999')
+
+query IT
+SELECT id, t::text FROM types_time_ops_t ORDER BY t, id
+----
+4	00:00:00
+2	04:05:06
+5	04:05:06
+1	12:00:00
+7	23:59:59.999999
+3	24:00:00
+6	NULL
+
+query IT
+SELECT id, t::text FROM types_time_ops_t ORDER BY t DESC NULLS FIRST, id
+----
+6	NULL
+3	24:00:00
+7	23:59:59.999999
+1	12:00:00
+2	04:05:06
+5	04:05:06
+4	00:00:00
+
+query T
+SELECT t::text FROM types_time_ops_t GROUP BY t ORDER BY t
+----
+00:00:00
+04:05:06
+12:00:00
+23:59:59.999999
+24:00:00
+NULL
+
+query T
+SELECT DISTINCT t::text FROM types_time_ops_t WHERE t IS NOT NULL ORDER BY 1
+----
+00:00:00
+04:05:06
+12:00:00
+23:59:59.999999
+24:00:00
+
+query T
+SELECT min(t)::text || ' ' || max(t)::text FROM types_time_ops_t
+----
+00:00:00 24:00:00
+
+query I
+SELECT count(DISTINCT t) FROM types_time_ops_t
+----
+5
+
+query T
+SELECT (t + interval '1 hour')::text FROM types_time_ops_t WHERE id <= 4 ORDER BY id
+----
+13:00:00
+05:05:06
+01:00:00
+01:00:00
+
+# B+Tree
+
+statement ok
+CREATE TABLE types_time_ops_u (t time PRIMARY KEY, n int)
+
+statement ok
+INSERT INTO types_time_ops_u VALUES ('12:00', 1), ('00:00', 2), ('23:59:59.999999', 3), ('24:00', 4), ('06:30:15.5', 5)
+
+statement error (23505)
+INSERT INTO types_time_ops_u VALUES ('12:00:00.000', 9)
+
+
+statement error (23505)
+INSERT INTO types_time_ops_u VALUES ('12:00 PM', 9)
+
+
+query IT
+SELECT n, t::text FROM types_time_ops_u ORDER BY t
+----
+2	00:00:00
+5	06:30:15.5
+1	12:00:00
+3	23:59:59.999999
+4	24:00:00
+
+query IT
+SELECT n, t::text FROM types_time_ops_u WHERE t = time '06:30:15.5'
+----
+5	06:30:15.5
+
+query IT
+SELECT n, t::text FROM types_time_ops_u WHERE t > time '06:00' AND t <= time '23:59:59.999999' ORDER BY t
+----
+5	06:30:15.5
+1	12:00:00
+3	23:59:59.999999
+
+query IT
+SELECT n, t::text FROM types_time_ops_u WHERE t >= time '24:00'
+----
+4	24:00:00
+
+statement ok
+DROP INDEX IF EXISTS types_time_ops_u_n
+
+statement ok
+CREATE INDEX types_time_ops_u_n ON types_time_ops_u (n)
+
+statement ok
+DROP INDEX types_time_ops_u_n
+
+statement ok
+UPDATE types_time_ops_u SET t = '01:02:03' WHERE n = 1
+
+query IT
+SELECT n, t::text FROM types_time_ops_u ORDER BY t
+----
+2	00:00:00
+1	01:02:03
+5	06:30:15.5
+3	23:59:59.999999
+4	24:00:00
+
+statement ok
+DELETE FROM types_time_ops_u WHERE t > time '12:00'
+
+query IT
+SELECT n, t::text FROM types_time_ops_u ORDER BY t
+----
+2	00:00:00
+1	01:02:03
+5	06:30:15.5
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_time_ops_t
+
+statement ok
+DROP TABLE types_time_ops_u

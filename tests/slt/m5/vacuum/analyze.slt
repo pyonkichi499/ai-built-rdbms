@@ -1,0 +1,65 @@
+# ANALYZE の構文・エラー・reltuples / relpages（ANALYZE 後の値）
+
+statement ok
+DROP TABLE IF EXISTS vacuum_analyze_t
+
+statement ok
+CREATE TABLE vacuum_analyze_t (a int, b text)
+
+statement ok
+INSERT INTO vacuum_analyze_t SELECT g, 'x' || g FROM generate_series(1, 100) g
+
+statement ok
+ANALYZE
+
+statement ok
+ANALYZE vacuum_analyze_t
+
+statement ok
+ANALYZE vacuum_analyze_t (a)
+
+statement ok
+ANALYZE vacuum_analyze_t (a, b)
+
+statement ok
+ANALYZE public.vacuum_analyze_t
+
+statement ok
+ANALYZE (VERBOSE) vacuum_analyze_t
+
+statement ok
+ANALYZE VERBOSE vacuum_analyze_t
+
+statement ok
+ANALYZE (SKIP_LOCKED) vacuum_analyze_t
+
+query IT
+SELECT relpages, reltuples::int::text FROM pg_class WHERE oid = 'vacuum_analyze_t'::regclass
+----
+1 100
+
+statement ok
+DELETE FROM vacuum_analyze_t WHERE a > 50
+
+statement ok
+ANALYZE vacuum_analyze_t
+
+query IT
+SELECT relpages, reltuples::int::text FROM pg_class WHERE oid = 'vacuum_analyze_t'::regclass
+----
+1 50
+
+# ANALYZE は行の内容を変えない
+query II
+SELECT count(*), sum(a) FROM vacuum_analyze_t
+----
+50 1275
+
+statement error (42703)
+ANALYZE vacuum_analyze_t (nosuch)
+
+statement error (?s)column "nosuch" of relation "vacuum_analyze_t" does not exist
+ANALYZE vacuum_analyze_t (nosuch)
+
+statement ok
+DROP TABLE vacuum_analyze_t

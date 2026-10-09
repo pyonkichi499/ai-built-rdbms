@@ -1,0 +1,27 @@
+psql:<stdin>:2: NOTICE:  database "tsx_db2" does not exist, skipping
+   db    |   usr    
+---------+----------
+ tsx_db2 | postgres
+(1 row)
+
+ count 
+-------
+     2
+(1 row)
+
+    db    
+----------
+ postgres
+(1 row)
+
+ count 
+-------
+     0
+(1 row)
+
+ count 
+-------
+     1
+(1 row)
+
+psql:<stdin>:16: error: \connect: connection to server at "<HOST>", port <PORT> failed: FATAL:  database "tsx_db2" does not exist

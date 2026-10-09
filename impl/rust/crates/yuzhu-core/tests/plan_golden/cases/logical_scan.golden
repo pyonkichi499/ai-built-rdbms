@@ -1,0 +1,172 @@
+-- case scan_pk_eq
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select * from p where id = 3
+-- build
+Project [#0:p.id #1:p.v]
+  Filter (#0:p.id = 3)
+    Get p [#0:p.id #1:p.v]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case scan_pk_range
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select v from p where id > 10 and id < 20
+-- build
+Project [#1:p.v]
+  Filter ((#0:p.id > 10) AND (#0:p.id < 20))
+    Get p [#0:p.id #1:p.v]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case scan_unique_eq_prune
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select v from w where k = 7
+-- build
+Project [#1:w.v]
+  Filter (#0:w.k = 7)
+    Get w [#0:w.k #1:w.v]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case scan_expr_prune
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select a + 1 from t where c = 'x'
+-- build
+Project [#3 := (#0:t.a + 1)]
+  Filter (#2:t.c = 'x')
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case scan_limit
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select a from t order by a limit 5 offset 2
+-- build
+Limit limit=CAST(5 AS bigint) offset=CAST(2 AS bigint)
+  Sort [#0:t.a ASC NULLS LAST]
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+Limit limit=5 offset=2
+  Sort [#0:t.a ASC NULLS LAST]
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case scan_distinct
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select distinct a, b from t
+-- build
+Distinct
+  Project [#0:t.a #1:t.b]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)

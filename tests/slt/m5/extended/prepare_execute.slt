@@ -1,0 +1,144 @@
+# SQL レベルの PREPARE / EXECUTE（m5 04 §7.1）。名前は extended_prepare_execute_ を接頭辞にする
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DROP TABLE IF EXISTS extended_prepare_execute_t
+
+statement ok
+CREATE TABLE extended_prepare_execute_t (id int PRIMARY KEY, name text, n int)
+
+statement ok
+PREPARE extended_prepare_execute_q1(int) AS SELECT $1 + 1
+
+query I
+EXECUTE extended_prepare_execute_q1(4)
+----
+5
+
+# 引数は式でもよい
+query I
+EXECUTE extended_prepare_execute_q1(1 + 2)
+----
+4
+
+query I
+EXECUTE extended_prepare_execute_q1(abs(-4))
+----
+5
+
+# 文字列から int への暗黙の変換
+query I
+EXECUTE extended_prepare_execute_q1('7')
+----
+8
+
+query I
+EXECUTE extended_prepare_execute_q1(NULL)
+----
+NULL
+
+# 型を宣言しない $1 は text
+statement ok
+PREPARE extended_prepare_execute_q2 AS SELECT $1
+
+query T
+EXECUTE extended_prepare_execute_q2('a')
+----
+a
+
+statement ok
+PREPARE extended_prepare_execute_q2t AS SELECT pg_typeof(x)::text FROM (SELECT $1 AS x) AS s
+
+query T
+EXECUTE extended_prepare_execute_q2t('a')
+----
+text
+
+# INSERT ... RETURNING
+statement ok
+PREPARE extended_prepare_execute_q3(int, text) AS INSERT INTO extended_prepare_execute_t (id, name) VALUES ($1, $2) RETURNING id, name
+
+query IT
+EXECUTE extended_prepare_execute_q3(1, 'one')
+----
+1 one
+
+query IT
+EXECUTE extended_prepare_execute_q3(2, 'two')
+----
+2 two
+
+statement error (23505)
+EXECUTE extended_prepare_execute_q3(2, 'dup')
+
+# 複数文の INSERT のタグ（statement count は影響行数）
+statement count 1
+EXECUTE extended_prepare_execute_q3(3, 'three')
+
+# UPDATE
+statement ok
+PREPARE extended_prepare_execute_q4(int, int) AS UPDATE extended_prepare_execute_t SET n = $2 WHERE id <= $1
+
+statement count 2
+EXECUTE extended_prepare_execute_q4(2, 10)
+
+statement count 0
+EXECUTE extended_prepare_execute_q4(0, 99)
+
+query ITI
+SELECT id, name, n FROM extended_prepare_execute_t ORDER BY id
+----
+1 one 10
+2 two 10
+3 three NULL
+
+# DELETE
+statement ok
+PREPARE extended_prepare_execute_q5(int) AS DELETE FROM extended_prepare_execute_t WHERE id = $1
+
+statement count 1
+EXECUTE extended_prepare_execute_q5(3)
+
+statement count 0
+EXECUTE extended_prepare_execute_q5(3)
+
+# SELECT（複数回の実行、パラメータが 2 つ）
+statement ok
+PREPARE extended_prepare_execute_q6(int, text) AS SELECT id, name FROM extended_prepare_execute_t WHERE id >= $1 AND name <> $2 ORDER BY id
+
+query IT
+EXECUTE extended_prepare_execute_q6(1, 'one')
+----
+2 two
+
+query IT
+EXECUTE extended_prepare_execute_q6(0, 'zzz')
+----
+1 one
+2 two
+
+# VALUES
+statement ok
+PREPARE extended_prepare_execute_q7(int, text) AS VALUES ($1, $2)
+
+query IT
+EXECUTE extended_prepare_execute_q7(5, 'v')
+----
+5 v
+
+# 引数なしの文
+statement ok
+PREPARE extended_prepare_execute_q8 AS SELECT count(*) FROM extended_prepare_execute_t
+
+query I
+EXECUTE extended_prepare_execute_q8
+----
+2
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DROP TABLE extended_prepare_execute_t

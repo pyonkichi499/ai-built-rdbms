@@ -1,0 +1,106 @@
+# PG17 にあって yuzhu にない行（kind<TAB>id<TAB>name<TAB>分類<TAB>理由）。m5/05 §5.2 の分類: M6 / 不要 / 型なし
+cast	1700>1700	if	不要	typmod の長さ強制の行は入れない（8 点チェックリスト 5）
+cast	1700>790	af	型なし	money / jsonb / xml / inet / cidr は未実装の型
+cast	3802>1700	ef	型なし	money / jsonb / xml / inet / cidr は未実装の型
+cast	790>1700	af	型なし	money / jsonb / xml / inet / cidr は未実装の型
+oper	3228	-	型なし	pg_lsn は未実装の型
+oper	5025	+	型なし	pg_lsn は未実装の型
+oper	5026	+	型なし	pg_lsn は未実装の型
+oper	5027	-	型なし	pg_lsn は未実装の型
+proc	1703	numeric	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	1731	numeric_sqrt	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1733	numeric_exp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1735	numeric_ln	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1737	numeric_log	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1764	numeric_inc	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1766	numeric_smaller	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1767	numeric_larger	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1772	to_char	M6	書式言語・generate_series(numeric) は M6
+proc	1777	to_number	M6	書式言語・generate_series(numeric) は M6
+proc	1833	numeric_accum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1837	numeric_avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1838	numeric_var_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1839	numeric_stddev_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1842	int8_sum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1964	int8_avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	1980	numeric_div_trunc	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2100	avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2101	avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2102	avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2103	avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2107	sum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2114	sum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2130	max	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2146	min	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2148	variance	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2149	variance	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2150	variance	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2153	variance	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2154	stddev	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2155	stddev	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2156	stddev	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2159	stddev	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2514	numeric_var_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2596	numeric_stddev_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2641	var_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2642	var_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2643	var_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2646	var_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2712	stddev_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2713	stddev_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2714	stddev_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2717	stddev_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2718	var_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2719	var_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2720	var_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2723	var_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2724	stddev_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2725	stddev_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2726	stddev_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2729	stddev_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2858	numeric_avg_accum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3165	pg_wal_lsn_diff	型なし	pg_lsn / numrange / money は未実装の型
+proc	3166	pg_size_pretty	型なし	pg_lsn / numrange / money は未実装の型
+proc	3178	numeric_sum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3237	pg_lsn_mi	型なし	pg_lsn / numrange / money は未実装の型
+proc	3259	generate_series	M6	書式言語・generate_series(numeric) は M6
+proc	3260	generate_series	M6	書式言語・generate_series(numeric) は M6
+proc	3388	numeric_poly_sum	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3389	numeric_poly_avg	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3390	numeric_poly_var_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3391	numeric_poly_var_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3392	numeric_poly_stddev_pop	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3393	numeric_poly_stddev_samp	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3449	numeric	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	3548	numeric_accum_inv	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	3823	numeric	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	3824	money	型なし	pg_lsn / numrange / money は未実装の型
+proc	3844	numrange	型なし	pg_lsn / numrange / money は未実装の型
+proc	3845	numrange	型なし	pg_lsn / numrange / money は未実装の型
+proc	3924	numrange_subdiff	型なし	pg_lsn / numrange / money は未実装の型
+proc	4141	in_range	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	432	hash_numeric	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	5022	pg_lsn_pli	型なし	pg_lsn / numrange / money は未実装の型
+proc	5023	numeric_pl_pg_lsn	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	5024	pg_lsn_mii	型なし	pg_lsn / numrange / money は未実装の型
+proc	6103	pg_lsn	型なし	pg_lsn / numrange / money は未実装の型
+proc	6199	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	6200	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	6201	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	6202	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	6203	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	6204	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	6341	random	M6	書式言語・generate_series(numeric) は M6
+proc	780	hash_numeric_extended	不要	内部の補助・typmod 強制・extract(numeric) は TD
+amop	1998:1	1752	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4055:1	1754	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4055:2	1755	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4055:3	1752	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4055:4	1757	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4055:5	1756	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4574:1	1752	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4603:1	1754	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4603:2	1755	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4603:3	1752	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4603:4	1757	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4603:5	1756	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）

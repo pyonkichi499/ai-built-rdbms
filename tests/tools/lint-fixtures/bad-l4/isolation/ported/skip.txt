@@ -1,0 +1,3 @@
+# 理由つき
+tuplelock-conflict: KD-1
+alter-table-x

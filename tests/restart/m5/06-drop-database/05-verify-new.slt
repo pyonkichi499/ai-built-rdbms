@@ -1,0 +1,12 @@
+# フェーズ 5（作り直した crm5_06_d に接続）: 古い表はなく、新しく書ける。
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'crm5_06_t'
+----
+0
+
+statement ok
+CREATE TABLE crm5_06_t (id int PRIMARY KEY, v text)
+
+statement count 1
+INSERT INTO crm5_06_t VALUES (10, 'new')

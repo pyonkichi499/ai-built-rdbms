@@ -1,0 +1,164 @@
+# PREPARE の後の DDL（再解析と cached plan must not change result type。m5 04 §7.1）
+# 名前は extended_plan_invalidation_ を接頭辞にする
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DROP TABLE IF EXISTS extended_plan_invalidation_t
+
+statement ok
+CREATE TABLE extended_plan_invalidation_t (a int, b text)
+
+statement ok
+INSERT INTO extended_plan_invalidation_t VALUES (1, 'x')
+
+statement ok
+PREPARE extended_plan_invalidation_q1 AS SELECT a, b FROM extended_plan_invalidation_t ORDER BY a
+
+statement ok
+PREPARE extended_plan_invalidation_q2(int) AS SELECT a FROM extended_plan_invalidation_t WHERE a >= $1 ORDER BY a
+
+statement ok
+PREPARE extended_plan_invalidation_q3(int, text) AS INSERT INTO extended_plan_invalidation_t VALUES ($1, $2)
+
+query IT
+EXECUTE extended_plan_invalidation_q1
+----
+1 x
+
+# 索引の追加（再解析されるが結果は同じ）
+statement ok
+CREATE INDEX extended_plan_invalidation_i ON extended_plan_invalidation_t (a)
+
+query IT
+EXECUTE extended_plan_invalidation_q1
+----
+1 x
+
+query I
+EXECUTE extended_plan_invalidation_q2(1)
+----
+1
+
+# 索引の削除
+statement ok
+DROP INDEX extended_plan_invalidation_i
+
+query I
+EXECUTE extended_plan_invalidation_q2(1)
+----
+1
+
+# DROP + CREATE（同じ形）なら成功し、新しい表を読む
+statement ok
+DROP TABLE extended_plan_invalidation_t
+
+statement ok
+CREATE TABLE extended_plan_invalidation_t (a int, b text)
+
+statement ok
+INSERT INTO extended_plan_invalidation_t VALUES (2, 'y')
+
+query IT
+EXECUTE extended_plan_invalidation_q1
+----
+2 y
+
+query I
+EXECUTE extended_plan_invalidation_q2(1)
+----
+2
+
+statement ok
+EXECUTE extended_plan_invalidation_q3(3, 'z')
+
+query IT
+SELECT a, b FROM extended_plan_invalidation_t ORDER BY a
+----
+2 y
+3 z
+
+# 表がない（42P01）
+statement ok
+DROP TABLE extended_plan_invalidation_t
+
+statement error (42P01)
+EXECUTE extended_plan_invalidation_q1
+
+statement error (42P01)
+EXECUTE extended_plan_invalidation_q3(4, 'w')
+
+# 結果の型が変わる再作成は 0A000 cached plan must not change result type
+statement ok
+CREATE TABLE extended_plan_invalidation_t (a bigint, b text)
+
+statement error cached plan must not change result type
+EXECUTE extended_plan_invalidation_q1
+
+statement error cached plan must not change result type
+EXECUTE extended_plan_invalidation_q2(1)
+
+# INSERT（結果の列を返さない）は型が変わっても再解析され、$1 の型は宣言のまま
+statement ok
+EXECUTE extended_plan_invalidation_q3(5, 'v')
+
+query IT
+SELECT a, b FROM extended_plan_invalidation_t
+----
+5 v
+
+# 失敗した文は残り、表を元の形に戻せば再び使える
+statement ok
+DROP TABLE extended_plan_invalidation_t
+
+statement ok
+CREATE TABLE extended_plan_invalidation_t (a int, b text)
+
+statement ok
+INSERT INTO extended_plan_invalidation_t VALUES (7, 'k')
+
+query IT
+EXECUTE extended_plan_invalidation_q1
+----
+7 k
+
+# 列が減る再作成は再解析で 42703（結果の型の検査より前）
+statement ok
+DROP TABLE extended_plan_invalidation_t
+
+statement ok
+CREATE TABLE extended_plan_invalidation_t (a int)
+
+statement error (42703)
+EXECUTE extended_plan_invalidation_q1
+
+# 列がなくなる（再解析で 42703）。結果の列が変わらない q2 を使う
+statement ok
+DROP TABLE extended_plan_invalidation_t
+
+statement ok
+CREATE TABLE extended_plan_invalidation_t (c int)
+
+statement error (42703)
+EXECUTE extended_plan_invalidation_q2(1)
+
+# DISCARD PLANS の後も実行できる
+statement ok
+DROP TABLE extended_plan_invalidation_t
+
+statement ok
+CREATE TABLE extended_plan_invalidation_t (a int, b text)
+
+statement ok
+DISCARD PLANS
+
+query IT
+EXECUTE extended_plan_invalidation_q1
+----
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DROP TABLE extended_plan_invalidation_t

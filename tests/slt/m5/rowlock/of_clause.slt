@@ -1,0 +1,76 @@
+# FOR UPDATE OF <表>（結合の一方だけをロックする）
+
+statement ok
+DROP TABLE IF EXISTS rowlock_of_clause_a
+
+statement ok
+DROP TABLE IF EXISTS rowlock_of_clause_b
+
+statement ok
+CREATE TABLE rowlock_of_clause_a (id int PRIMARY KEY, v int)
+
+statement ok
+CREATE TABLE rowlock_of_clause_b (id int PRIMARY KEY, w int)
+
+statement ok
+INSERT INTO rowlock_of_clause_a VALUES (1, 10), (2, 20)
+
+statement ok
+INSERT INTO rowlock_of_clause_b VALUES (1, 100), (2, 200)
+
+connection a
+statement ok
+BEGIN
+
+connection a
+query III rowsort
+SELECT a.id, a.v, b.w FROM rowlock_of_clause_a a JOIN rowlock_of_clause_b b ON a.id = b.id FOR UPDATE OF a
+----
+1 10 100
+2 20 200
+
+# a はロックされ、b はロックされていない
+connection b
+statement error (55P03)
+SELECT id FROM rowlock_of_clause_a WHERE id = 1 FOR UPDATE NOWAIT
+
+connection b
+query I
+SELECT id FROM rowlock_of_clause_b WHERE id = 1 FOR UPDATE NOWAIT
+----
+1
+
+# 結合を伴う NOWAIT も OF で絞れる
+connection b
+query I
+SELECT b.id FROM rowlock_of_clause_a a JOIN rowlock_of_clause_b b ON a.id = b.id WHERE b.id = 1 FOR UPDATE OF b NOWAIT
+----
+1
+
+connection b
+statement error (55P03)
+SELECT b.id FROM rowlock_of_clause_a a JOIN rowlock_of_clause_b b ON a.id = b.id WHERE b.id = 1 FOR UPDATE OF a NOWAIT
+
+connection a
+statement ok
+ROLLBACK
+
+# OF に実表名と別名
+query I
+SELECT a.id FROM rowlock_of_clause_a a, rowlock_of_clause_b b WHERE a.id = b.id AND a.id = 1 FOR SHARE OF a, b
+----
+1
+
+# FROM にない表は 42P01
+statement error (42P01)
+SELECT a.id FROM rowlock_of_clause_a a FOR UPDATE OF zzz
+
+# 別名を付けたら元の表名では指定できない
+statement error (42P01)
+SELECT a.id FROM rowlock_of_clause_a a FOR UPDATE OF rowlock_of_clause_a
+
+statement ok
+DROP TABLE rowlock_of_clause_a
+
+statement ok
+DROP TABLE rowlock_of_clause_b

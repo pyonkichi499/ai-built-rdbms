@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # 共有 sqllogictest スイートを実行する。
 #
-#   tests/run.sh --target pg|yuzhu [--host H] [--port N] [--user U] [--db D] [--restart] [--crash] [--] [files or dirs...]
+#   tests/run.sh --target pg|yuzhu [--host H] [--port N] [--user U] [--db D] [--protocol simple|extended] [--password PW] [--list] [--restart] [--crash] [--] [files or dirs...]
 #
 # - ファイルもディレクトリも指定しなければ tests/slt 以下（m1〜m4）の全 .slt を流す（パスの C ロケール昇順。m4/z_final が最後）。
 #   --restart のときは tests/restart 直下と tests/restart/m4（mode が restart か both）の全シナリオを流す。
 # - ランナーは sqllogictest-bin 0.29.1（cargo install sqllogictest-bin --locked --version 0.29.1）。
-# - エンジンは --engine postgres（Simple Query のみ）。
+# - エンジンは既定で --engine postgres（Simple Query）。--protocol extended なら --engine postgres-extended（Extended Query。
+#   ラベルは --label pg|yuzhu のまま。sqllogictest 側がエンジン名 postgres-extended もラベルに足すので、
+#   クライアント側の整形の差は skipif postgres-extended で除ける）。
+# - --password PW: sqllogictest の --pass に渡す（環境変数 PGPASSWORD でも指定できる。どちらもなければランナーの既定値のまま）。
+# - --list: 実行するファイル（--restart ならシナリオのフェーズのファイル）を 1 行ずつ出して終わる。ランナーも --target も要らない。
 # - 既定値: user=postgres, db=postgres, host=127.0.0.1, port は pg なら 55432、yuzhu なら 5432。
 # - onlyif/skipif 用に --label pg / --label yuzhu を付ける。
 # - 環境変数 SLT_BIN でランナーのパスを、SLT_EXTRA_ARGS で追加の引数を渡せる。
@@ -19,6 +23,8 @@
 #   - yuzhu: tests/yuzhu.sh crash（SIGKILL → 同じデータディレクトリで起動）
 #   シナリオのディレクトリの追加ファイル:
 #   - yuzhu.only:       あれば pg ではそのシナリオを飛ばす（PG に対応する挙動がないもの。例: ページチェックサムの破損）
+#   - NN-<名前>.db:     あれば（1 行、データベース名）、そのフェーズだけ --db の代わりにその名前へ接続する
+#                       （CREATE DATABASE をまたぐテスト用）
 #   - NN-<名前>.after.sh: あれば、フェーズ NN のあと、サーバが止まっている間（起動の前）に実行する。
 #                       環境変数 YUZHU_DATA にデータディレクトリが入る（yuzhu だけ。データファイルを壊す用）
 #   - mode (m4。1 行): restart | crash | both | mixed。なければ both。
@@ -42,10 +48,13 @@ USER_NAME="postgres"
 DB="postgres"
 RESTART=0
 CRASH=0
+PROTOCOL="simple"
+PASSWORD="${PGPASSWORD:-}"
+LIST=0
 PATHS=()
 
 usage() {
-    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -56,6 +65,9 @@ while [ $# -gt 0 ]; do
         --port) PORT="$2"; shift 2 ;;
         --user) USER_NAME="$2"; shift 2 ;;
         --db) DB="$2"; shift 2 ;;
+        --protocol) PROTOCOL="$2"; shift 2 ;;
+        --password) PASSWORD="$2"; shift 2 ;;
+        --list) LIST=1; shift ;;
         --restart) RESTART=1; shift ;;
         --crash) RESTART=1; CRASH=1; shift ;;
         -h|--help) usage ;;
@@ -65,29 +77,54 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+case "$PROTOCOL" in
+    simple) ENGINE=postgres ;;
+    extended) ENGINE=postgres-extended ;;
+    *) echo "--protocol simple|extended: got '$PROTOCOL'" >&2; usage ;;
+esac
+
 case "$TARGET" in
     pg) : "${PORT:=55432}" ;;
     yuzhu) : "${PORT:=5432}" ;;
-    *) echo "--target pg|yuzhu is required" >&2; usage ;;
+    *) if [ "$LIST" -eq 0 ]; then echo "--target pg|yuzhu is required" >&2; usage; fi ;;
 esac
 
 SLT="${SLT_BIN:-sqllogictest}"
-if ! command -v "$SLT" >/dev/null 2>&1; then
-    echo "sqllogictest not found. install: cargo install sqllogictest-bin --locked --version 0.29.1" >&2
-    exit 1
-fi
-
 EXTRA=()
-if "$SLT" --help 2>&1 | grep -q -- '--shutdown-timeout'; then
-    EXTRA+=(--shutdown-timeout 5)
+if [ "$LIST" -eq 0 ]; then
+    if ! command -v "$SLT" >/dev/null 2>&1; then
+        echo "sqllogictest not found. install: cargo install sqllogictest-bin --locked --version 0.29.1" >&2
+        exit 1
+    fi
+    if "$SLT" --help 2>&1 | grep -q -- '--shutdown-timeout'; then
+        EXTRA+=(--shutdown-timeout 5)
+    fi
+fi
+if [ -n "$PASSWORD" ]; then
+    EXTRA+=(--pass "$PASSWORD")
 fi
 # shellcheck disable=SC2206
 EXTRA+=(${SLT_EXTRA_ARGS:-})
 
+# 第 1 引数が --db <名前> なら、その実行だけ接続先のデータベースを差し替える。
 run_slt() {
-    "$SLT" --engine postgres \
-        --host "$HOST" --port "$PORT" --user "$USER_NAME" --db "$DB" \
+    local db="$DB"
+    if [ "${1:-}" = "--db" ]; then db="$2"; shift 2; fi
+    "$SLT" --engine "$ENGINE" \
+        --host "$HOST" --port "$PORT" --user "$USER_NAME" --db "$db" \
         --label "$TARGET" "${EXTRA[@]}" "$@"
+}
+
+# フェーズ NN-<名前>.slt の接続先データベース（NN-<名前>.db の 1 行目。なければ --db）。
+phase_db() {
+    local f="${1%.slt}.db" d
+    if [ -f "$f" ]; then
+        d="$(head -n 1 "$f" | tr -d '[:space:]')"
+        [ -n "$d" ] || { echo "empty database name in $f" >&2; return 1; }
+        echo "$d"
+    else
+        echo "$DB"
+    fi
 }
 
 # ---------------------------------------------------------------- 再起動テスト
@@ -168,10 +205,11 @@ run_scenario() {
         applied_args=1
     fi
 
-    local i rc=0 hook saved_crash="$CRASH"
+    local i rc=0 hook pdb saved_crash="$CRASH"
     for i in "${!phases[@]}"; do
-        echo "-- phase $((i + 1))/${#phases[@]}: ${phases[$i]}"
-        if ! run_slt "${phases[$i]}"; then
+        pdb="$(phase_db "${phases[$i]}")" || { rc=1; break; }
+        echo "-- phase $((i + 1))/${#phases[@]}: ${phases[$i]} (db=$pdb)"
+        if ! run_slt --db "$pdb" "${phases[$i]}"; then
             rc=1
             break
         fi
@@ -247,6 +285,13 @@ if [ "$RESTART" -eq 1 ]; then
     fi
     for s in "${SCENARIOS[@]}"; do scenario_mode "$s" >/dev/null || exit 2; done
     [ ${#SCENARIOS[@]} -gt 0 ] || { echo "no scenarios found" >&2; exit 1; }
+    if [ "$LIST" -eq 1 ]; then
+        for s in "${SCENARIOS[@]}"; do
+            if [ "$TARGET" = pg ] && [ -f "$s/yuzhu.only" ]; then continue; fi
+            find "$s" -maxdepth 1 -type f -name '*.slt' | LC_ALL=C sort
+        done
+        exit 0
+    fi
     echo "running ${#SCENARIOS[@]} restart scenario(s) against $TARGET at $HOST:$PORT (user=$USER_NAME db=$DB, crash=$CRASH)"
     FAILED=()
     for s in "${SCENARIOS[@]}"; do
@@ -283,7 +328,12 @@ if [ ${#FILES[@]} -eq 0 ]; then
     exit 1
 fi
 
-echo "running ${#FILES[@]} file(s) against $TARGET at $HOST:$PORT (user=$USER_NAME db=$DB)"
-exec "$SLT" --engine postgres \
+if [ "$LIST" -eq 1 ]; then
+    printf '%s\n' "${FILES[@]}"
+    exit 0
+fi
+
+echo "running ${#FILES[@]} file(s) against $TARGET at $HOST:$PORT (user=$USER_NAME db=$DB protocol=$PROTOCOL)"
+exec "$SLT" --engine "$ENGINE" \
     --host "$HOST" --port "$PORT" --user "$USER_NAME" --db "$DB" \
     --label "$TARGET" "${EXTRA[@]}" "${FILES[@]}"

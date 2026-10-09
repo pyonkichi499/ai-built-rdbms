@@ -43,6 +43,16 @@ pub enum Datum {
     TimestampTz(yuzhu_datetime::TimestampTz),
     /// `int2vector`（1 次元の `int2[]` も同じ変種）。
     Int2Vector(Vec<i16>),
+    /// `time`（0 時からのマイクロ秒）。
+    Time(i64),
+    /// `interval`。
+    Interval(yuzhu_datetime::Interval),
+    /// `bytea`。
+    Bytea(Vec<u8>),
+    /// `uuid`。
+    Uuid([u8; 16]),
+    /// 配列。M3 の `Int4Array` を置き換える（TY-5 が移行する。それまで両方ある）。
+    Array(Box<super::array::ArrayValue>),
 }
 
 /// A row of values, in column order.
@@ -64,6 +74,30 @@ impl Datum {
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Datum::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// `bytea` のバイト列。
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Datum::Bytea(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// `uuid` の 16 バイト。
+    pub fn as_uuid(&self) -> Option<&[u8; 16]> {
+        match self {
+            Datum::Uuid(u) => Some(u),
+            _ => None,
+        }
+    }
+
+    /// 配列の値。
+    pub fn as_array(&self) -> Option<&super::array::ArrayValue> {
+        match self {
+            Datum::Array(a) => Some(a),
             _ => None,
         }
     }
@@ -107,6 +141,11 @@ impl Datum {
             Datum::Timestamp(_) => 16,
             Datum::TimestampTz(_) => 17,
             Datum::Int2Vector(_) => 18,
+            Datum::Time(_) => 19,
+            Datum::Interval(_) => 20,
+            Datum::Bytea(_) => 21,
+            Datum::Uuid(_) => 22,
+            Datum::Array(_) => 23,
             Datum::Null => 4,
         }
     }
@@ -155,6 +194,11 @@ pub fn cmp_datum(a: &Datum, b: &Datum) -> Ordering {
         (Datum::Timestamp(x), Datum::Timestamp(y)) => x.cmp(y),
         (Datum::TimestampTz(x), Datum::TimestampTz(y)) => x.cmp(y),
         (Datum::Int2Vector(x), Datum::Int2Vector(y)) => x.cmp(y),
+        (Datum::Time(x), Datum::Time(y)) => x.cmp(y),
+        (Datum::Bytea(x), Datum::Bytea(y)) => x.cmp(y),
+        (Datum::Uuid(x), Datum::Uuid(y)) => x.cmp(y),
+        (Datum::Interval(x), Datum::Interval(y)) => x.cmp(y),
+        (Datum::Array(x), Datum::Array(y)) => cmp_array(x, y),
         _ => {
             if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
                 return x.cmp(&y);
@@ -167,6 +211,35 @@ pub fn cmp_datum(a: &Datum, b: &Datum) -> Ordering {
             a.rank().cmp(&b.rank())
         }
     }
+}
+
+/// 配列の比較（PostgreSQL の `btarraycmp`）。要素を先頭から `cmp_datum` で比べ（NULL は非 NULL より大きく、
+/// NULL どうしは等しい）、同じなら次元数・各次元の要素数・下限の順に比べる。
+fn cmp_array(a: &super::array::ArrayValue, b: &super::array::ArrayValue) -> Ordering {
+    for (x, y) in a.items.iter().zip(&b.items) {
+        let c = match (x.is_null(), y.is_null()) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => cmp_datum(x, y),
+        };
+        if c != Ordering::Equal {
+            return c;
+        }
+    }
+    a.items
+        .len()
+        .cmp(&b.items.len())
+        .then_with(|| a.dims.len().cmp(&b.dims.len()))
+        .then_with(|| {
+            let lens =
+                |v: &super::array::ArrayValue| v.dims.iter().map(|d| d.len).collect::<Vec<_>>();
+            let lbounds =
+                |v: &super::array::ArrayValue| v.dims.iter().map(|d| d.lbound).collect::<Vec<_>>();
+            lens(a)
+                .cmp(&lens(b))
+                .then_with(|| lbounds(a).cmp(&lbounds(b)))
+        })
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -283,5 +356,30 @@ mod tests {
         assert_eq!(Int2(3).as_i64(), Some(3));
         assert_eq!(Text("x".into()).as_str(), Some("x"));
         assert_eq!(Float4(0.5).as_f64(), Some(0.5));
+    }
+}
+
+#[cfg(test)]
+mod tests_m5 {
+    use super::*;
+
+    #[test]
+    fn m5_variants_order() {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        assert_eq!(cmp_datum(&Datum::Time(1), &Datum::Time(2)), Less);
+        assert_eq!(
+            cmp_datum(&Datum::Bytea(vec![1, 2]), &Datum::Bytea(vec![1])),
+            Greater
+        );
+        assert_eq!(
+            cmp_datum(&Datum::Uuid([1; 16]), &Datum::Uuid([1; 16])),
+            Equal
+        );
+        let a = Datum::Array(Box::new(super::super::array::ArrayValue::one_dim(
+            23,
+            vec![Datum::Int4(1)],
+        )));
+        assert_eq!(a.clone(), a);
+        assert_ne!(cmp_datum(&a, &Datum::Time(0)), Equal);
     }
 }

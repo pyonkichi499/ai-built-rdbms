@@ -41,7 +41,7 @@ target/release/difffuzz --domain expr --seed 1 --cases 5000 \
 | `--skip-unsupported` | PG が成功し yuzhu が `0A000`（未対応）を返した文で、そのケースを打ち切って数えるだけにする |
 | `--ignore-trailing-space` | 行の各フィールドの末尾の空白を無視（M4 領域の読み取り文だけ。char(n) の詰め物の差を別扱いにして、ほかの差分を見るとき） |
 | `--exclude NEEDLE` | NEEDLE を含む文を両方のサーバへ流さない（何度でも指定可。既知の差が他の差分を隠すとき。`done-check.sh` は `known-excludes.txt` から読む） |
-| `--timeout-ms N` | 1 文あたりの待ち時間（既定 10000）。超えると `timeout` として差分になる |
+| `--timeout-ms N` | 1 文あたりの待ち時間（既定 10000。`CHECKPOINT` だけ 6 倍）。超えると `timeout` として差分になる |
 | `-v` | 全文と両者の結果を標準エラーに出す |
 
 `--domain all` のときの領域は `case % 11`（expr, types, query, dml, txn, join, agg, subquery, setop, index, ddl の順）で決まります。

@@ -7,7 +7,7 @@ use super::bound::{
     BoundCheck, BoundDelete, BoundDistinct, BoundExpr, BoundExprKind, BoundInsert, BoundQuery,
     BoundReturning, BoundSelect, BoundSetExpr, BoundUpdate, FromItem, UpdateSource,
 };
-use super::coerce::{resolve_unknown, tname};
+use super::coerce::tname;
 use super::cte::CteScope;
 use super::ddl::{GivenValue, IdentityInsert};
 use super::expr::{ExprCtx, figure_colname};
@@ -107,7 +107,11 @@ impl Analyzer<'_> {
             return Err(Error::not_supported("RETURNING is not supported yet").with_span(span));
         }
         let table = self.resolve_relation(&ins.table, None)?;
-        Self::check_writable(&table, ins.table.span)?;
+        Self::check_writable(
+            &table,
+            crate::catalog::virtual_rel::ModifyKind::Insert,
+            ins.table.span,
+        )?;
 
         // Target columns (indices into table.columns).
         let explicit = !ins.columns.is_empty();
@@ -160,6 +164,7 @@ impl Analyzer<'_> {
                         targets: vec![],
                         n_visible: 0,
                         distinct: BoundDistinct::None,
+                        locking: vec![],
                     })),
                     order_by: vec![],
                     limit: None,
@@ -346,7 +351,7 @@ impl Analyzer<'_> {
         cols: &[Ident],
     ) -> Result<(BoundQuery, Option<Vec<BoundExpr>>)> {
         let root = CteScope::root();
-        let mut bq = self.analyze_query(q, &QueryEnv::root(false, &root))?;
+        let mut bq = self.analyze_top_query(q, &QueryEnv::root(false, &root))?;
         let n = bq.columns.len();
         let extra = match &bq.body {
             BoundSetExpr::Select(s) => s.targets.get(targets.len()).map(|t| t.span),
@@ -382,7 +387,7 @@ impl Analyzer<'_> {
                 if bq.order_by.iter().any(|k| k.target == i) {
                     // A sort key resolves an unknown output column to text
                     // (`addTargetToSortList`).
-                    sel.targets[i] = resolve_unknown(sel.targets[i].clone());
+                    sel.targets[i] = self.resolve_unknown(sel.targets[i].clone())?;
                 } else {
                     // An unknown literal (or NULL) is a constant: convert it
                     // in place, so invalid input is reported at analysis
@@ -440,7 +445,17 @@ struct DmlInput {
 impl Analyzer<'_> {
     /// DML on a system catalog is refused (`m2.md` §6.8.7, M2-Q12). シーケンスは書き換えられない
     /// （`42809`。08 §4.6）。
-    fn check_writable(table: &TableDef, span: Span) -> Result<()> {
+    fn check_writable(
+        table: &TableDef,
+        kind: crate::catalog::virtual_rel::ModifyKind,
+        span: Span,
+    ) -> Result<()> {
+        // 仮想リレーション（`pg_locks`）は OID が小さいのでカタログの検査より先に見る。PG のビューと同じ 55000。
+        if table.kind == crate::catalog::RelKind::Virtual {
+            return Err(
+                crate::catalog::virtual_rel::modify_error(&table.name, kind).with_span(span)
+            );
+        }
         if table.is_system_catalog() {
             return Err(Error::new(
                 sqlstate::INSUFFICIENT_PRIVILEGE,
@@ -520,7 +535,7 @@ impl Analyzer<'_> {
             };
             match item {
                 SelectItem::Expr { expr, alias, .. } => {
-                    let b = resolve_unknown(self.transform_expr(expr, &cx)?);
+                    let b = self.resolve_unknown(self.transform_expr(expr, &cx)?)?;
                     Self::check_returning_expr(&b)?;
                     let name = alias
                         .as_ref()
@@ -583,7 +598,11 @@ impl Analyzer<'_> {
             return Err(Error::not_supported("RETURNING is not supported yet").with_span(span));
         }
         let table = self.resolve_relation(&del.table, None)?;
-        Self::check_writable(&table, del.table.span)?;
+        Self::check_writable(
+            &table,
+            crate::catalog::virtual_rel::ModifyKind::Delete,
+            del.table.span,
+        )?;
         let root = CteScope::root();
         let input = self.dml_input(
             &table,
@@ -620,7 +639,11 @@ impl Analyzer<'_> {
             return Err(Error::not_supported("RETURNING is not supported yet").with_span(span));
         }
         let table = self.resolve_relation(&upd.table, None)?;
-        Self::check_writable(&table, upd.table.span)?;
+        Self::check_writable(
+            &table,
+            crate::catalog::virtual_rel::ModifyKind::Update,
+            upd.table.span,
+        )?;
         let refname = upd
             .alias
             .as_ref()

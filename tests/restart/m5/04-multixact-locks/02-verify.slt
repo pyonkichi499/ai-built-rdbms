@@ -1,0 +1,23 @@
+# フェーズ 2: ロックは消えている。すべての行に FOR UPDATE NOWAIT が成功し、更新もできる。
+
+query I
+SELECT id FROM crm5_04_t ORDER BY id FOR UPDATE NOWAIT
+----
+1
+2
+3
+4
+
+statement count 4
+UPDATE crm5_04_t SET v = v || '!'
+
+query IT
+SELECT id, v FROM crm5_04_t ORDER BY id
+----
+1 a!
+2 b!
+3 c!
+4 d!
+
+statement ok
+DROP TABLE crm5_04_t

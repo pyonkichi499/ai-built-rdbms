@@ -1,0 +1,71 @@
+# フェーズ 2: コミット済みの CASCADE・SET NULL は残り、未コミットの CASCADE は親も子も残る。
+# RESTRICT の違反は何も変えていない。other が持っていた親 2 の行ロックは消えていて、すぐ削除できる。
+
+statement ok
+SET lock_timeout = '5s'
+
+query I
+SELECT id FROM crm5_03_parent_c ORDER BY id
+----
+2
+3
+
+query II
+SELECT id, pid FROM crm5_03_child_c ORDER BY id
+----
+20 2
+30 3
+
+query II
+SELECT id, pid FROM crm5_03_child_n ORDER BY id
+----
+10 NULL
+11 NULL
+20 2
+
+query I
+SELECT id FROM crm5_03_parent_n ORDER BY id
+----
+2
+
+query I
+SELECT id FROM crm5_03_parent_r ORDER BY id
+----
+1
+2
+
+query II
+SELECT id, pid FROM crm5_03_child_r ORDER BY id
+----
+10 1
+20 2
+
+# 復旧後も CASCADE / RESTRICT が働く
+statement count 1
+DELETE FROM crm5_03_parent_c WHERE id = 2
+
+query I
+SELECT count(*) FROM crm5_03_child_c
+----
+1
+
+statement error (23503)
+DELETE FROM crm5_03_parent_r WHERE id = 2
+
+statement ok
+DROP TABLE crm5_03_child_c
+
+statement ok
+DROP TABLE crm5_03_parent_c
+
+statement ok
+DROP TABLE crm5_03_child_n
+
+statement ok
+DROP TABLE crm5_03_parent_n
+
+statement ok
+DROP TABLE crm5_03_child_r
+
+statement ok
+DROP TABLE crm5_03_parent_r

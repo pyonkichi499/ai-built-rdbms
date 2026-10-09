@@ -1,0 +1,19 @@
+# フェーズ 4（postgres に接続）: 行がなく、接続は 3D000 で失敗し、同名で作り直せる（中身は空）。
+# 接続の失敗（3D000）は psql で確かめる（psql は SQLSTATE を出さないので、メッセージ「database ... does not exist」で判定する）。
+# 接続先は環境変数 PGHOST / PGPORT / PGUSER（なければ 127.0.0.1:55432 の postgres）。run.sh が export する必要がある（未対応なら手動で設定する）。
+
+query I
+SELECT count(*) FROM pg_database WHERE datname = 'crm5_06_d'
+----
+0
+
+system ok
+bash -c 'out=$(psql -X -w -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-55432}" -U "${PGUSER:-postgres}" -d crm5_06_d -c "select 1" 2>&1 || true); echo "$out" | grep -q "database \"crm5_06_d\" does not exist"'
+
+statement ok
+CREATE DATABASE crm5_06_d
+
+query I
+SELECT count(*) FROM pg_database WHERE datname = 'crm5_06_d'
+----
+1

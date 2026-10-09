@@ -1,0 +1,55 @@
+psql:<stdin>:2: NOTICE:  table "tsx_child2" does not exist, skipping
+psql:<stdin>:3: NOTICE:  table "tsx_child" does not exist, skipping
+psql:<stdin>:4: NOTICE:  table "tsx_parent" does not exist, skipping
+             Table "public.tsx_child"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ id     | integer |           | not null | 
+ pid    | integer |           | not null | 
+ kk     | integer |           |          | 
+Indexes:
+    "tsx_child_pkey" PRIMARY KEY, btree (id)
+    "tsx_child_id_pid_key" UNIQUE CONSTRAINT, btree (id, pid)
+Foreign-key constraints:
+    "tsx_child_kk_fkey" FOREIGN KEY (kk) REFERENCES tsx_parent(k) ON DELETE SET NULL
+    "tsx_child_pid_fkey" FOREIGN KEY (pid) REFERENCES tsx_parent(id) ON UPDATE RESTRICT ON DELETE CASCADE
+Referenced by:
+    TABLE "tsx_child2" CONSTRAINT "tsx_child2_a_b_fkey" FOREIGN KEY (a, b) REFERENCES tsx_child(id, pid) MATCH FULL
+
+             Table "public.tsx_child2"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ a      | integer |           |          | 
+ b      | integer |           |          | 
+ c      | integer |           |          | 
+Foreign-key constraints:
+    "tsx_child2_a_b_fkey" FOREIGN KEY (a, b) REFERENCES tsx_child(id, pid) MATCH FULL
+    "tsx_child2_c_fkey" FOREIGN KEY (c) REFERENCES tsx_parent(id)
+
+             Table "public.tsx_parent"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ id     | integer |           | not null | 
+ k      | integer |           | not null | 
+ name   | text    |           |          | 
+Indexes:
+    "tsx_parent_pkey" PRIMARY KEY, btree (id)
+    "tsx_parent_k_key" UNIQUE CONSTRAINT, btree (k)
+Referenced by:
+    TABLE "tsx_child2" CONSTRAINT "tsx_child2_c_fkey" FOREIGN KEY (c) REFERENCES tsx_parent(id)
+    TABLE "tsx_child" CONSTRAINT "tsx_child_kk_fkey" FOREIGN KEY (kk) REFERENCES tsx_parent(k) ON DELETE SET NULL
+    TABLE "tsx_child" CONSTRAINT "tsx_child_pid_fkey" FOREIGN KEY (pid) REFERENCES tsx_parent(id) ON UPDATE RESTRICT ON DELETE CASCADE
+
+       conname       | contype | confupdtype | confdeltype | confmatchtype |                                       def                                        
+---------------------+---------+-------------+-------------+---------------+----------------------------------------------------------------------------------
+ tsx_child2_a_b_fkey | f       | a           | a           | f             | FOREIGN KEY (a, b) REFERENCES tsx_child(id, pid) MATCH FULL
+ tsx_child2_c_fkey   | f       | a           | a           | s             | FOREIGN KEY (c) REFERENCES tsx_parent(id)
+ tsx_child_kk_fkey   | f       | a           | n           | s             | FOREIGN KEY (kk) REFERENCES tsx_parent(k) ON DELETE SET NULL
+ tsx_child_pid_fkey  | f       | r           | c           | s             | FOREIGN KEY (pid) REFERENCES tsx_parent(id) ON UPDATE RESTRICT ON DELETE CASCADE
+(4 rows)
+
+     conname      | contype |       def        
+------------------+---------+------------------
+ tsx_parent_k_key | u       | UNIQUE (k)
+ tsx_parent_pkey  | p       | PRIMARY KEY (id)
+(2 rows)

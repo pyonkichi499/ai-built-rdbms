@@ -1,19 +1,27 @@
 //! Type system (lowest layer). Types are identified by OID + typmod, as in
 //! PostgreSQL.
 
+pub mod array;
+pub mod array_text;
+pub mod binary;
 pub mod bpchar;
+pub mod bytea;
 pub mod cmp;
 pub mod datetime;
 pub mod datum;
 mod float_fmt;
 pub mod funcs;
 pub mod hash;
+pub mod interval;
 pub mod io;
 pub mod numeric;
 pub mod ops;
 pub mod regex;
 pub mod sys;
+pub mod time;
+pub mod typeinfo;
 pub mod typmod;
+pub mod uuid;
 
 pub use datum::{Datum, Row, cmp_datum};
 
@@ -49,6 +57,29 @@ pub trait OidNames: std::fmt::Debug {
     }
 }
 
+/// `bytea_output` 設定（`bytea` のテキスト出力の形式。`m5/05-types-core.md` §4.2、TY-D6）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ByteaOutput {
+    /// `\x0001ff`（既定）。
+    #[default]
+    Hex,
+    /// `\000\001\377`。
+    Escape,
+}
+
+impl ByteaOutput {
+    /// 設定値（`hex` / `escape`。大文字小文字は区別しない）から。
+    pub fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("hex") {
+            Some(Self::Hex)
+        } else if value.eq_ignore_ascii_case("escape") {
+            Some(Self::Escape)
+        } else {
+            None
+        }
+    }
+}
+
 /// テキストの入出力が参照する設定。session が文ごとに作る（`m4/00-contracts.md` §12.4）。
 #[derive(Clone, Copy, Debug)]
 pub struct TypeEnv<'a> {
@@ -58,6 +89,8 @@ pub struct TypeEnv<'a> {
     pub datetime: Option<yuzhu_datetime::DateTimeEnv<'a>>,
     /// regclass / regtype / regproc の名前表示。`None` の文脈では数字で扱う。
     pub names: Option<&'a dyn OidNames>,
+    /// `bytea` の出力形式（`bytea_output`）。
+    pub bytea_output: ByteaOutput,
 }
 
 impl Default for TypeEnv<'_> {
@@ -66,6 +99,7 @@ impl Default for TypeEnv<'_> {
             extra_float_digits: 1,
             datetime: None,
             names: None,
+            bytea_output: ByteaOutput::Hex,
         }
     }
 }
@@ -91,6 +125,26 @@ pub mod oid {
     pub const TIMESTAMPTZ: Oid = 1184;
     pub const ANYARRAY: Oid = 2277;
     pub const ACLITEM_ARRAY: Oid = 1034;
+    /// `bytea[]`。
+    pub const BYTEA_ARRAY: Oid = 1001;
+    /// `uuid[]`。
+    pub const UUID_ARRAY: Oid = 2951;
+    /// `_int2vector`（行だけ。値は NULL 専用）。
+    pub const INT2VECTOR_ARRAY: Oid = 1006;
+    /// `_cstring`（`typmodin` の引数型。値は NULL 専用）。
+    pub const CSTRING_ARRAY: Oid = 1263;
+    /// `record`（疑似型）。
+    pub const RECORD: Oid = 2249;
+    /// `_record`（行だけ。値は NULL 専用）。
+    pub const RECORD_ARRAY: Oid = 2287;
+    /// `anyelement`（ポリモーフィック疑似型）。
+    pub const ANYELEMENT: Oid = 2283;
+    /// `anynonarray`。
+    pub const ANYNONARRAY: Oid = 2776;
+    /// `anycompatible`。
+    pub const ANYCOMPATIBLE: Oid = 5077;
+    /// `anycompatiblearray`。
+    pub const ANYCOMPATIBLEARRAY: Oid = 5078;
     pub const TEXT_ARRAY: Oid = 1009;
     pub const INT2_ARRAY: Oid = 1005;
     pub const OID_ARRAY: Oid = 1028;
@@ -117,6 +171,10 @@ pub mod oid {
     pub const TIMESTAMP: Oid = 1114;
     /// `interval`（M5。キーワードは `0A000`）。
     pub const INTERVAL: Oid = 1186;
+    /// `bytea`（M5）。
+    pub const BYTEA: Oid = 17;
+    /// `uuid`（M5）。
+    pub const UUID: Oid = 2950;
     /// `timetz`（M5。キーワードは `0A000`）。
     pub const TIMETZ: Oid = 1266;
     pub const REGCLASS: Oid = 2205;
@@ -167,6 +225,8 @@ impl SqlType {
     pub const TIMESTAMPTZ: SqlType = SqlType::of(oid::TIMESTAMPTZ);
     pub const REGCLASS: SqlType = SqlType::of(oid::REGCLASS);
     pub const REGTYPE: SqlType = SqlType::of(oid::REGTYPE);
+    pub const BYTEA: SqlType = SqlType::of(oid::BYTEA);
+    pub const UUID: SqlType = SqlType::of(oid::UUID);
 
     pub const fn new(oid: Oid, typmod: i32) -> Self {
         SqlType { oid, typmod }
@@ -250,6 +310,24 @@ mod tests {
         assert_eq!(oid::INTERVAL, 1186);
         assert_eq!(oid::TIME, 1083);
         assert_eq!(oid::TIMETZ, 1266);
+        assert_eq!(env.bytea_output, ByteaOutput::Hex);
+        assert_eq!(SqlType::BYTEA.oid, 17);
+        assert_eq!(SqlType::UUID.oid, 2950);
+        assert_eq!(
+            [
+                oid::INT2VECTOR_ARRAY,
+                oid::CSTRING_ARRAY,
+                oid::RECORD_ARRAY,
+                oid::ANYELEMENT,
+                oid::ANYNONARRAY,
+                oid::ANYCOMPATIBLE,
+                oid::ANYCOMPATIBLEARRAY,
+            ],
+            [1006, 1263, 2287, 2283, 2776, 5077, 5078]
+        );
+        assert_eq!(ByteaOutput::parse("ESCAPE"), Some(ByteaOutput::Escape));
+        assert_eq!(ByteaOutput::parse("Hex"), Some(ByteaOutput::Hex));
+        assert_eq!(ByteaOutput::parse("base64"), None);
         // bpchar は Datum::BpChar で持つので is_string_like（Text の変種）には含めない。
         assert!(!SqlType::BPCHAR.is_string_like());
     }

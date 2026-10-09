@@ -1,0 +1,62 @@
+# フェーズ 1: 2 接続（本体と other）が別の行を同時に更新する。
+# 本体はコミットし、other は未コミットのまま kill -9 される。
+# M5 は複数ライターなので、other が行 1 を更新している最中に本体が行 2・3 を更新・コミットできる。
+
+statement ok
+DROP TABLE IF EXISTS crm5_01_t
+
+statement ok
+CREATE TABLE crm5_01_t (id int NOT NULL, v text)
+
+statement count 5
+INSERT INTO crm5_01_t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')
+
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 1
+UPDATE crm5_01_t SET v = 'other-uncommitted' WHERE id = 1
+
+connection other
+statement count 1
+INSERT INTO crm5_01_t VALUES (100, 'other-uncommitted')
+
+# 本体は other の行ロックを待たずに別の行を更新してコミットする
+statement count 1
+UPDATE crm5_01_t SET v = 'bb' WHERE id = 2
+
+statement ok
+BEGIN
+
+statement count 1
+UPDATE crm5_01_t SET v = 'cc' WHERE id = 3
+
+statement count 1
+DELETE FROM crm5_01_t WHERE id = 5
+
+statement ok
+COMMIT
+
+connection other
+statement count 1
+UPDATE crm5_01_t SET v = 'other-uncommitted' WHERE id = 4
+
+connection other
+query IT
+SELECT id, v FROM crm5_01_t ORDER BY id
+----
+1 other-uncommitted
+2 bb
+3 cc
+4 other-uncommitted
+100 other-uncommitted
+
+query IT
+SELECT id, v FROM crm5_01_t ORDER BY id
+----
+1 a
+2 bb
+3 cc
+4 d

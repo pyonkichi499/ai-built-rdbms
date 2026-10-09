@@ -232,6 +232,37 @@ fn sexp(e: &Expr) -> String {
         Expr::NullIf { left, right, .. } => format!("(nullif {} {})", sexp(left), sexp(right)),
         Expr::SessionValue { kind, .. } => format!("<{}>", kind.column_name()),
         Expr::Default { .. } => "DEFAULT".into(),
+        Expr::ArrayConstructor { elems, .. } => format!("(array {})", list(elems)),
+        Expr::ArraySubquery { .. } => "(array-subquery)".into(),
+        Expr::Subscript {
+            expr,
+            lower,
+            upper,
+            slice,
+            ..
+        } => format!(
+            "(subscript {} {}{}{})",
+            sexp(expr),
+            lower.as_ref().map_or_else(String::new, |l| sexp(l)),
+            if *slice { ":" } else { "" },
+            upper.as_ref().map_or_else(String::new, |u| sexp(u))
+        ),
+        Expr::QuantifiedArray {
+            expr,
+            op,
+            quantifier,
+            array,
+            ..
+        } => format!(
+            "({op}-{}-array {} {})",
+            if *quantifier == Quantifier::All {
+                "all"
+            } else {
+                "any"
+            },
+            sexp(expr),
+            sexp(array)
+        ),
         Expr::QuantifiedSubquery {
             expr,
             op,
@@ -773,8 +804,6 @@ fn subqueries() {
 
 #[test]
 fn not_supported_expressions() {
-    unsupported("SELECT a[1] FROM t");
-    unsupported("SELECT ARRAY[1]");
     unsupported("SELECT count(*) OVER () FROM t");
     unsupported("SELECT f(x => 1)");
     unsupported("SELECT a SIMILAR TO 'x' FROM t");
@@ -1690,4 +1719,23 @@ fn set_transaction_keeps_all_modes() {
         other => panic!("not SET: {other:?}"),
     }
     syntax("SET TRANSACTION", "", 16);
+}
+
+#[test]
+fn array_syntax() {
+    assert_eq!(e("ARRAY[1, 2]"), "(array 1 2)");
+    assert_eq!(e("ARRAY[]"), "(array )");
+    assert_eq!(e("ARRAY[[1], [2]]"), "(array (array 1) (array 2))");
+    assert_eq!(e("a[1]"), "(subscript a 1)");
+    assert_eq!(e("a[1][2]"), "(subscript (subscript a 1) 2)");
+    assert_eq!(e("a[1:2]"), "(subscript a 1:2)");
+    assert_eq!(e("(a)[i + 1]"), "(subscript a (+ i 1))");
+    assert_eq!(e("a = ANY (b)"), "(=-any-array a b)");
+    assert_eq!(e("a <> ALL (ARRAY[1])"), "(<>-all-array a (array 1))");
+    assert!(matches!(
+        crate::sql::parser::parse_expr("ARRAY(SELECT 1)").unwrap(),
+        Expr::ArraySubquery { .. }
+    ));
+    syntax("SELECT ARRAY[1,2][1]", "[", 19);
+    syntax("SELECT a < ALL (1, 2) FROM t", ",", 20);
 }

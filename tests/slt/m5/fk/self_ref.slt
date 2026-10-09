@@ -1,0 +1,68 @@
+# FOREIGN KEY: 自己参照
+# 接頭辞: fk_self_ref_
+
+statement ok
+DROP TABLE IF EXISTS fk_self_ref_t
+
+statement ok
+CREATE TABLE fk_self_ref_t (id int PRIMARY KEY, parent int REFERENCES fk_self_ref_t (id) ON DELETE CASCADE ON UPDATE CASCADE)
+
+statement ok
+INSERT INTO fk_self_ref_t VALUES (1, NULL)
+
+statement ok
+INSERT INTO fk_self_ref_t VALUES (2, 1), (3, 2), (4, 3), (5, 1)
+
+statement ok
+INSERT INTO fk_self_ref_t VALUES (10, NULL), (11, 10)
+
+# 存在しない親
+statement error (?s)violates foreign key constraint "fk_self_ref_t_parent_fkey".*Key \(parent\)=\(99\) is not present in table "fk_self_ref_t"\.
+INSERT INTO fk_self_ref_t VALUES (6, 99)
+
+# 自分自身を親にできる
+statement ok
+INSERT INTO fk_self_ref_t VALUES (7, 7)
+
+# ON UPDATE CASCADE の連鎖
+statement ok
+UPDATE fk_self_ref_t SET id = id + 100 WHERE id IN (10)
+
+query II
+SELECT id, parent FROM fk_self_ref_t WHERE id >= 10 ORDER BY id
+----
+11 110
+110 NULL
+
+# 多段の CASCADE: 1 を消すと 2, 3, 4, 5 が消える
+statement ok
+DELETE FROM fk_self_ref_t WHERE id = 1
+
+query II
+SELECT id, parent FROM fk_self_ref_t ORDER BY id
+----
+7 7
+11 110
+110 NULL
+
+# 自己参照の行を消せる
+statement ok
+DELETE FROM fk_self_ref_t WHERE id = 7
+
+query I
+SELECT count(*) FROM fk_self_ref_t
+----
+2
+
+# 同じ文で更新の対象にもなる行を CASCADE が更新する
+statement ok
+UPDATE fk_self_ref_t SET id = id + 1000
+
+query II
+SELECT id, parent FROM fk_self_ref_t ORDER BY id
+----
+1011 1110
+1110 NULL
+
+statement ok
+DROP TABLE fk_self_ref_t

@@ -331,6 +331,7 @@ slttools consistency [--add] [--check] [paths...]
 - 既定の探索先: `--restart` は `tests/restart` 直下と `tests/restart/m4`、`--crash` は `tests/restart/m3` と `tests/restart/m4`。明示のパスを渡すと `mode` を無視して全部流す。
 - B+Tree のシナリオ（K4）: `btree-grow`（both。昇順・降順・ばらばらの順の挿入で分割、キーを変える UPDATE、範囲 DELETE、ROLLBACK）、
   `btree-uncommitted-crash`（crash。`--shared-buffers 1MB`。分割を伴う未コミットの変更を残して kill -9）、`btree-mixed`（mixed。正常停止のあと kill -9）。接頭辞は `m4r_bg_` `m4r_bu_` `m4r_bm_` `m4r_`。
+- `idx-min-buffers`（both。`--shared-buffers 512kB`＝下限の 64 フレームで 3 つの索引を作り、約 2.6KB のキーを INSERT、再起動後に UPDATE / DELETE。接頭辞 `m4r_mb_`）。
 - 専用の PostgreSQL に対して流すには、`PG_DATA=... PG_PORT=N sandbox/pg.sh start` のあと `PG_DATA=... PG_PORT=N tests/run.sh --target pg --port N --crash`（再起動・kill -9 が同じインスタンスを指す）。
 
 ### isolation の追加
@@ -354,3 +355,41 @@ yuzhu では `--variant yuzhu-m3` を付けて流す（Repeatable Read は M5）
   `PG_PORT=55460 PG_DATA=/tmp/x sandbox/pg.sh start` → `tests/run.sh --target pg --port 55460`（`z_final/no_leftovers.slt` まで通る）→
   `PG_DATA=/tmp/x tests/run.sh --target pg --port 55460 --restart` と `--crash` → `yuzhu-isolation --port 55460 tests/isolation/specs`。
   共有の 55432 は他のエージェントの表が残るので、`no_leftovers.slt` と `m2/catalog/pg_attribute.slt` などの `oid >= 16384` を数える系は通らないことがある。
+
+## M5 の追加（下書き。TS-5a2。統合時に本文へ組み込む）
+
+### run.sh のオプション
+
+| オプション | 内容 |
+|---|---|
+| `--protocol simple\|extended` | 既定 simple（`--engine postgres`）。extended は `--engine postgres-extended`。ラベルは `pg` / `yuzhu` のまま |
+| `--password PW` | sqllogictest の `--pass` に渡す。環境変数 `PGPASSWORD` でも指定できる（SCRAM 構成用） |
+| `--list` | 実行するファイル（`--restart` ならフェーズのファイル）を 1 行ずつ出して終わる。ランナーも `--target` も不要 |
+| `NN-<名前>.db`（`--restart` / `--crash`） | フェーズ `NN-<名前>.slt` と同じ場所に置く（1 行、データベース名）。そのフェーズだけ `--db` の代わりにその名前へ接続する |
+
+### SCRAM の PostgreSQL
+
+```sh
+tests/pg.sh start --auth scram           # docker。postgres のパスワードは yuzhu-test-pw、環境変数 PG_IMAGE でイメージを変えられる
+sandbox/pg.sh start --auth scram         # claude-sandbox（docker なし）
+tests/run.sh --target pg --password yuzhu-test-pw
+```
+
+`start` のたびに、サーバの `server_version` を `tests/PG_VERSION` に記録する（期待値の検証元）。
+
+### `--protocol extended`（sqllogictest-bin 0.29.1 の postgres-extended。U-2 の実測結果）
+
+- `--engine postgres-extended` は使える。ただし **未対応が多く、スイートをそのままは流せない**:
+  - 1 つの文字列に複数の文（`SELECT 1 / 0; INSERT ...`）を書くと、PostgreSQL が 42601（cannot insert multiple commands into a prepared statement）を返す。
+    `m1/constraints/atomicity.slt`、`m1/errors/sqlstate.slt` などがこれで落ちる（Simple Query 専用のテスト）。
+  - `regtype` などの列で、ランナー自身が `todo!`（"Don't support regtype type now"）で panic し、ファイルの残りどころかランナーのプロセスが落ちる
+    （`m1/expressions/distinct_greatest.slt`）。
+- **浮動小数点の整形が simple と違う**。simple はサーバのテキスト（PostgreSQL の `1e+100`、`1e-05`、`1.2345678901234568e+17`、`1.6777216e+07`）、
+  extended はクライアント（Rust の f64 / f32 の `Display`）が整形して `1000…0`（1e100 を桁展開）、`0.00001`、`123456789012345680`、`16777216` になる。
+  `NaN`、`Infinity`、`-0`、`0.1+0.2` の `0.30000000000000004`、`1.5`、`1.1`（float4）は同じ。指数表記になる値は `skipif postgres-extended` で除く。
+- 対策: extended 用のスイートは `tests/slt/m5/extended/` のように専用に分け、複数文と `regtype` の列を避けて、浮動小数点は指数表記にならない値だけを書く。
+
+### bpchar の差分コーパス `tests/tools/gen_bpchar_corpus.sh`
+
+入力 x typmod x（代入 / 明示キャスト / 比較 / `length` / `octet_length` / `LIKE` / `~` / `||`）の SQL を作る。
+`tests/tools/gen_bpchar_corpus.sh --diff PG_PORT YUZHU_PORT` は、同じ SQL を PostgreSQL と yuzhu に流して出力（エラーは SQLSTATE だけ）を比べる。差分があれば終了コード 1。

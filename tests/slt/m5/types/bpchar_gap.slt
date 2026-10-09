@@ -1,0 +1,1247 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# bpchar の M4 の bpchar.slt が見ない境界（実機の値）
+
+# 接頭辞: types_bpchar_gap_
+
+statement ok
+DROP TABLE IF EXISTS types_bpchar_gap_t
+
+# 関数形式のキャストと bpcharcmp
+
+query T
+SELECT (bpchar('ab'::name) || '|')::text
+----
+ab|
+
+query T
+SELECT (name('ab '::bpchar) || '|')::text
+----
+ab|
+
+query T
+SELECT (length(name('ab  '::char(5))::text))::text
+----
+2
+
+query T
+SELECT (text('ab  '::char(5)) || '|')::text
+----
+ab|
+
+query T
+SELECT (length(text('ab  '::char(5))))::text
+----
+2
+
+query T
+SELECT (bpchar('a'::"char") || '|')::text
+----
+a|
+
+query T
+SELECT ("char"('abc'::char(5)))::text
+----
+a
+
+query T
+SELECT ("char"(''::char(3)))::text
+----
+(empty)
+
+query T
+SELECT ("char"('é'::char(3)))::text
+----
+\303
+
+query T
+SELECT (bpcharcmp('a'::char(3), 'a '::char(5)))::text
+----
+0
+
+query T
+SELECT (bpcharcmp('a'::char(3), 'b'::char(3)))::text
+----
+-1
+
+query T
+SELECT (bpcharcmp('b'::char(3), 'a'::char(3)))::text
+----
+1
+
+query T
+SELECT (bpcharcmp('a'::char(3), NULL))::text
+----
+NULL
+
+query T
+SELECT (bpchareq('a'::char(3), 'a  '::char(3)))::text
+----
+true
+
+query T
+SELECT (bpchareq('a'::char(3), 'b'::char(3)))::text
+----
+false
+
+query T
+SELECT (bpcharne('a'::char(3), 'b'::char(3)))::text
+----
+true
+
+query T
+SELECT (bpcharlt('a'::char(3), 'b'::char(3)))::text
+----
+true
+
+query T
+SELECT (bpcharle('a'::char(3), 'a'::char(3)))::text
+----
+true
+
+query T
+SELECT (bpchargt('b'::char(3), 'a'::char(3)))::text
+----
+true
+
+query T
+SELECT (bpcharge('a'::char(3), 'b'::char(3)))::text
+----
+false
+
+# 代入（INSERT）での 22001 と空白だけの超過の切り捨て
+
+statement ok
+CREATE TABLE types_bpchar_gap_t (id int, c char(3), v varchar(3))
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (1, 'abc', 'abc')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (2, 'ab   ', 'ab   ')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (3, 'abc      ', 'abc ')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (4, '', '')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (5, '   ', '   ')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (6, 'é', 'é')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (7, 'éé ', 'éé ')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (8, NULL, NULL)
+
+statement error (22001)
+INSERT INTO types_bpchar_gap_t VALUES (9, 'abcd', 'a')
+
+statement error (22001)
+INSERT INTO types_bpchar_gap_t VALUES (9, 'a', 'abcd')
+
+statement error (22001)
+INSERT INTO types_bpchar_gap_t VALUES (9, 'abc  d', 'a')
+
+statement error (22001)
+INSERT INTO types_bpchar_gap_t VALUES (9, 'éééé', 'a')
+
+statement error (22001)
+INSERT INTO types_bpchar_gap_t VALUES (9, 'a', 'ab  c')
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (10, 'abcd'::char(3), 'abcde'::varchar(3))
+
+statement ok
+INSERT INTO types_bpchar_gap_t VALUES (11, 'abcdef'::text::char(3), 'x')
+
+query T
+SELECT id || ':' || coalesce(c::text, 'NULL') || '|' || coalesce(length(c)::text, 'NULL') || ':' || coalesce(octet_length(c)::text, 'NULL') FROM types_bpchar_gap_t ORDER BY id
+----
+1:abc|3:3
+2:ab|2:3
+3:abc|3:3
+4:|0:3
+5:|0:3
+6:é|1:4
+7:éé|2:5
+8:NULL|NULL:NULL
+10:abc|3:3
+11:abc|3:3
+
+
+query T
+SELECT id || ':' || coalesce(v, 'NULL') || '|' FROM types_bpchar_gap_t ORDER BY id
+----
+1:abc|
+2:ab |
+3:abc|
+4:|
+5:   |
+6:é|
+7:éé |
+8:NULL|
+10:abc|
+11:x|
+
+
+statement ok
+UPDATE types_bpchar_gap_t SET c = 'xy' WHERE id = 1
+
+query T
+SELECT c::text || '|' FROM types_bpchar_gap_t WHERE id = 1
+----
+xy|
+
+
+statement error (22001)
+UPDATE types_bpchar_gap_t SET c = 'wxyz' WHERE id = 1
+
+statement ok
+UPDATE types_bpchar_gap_t SET c = 'xy      ' WHERE id = 1
+
+query T
+SELECT octet_length(c)::text FROM types_bpchar_gap_t WHERE id = 1
+----
+3
+
+
+# char(n) の入力・typmod・明示キャスト
+
+query T
+SELECT ('abc'::char(5) || '|')::text
+----
+abc|
+
+query T
+SELECT ('abc  '::char(5) || '|')::text
+----
+abc|
+
+query T
+SELECT ('abcdef'::char(3) || '|')::text
+----
+abc|
+
+query T
+SELECT ('ab'::char(1) || '|')::text
+----
+a|
+
+query T
+SELECT (''::char(2) || '|')::text
+----
+|
+
+query T
+SELECT ('  '::char(1) || '|')::text
+----
+|
+
+query T
+SELECT ('é'::char(3) || '|')::text
+----
+é|
+
+query T
+SELECT (octet_length('é'::char(3)))::text
+----
+4
+
+query T
+SELECT (octet_length('é'::char(1)))::text
+----
+2
+
+query T
+SELECT (octet_length('日本'::char(4)))::text
+----
+8
+
+query T
+SELECT (length('日本'::char(4)))::text
+----
+2
+
+query T
+SELECT (octet_length(''::char(3)))::text
+----
+3
+
+query T
+SELECT (length(''::char(3)))::text
+----
+0
+
+query T
+SELECT (length('   '::char(3)))::text
+----
+0
+
+query T
+SELECT (length(' a '::char(3)))::text
+----
+2
+
+query T
+SELECT (length(' a'::char(5)))::text
+----
+2
+
+query T
+SELECT (octet_length(' a'::char(5)))::text
+----
+5
+
+query T
+SELECT (char_length('ab  '::char(5)))::text
+----
+2
+
+query T
+SELECT (character_length('ab'::char(5)))::text
+----
+2
+
+query T
+SELECT ('a'::bpchar || '|')::text
+----
+a|
+
+query T
+SELECT ('a  '::bpchar || '|')::text
+----
+a|
+
+query T
+SELECT (length('a  '::bpchar))::text
+----
+1
+
+query T
+SELECT (octet_length('a  '::bpchar))::text
+----
+3
+
+query T
+SELECT (pg_typeof('a'::bpchar))::text
+----
+character
+
+statement error (22023)
+SELECT ('a'::char(0))::text
+
+statement error (22023)
+SELECT ('a'::char(10485761))::text
+
+query T
+SELECT ('a'::char(10485760) IS NOT NULL)::text
+----
+true
+
+statement error (22023)
+SELECT ('a'::bpchar(0))::text
+
+statement error (22023)
+SELECT ('a'::bpchar(-1))::text
+
+statement error (42601)
+SELECT ('a'::char(1,2))::text
+
+query T
+SELECT (length(repeat('a', 100)::char(100)))::text
+----
+100
+
+query T
+SELECT (length(repeat('a', 99)::char(100)))::text
+----
+99
+
+query T
+SELECT (octet_length(repeat('a', 99)::char(100)))::text
+----
+100
+
+# 代入キャスト（式の中）と明示キャストの違い
+
+query T
+SELECT (CAST('abcdef' AS char(3)) || '|')::text
+----
+abc|
+
+query T
+SELECT (CAST('abc   ' AS char(3)) || '|')::text
+----
+abc|
+
+query T
+SELECT ('abcdef'::varchar(3) || '|')::text
+----
+abc|
+
+query T
+SELECT ('abcdef'::char(3)::varchar || '|')::text
+----
+abc|
+
+query T
+SELECT ('ab'::char(5)::varchar || '|')::text
+----
+ab|
+
+query T
+SELECT (length('ab'::char(5)::varchar))::text
+----
+2
+
+query T
+SELECT (length('ab'::char(5)::text))::text
+----
+2
+
+query T
+SELECT (length('ab'::char(5)::name::text))::text
+----
+2
+
+query T
+SELECT ('ab'::char(5)::name::text || '|')::text
+----
+ab|
+
+query T
+SELECT ('ab '::name::char(5) || '|')::text
+----
+ab|
+
+# 比較（char 同士・text・varchar・文字列リテラル）
+
+query T
+SELECT ('a'::char(3) = 'a'::text)::text
+----
+true
+
+query T
+SELECT ('a'::char(3) = 'a  '::text)::text
+----
+false
+
+query T
+SELECT ('a  '::text = 'a'::char(3))::text
+----
+false
+
+query T
+SELECT ('a'::char(3) = 'a'::varchar)::text
+----
+true
+
+query T
+SELECT ('a'::char(3) = 'a  '::varchar)::text
+----
+true
+
+query T
+SELECT ('a'::char(3) = 'a')::text
+----
+true
+
+query T
+SELECT ('a'::char(3) = 'a    ')::text
+----
+true
+
+query T
+SELECT ('a'::char(3) < 'a '::char(5))::text
+----
+false
+
+query T
+SELECT (' a'::char(3) < 'a'::char(3))::text
+----
+true
+
+query T
+SELECT ('a'::char(3) < 'a!'::char(3))::text
+----
+true
+
+query T
+SELECT ('a'::char(3) > 'a!'::char(3))::text
+----
+false
+
+query T
+SELECT ('a'::char(3) < 'a!')::text
+----
+true
+
+query T
+SELECT ('a'::char(3) = 'a'::text COLLATE "C")::text
+----
+true
+
+query T
+SELECT ('a b'::char(5) = 'a b')::text
+----
+true
+
+query T
+SELECT ('a'::char(2) IS NOT DISTINCT FROM 'a '::char(5))::text
+----
+true
+
+query T
+SELECT (NULL::char(3) = 'a')::text
+----
+NULL
+
+query T
+SELECT ('a'::char(3) IN ('a', 'b'))::text
+----
+true
+
+query T
+SELECT ('a'::char(3) IN ('a  '::text, 'b'::text))::text
+----
+true
+
+query T
+SELECT ('a'::char(3) IN ('b'::text, 'a'::text))::text
+----
+true
+
+query T
+SELECT ('a'::char(3) BETWEEN 'A' AND 'b')::text
+----
+true
+
+query T
+SELECT ('a'::char(3) = ANY(ARRAY['a'::text, 'b']))::text
+----
+true
+
+query T
+SELECT ('a  '::char(3) = ANY(ARRAY['a'::char(5), 'b'::char(5)]))::text
+----
+true
+
+query T
+SELECT (pg_typeof('a'::char(3) = 'a'::text))::text
+----
+boolean
+
+# LIKE / ~ / || / concat
+
+query T
+SELECT ('ab '::char(3) LIKE 'ab')::text
+----
+false
+
+query T
+SELECT ('ab '::char(3) LIKE 'ab ')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) LIKE 'ab%')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) LIKE '%b')::text
+----
+false
+
+query T
+SELECT ('ab '::char(3) LIKE '%b ')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) LIKE 'ab_')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) NOT LIKE 'ab')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) ILIKE 'AB ')::text
+----
+true
+
+query T
+SELECT ('ab'::char(2) LIKE 'ab')::text
+----
+true
+
+query T
+SELECT ('a%'::char(3) LIKE 'a\%')::text
+----
+false
+
+query T
+SELECT ('ab '::char(3) ~ 'b$')::text
+----
+false
+
+query T
+SELECT ('ab '::char(3) ~ 'b $')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) ~ '^ab $')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) ~ '^ab$')::text
+----
+false
+
+query T
+SELECT ('ab '::char(3) ~ 'b\s$')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) ~* 'B $')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) !~ 'b$')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) SIMILAR TO 'ab')::text
+----
+false
+
+query T
+SELECT ('ab '::char(3) SIMILAR TO 'ab ')::text
+----
+true
+
+query T
+SELECT ('ab '::char(3) SIMILAR TO 'ab%')::text
+----
+true
+
+query T
+SELECT (''::char(3) ~ '^ +$')::text
+----
+true
+
+query T
+SELECT (''::char(3) LIKE '   ')::text
+----
+true
+
+query T
+SELECT (''::char(3) LIKE '')::text
+----
+false
+
+query T
+SELECT (('a'::char(3) || 'b'::char(3)) || '|')::text
+----
+ab|
+
+query T
+SELECT (('a'::char(3) || 'b'::text) || '|')::text
+----
+ab|
+
+query T
+SELECT (('a'::text || 'b'::char(3)) || '|')::text
+----
+ab|
+
+query T
+SELECT (('a'::char(3) || NULL::char(3)))::text
+----
+NULL
+
+query T
+SELECT (('a'::char(3) || 1) || '|')::text
+----
+a1|
+
+query T
+SELECT (('a'::char(3) || 'b') || '|')::text
+----
+ab|
+
+query T
+SELECT (length('a'::char(3) || 'b'::char(3)))::text
+----
+2
+
+query T
+SELECT (pg_typeof('a'::char(3) || 'b'::char(3)))::text
+----
+text
+
+query T
+SELECT (pg_typeof('a'::char(3) || 'b'::text))::text
+----
+text
+
+query T
+SELECT (concat('a'::char(3), 'b') || '|')::text
+----
+a  b|
+
+query T
+SELECT (concat('a'::char(3), 'b'::char(3)) || '|')::text
+----
+a  b  |
+
+query T
+SELECT (concat('a'::char(3), NULL, 'b') || '|')::text
+----
+a  b|
+
+query T
+SELECT (concat_ws(',', 'a'::char(3), 'b'::char(2)) || '|')::text
+----
+a  ,b |
+
+query T
+SELECT (format('%s|%s', 'a'::char(3), 'b'::char(2)) || '|')::text
+----
+a  |b |
+
+query T
+SELECT (format('%10s|', 'a'::char(3)))::text
+----
+       a  |
+
+query T
+SELECT ('a'::char(3)::text || 'b'::char(3)::text || '|')::text
+----
+ab|
+
+query T
+SELECT (upper('ab '::char(4)) || '|')::text
+----
+AB|
+
+query T
+SELECT (lower('AB '::char(4)) || '|')::text
+----
+ab|
+
+query T
+SELECT (length(upper('ab '::char(4))))::text
+----
+2
+
+query T
+SELECT (trim('ab  '::char(4)) || '|')::text
+----
+ab|
+
+query T
+SELECT (rtrim('ab  '::char(4)) || '|')::text
+----
+ab|
+
+query T
+SELECT (ltrim('  ab'::char(4)) || '|')::text
+----
+ab|
+
+query T
+SELECT (btrim('  ab  '::char(6)) || '|')::text
+----
+ab|
+
+query T
+SELECT (substr('abc   '::char(6), 3) || '|')::text
+----
+c|
+
+query T
+SELECT (substr('abc   '::char(6), 3, 2) || '|')::text
+----
+c|
+
+query T
+SELECT (substring('abc   '::char(6) from 4) || '|')::text
+----
+|
+
+query T
+SELECT (replace('ab  '::char(4), ' ', '_'))::text
+----
+ab
+
+query T
+SELECT (position('b' in 'ab  '::char(4)))::text
+----
+2
+
+query T
+SELECT (position(' ' in 'ab  '::char(4)))::text
+----
+0
+
+query T
+SELECT (strpos('ab  '::char(4), ' '))::text
+----
+0
+
+query T
+SELECT (left('ab  '::char(4), 3) || '|')::text
+----
+ab|
+
+query T
+SELECT (right('ab  '::char(4), 3) || '|')::text
+----
+ab|
+
+query T
+SELECT (reverse('ab  '::char(4)) || '|')::text
+----
+ba|
+
+query T
+SELECT (repeat('ab '::char(3), 2) || '|')::text
+----
+abab|
+
+query T
+SELECT (md5('ab '::char(3)))::text
+----
+187ef4436122d1cc2f40dc2b92f0eba0
+
+query T
+SELECT (md5('ab'::text))::text
+----
+187ef4436122d1cc2f40dc2b92f0eba0
+
+query T
+SELECT (ascii(' a'::char(3)))::text
+----
+32
+
+query T
+SELECT (ascii(''::char(3)))::text
+----
+0
+
+query T
+SELECT (initcap('ab cd'::char(6)) || '|')::text
+----
+Ab Cd|
+
+query T
+SELECT (lpad('ab'::char(4), 6, '*'))::text
+----
+****ab
+
+query T
+SELECT (rpad('ab'::char(4), 6, '*'))::text
+----
+ab****
+
+query T
+SELECT (split_part('a b  '::char(5), ' ', 2) || '|')::text
+----
+b|
+
+query T
+SELECT (split_part('a b  '::char(5), ' ', 3) || '|')::text
+----
+|
+
+query T
+SELECT (string_to_array('a b  '::char(5), ' '))::text
+----
+{a,b}
+
+query T
+SELECT (array_to_string(ARRAY['a'::char(3), 'b'::char(3)], ',') || '|')::text
+----
+a  ,b  |
+
+# 集約（min / max は空白を保持して返す）
+
+query T
+SELECT ((SELECT min(c)::text || '|' FROM types_bpchar_gap_t))::text
+----
+|
+
+query T
+SELECT ((SELECT max(c)::text || '|' FROM types_bpchar_gap_t))::text
+----
+éé|
+
+query T
+SELECT ((SELECT min(c)::text FROM types_bpchar_gap_t WHERE id IN (1, 2, 3)))::text
+----
+ab
+
+query T
+SELECT ((SELECT max(c)::text FROM types_bpchar_gap_t WHERE id IN (1, 2, 3)))::text
+----
+xy
+
+query T
+SELECT ((SELECT length(max(c)) FROM types_bpchar_gap_t))::text
+----
+2
+
+query T
+SELECT ((SELECT octet_length(max(c)) FROM types_bpchar_gap_t))::text
+----
+5
+
+query T
+SELECT ((SELECT pg_typeof(min(c)) FROM types_bpchar_gap_t LIMIT 1))::text
+----
+character
+
+query T
+SELECT ((SELECT count(*) FROM (SELECT DISTINCT c FROM types_bpchar_gap_t) d))::text
+----
+7
+
+query T
+SELECT ((SELECT count(DISTINCT c) FROM types_bpchar_gap_t))::text
+----
+6
+
+query T
+SELECT ((SELECT string_agg(c, ',' ORDER BY id) FROM types_bpchar_gap_t WHERE id IN (1, 2, 4)))::text
+----
+xy,ab,
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c = ''))::text
+----
+2
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c = ' '))::text
+----
+2
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c = '   '))::text
+----
+2
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c LIKE '%'))::text
+----
+9
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c LIKE '___'))::text
+----
+9
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c LIKE '% '))::text
+----
+6
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c ~ ' $'))::text
+----
+6
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c::text ~ ' $'))::text
+----
+0
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c = v))::text
+----
+7
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c = v::text))::text
+----
+4
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c < 'b'))::text
+----
+6
+
+query T
+SELECT ((SELECT count(*) FROM types_bpchar_gap_t WHERE c >= 'b'))::text
+----
+3
+
+query T
+SELECT id::text FROM types_bpchar_gap_t ORDER BY c, id
+----
+4
+5
+2
+10
+11
+3
+1
+6
+7
+8
+
+
+query T
+SELECT id::text FROM types_bpchar_gap_t ORDER BY c DESC NULLS LAST, id
+----
+7
+6
+1
+10
+11
+3
+2
+4
+5
+8
+
+
+query T
+SELECT c::text || '|' FROM (SELECT DISTINCT c FROM types_bpchar_gap_t) d ORDER BY c NULLS LAST
+----
+|
+ab|
+abc|
+xy|
+é|
+éé|
+NULL
+
+
+query T
+SELECT coalesce(c::text, 'N') || '|' || count(*) FROM types_bpchar_gap_t GROUP BY c ORDER BY c NULLS LAST
+----
+|2
+ab|1
+abc|3
+xy|1
+é|1
+éé|1
+N|1
+
+
+# format_type / pg_attribute
+
+query T
+SELECT (format_type(1042, NULL))::text
+----
+character
+
+query T
+SELECT (format_type(1042, 4))::text
+----
+character
+
+query T
+SELECT (format_type(1042, 5))::text
+----
+character(1)
+
+query T
+SELECT (format_type(1042, -1))::text
+----
+bpchar
+
+query T
+SELECT (format_type(1042, 10485764))::text
+----
+character(10485760)
+
+query T
+SELECT (format_type(1042, 3))::text
+----
+character
+
+query T
+SELECT ((SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'types_bpchar_gap_t'::regclass AND attname = 'c'))::text
+----
+character(3)
+
+query T
+SELECT ((SELECT atttypmod FROM pg_attribute WHERE attrelid = 'types_bpchar_gap_t'::regclass AND attname = 'c'))::text
+----
+7
+
+query T
+SELECT ((SELECT atttypmod FROM pg_attribute WHERE attrelid = 'types_bpchar_gap_t'::regclass AND attname = 'v'))::text
+----
+7
+
+query T
+SELECT (pg_typeof('a'::char))::text
+----
+character
+
+query T
+SELECT (pg_typeof('a'::character))::text
+----
+character
+
+query T
+SELECT (pg_typeof('a'::character(4)))::text
+----
+character
+
+query T
+SELECT (length('a'::char))::text
+----
+1
+
+query T
+SELECT ('ab'::char || '|')::text
+----
+a|
+
+query T
+SELECT ('ab'::character || '|')::text
+----
+a|
+
+# 型変換
+
+query T
+SELECT (12::char(5) || '|')::text
+----
+12|
+
+query T
+SELECT (1.5::char(6) || '|')::text
+----
+1.5|
+
+query T
+SELECT (true::char(6) || '|')::text
+----
+true|
+
+query T
+SELECT ('x'::"char"::char(3) || '|')::text
+----
+x|
+
+query T
+SELECT ('2024-01-02'::date::char(12) || '|')::text
+----
+2024-01-02|
+
+statement error (22P02)
+SELECT ('a'::char(3)::int)::text
+
+query T
+SELECT ('12 '::char(5)::int)::text
+----
+12
+
+query T
+SELECT (' 12'::char(5)::int)::text
+----
+12
+
+query T
+SELECT ('12'::char(5)::int8)::text
+----
+12
+
+query T
+SELECT ('1.5'::char(5)::numeric)::text
+----
+1.5
+
+query T
+SELECT ('1.5'::char(5)::float8)::text
+----
+1.5
+
+query T
+SELECT ('t'::char(5)::bool)::text
+----
+true
+
+query T
+SELECT ('a'::char(3)::bytea)::text
+----
+\x612020
+
+query T
+SELECT ('a'::char(3)::name)::text
+----
+a
+
+query T
+SELECT (('a'::char(3)::name)::text || '|')::text
+----
+a|
+
+query T
+SELECT ('abc'::char(3)::char(2) || '|')::text
+----
+ab|
+
+query T
+SELECT ('a'::char(2)::char(5) || '|')::text
+----
+a|
+
+query T
+SELECT ('a'::char(5)::char(2) || '|')::text
+----
+a|
+
+query T
+SELECT (length('a'::char(5)::char(2)))::text
+----
+1
+
+query T
+SELECT ('a'::char(5)::varchar(2) || '|')::text
+----
+a|
+
+query T
+SELECT ('a  '::char(3)::varchar(1) || '|')::text
+----
+a|
+
+statement ok
+DROP TABLE types_bpchar_gap_t
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

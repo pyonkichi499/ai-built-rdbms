@@ -1,0 +1,99 @@
+# NOWAIT と SKIP LOCKED（待たない形のみ）
+
+statement ok
+DROP TABLE IF EXISTS rowlock_nowait_skiplocked_t
+
+statement ok
+CREATE TABLE rowlock_nowait_skiplocked_t (id int PRIMARY KEY, v text)
+
+statement ok
+INSERT INTO rowlock_nowait_skiplocked_t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')
+
+connection a
+statement ok
+BEGIN
+
+connection a
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t WHERE id IN (1, 3) FOR UPDATE
+----
+1
+3
+
+# NOWAIT: ロックされた行に当たると 55P03
+connection b
+statement error (55P03)
+SELECT id FROM rowlock_nowait_skiplocked_t FOR UPDATE NOWAIT
+
+# ロックされていない行だけを対象にすれば通る
+connection b
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t WHERE id = 2 FOR UPDATE NOWAIT
+----
+2
+
+# SKIP LOCKED: ロックされた行を飛ばす
+connection b
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t ORDER BY id FOR UPDATE SKIP LOCKED
+----
+2
+4
+
+connection b
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t WHERE id = 1 FOR UPDATE SKIP LOCKED
+----
+
+connection b
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t ORDER BY id FOR SHARE SKIP LOCKED
+----
+2
+4
+
+# LIMIT と組み合わせる（ジョブキューの形）
+connection b
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+----
+2
+
+# UPDATE の NOWAIT 相当は lock_timeout だが、ここでは待たない形だけを書く
+connection a
+statement ok
+COMMIT
+
+# ロックが解放されたあとは全部見える
+connection b
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t ORDER BY id FOR UPDATE NOWAIT
+----
+1
+2
+3
+4
+
+# SKIP LOCKED と NOWAIT の併用は構文エラー
+statement error (42601)
+SELECT id FROM rowlock_nowait_skiplocked_t FOR UPDATE NOWAIT SKIP LOCKED
+
+# 同じトランザクション内の自分のロックは飛ばさない
+statement ok
+BEGIN
+
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t WHERE id = 1 FOR UPDATE
+----
+1
+
+query I
+SELECT id FROM rowlock_nowait_skiplocked_t WHERE id = 1 FOR UPDATE SKIP LOCKED
+----
+1
+
+statement ok
+COMMIT
+
+statement ok
+DROP TABLE rowlock_nowait_skiplocked_t

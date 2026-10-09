@@ -525,10 +525,11 @@ mod orphan_tests {
                 max_wal_size: 64 << 20,
                 background_checkpointer: false,
                 knobs: DebugKnobs::default(),
+                ..ClusterOptions::new(PathBuf::from("/sim/data"))
             },
         )
         .unwrap();
-        let (db, _) = cluster.connect("postgres", "postgres").unwrap();
+        let (db, _) = cluster.connect_simple("postgres", "postgres").unwrap();
         let snap = cluster.txn_manager().snapshot(None, 0);
         let first = check_orphan_files(&cluster, &db, &snap).unwrap();
         assert!(first.is_empty(), "{first:?}");

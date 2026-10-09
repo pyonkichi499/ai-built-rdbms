@@ -9,7 +9,7 @@ use super::Analyzer;
 use super::bound::{
     BoundExpr, BoundExprKind, BoundQuery, BoundSetExpr, BoundSortKey, OutputColumn, SetOpKind,
 };
-use super::coerce::{CoercionContext, resolve_unknown, select_common_typmod};
+use super::coerce::{CoercionContext, select_common_typmod};
 use super::cte::CteScope;
 use super::expr::{ExprCtx, contains_column_ref, parse_int_literal};
 use super::scope::{ParseExprKind, QueryEnv, ScopeColumn, ScopeRel, ScopeStack};
@@ -137,6 +137,7 @@ impl Analyzer<'_> {
             order_by: Vec::new(),
             limit: None,
             offset: None,
+            locking: Vec::new(),
             span,
         };
         self.analyze_query(&tmp, &arm_env)
@@ -348,7 +349,7 @@ impl Analyzer<'_> {
             return Ok(usize::try_from(pos - 1).unwrap_or(0));
         }
         // 式: 結果の列だけの名前空間で解析する（未知の名前・修飾名はここでエラー）。
-        let b = resolve_unknown(self.transform_expr(e, cx)?);
+        let b = self.resolve_unknown(self.transform_expr(e, cx)?)?;
         if let BoundExprKind::Column(v) = &b.kind
             && v.levels_up == 0
             && v.rte == RteId(0)

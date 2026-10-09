@@ -10,6 +10,7 @@ use std::sync::Arc;
 use super::ident::{quote_identifier, quote_qualified};
 use super::{ColText, ColumnNamer, DeparseCtx, DeparseOptions, deparse_expr};
 use crate::analyzer::query::BoundQuery;
+use crate::catalog::fk::{FkNames, fk_constraint_def};
 use crate::catalog::opclass::{default_opclass, opclass_by_oid};
 use crate::catalog::{CatalogReader, CheckDef, ConstraintKind, IndexDef, SystemColumn, TableDef};
 use crate::error::{Error, Result};
@@ -165,7 +166,32 @@ pub fn pg_get_constraintdef(
             };
             format!("{head} ({})", cols.join(", "))
         }
+        ConstraintKind::ForeignKey => {
+            let fk = catalog
+                .foreign_keys_of(c.table_oid)?
+                .into_iter()
+                .find(|f| f.oid == c.oid)
+                .ok_or_else(|| Error::internal("foreign key constraint without a definition"))?;
+            fk_constraint_def(&fk, &CatalogFkNames(catalog))
+        }
     }))
+}
+
+/// `fk_constraint_def` に名前を渡す `CatalogReader` の包み。
+struct CatalogFkNames<'a>(&'a dyn CatalogReader);
+
+impl FkNames for CatalogFkNames<'_> {
+    fn column_name(&self, table: Oid, attnum: i16) -> Option<String> {
+        let t = self.0.table_by_oid(table).ok().flatten()?;
+        t.columns
+            .iter()
+            .find(|c| c.attnum == attnum)
+            .map(|c| c.name.clone())
+    }
+
+    fn relation_name(&self, table: Oid) -> Option<String> {
+        self.0.relation_name(table).ok().flatten()
+    }
 }
 
 fn attnum_names(table: &TableDef, attnums: impl Iterator<Item = i16>) -> Result<Vec<String>> {
@@ -302,6 +328,9 @@ fn empty_table() -> TableDef {
         indexes: Vec::new(),
         sequence: None,
         identity_seqs: Vec::new(),
+        key_columns: Vec::new(),
+        foreign_keys: Vec::new(),
+        referenced_by: Vec::new(),
     }
 }
 

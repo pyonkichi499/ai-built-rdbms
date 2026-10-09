@@ -251,12 +251,24 @@ pub fn sync_data_directory(vfs: &dyn Vfs) -> Result<()> {
 /// the directories are fsynced. On failure the partial copy is removed.
 /// Flushing buffers first is the caller's job (§6.9.3).
 pub fn copy_database_dir(vfs: &dyn Vfs, src: Oid, dst: Oid, sync: bool) -> Result<()> {
+    copy_database_dir_checked(vfs, src, dst, sync, &mut || Ok(()))
+}
+
+/// [`copy_database_dir`] with a cancellation hook: `check` runs before every file and after
+/// every 1 MiB chunk; an `Err` aborts the copy, removes `dst` and is returned (`m5/09` §4.6).
+pub fn copy_database_dir_checked(
+    vfs: &dyn Vfs,
+    src: Oid,
+    dst: Oid,
+    sync: bool,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
     let base = PathBuf::from("base");
     let src_dir = base.join(src.to_string());
     let dst_dir = base.join(dst.to_string());
     vfs.create_dir(&dst_dir)
         .map_err(|e| io_error(&e, "create directory", &dst_dir))?;
-    let result = copy_files(vfs, &src_dir, &dst_dir, sync).and_then(|()| {
+    let result = copy_files(vfs, &src_dir, &dst_dir, sync, check).and_then(|()| {
         if sync {
             vfs.sync_dir(&dst_dir)
                 .and_then(|()| vfs.sync_dir(&base))
@@ -270,7 +282,13 @@ pub fn copy_database_dir(vfs: &dyn Vfs, src: Oid, dst: Oid, sync: bool) -> Resul
     result
 }
 
-fn copy_files(vfs: &dyn Vfs, src_dir: &Path, dst_dir: &Path, sync: bool) -> Result<()> {
+fn copy_files(
+    vfs: &dyn Vfs,
+    src_dir: &Path,
+    dst_dir: &Path,
+    sync: bool,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
     const CHUNK: usize = 1 << 20;
     let entries = vfs
         .read_dir(src_dir)
@@ -280,8 +298,10 @@ fn copy_files(vfs: &dyn Vfs, src_dir: &Path, dst_dir: &Path, sync: bool) -> Resu
         let Some(name) = entry.file_name() else {
             continue;
         };
+        check()?;
         let to = dst_dir.join(name);
-        let copy = |buf: &mut Vec<u8>| -> std::io::Result<()> {
+        // `Ok(Some(e))`: `check` asked to stop.
+        let mut copy = |buf: &mut Vec<u8>| -> std::io::Result<Option<Error>> {
             let from = vfs.open(&entry, OpenMode::ReadOnly)?;
             let out = vfs.open(&to, OpenMode::CreateNew)?;
             let size = from.size()?;
@@ -291,13 +311,18 @@ fn copy_files(vfs: &dyn Vfs, src_dir: &Path, dst_dir: &Path, sync: bool) -> Resu
                 from.read_exact_at(&mut buf[..n], off)?;
                 out.write_all_at(&buf[..n], off)?;
                 off += n as u64;
+                if let Err(e) = check() {
+                    return Ok(Some(e));
+                }
             }
             if sync {
                 out.sync_all()?;
             }
-            Ok(())
+            Ok(None)
         };
-        copy(&mut buf).map_err(|e| io_error(&e, "copy file", &entry))?;
+        if let Some(e) = copy(&mut buf).map_err(|e| io_error(&e, "copy file", &entry))? {
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -615,5 +640,44 @@ mod tests {
         s.set_faults(FaultPlan::default());
         s.set_ignore_sync_dir(false);
         sync_data_directory(&*vfs).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checked_copy_tests {
+    use super::*;
+    use crate::storage::vfs::OpenMode;
+    use crate::storage::vfs::sim::SimVfs;
+    use std::path::Path;
+
+    #[test]
+    fn check_error_aborts_and_removes_dst() {
+        let s = SimVfs::new(1);
+        let vfs: Arc<dyn Vfs> = Arc::new(s);
+        vfs.create_dir_all(Path::new("base/1")).unwrap();
+        for n in ["a", "b", "c"] {
+            let f = vfs
+                .open(&Path::new("base/1").join(n), OpenMode::CreateNew)
+                .unwrap();
+            f.write_all_at(b"x", 0).unwrap();
+        }
+        let mut calls = 0;
+        let e = copy_database_dir_checked(&*vfs, 1, 9, false, &mut || {
+            calls += 1;
+            if calls == 4 {
+                Err(Error::new(
+                    crate::error::sqlstate::QUERY_CANCELED,
+                    "canceled",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(e.sqlstate.code(), "57014");
+        assert!(!vfs.exists(Path::new("base/9")).unwrap());
+        // Without a failing check the copy completes.
+        copy_database_dir_checked(&*vfs, 1, 9, false, &mut || Ok(())).unwrap();
+        assert!(vfs.exists(Path::new("base/9/c")).unwrap());
     }
 }

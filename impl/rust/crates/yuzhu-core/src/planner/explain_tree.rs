@@ -525,6 +525,7 @@ impl Asm<'_> {
             P::Result { .. }
             | P::Values { .. }
             | P::SeqScan { .. }
+            | P::VirtualScan { .. }
             | P::IndexScan { .. }
             | P::FunctionScan { .. }
             | P::CteScan { .. } => Ok(Group {

@@ -224,7 +224,7 @@ mod redo_tests {
         let smgr = Arc::new(StorageManager::new(Arc::clone(&vfs), 131_072));
         smgr.set_recovery_mode(true);
         let pool = BufferPool::new(8, Arc::clone(&smgr), Arc::new(NoWal), DebugKnobs::default());
-        let clog = Arc::new(Clog::open(vfs, Xid(3)).unwrap());
+        let clog = Arc::new(Clog::open(vfs, Xid(3), Xid(3)).unwrap());
         let ctx = RedoCtx {
             pool,
             smgr,

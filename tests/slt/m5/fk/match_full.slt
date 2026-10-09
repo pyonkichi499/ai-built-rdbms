@@ -1,0 +1,58 @@
+# FOREIGN KEY: MATCH FULL。全列 NULL か全列非 NULL のみ
+# 接頭辞: fk_match_full_
+
+statement ok
+DROP TABLE IF EXISTS fk_match_full_c
+
+statement ok
+DROP TABLE IF EXISTS fk_match_full_p
+
+statement ok
+CREATE TABLE fk_match_full_p (a int, b int, PRIMARY KEY (a, b))
+
+statement ok
+INSERT INTO fk_match_full_p VALUES (1, 1), (2, 2)
+
+statement ok
+CREATE TABLE fk_match_full_c (n int PRIMARY KEY, a int, b int, FOREIGN KEY (a, b) REFERENCES fk_match_full_p MATCH FULL)
+
+# 全 NULL と全一致は通る
+statement ok
+INSERT INTO fk_match_full_c VALUES (1, 1, 1), (2, NULL, NULL)
+
+# NULL 混在は 23503
+statement error (?s)insert or update on table "fk_match_full_c" violates foreign key constraint "fk_match_full_c_a_b_fkey".*MATCH FULL does not allow mixing of null and nonnull key values\.
+INSERT INTO fk_match_full_c VALUES (3, 1, NULL)
+
+statement error (?s)MATCH FULL does not allow mixing of null and nonnull key values\.
+INSERT INTO fk_match_full_c VALUES (4, NULL, 1)
+
+statement error (23503)
+INSERT INTO fk_match_full_c VALUES (4, NULL, 1)
+
+statement error (?s)MATCH FULL does not allow mixing of null and nonnull key values\.
+UPDATE fk_match_full_c SET b = NULL WHERE n = 1
+
+# 親に無い組
+statement error (?s)Key \(a, b\)=\(1, 2\) is not present in table "fk_match_full_p"\.
+INSERT INTO fk_match_full_c VALUES (5, 1, 2)
+
+# 親の削除の違反
+statement error (?s)Key \(a, b\)=\(1, 1\) is still referenced from table "fk_match_full_c"\.
+DELETE FROM fk_match_full_p WHERE a = 1
+
+query T
+SELECT confmatchtype FROM pg_constraint WHERE conname = 'fk_match_full_c_a_b_fkey'
+----
+f
+
+query T
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'fk_match_full_c_a_b_fkey'
+----
+FOREIGN KEY (a, b) REFERENCES fk_match_full_p(a, b) MATCH FULL
+
+statement ok
+DROP TABLE fk_match_full_c
+
+statement ok
+DROP TABLE fk_match_full_p

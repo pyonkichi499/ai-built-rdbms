@@ -1,0 +1,303 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# bytea 列: INSERT / ORDER BY / DISTINCT / GROUP BY / PRIMARY KEY / UNIQUE
+
+# 接頭辞: types_bytea_table_
+
+statement ok
+DROP TABLE IF EXISTS types_bytea_table_t
+
+statement ok
+DROP TABLE IF EXISTS types_bytea_table_pk
+
+statement ok
+DROP TABLE IF EXISTS types_bytea_table_u
+
+statement ok
+CREATE TABLE types_bytea_table_t (id int, b bytea)
+
+statement ok
+INSERT INTO types_bytea_table_t VALUES (1, '\x00'), (2, '\x'), (3, '\x0000'), (4, '\x01'), (5, '\x0100'), (6, '\xff'), (7, NULL), (8, '\x00'), (9, '\x0001'), (10, '\x7f80')
+
+query T
+SELECT id::text FROM types_bytea_table_t ORDER BY b, id
+----
+2
+1
+8
+3
+9
+4
+5
+10
+6
+7
+
+
+query T
+SELECT id::text FROM types_bytea_table_t ORDER BY b DESC, id
+----
+7
+6
+10
+5
+4
+9
+3
+1
+8
+2
+
+
+query T
+SELECT id::text FROM types_bytea_table_t ORDER BY b NULLS FIRST, id
+----
+7
+2
+1
+8
+3
+9
+4
+5
+10
+6
+
+
+query T
+SELECT b::text FROM (SELECT DISTINCT b FROM types_bytea_table_t) s ORDER BY b NULLS LAST
+----
+\x
+\x00
+\x0000
+\x0001
+\x01
+\x0100
+\x7f80
+\xff
+NULL
+
+
+query T
+SELECT coalesce(b::text, 'NULL') || ':' || count(*) FROM types_bytea_table_t GROUP BY b ORDER BY b NULLS LAST
+----
+\x:1
+\x00:2
+\x0000:1
+\x0001:1
+\x01:1
+\x0100:1
+\x7f80:1
+\xff:1
+NULL:1
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b = '\x00' ORDER BY id
+----
+1
+8
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b < '\x0100' ORDER BY id
+----
+1
+2
+3
+4
+8
+9
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b >= '\x0100' ORDER BY id
+----
+10
+5
+6
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b IN ('\x00', '\xff') ORDER BY id
+----
+1
+6
+8
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b IS NULL
+----
+7
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE length(b) = 2 ORDER BY id
+----
+10
+3
+5
+9
+
+
+query T
+SELECT (b || '\x2a')::text FROM types_bytea_table_t WHERE id <= 3 ORDER BY id
+----
+\x002a
+\x2a
+\x00002a
+
+
+query T
+SELECT id || ':' || encode(b, 'hex') FROM types_bytea_table_t WHERE b IS NOT NULL ORDER BY id
+----
+1:00
+2:
+3:0000
+4:01
+5:0100
+6:ff
+8:00
+9:0001
+10:7f80
+
+
+statement ok
+UPDATE types_bytea_table_t SET b = b || '\x00' WHERE id = 4
+
+query T
+SELECT b::text FROM types_bytea_table_t WHERE id = 4
+----
+\x0100
+
+
+statement ok
+CREATE TABLE types_bytea_table_pk (k bytea PRIMARY KEY, v int)
+
+statement ok
+INSERT INTO types_bytea_table_pk VALUES ('\x00', 1), ('\x0000', 2), ('\x', 3), ('\x01', 4), ('\x0100', 5), ('\xff', 6), ('\x00ff', 7)
+
+statement error (23505)
+INSERT INTO types_bytea_table_pk VALUES ('\x00', 9)
+
+statement error (23505)
+INSERT INTO types_bytea_table_pk VALUES ('\x', 9)
+
+statement error (23502)
+INSERT INTO types_bytea_table_pk VALUES (NULL, 9)
+
+query T
+SELECT k::text || '=' || v FROM types_bytea_table_pk ORDER BY k
+----
+\x=3
+\x00=1
+\x0000=2
+\x00ff=7
+\x01=4
+\x0100=5
+\xff=6
+
+
+query T
+SELECT v::text FROM types_bytea_table_pk WHERE k = '\x0000'
+----
+2
+
+
+query T
+SELECT v::text FROM types_bytea_table_pk WHERE k = '\x'
+----
+3
+
+
+query T
+SELECT v::text FROM types_bytea_table_pk WHERE k > '\x00' AND k < '\x01' ORDER BY k
+----
+2
+7
+
+
+query T
+SELECT v::text FROM types_bytea_table_pk WHERE k >= '\x01' ORDER BY k
+----
+4
+5
+6
+
+
+statement ok
+CREATE TABLE types_bytea_table_u (id int, b bytea UNIQUE)
+
+statement ok
+INSERT INTO types_bytea_table_u VALUES (1, '\x00'), (2, '\x0000'), (3, NULL), (4, NULL), (5, '\x'), (6, '\x6162')
+
+statement error (23505)
+INSERT INTO types_bytea_table_u VALUES (7, '\x6162')
+
+statement error (23505)
+INSERT INTO types_bytea_table_u VALUES (7, 'ab')
+
+query T
+SELECT id::text FROM types_bytea_table_u ORDER BY b NULLS LAST, id
+----
+5
+1
+2
+6
+3
+4
+
+
+query T
+SELECT count(*)::text FROM types_bytea_table_u
+----
+6
+
+
+statement ok
+CREATE INDEX types_bytea_table_u_idx ON types_bytea_table_t (b)
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b = '\x0100'
+----
+5
+4
+
+
+query T
+SELECT id::text FROM types_bytea_table_t WHERE b > '\x00' ORDER BY b, id
+----
+3
+9
+4
+5
+10
+6
+
+
+statement ok
+DROP TABLE types_bytea_table_t
+
+statement ok
+DROP TABLE types_bytea_table_pk
+
+statement ok
+DROP TABLE types_bytea_table_u
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

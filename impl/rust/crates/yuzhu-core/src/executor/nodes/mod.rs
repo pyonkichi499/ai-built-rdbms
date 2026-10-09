@@ -17,6 +17,7 @@ pub mod hash_setop;
 pub mod index_scan;
 pub mod insert;
 pub mod limit;
+pub mod lock_rows;
 pub mod materialize;
 pub mod nested_loop;
 pub mod project;

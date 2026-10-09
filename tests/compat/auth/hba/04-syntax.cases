@@ -1,0 +1,6 @@
+alice  app       127.0.0.1  alice-pw   ok/scram
+alice  other     127.0.0.1  alice-pw   ok/scram
+bob    app       127.0.0.1  bob-pw     ok/scram
+alice  app       127.0.0.1  wrong      28P01
+alice  postgres  127.0.0.1  alice-pw   28000
+dave   app       127.0.0.1  x          28000

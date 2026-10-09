@@ -1,0 +1,285 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# psql の \d などが使う配列の式だけを抜き出した縮小版
+
+# 接頭辞: types_psql_d_arrays_
+
+statement ok
+DROP TABLE IF EXISTS types_psql_d_arrays_t
+
+statement ok
+CREATE TABLE types_psql_d_arrays_t (a int, b text, c int)
+
+# ポリシー: polroles = '{0}'（oid[] と unknown リテラル）
+
+query T
+SELECT ('{0}'::oid[] = '{0}')::text
+----
+true
+
+query T
+SELECT ('{0}'::oid[] = '{1}')::text
+----
+false
+
+query T
+SELECT ('{0}'::oid[] <> '{0}')::text
+----
+false
+
+query T
+SELECT ((SELECT '{0}'::oid[] = '{0}'))::text
+----
+true
+
+query T
+SELECT ((SELECT polroles = '{0}' FROM (SELECT '{0}'::oid[] AS polroles) p))::text
+----
+true
+
+query T
+SELECT ((SELECT CASE WHEN polroles = '{0}' THEN 'all' ELSE 'some' END FROM (SELECT '{0}'::oid[] AS polroles) p))::text
+----
+all
+
+query T
+SELECT ((SELECT CASE WHEN polroles = '{0}' THEN 'all' ELSE 'some' END FROM (SELECT '{1,2}'::oid[] AS polroles) p))::text
+----
+some
+
+# array(select ...)（name[]）と oid = any(oid[]) と array_to_string(name[], text)
+
+query T
+SELECT (array(select rolname from pg_catalog.pg_roles where oid = any ('{0}'::oid[]) order by 1))::text
+----
+{}
+
+query T
+SELECT (pg_typeof(array(select rolname from pg_catalog.pg_roles where oid = any ('{0}'::oid[]) order by 1)))::text
+----
+name[]
+
+query T
+SELECT (pg_catalog.array_to_string(array(select rolname from pg_catalog.pg_roles where oid = any ('{0}'::oid[]) order by 1),','))::text
+----
+(empty)
+
+query T
+SELECT ((SELECT CASE WHEN polroles = '{0}' THEN NULL ELSE pg_catalog.array_to_string(array(select rolname from pg_catalog.pg_roles where oid = any (polroles) order by 1),',') END FROM (SELECT '{0}'::oid[] AS polroles) p) IS NULL)::text
+----
+true
+
+query T
+SELECT ((SELECT CASE WHEN polroles = '{0}' THEN NULL ELSE pg_catalog.array_to_string(array(select rolname from pg_catalog.pg_roles where oid = any (polroles) order by 1),',') END FROM (SELECT '{}'::oid[] AS polroles) p))::text
+----
+(empty)
+
+query T
+SELECT (array(select rolname from pg_catalog.pg_roles where oid = any ('{}'::oid[]) order by 1))::text
+----
+{}
+
+query T
+SELECT (cardinality(array(select oid from pg_catalog.pg_roles where oid = any ('{0}'::oid[]))))::text
+----
+0
+
+query T
+SELECT (array(select 'toast.' || x from (values ('a'), ('b')) v(x)))::text
+----
+{toast.a,toast.b}
+
+query T
+SELECT (array(select 'toast.' || x from (values ('a'), ('b')) v(x) where false))::text
+----
+{}
+
+# 拡張統計: 'd' = any(stxkind)（"char"[]）
+
+query T
+SELECT ('d' = any('{d,f}'::"char"[]))::text
+----
+true
+
+query T
+SELECT ('m' = any('{d,f}'::"char"[]))::text
+----
+false
+
+query T
+SELECT ('f' = any('{d,f}'::"char"[]))::text
+----
+true
+
+query T
+SELECT ('d' = any('{}'::"char"[]))::text
+----
+false
+
+query T
+SELECT ('d' = any(NULL::"char"[]))::text
+----
+NULL
+
+query T
+SELECT ((SELECT 'd' = any(stxkind) FROM (SELECT '{d,f,m}'::"char"[] AS stxkind) s))::text
+----
+true
+
+query T
+SELECT ((SELECT 'f' = any(stxkind) AS deps_enabled FROM (SELECT '{d}'::"char"[] AS stxkind) s))::text
+----
+false
+
+query T
+SELECT (pg_typeof('{d,f}'::"char"[]))::text
+----
+"char"[]
+
+query T
+SELECT ('{d,f}'::"char"[])::text
+----
+{d,f}
+
+# 出版物: int2vector の int2[] へのキャストと添字
+
+query T
+SELECT (('1 3'::int2vector)::pg_catalog.int2[])::text
+----
+[0:1]={1,3}
+
+query T
+SELECT ((('1 3'::int2vector)::pg_catalog.int2[])::text)::text
+----
+[0:1]={1,3}
+
+query T
+SELECT (pg_catalog.array_upper(('1 3'::int2vector)::pg_catalog.int2[], 1))::text
+----
+1
+
+query T
+SELECT (pg_catalog.array_upper(''::int2vector::pg_catalog.int2[], 1))::text
+----
+-1
+
+query T
+SELECT (('1 3'::int2vector)[0])::text
+----
+1
+
+query T
+SELECT (('1 3'::int2vector)[1])::text
+----
+3
+
+query T
+SELECT ((SELECT string_agg(attname, ', ' ORDER BY s) FROM pg_catalog.generate_series(0, pg_catalog.array_upper(('1 3'::int2vector)::pg_catalog.int2[], 1)) s, pg_catalog.pg_attribute WHERE attrelid = 'types_psql_d_arrays_t'::regclass AND attnum = ('1 3'::int2vector)[s]))::text
+----
+a, c
+
+query T
+SELECT ((SELECT string_agg(attname, ', ' ORDER BY s) FROM pg_catalog.generate_series(0, pg_catalog.array_upper(('2'::int2vector)::pg_catalog.int2[], 1)) s, pg_catalog.pg_attribute WHERE attrelid = 'types_psql_d_arrays_t'::regclass AND attnum = ('2'::int2vector)[s]))::text
+----
+b
+
+query T
+SELECT ((SELECT CASE WHEN prattrs IS NOT NULL THEN (SELECT string_agg(attname, ', ' ORDER BY s) FROM pg_catalog.generate_series(0, pg_catalog.array_upper(prattrs::pg_catalog.int2[], 1)) s, pg_catalog.pg_attribute WHERE attrelid = 'types_psql_d_arrays_t'::regclass AND attnum = prattrs[s]) ELSE NULL END FROM (SELECT '1 3'::int2vector AS prattrs) p))::text
+----
+a, c
+
+query T
+SELECT ((SELECT CASE WHEN prattrs IS NOT NULL THEN 'x' ELSE NULL END FROM (SELECT NULL::int2vector AS prattrs) p) IS NULL)::text
+----
+true
+
+# aclitem[] への array_length / array_to_string（実行時は NULL）
+
+query T
+SELECT (array_length(NULL::aclitem[], 1))::text
+----
+NULL
+
+query T
+SELECT (array_length(NULL::aclitem[], 1) = 0)::text
+----
+NULL
+
+query T
+SELECT (array_to_string(NULL::aclitem[], E'\n'))::text
+----
+NULL
+
+query T
+SELECT (pg_typeof(NULL::aclitem[]))::text
+----
+aclitem[]
+
+query T
+SELECT ((SELECT array_length(datacl, 1) FROM pg_catalog.pg_database WHERE datname = current_database()) IS NULL)::text
+----
+true
+
+query T
+SELECT ((SELECT array_to_string(datacl, E'\n') FROM pg_catalog.pg_database WHERE datname = current_database()) IS NULL)::text
+----
+true
+
+query T
+SELECT ((SELECT array_length(relacl, 1) FROM pg_catalog.pg_class WHERE oid = 'types_psql_d_arrays_t'::regclass) IS NULL)::text
+----
+true
+
+query T
+SELECT ((SELECT array_to_string(relacl, E'\n') FROM pg_catalog.pg_class WHERE oid = 'types_psql_d_arrays_t'::regclass) IS NULL)::text
+----
+true
+
+# typarray の整合（\dT）
+
+query T
+SELECT ((SELECT count(*) FROM pg_catalog.pg_type t WHERE NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type el WHERE el.oid = t.typelem AND el.typarray = t.oid) AND t.typcategory = 'A' AND t.typname NOT LIKE '\_%'))::text
+----
+2
+
+query T
+SELECT ((SELECT count(*) FROM pg_catalog.pg_type t WHERE t.typelem <> 0 AND t.typcategory = 'A' AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type el WHERE el.oid = t.typelem AND el.typarray = t.oid)))::text
+----
+2
+
+# reloptions || array(select ... unnest)（任意の ||。unnest は M6 なので書かない）
+
+query T
+SELECT ('{a}'::text[] || ARRAY['b'])::text
+----
+{a,b}
+
+query T
+SELECT ('{a}'::text[] || array(select 'toast.' || x from (values ('c')) v(x)))::text
+----
+{a,toast.c}
+
+query T
+SELECT (NULL::text[] || array(select 'toast.' || x from (values ('c')) v(x)))::text
+----
+{toast.c}
+
+statement ok
+DROP TABLE types_psql_d_arrays_t
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

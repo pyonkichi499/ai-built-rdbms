@@ -249,10 +249,14 @@ fn prune(
             checks,
             not_null,
             returning,
+            recheck,
         } => {
             let mut r: ColSet = old_cols.iter().copied().collect();
             r.insert(ctid);
             r.extend(new_values.iter().map(|(_, c)| *c));
+            if let Some(rc) = &recheck {
+                r.extend(rc.extra_cols.iter().copied());
+            }
             L::Update {
                 table,
                 rel,
@@ -263,6 +267,7 @@ fn prune(
                 checks,
                 not_null,
                 returning,
+                recheck,
             }
         }
         L::Delete {
@@ -272,9 +277,13 @@ fn prune(
             old_cols,
             ctid,
             returning,
+            recheck,
         } => {
             let mut r: ColSet = old_cols.iter().copied().collect();
             r.insert(ctid);
+            if let Some(rc) = &recheck {
+                r.extend(rc.extra_cols.iter().copied());
+            }
             L::Delete {
                 table,
                 rel,
@@ -282,6 +291,27 @@ fn prune(
                 old_cols,
                 ctid,
                 returning,
+                recheck,
+            }
+        }
+        L::LockRows {
+            input,
+            marks,
+            recheck,
+        } => {
+            // ロック対象の全ユーザー列と ctid、再評価の式が参照する列は刈り込まない。
+            let mut r = required.clone();
+            for m in &marks {
+                r.insert(m.tid);
+                r.extend(m.cols.iter().copied());
+            }
+            if let Some(e) = &recheck {
+                r.extend(expr_refs(e));
+            }
+            L::LockRows {
+                input: Box::new(prune(*input, &r, Parent::Wide, arena, d)?),
+                marks,
+                recheck,
             }
         }
         leaf @ (L::Get { .. }

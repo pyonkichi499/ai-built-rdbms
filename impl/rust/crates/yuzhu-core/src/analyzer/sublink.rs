@@ -59,6 +59,7 @@ struct Quantified<'e> {
 }
 
 impl Analyzer<'_> {
+    #[allow(clippy::too_many_lines)]
     /// 副問い合わせ式 1 つを解析する。
     pub(super) fn analyze_sublink(&self, e: &Expr, cx: &ExprCtx<'_>) -> Result<BoundExpr> {
         let span = e.span();
@@ -82,7 +83,8 @@ impl Analyzer<'_> {
         let (Expr::Subquery { query, .. }
         | Expr::Exists { query, .. }
         | Expr::InSubquery { query, .. }
-        | Expr::QuantifiedSubquery { query, .. }) = e
+        | Expr::QuantifiedSubquery { query, .. }
+        | Expr::ArraySubquery { query, .. }) = e
         else {
             return Err(Error::internal("analyze_sublink without a subquery"));
         };
@@ -116,6 +118,7 @@ impl Analyzer<'_> {
                     span,
                 ))
             }
+            Expr::ArraySubquery { .. } => self.array_sublink(sub, span),
             Expr::Exists { .. } => Ok(bool_expr(
                 BoundExprKind::SubLink {
                     kind: SubLinkKind::Exists,

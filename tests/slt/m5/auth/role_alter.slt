@@ -1,0 +1,103 @@
+# ALTER ROLE / ALTER USER: 指定した属性だけが変わる。RENAME。パスワードの値そのものは比べない
+
+statement ok
+DROP ROLE IF EXISTS auth_role_alter_a
+
+statement ok
+DROP ROLE IF EXISTS auth_role_alter_b
+
+statement ok
+DROP ROLE IF EXISTS auth_role_alter_c
+
+statement ok
+CREATE ROLE auth_role_alter_a CREATEDB CONNECTION LIMIT 3
+
+statement ok
+ALTER ROLE auth_role_alter_a LOGIN
+
+query TBBBI
+SELECT rolname, rolcanlogin, rolcreatedb, rolcreaterole, rolconnlimit FROM pg_roles WHERE rolname = 'auth_role_alter_a'
+----
+auth_role_alter_a t t f 3
+
+statement ok
+ALTER ROLE auth_role_alter_a WITH NOCREATEDB CREATEROLE NOLOGIN CONNECTION LIMIT -1
+
+query TBBBI
+SELECT rolname, rolcanlogin, rolcreatedb, rolcreaterole, rolconnlimit FROM pg_roles WHERE rolname = 'auth_role_alter_a'
+----
+auth_role_alter_a f f t -1
+
+statement ok
+ALTER ROLE auth_role_alter_a VALID UNTIL 'infinity'
+
+query T
+SELECT rolvaliduntil::text FROM pg_roles WHERE rolname = 'auth_role_alter_a'
+----
+infinity
+
+# ALTER USER は同じ
+statement ok
+ALTER USER auth_role_alter_a INHERIT BYPASSRLS
+
+query BB
+SELECT rolinherit, rolbypassrls FROM pg_roles WHERE rolname = 'auth_role_alter_a'
+----
+t t
+
+# パスワード: SCRAM 形式で保存される（値は比べない）
+query B
+SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'auth_role_alter_a'
+----
+t
+
+statement ok
+ALTER ROLE auth_role_alter_a PASSWORD 'secret'
+
+query B
+SELECT rolpassword LIKE 'SCRAM-SHA-256$4096:%' FROM pg_authid WHERE rolname = 'auth_role_alter_a'
+----
+t
+
+statement ok
+ALTER ROLE auth_role_alter_a PASSWORD NULL
+
+query B
+SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'auth_role_alter_a'
+----
+t
+
+# 空文字列のパスワードは NOTICE のうえ NULL になる
+statement ok
+ALTER ROLE auth_role_alter_a PASSWORD ''
+
+query B
+SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'auth_role_alter_a'
+----
+t
+
+# RENAME
+statement ok
+ALTER ROLE auth_role_alter_a RENAME TO auth_role_alter_b
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_role_alter_a'
+----
+0
+
+query B
+SELECT rolcreaterole FROM pg_roles WHERE rolname = 'auth_role_alter_b'
+----
+t
+
+# 超ユーザー（自分）の変更は CURRENT_USER で書ける。値を変えない変更
+statement ok
+ALTER ROLE CURRENT_USER CONNECTION LIMIT -1
+
+statement ok
+DROP ROLE auth_role_alter_b
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname LIKE 'auth\_role\_alter\_%'
+----
+0

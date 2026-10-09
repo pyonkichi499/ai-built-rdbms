@@ -1,0 +1,52 @@
+# フェーズ 1: 2 接続が同じ行を FOR SHARE / FOR KEY SHARE で保持したまま kill -9 される。
+
+statement ok
+DROP TABLE IF EXISTS crm5_04_t
+
+statement ok
+CREATE TABLE crm5_04_t (id int PRIMARY KEY, v text)
+
+statement count 4
+INSERT INTO crm5_04_t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')
+
+statement ok
+BEGIN
+
+query I
+SELECT id FROM crm5_04_t WHERE id IN (1, 2) ORDER BY id FOR SHARE
+----
+1
+2
+
+query I
+SELECT id FROM crm5_04_t WHERE id IN (3, 4) ORDER BY id FOR KEY SHARE
+----
+3
+4
+
+connection other
+statement ok
+BEGIN
+
+connection other
+query I
+SELECT id FROM crm5_04_t WHERE id IN (1, 2) ORDER BY id FOR SHARE
+----
+1
+2
+
+connection other
+query I
+SELECT id FROM crm5_04_t WHERE id IN (3, 4) ORDER BY id FOR KEY SHARE
+----
+3
+4
+
+# 保持されている間、別の接続の FOR UPDATE NOWAIT は失敗する（55P03）
+connection third
+statement error (55P03)
+SELECT id FROM crm5_04_t WHERE id = 1 FOR UPDATE NOWAIT
+
+connection third
+statement error (55P03)
+SELECT id FROM crm5_04_t WHERE id = 3 FOR UPDATE NOWAIT

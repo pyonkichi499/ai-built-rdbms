@@ -5,9 +5,9 @@ use super::Parser;
 use super::expr::is_query_start_kw;
 use crate::error::{Error, Result, Span, sqlstate};
 use crate::sql::ast::{
-    Cte, Distinct, Expr, Ident, JoinConstraint, JoinKind, Literal, NullsOrder, ObjectName,
-    OrderByItem, Query, QueryBody, Select, SelectItem, SetOperator, SortDirection, TableAlias,
-    TableRef, Values, With,
+    Cte, Distinct, Expr, Ident, JoinConstraint, JoinKind, Literal, LockStrength, LockWaitPolicy,
+    LockingClause, NullsOrder, ObjectName, OrderByItem, Query, QueryBody, Select, SelectItem,
+    SetOperator, SortDirection, TableAlias, TableRef, Values, With,
 };
 use crate::sql::token::{TokenKind, requires_as_label};
 
@@ -45,6 +45,7 @@ impl Parser<'_> {
                     order_by: Vec::new(),
                     limit: None,
                     offset: None,
+                    locking: Vec::new(),
                     span,
                 };
             }
@@ -213,6 +214,8 @@ impl Parser<'_> {
         let mut offset = None;
         let mut limit_seen = false;
         let mut offset_seen = false;
+        let mut locking = Vec::new();
+        // `select_limit [for_locking_clause]` or `for_locking_clause [select_limit]`.
         loop {
             if !limit_seen && self.is_kw("limit") {
                 limit_seen = true;
@@ -227,12 +230,17 @@ impl Parser<'_> {
                 if !self.eat_kw("row") {
                     self.eat_kw("rows");
                 }
+            } else if locking.is_empty() && self.is_kw("for") {
+                while self.is_kw("for") {
+                    locking.push(self.parse_locking_clause()?);
+                }
+                // After FOR only LIMIT / OFFSET may follow, and only if there were none before.
+                if limit_seen || offset_seen {
+                    break;
+                }
             } else {
                 break;
             }
-        }
-        if self.is_kw("for") {
-            return Err(self.not_supported("FOR UPDATE/SHARE"));
         }
         // `(SELECT ... ORDER BY ...) LIMIT 1`: merge into the inner query.
         if let QueryBody::Nested(mut inner) = body {
@@ -254,6 +262,7 @@ impl Parser<'_> {
                 }
                 inner.offset = Some(o);
             }
+            inner.locking.extend(locking);
             inner.span = self.span_from(start);
             return Ok(*inner);
         }
@@ -263,6 +272,50 @@ impl Parser<'_> {
             order_by,
             limit,
             offset,
+            locking,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `for_locking_item`: `FOR {UPDATE | NO KEY UPDATE | SHARE | KEY SHARE} [OF name, ...] [NOWAIT | SKIP LOCKED]`.
+    fn parse_locking_clause(&mut self) -> Result<LockingClause> {
+        let start = self.advance().span.start;
+        let strength = if self.eat_kw("update") {
+            LockStrength::Update
+        } else if self.eat_kw("share") {
+            LockStrength::Share
+        } else if self.is_kw("no") && self.nth_is_kw(1, "key") && self.nth_is_kw(2, "update") {
+            self.advance();
+            self.advance();
+            self.advance();
+            LockStrength::NoKeyUpdate
+        } else if self.is_kw("key") && self.nth_is_kw(1, "share") {
+            self.advance();
+            self.advance();
+            LockStrength::KeyShare
+        } else {
+            return Err(self.unexpected());
+        };
+        let mut of = Vec::new();
+        if self.eat_kw("of") {
+            of.push(self.parse_object_name()?);
+            while self.eat(&TokenKind::Comma) {
+                of.push(self.parse_object_name()?);
+            }
+        }
+        let wait = if self.eat_kw("nowait") {
+            LockWaitPolicy::NoWait
+        } else if self.is_kw("skip") {
+            self.advance();
+            self.expect_kw("locked")?;
+            LockWaitPolicy::SkipLocked
+        } else {
+            LockWaitPolicy::Block
+        };
+        Ok(LockingClause {
+            strength,
+            of,
+            wait,
             span: self.span_from(start),
         })
     }
@@ -802,4 +855,158 @@ fn multiple(what: &str, pos: u32) -> Error {
 /// Keywords that start a data-modifying statement.
 fn is_dml_kw(kw: Option<&str>) -> bool {
     matches!(kw, Some("insert" | "update" | "delete" | "merge"))
+}
+
+#[cfg(test)]
+mod locking_tests {
+    use crate::sql::ast::{
+        LockStrength, LockWaitPolicy, LockingClause, Query, QueryBody, Statement,
+    };
+
+    fn query(sql: &str) -> Query {
+        match crate::sql::parse(sql)
+            .unwrap_or_else(|e| panic!("{sql}: {e:?}"))
+            .remove(0)
+        {
+            Statement::Query(q) => *q,
+            other => panic!("not a query: {other:?}"),
+        }
+    }
+
+    fn clauses(sql: &str) -> Vec<LockingClause> {
+        query(sql).locking
+    }
+
+    fn err(sql: &str) -> (String, String) {
+        let e = crate::sql::parse(sql).expect_err(sql);
+        (e.sqlstate.code().to_owned(), e.message)
+    }
+
+    #[test]
+    fn four_strengths() {
+        for (sql, want) in [
+            ("select * from t for update", LockStrength::Update),
+            (
+                "select * from t for no key update",
+                LockStrength::NoKeyUpdate,
+            ),
+            ("select * from t for share", LockStrength::Share),
+            ("select * from t for key share", LockStrength::KeyShare),
+        ] {
+            let c = clauses(sql);
+            assert_eq!(c.len(), 1, "{sql}");
+            assert_eq!(c[0].strength, want, "{sql}");
+            assert!(c[0].of.is_empty());
+            assert_eq!(c[0].wait, LockWaitPolicy::Block);
+        }
+    }
+
+    #[test]
+    fn of_and_wait_policy() {
+        let c = clauses("select * from a, b for update of a, b nowait");
+        assert_eq!(c[0].of.len(), 2);
+        assert_eq!(c[0].of[1].name().value, "b");
+        assert_eq!(c[0].wait, LockWaitPolicy::NoWait);
+        let c = clauses("select * from a for share skip locked");
+        assert_eq!(c[0].wait, LockWaitPolicy::SkipLocked);
+        let c = clauses("select * from a for key share of a skip locked");
+        assert_eq!((c[0].of.len(), c[0].wait), (1, LockWaitPolicy::SkipLocked));
+    }
+
+    #[test]
+    fn several_clauses() {
+        let c = clauses("select * from a, b for update of a for share of b nowait");
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].strength, LockStrength::Update);
+        assert_eq!(c[1].strength, LockStrength::Share);
+        assert_eq!(c[1].wait, LockWaitPolicy::NoWait);
+    }
+
+    #[test]
+    fn limit_before_or_after_for() {
+        let q = query("select * from t for update limit 1 offset 2");
+        assert!(q.limit.is_some() && q.offset.is_some());
+        assert_eq!(q.locking.len(), 1);
+        let q = query("select * from t order by 1 limit 1 for update");
+        assert!(q.limit.is_some());
+        assert_eq!(q.locking.len(), 1);
+        let q = query("select * from t offset 1 limit 1 for update");
+        assert!(q.limit.is_some() && q.offset.is_some() && q.locking.len() == 1);
+        let q = query("select * from t for update fetch first 1 rows only");
+        assert!(q.limit.is_some());
+    }
+
+    #[test]
+    fn nowait_and_skip_locked_together_is_a_syntax_error() {
+        for sql in [
+            "select * from t for update nowait skip locked",
+            "select * from t for update skip locked nowait",
+        ] {
+            let (state, msg) = err(sql);
+            assert_eq!(state, "42601", "{sql}");
+            assert!(msg.starts_with("syntax error at or near"), "{msg}");
+        }
+        assert_eq!(err("select * from t for update skip").0, "42601");
+        assert_eq!(err("select * from t for no update").0, "42601");
+        assert_eq!(err("select * from t for key update").0, "42601");
+        assert_eq!(err("select * from t for update of").0, "42601");
+        assert_eq!(err("select * from t for").0, "42601");
+    }
+
+    #[test]
+    fn limit_after_limit_and_for_is_rejected() {
+        assert_eq!(err("select * from t limit 1 for update limit 2").0, "42601");
+        assert_eq!(
+            err("select * from t for update for update limit 1 for share").0,
+            "42601"
+        );
+    }
+
+    #[test]
+    fn qualified_of_names_parse() {
+        let c = clauses("select * from t for update of public.t");
+        assert_eq!(c[0].of[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn parenthesized_query_keeps_its_clause() {
+        let q = query("(select * from t for update)");
+        assert!(q.locking.is_empty() || matches!(q.body, QueryBody::Select(_)));
+        let q = query("(select 1 from t for update) union select 2");
+        let QueryBody::SetOp { left, .. } = &q.body else {
+            panic!("not a set operation");
+        };
+        let QueryBody::Nested(inner) = &**left else {
+            panic!("the arm lost its FOR: {left:?}");
+        };
+        assert_eq!(inner.locking.len(), 1);
+        let q = query("(select 1 from t) limit 1 for update");
+        assert_eq!(q.locking.len(), 1);
+        assert!(q.limit.is_some());
+    }
+
+    #[test]
+    fn for_in_subquery_positions_parse() {
+        let q = query("select * from (select * from t for update) s");
+        assert!(q.locking.is_empty());
+        let q = query("with c as (select * from t for share) select * from c for update");
+        assert_eq!(q.locking.len(), 1);
+        let Statement::Insert(ins) = crate::sql::parse("insert into t select * from u for update")
+            .unwrap()
+            .remove(0)
+        else {
+            panic!("not an insert");
+        };
+        let crate::sql::ast::InsertSource::Query(src) = &ins.source else {
+            panic!("no query source");
+        };
+        assert_eq!(src.locking.len(), 1);
+        query("select (select 1 from u for update)");
+    }
+
+    #[test]
+    fn locking_words_remain_usable_as_names() {
+        query("select share, key, no, skip, locked, nowait, of from t");
+        query("select * from t as share");
+    }
 }

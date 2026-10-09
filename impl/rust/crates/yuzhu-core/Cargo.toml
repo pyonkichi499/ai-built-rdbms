@@ -11,9 +11,14 @@ publish.workspace = true
 [dependencies]
 yuzhu-numeric = { path = "../yuzhu-numeric" }
 yuzhu-datetime = { path = "../yuzhu-datetime" }
+yuzhu-auth = { path = "../yuzhu-auth" }
 
 [dev-dependencies]
 proptest.workspace = true
+
+[features]
+# テスト用の同期点（util::sync_point。m5/02 §7.5）を有効にする。
+sync-points = []
 
 [lints]
 workspace = true

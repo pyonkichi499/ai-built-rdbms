@@ -43,7 +43,19 @@ pub fn output_text_with(d: &Datum, ty: SqlType, opts: &OutputOpts) -> Option<Str
     let efd = opts.extra_float_digits;
     Some(match d {
         // 日時の出力は `TypeEnv` が要る。T2 が `output_text` の TypeEnv 版で実装するまでは None。
-        Datum::Null | Datum::Date(_) | Datum::Timestamp(_) | Datum::TimestampTz(_) => return None,
+        Datum::Null | Datum::Date(_) | Datum::Timestamp(_) | Datum::TimestampTz(_)
+        | Datum::Time(_)
+        | Datum::Interval(_)
+        // bytea・uuid・配列の出力は TY が実装する（それまでは作られない）。
+        | Datum::Bytea(_)
+        | Datum::Uuid(_) => return None,
+        Datum::Array(a) => {
+            let env = super::TypeEnv {
+                extra_float_digits: efd,
+                ..super::TypeEnv::default()
+            };
+            return super::array_text::array_out(a, &env).ok();
+        }
         Datum::Bool(b) => if *b { "t" } else { "f" }.to_owned(),
         Datum::Int2(v) => v.to_string(),
         Datum::Int4(v) => v.to_string(),
@@ -217,6 +229,9 @@ pub fn input_text(s: &str, ty: SqlType) -> Result<Datum> {
         oid::BPCHAR => Ok(super::bpchar::bpchar_in(s)),
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN => Ok(Datum::Text(s.to_owned())),
         oid::NAME => Ok(Datum::Text(truncate_identifier(s).to_owned())),
+        t if super::typeinfo::is_array_type(t) => {
+            super::array_text::array_in(s, ty, &super::TypeEnv::default())
+        }
         t if super::sys::handles(t) => super::sys::input_text(s, ty),
         other => Err(Error::internal(format!(
             "no input function for type with OID {other}"
@@ -792,6 +807,7 @@ pub fn input_text_env(s: &str, ty: SqlType, env: &super::TypeEnv<'_>) -> Result<
         oid::DATE => super::datetime::date_in(s, env),
         oid::TIMESTAMP => super::datetime::timestamp_in(s, -1, env),
         oid::TIMESTAMPTZ => super::datetime::timestamptz_in(s, -1, env),
+        t if super::typeinfo::is_array_type(t) => super::array_text::array_in(s, ty, env),
         _ => input_text(s, ty),
     }
 }
@@ -805,6 +821,9 @@ pub fn input_text_typed(s: &str, ty: SqlType, env: &super::TypeEnv<'_>) -> Resul
 /// アナライザが unknown リテラルを `TypeEnv::default()` で即座に評価してよい型か。
 /// 日時型は DateStyle・TimeZone・`now` に依存するので `false`（プランナの定数畳み込みが評価する。D-9-3）。
 pub fn input_is_eager(type_oid: Oid) -> bool {
+    if super::typeinfo::is_array_type(type_oid) {
+        return super::array_text::array_input_is_eager(type_oid);
+    }
     !matches!(type_oid, oid::DATE | oid::TIMESTAMP | oid::TIMESTAMPTZ)
 }
 
@@ -821,6 +840,9 @@ pub fn try_output_text_env(
     ty: SqlType,
     env: &super::TypeEnv<'_>,
 ) -> Result<Option<String>> {
+    if let Datum::Array(a) = d {
+        return super::array_text::array_out(a, env).map(Some);
+    }
     if let Some(r) = super::datetime::output_any(d, env) {
         return r.map(Some);
     }

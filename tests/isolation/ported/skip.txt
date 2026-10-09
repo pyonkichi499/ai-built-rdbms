@@ -1,0 +1,107 @@
+# 移植しない PostgreSQL 本体の spec。形式: <name> <KD-n> <理由>（設計 10 §6.4）
+# port-pg-specs.sh が生成する（規則は同スクリプトの SKIP_RULES）。手で編集しない。
+read-only-anomaly KD-3 SERIALIZABLE（SSI）が前提
+read-only-anomaly-2 KD-3 SERIALIZABLE（SSI）が前提
+read-only-anomaly-3 KD-3 SERIALIZABLE（SSI）が前提
+read-write-unique KD-3 BEGIN ISOLATION LEVEL SERIALIZABLE を使う
+read-write-unique-2 KD-3 BEGIN ISOLATION LEVEL SERIALIZABLE を使う
+read-write-unique-3 KD-3 BEGIN ISOLATION LEVEL SERIALIZABLE を使う
+read-write-unique-4 KD-3 BEGIN ISOLATION LEVEL SERIALIZABLE を使う
+simple-write-skew KD-3 SERIALIZABLE（SSI）が前提
+receipt-report KD-3 SERIALIZABLE（SSI）が前提
+temporal-range-integrity KD-3 SERIALIZABLE（SSI）が前提
+project-manager KD-3 SERIALIZABLE（SSI）が前提
+classroom-scheduling KD-3 SERIALIZABLE（SSI）が前提
+total-cash KD-3 SERIALIZABLE（SSI）が前提
+referential-integrity KD-3 SERIALIZABLE（SSI）が前提
+ri-trigger KD-3 SERIALIZABLE（SSI）が前提
+partial-index KD-3 SERIALIZABLE（SSI）が前提
+two-ids KD-3 SERIALIZABLE（SSI）が前提
+multiple-row-versions KD-3 SERIALIZABLE（SSI）が前提
+index-only-scan KD-8 ビジビリティマップが前提
+predicate-lock-hot-tuple KD-3 述語ロック・SSI が前提
+update-conflict-out KD-3 SERIALIZABLE（SSI）が前提
+deadlock-parallel KD-28 並列クエリが前提
+detach-partition-concurrently-1 KD-28 パーティションが前提
+detach-partition-concurrently-2 KD-28 パーティションが前提
+detach-partition-concurrently-3 KD-28 パーティションが前提
+detach-partition-concurrently-4 KD-28 パーティションが前提
+fk-partitioned-1 KD-28 パーティションが前提
+fk-partitioned-2 KD-28 パーティションが前提
+fk-snapshot KD-28 パーティションと DEFERRABLE（KD-16）を使う
+subxid-overflow KD-4 サブトランザクション（SAVEPOINT・例外ブロック）が前提
+eval-plan-qual KD-25 MERGE・パーティション・ALTER TABLE・PL/pgSQL 関数を使う（単一テーブルの部分は共有の epq-single、TS-1b）
+eval-plan-qual-trigger KD-2 トリガが前提
+inplace-inval KD-26 インプレース更新・ALTER TABLE が前提
+intra-grant-inplace KD-23 GRANT が前提
+intra-grant-inplace-db KD-23 GRANT が前提
+lock-update-delete KD-19 勧告ロックを使う
+inherit-temp KD-28 継承が前提
+temp-schema-cleanup KD-27 スキーマ（一時スキーマ）が前提
+insert-conflict-do-nothing KD-25 ON CONFLICT が前提
+insert-conflict-do-nothing-2 KD-25 ON CONFLICT が前提
+insert-conflict-do-update KD-25 ON CONFLICT が前提
+insert-conflict-do-update-2 KD-25 ON CONFLICT が前提
+insert-conflict-do-update-3 KD-25 ON CONFLICT が前提
+insert-conflict-do-update-4 KD-25 ON CONFLICT が前提
+insert-conflict-specconflict KD-25 ON CONFLICT が前提
+insert-conflict-serializable KD-25 ON CONFLICT が前提
+merge-insert-update KD-25 MERGE が前提
+merge-delete KD-25 MERGE が前提
+merge-update KD-25 MERGE が前提
+merge-match-recheck KD-25 MERGE が前提
+merge-join KD-25 MERGE が前提
+delete-abort-savept KD-4 SAVEPOINT が前提
+delete-abort-savept-2 KD-4 SAVEPOINT が前提
+aborted-keyrevoke KD-4 SAVEPOINT が前提
+multixact-no-deadlock KD-4 SAVEPOINT が前提
+lock-committed-update KD-19 勧告ロックと SERIALIZABLE を使う
+lock-committed-keyupdate KD-19 勧告ロックと SERIALIZABLE を使う
+reindex-concurrently KD-26 REINDEX CONCURRENTLY・スキーマが前提
+reindex-concurrently-toast KD-26 REINDEX CONCURRENTLY・スキーマが前提
+reindex-schema KD-26 REINDEX CONCURRENTLY・スキーマが前提
+propagate-lock-delete KD-4 SAVEPOINT が前提
+tuplelock-conflict KD-4 SAVEPOINT が前提（MultiXact の版も KD-1）
+tuplelock-update KD-19 勧告ロック（pg_advisory_lock）を使う
+tuplelock-upgrade-no-deadlock KD-4 SAVEPOINT が前提（KD-1 も）
+tuplelock-partition KD-28 パーティションが前提
+freeze-the-dead KD-8 VACUUM FREEZE と pageinspect が前提
+nowait-4 KD-19 勧告ロックを使う
+nowait-5 KD-19 勧告ロックを使う（ctid・xmax・PREPARE も）
+skip-locked-4 KD-19 勧告ロックを使う
+drop-index-concurrently-1 KD-26 DROP INDEX CONCURRENTLY が前提
+multiple-cic KD-26 CREATE INDEX CONCURRENTLY が前提
+alter-table-1 KD-26 ALTER TABLE の大半が前提
+alter-table-2 KD-26 ALTER TABLE の大半が前提
+alter-table-3 KD-26 ALTER TABLE の大半が前提
+alter-table-4 KD-26 ALTER TABLE の大半が前提
+create-trigger KD-2 トリガが前提
+sequence-ddl KD-26 ALTER SEQUENCE が前提
+async-notify KD-24 LISTEN / NOTIFY が前提
+vacuum-no-cleanup-lock KD-8 VACUUM の内部動作（MultiXact・ページのクリーンアップロック）が前提
+vacuum-concurrent-drop KD-28 パーティションが前提（VACUUM / ANALYZE の対象指定は KD-8）
+vacuum-conflict KD-8 VACUUM のオプションと内部動作が前提
+vacuum-skip-locked KD-28 パーティションと ALTER TABLE を使う
+stats KD-18 pg_stat_* が前提
+horizons KD-8 VACUUM と統計の内部動作が前提
+predicate-hash KD-3 述語ロック・SSI が前提
+predicate-gist KD-3 述語ロック・SSI が前提
+predicate-gin KD-3 述語ロック・SSI が前提
+partition-concurrent-attach KD-28 パーティションが前提
+partition-drop-index-locking KD-28 パーティションが前提
+partition-key-update-1 KD-28 パーティションが前提
+partition-key-update-2 KD-28 パーティションが前提
+partition-key-update-3 KD-28 パーティションが前提
+partition-key-update-4 KD-28 パーティションが前提
+plpgsql-toast KD-27 PL/pgSQL・TOAST が前提
+cluster-conflict KD-26 CLUSTER が前提
+cluster-conflict-partition KD-26 CLUSTER が前提
+truncate-conflict KD-23 ロールと GRANT が前提
+serializable-parallel KD-3 SERIALIZABLE（SSI）と並列クエリが前提
+serializable-parallel-2 KD-3 SERIALIZABLE（SSI）と並列クエリが前提
+serializable-parallel-3 KD-3 SERIALIZABLE（SSI）と並列クエリが前提
+matview-write-skew KD-3 SERIALIZABLE と マテリアライズドビューが前提
+ddl-dependency-locking KD-27 スキーマ・関数・型の依存が前提
+tablespace-dependency-locking KD-27 テーブルスペース・スキーマが前提
+pub-concurrent-drop KD-27 パブリケーションが前提
+drop-owned-grant KD-23 DROP OWNED・GRANT が前提

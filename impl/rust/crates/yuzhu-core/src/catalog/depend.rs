@@ -214,9 +214,9 @@ impl DropSet<'_> {
                     return Ok(None);
                 };
                 let kind = match row.kind {
-                    RelKind::Table => DropKind::Table,
                     RelKind::Index => DropKind::Index,
                     RelKind::Sequence => DropKind::Sequence,
+                    RelKind::Table | RelKind::Virtual => DropKind::Table,
                 };
                 Ok(Some(DropItem {
                     addr: whole,

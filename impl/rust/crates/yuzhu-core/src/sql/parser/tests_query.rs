@@ -611,35 +611,6 @@ fn quantified_subquery_spans() {
     assert_eq!(span.start, 2);
 }
 
-#[test]
-fn quantified_array_forms_are_not_supported() {
-    unsupported(
-        "SELECT a = ANY (ARRAY[1]) FROM t",
-        "ANY/ALL with an array is not supported yet",
-        12,
-    );
-    unsupported(
-        "SELECT a = ANY (1) FROM t",
-        "ANY/ALL with an array is not supported yet",
-        12,
-    );
-    unsupported(
-        "SELECT a < ALL (1, 2) FROM t",
-        "ANY/ALL with an array is not supported yet",
-        12,
-    );
-    unsupported(
-        "SELECT a LIKE SOME (x) FROM t",
-        "ANY/ALL with an array is not supported yet",
-        15,
-    );
-    unsupported(
-        "SELECT a = ANY ((1)) FROM t",
-        "ANY/ALL with an array is not supported yet",
-        12,
-    );
-}
-
 // ----- COLLATE -----------------------------------------------------------------
 
 #[test]

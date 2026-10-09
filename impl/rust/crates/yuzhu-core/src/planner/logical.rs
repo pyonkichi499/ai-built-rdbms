@@ -15,7 +15,8 @@ pub use crate::analyzer::bound::{CteMaterialize, SetOpKind};
 use crate::catalog::{BuiltinFunction, SystemColumn, TableDef};
 use crate::error::{Error, Result};
 use crate::expr::{AggCall, ColId, CteId, Expr, ExprKind, SubLinkKind};
-use crate::storage::RelHandle;
+use crate::storage::{RelHandle, RowWait};
+use crate::txn::LockTupleMode;
 use crate::types::{Oid, SqlType};
 
 pub type LExpr = Expr<ColId, Box<LogicalSubquery>>;
@@ -113,6 +114,41 @@ pub struct LSortKey {
     pub nulls_first: bool,
 }
 
+/// `FOR UPDATE` などでロックする表 1 つ（`m5/02` §4.4、§6.5）。
+#[derive(Debug, Clone)]
+pub struct LRowMark {
+    pub rel: RelHandle,
+    /// ロック対象の `Get` が出す `ctid` の列。
+    pub tid: ColId,
+    /// ロック対象の表のユーザー列（`attnum` 順）。
+    pub cols: Vec<ColId>,
+    pub mode: LockTupleMode,
+    pub wait: RowWait,
+    /// 55P03（NOWAIT）のメッセージ用。
+    pub table_name: String,
+}
+
+/// `UPDATE` / `DELETE` が最新版に差し替えたあとで評価し直すもの（EvalPlanQual の簡易版。`m5/02` §6.5）。
+#[derive(Debug, Clone)]
+pub struct LRecheck {
+    /// WHERE と内部結合の ON の AND（Bound の式から作る。書き換え前の形）。
+    pub qual: Option<LExpr>,
+    /// `Update` のみ。代入式（`new_values` と同じ順）。
+    pub new_values: Vec<LExpr>,
+    /// `qual` / `new_values` が参照する、対象表以外の列。入力の末尾に隠し列として足す。
+    pub extra_cols: Vec<ColId>,
+}
+
+impl LRecheck {
+    fn exprs(&self) -> impl Iterator<Item = &LExpr> {
+        self.qual.iter().chain(self.new_values.iter())
+    }
+
+    fn exprs_mut(&mut self) -> impl Iterator<Item = &mut LExpr> {
+        self.qual.iter_mut().chain(self.new_values.iter_mut())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LogicalPlan {
     /// ベーステーブルの走査。`cols` は attnum 順のユーザー列、`system_columns` は参照された分だけ。
@@ -174,6 +210,12 @@ pub enum LogicalPlan {
         limit: Option<LExpr>,
         offset: Option<LExpr>,
     },
+    /// 出力 = 入力の出力。`marks` の行ロックを取り、最新版に差し替えて `recheck` を評価し直す。
+    LockRows {
+        input: Box<LogicalPlan>,
+        marks: Vec<LRowMark>,
+        recheck: Option<LExpr>,
+    },
     SetOp {
         op: SetOpKind,
         all: bool,
@@ -201,7 +243,8 @@ pub enum LogicalPlan {
         not_null: Vec<bool>,
         returning: Option<Vec<PhysExpr>>,
     },
-    /// `input` の出力: 対象表のユーザー列 ++ ctid ++ 代入する列の新しい値（`new_values` と同じ順）。
+    /// `input` の出力: 対象表のユーザー列 ++ ctid ++ 代入する列の新しい値（`new_values` と同じ順）
+    /// ++ `recheck.extra_cols`。
     Update {
         table: Arc<TableDef>,
         rel: RelHandle,
@@ -213,7 +256,9 @@ pub enum LogicalPlan {
         checks: Vec<PhysCheck>,
         not_null: Vec<bool>,
         returning: Option<Vec<PhysExpr>>,
+        recheck: Option<LRecheck>,
     },
+    /// `input` の出力: 対象表のユーザー列 ++ ctid ++ `recheck.extra_cols`。
     Delete {
         table: Arc<TableDef>,
         rel: RelHandle,
@@ -221,6 +266,7 @@ pub enum LogicalPlan {
         old_cols: Vec<ColId>,
         ctid: ColId,
         returning: Option<Vec<PhysExpr>>,
+        recheck: Option<LRecheck>,
     },
 }
 
@@ -296,7 +342,8 @@ impl LogicalPlan {
             L::Filter { input, .. }
             | L::Distinct { input, .. }
             | L::Sort { input, .. }
-            | L::Limit { input, .. } => input.output_cols(),
+            | L::Limit { input, .. }
+            | L::LockRows { input, .. } => input.output_cols(),
             L::Project { exprs, .. } => exprs.iter().map(|(c, _)| *c).collect(),
             L::Join {
                 kind, left, right, ..
@@ -351,6 +398,7 @@ impl LogicalPlan {
             | L::Distinct { .. }
             | L::Sort { .. }
             | L::Limit { .. }
+            | L::LockRows { .. }
             | L::Insert { .. }
             | L::Update { .. }
             | L::Delete { .. } => Vec::new(),
@@ -373,6 +421,7 @@ impl LogicalPlan {
             | L::Distinct { input, .. }
             | L::Sort { input, .. }
             | L::Limit { input, .. }
+            | L::LockRows { input, .. }
             | L::Insert { input, .. }
             | L::Update { input, .. }
             | L::Delete { input, .. } => vec![&**input],
@@ -397,6 +446,7 @@ impl LogicalPlan {
             | L::Distinct { input, .. }
             | L::Sort { input, .. }
             | L::Limit { input, .. }
+            | L::LockRows { input, .. }
             | L::Insert { input, .. }
             | L::Update { input, .. }
             | L::Delete { input, .. } => vec![&mut **input],
@@ -431,13 +481,17 @@ impl LogicalPlan {
             L::Result {
                 one_time_filter, ..
             } => one_time_filter.iter().collect(),
+            L::LockRows { recheck, .. } => recheck.iter().collect(),
+            L::Update { recheck, .. } | L::Delete { recheck, .. } => {
+                recheck.iter().flat_map(LRecheck::exprs).collect()
+            }
             L::Get { .. }
             | L::CteScan { .. }
             | L::SetOp { .. }
             | L::Empty { .. }
-            | L::Insert { .. }
-            | L::Update { .. }
-            | L::Delete { .. } => vec![],
+            | L::Insert { .. } => {
+                vec![]
+            }
         }
     }
 
@@ -462,13 +516,17 @@ impl LogicalPlan {
             L::Result {
                 one_time_filter, ..
             } => one_time_filter.iter_mut().collect(),
+            L::LockRows { recheck, .. } => recheck.iter_mut().collect(),
+            L::Update { recheck, .. } | L::Delete { recheck, .. } => {
+                recheck.iter_mut().flat_map(LRecheck::exprs_mut).collect()
+            }
             L::Get { .. }
             | L::CteScan { .. }
             | L::SetOp { .. }
             | L::Empty { .. }
-            | L::Insert { .. }
-            | L::Update { .. }
-            | L::Delete { .. } => vec![],
+            | L::Insert { .. } => {
+                vec![]
+            }
         }
     }
 
@@ -523,6 +581,7 @@ fn node_name(p: &LogicalPlan) -> &'static str {
         L::Distinct { .. } => "Distinct",
         L::Sort { .. } => "Sort",
         L::Limit { .. } => "Limit",
+        L::LockRows { .. } => "LockRows",
         L::SetOp { .. } => "SetOp",
         L::Result { .. } => "Result",
         L::Empty { .. } => "Empty",
@@ -615,7 +674,10 @@ impl LogicalPlan {
             | L::Project { input, .. }
             | L::Aggregate { input, .. }
             | L::Distinct { input, .. }
-            | L::Sort { input, .. } => allowed.extend(input.output_cols()),
+            | L::Sort { input, .. }
+            | L::LockRows { input, .. }
+            | L::Update { input, .. }
+            | L::Delete { input, .. } => allowed.extend(input.output_cols()),
             _ => {}
         }
         for e in self.exprs() {
@@ -670,15 +732,22 @@ impl LogicalPlan {
                 old_cols,
                 ctid,
                 new_values,
+                recheck,
                 ..
             } => {
                 let mut want = old_cols.clone();
                 want.push(*ctid);
                 want.extend(new_values.iter().map(|(_, c)| *c));
+                if let Some(r) = recheck {
+                    if r.new_values.len() != new_values.len() {
+                        return Err(bad("L8", "Update recheck has a different number of values"));
+                    }
+                    want.extend(r.extra_cols.iter().copied());
+                }
                 if input.output_cols() != want {
                     return Err(bad(
                         "L8",
-                        "Update input output differs from old_cols ++ [ctid] ++ new_values",
+                        "Update input output differs from old_cols ++ [ctid] ++ new_values ++ extra_cols",
                     ));
                 }
             }
@@ -686,15 +755,27 @@ impl LogicalPlan {
                 input,
                 old_cols,
                 ctid,
+                recheck,
                 ..
             } => {
                 let mut want = old_cols.clone();
                 want.push(*ctid);
+                if let Some(r) = recheck {
+                    want.extend(r.extra_cols.iter().copied());
+                }
                 if input.output_cols() != want {
                     return Err(bad(
                         "L8",
-                        "Delete input output differs from old_cols ++ [ctid]",
+                        "Delete input output differs from old_cols ++ [ctid] ++ extra_cols",
                     ));
+                }
+            }
+            L::LockRows { input, marks, .. } => {
+                let out: HashSet<ColId> = input.output_cols().into_iter().collect();
+                for m in marks {
+                    if !out.contains(&m.tid) || m.cols.iter().any(|c| !out.contains(c)) {
+                        return Err(bad("L8", "LockRows mark columns are not in its input"));
+                    }
                 }
             }
             _ => {}
@@ -1021,6 +1102,7 @@ mod tests {
             old_cols: vec![lc[0]],
             ctid: lc[1],
             returning: None,
+            recheck: None,
         };
         assert!(dml.output_cols().is_empty() && dml.defines().is_empty());
         assert_eq!(dml.children().len(), 1);
@@ -1180,6 +1262,7 @@ mod tests {
             old_cols: vec![gc[0]],
             ctid: gc[1],
             returning: None,
+            recheck: None,
         };
         query(a.clone(), del(g.clone())).validate().unwrap();
         let wrong = LogicalPlan::Project {

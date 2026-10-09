@@ -174,6 +174,21 @@ impl Ctx {
         v.extend(
             (0..self.next_table).map(|i| format!("DROP TABLE IF EXISTS {}t{i};", self.prefix)),
         );
+        // t<N> 以外の派生表（`<表>_o` `<表>_g` など）。成功した CREATE TABLE が PG に残ると、同じケースの再実行で 42P07 の偽の差分になる。
+        let mut extra: Vec<String> = Vec::new();
+        for s in &self.stmts {
+            for part in s.split("CREATE TABLE ").skip(1) {
+                let part = part.strip_prefix("IF NOT EXISTS ").unwrap_or(part);
+                let name: String = part
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if name.starts_with(&self.prefix) && !extra.contains(&name) {
+                    extra.push(name);
+                }
+            }
+        }
+        v.extend(extra.iter().map(|n| format!("DROP TABLE IF EXISTS {n};")));
         v
     }
 }

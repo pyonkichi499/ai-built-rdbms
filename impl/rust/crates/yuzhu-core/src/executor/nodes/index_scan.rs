@@ -443,6 +443,8 @@ mod tests {
                     block: 0,
                     offset: 3,
                 },
+                None,
+                None,
             )
             .unwrap();
         assert_eq!(f.indexes.len(100), 6);

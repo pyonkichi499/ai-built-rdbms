@@ -1,0 +1,72 @@
+# DELETE ... RETURNING
+
+statement ok
+DROP TABLE IF EXISTS returning_delete_t
+
+statement ok
+CREATE TABLE returning_delete_t (id int PRIMARY KEY, a int, b text DEFAULT 'dflt')
+
+statement ok
+INSERT INTO returning_delete_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z'), (4, 40, 'z'), (5, 50, 'z')
+
+query ITT
+DELETE FROM returning_delete_t WHERE id = 1 RETURNING id, a, b
+----
+1 10 x
+
+query IT rowsort
+DELETE FROM returning_delete_t WHERE id IN (2, 3) RETURNING id, b
+----
+2 y
+3 z
+
+# 0 行
+query I
+DELETE FROM returning_delete_t WHERE id = 999 RETURNING id
+----
+
+# *、式
+query IIT
+DELETE FROM returning_delete_t WHERE id = 4 RETURNING *
+----
+4 40 z
+
+query IT
+DELETE FROM returning_delete_t AS t WHERE t.id = 5 RETURNING t.id * 2, upper(t.b)
+----
+10 Z
+
+# 全件
+statement ok
+INSERT INTO returning_delete_t SELECT n, n, 'g' FROM generate_series(1, 3) n
+
+statement count 3
+DELETE FROM returning_delete_t RETURNING id
+
+query I
+SELECT count(*) FROM returning_delete_t
+----
+0
+
+# ロールバックされれば削除も戻る
+statement ok
+INSERT INTO returning_delete_t VALUES (1, 1, 'r')
+
+statement ok
+BEGIN
+
+query I
+DELETE FROM returning_delete_t WHERE id = 1 RETURNING id
+----
+1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM returning_delete_t
+----
+1
+
+statement ok
+DROP TABLE returning_delete_t

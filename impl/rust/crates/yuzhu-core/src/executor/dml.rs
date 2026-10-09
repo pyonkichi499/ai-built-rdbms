@@ -9,7 +9,10 @@ use super::eval::{eval_const, eval_const_pred};
 use crate::catalog::TableDef;
 use crate::error::{Error, Result, sqlstate};
 use crate::planner::physical::{PhysCheck, PhysExpr};
-use crate::storage::{IndexHandle, RelHandle, TmResult, UniqueCheck, UpdateOutcome, WriteCtx};
+use crate::storage::{
+    IndexHandle, InsertOutcome, RelHandle, TmResult, UniqueCheck, UpdateOutcome, WriteCtx,
+};
+use crate::txn::{Snapshot, Xid};
 use crate::types::{Datum, Oid, Row, Tid, TypeEnv, io};
 
 /// 行をヒープに書き、`rel.indexes` の各索引に項目を入れる。
@@ -30,14 +33,22 @@ pub fn insert_with_indexes(
 
 /// 行の新しい版を書き、`TmResult::Ok` なら各索引に新しい TID の項目を入れる。`Ok` 以外は索引に触らない。
 /// キー列が変わらなくても全索引に項目を入れる（HOT なし）。旧版の項目は消さない（VACUUM は M5）。
+/// `snap` は更新対象の可視性に使うスナップショット、`crosscheck` は FK の RR 用（通常の文は `None`）。`ctx.wait` が
+/// あれば衝突する保持者の終了を待つ（`l2:` ループ。`None` なら待たずに `BeingModified`）。`old_row` は `ri::after_update` が使う。
+#[allow(clippy::too_many_arguments)]
 pub fn update_with_indexes(
     ctx: &mut ExecCtx<'_>,
     rel: &RelHandle,
     w: &WriteCtx,
+    snap: &Snapshot,
     tid: Tid,
+    old_row: &[Datum],
     new_row: &[Datum],
+    crosscheck: Option<&Snapshot>,
 ) -> Result<UpdateOutcome> {
-    let out = ctx.storage.update(rel, w, ctx.snapshot, tid, new_row)?;
+    let out = ctx
+        .storage
+        .update(rel, w, snap, tid, new_row, ctx.wait.as_ref(), crosscheck)?;
     if out.result != TmResult::Ok {
         return Ok(out);
     }
@@ -45,12 +56,37 @@ pub fn update_with_indexes(
         .new_tid
         .ok_or_else(|| Error::internal("update returned Ok without a new TID"))?;
     insert_index_entries(ctx, rel, w, new_row, new_tid)?;
+    super::ri::after_update(ctx, rel, tid, old_row, new_tid, new_row)?;
     Ok(out)
 }
 
+/// 行を削除する（`ctx.wait` があれば保持者の終了を待つ。`l1:` ループ）。インデックスには触れない（項目の削除は VACUUM）。
+/// 成功したら `ri::after_delete` を呼ぶ。
+pub fn delete_row(
+    ctx: &mut ExecCtx<'_>,
+    rel: &RelHandle,
+    w: &WriteCtx,
+    snap: &Snapshot,
+    tid: Tid,
+    old_row: &[Datum],
+    crosscheck: Option<&Snapshot>,
+) -> Result<TmResult> {
+    let result = ctx
+        .storage
+        .delete(rel, w, snap, tid, ctx.wait.as_ref(), crosscheck)?;
+    if result == TmResult::Ok {
+        super::ri::after_delete(ctx, rel, old_row)?;
+    }
+    Ok(result)
+}
+
 /// `rel.indexes` の各索引に `(row のキー列, tid)` を入れる。
+///
+/// 一意索引が他のトランザクションの未確定の項目に当たったら（`InsertOutcome::WaitFor`）、ラッチもピンも
+/// 外れた状態でその終了を待ち、同じ引数で降下からやり直す（PostgreSQL の `_bt_doinsert` の `xwait` ループ。
+/// 02 §5.9）。キャンセル・タイムアウト・デッドロックは `?` で伝わる。
 fn insert_index_entries(
-    ctx: &ExecCtx<'_>,
+    ctx: &mut ExecCtx<'_>,
     rel: &RelHandle,
     w: &WriteCtx,
     row: &[Datum],
@@ -58,20 +94,32 @@ fn insert_index_entries(
 ) -> Result<()> {
     for index in rel.indexes.iter() {
         let key = index_key(index, row)?;
-        let check = if index.unique {
-            UniqueCheck::Check {
-                heap: ctx.storage,
-                rel,
-                own_xid: w.xid,
+        loop {
+            let check = if index.unique {
+                UniqueCheck::Check {
+                    heap: ctx.storage,
+                    rel,
+                    own_xid: w.xid,
+                }
+            } else {
+                UniqueCheck::Skip
+            };
+            let outcome = ctx
+                .indexes
+                .insert(w, index, &key, tid, check)
+                .map_err(|e| complete_unique_error(e, index, &key, ctx.type_env))?;
+            match outcome {
+                InsertOutcome::Inserted => break,
+                InsertOutcome::WaitFor(x) => wait_for_xid(ctx, x)?,
             }
-        } else {
-            UniqueCheck::Skip
-        };
-        ctx.indexes
-            .insert(w, index, &key, tid, check)
-            .map_err(|e| complete_unique_error(e, index, &key, ctx.type_env))?;
+        }
     }
     Ok(())
+}
+
+/// 他トランザクションの終了を待つ。executor が待つときはこれだけを使う（待つ前にラッチ・ピンを持たない）。
+pub fn wait_for_xid(ctx: &mut ExecCtx<'_>, xid: Xid) -> Result<()> {
+    ctx.runtime.wait_for_xact(xid)
 }
 
 /// 行から索引のキー列の値を取り出す（式索引はない）。
@@ -480,7 +528,8 @@ mod tests {
     ) -> Result<UpdateOutcome> {
         let mut ctx = f.ctx();
         let w = ctx.write_ctx()?;
-        update_with_indexes(&mut ctx, rel, &w, tid, new_row)
+        let snap = ctx.snapshot.clone();
+        update_with_indexes(&mut ctx, rel, &w, &snap, tid, &[], new_row, None)
     }
 
     #[test]
@@ -701,6 +750,7 @@ mod tests {
             vec![],
             vec![true, false, false],
             None,
+            None,
         ));
         let err = f.run(&mut e).unwrap_err();
         assert_unique_error(&err, "e5_pkey", "Key (a)=(2) already exists.");
@@ -717,6 +767,7 @@ mod tests {
             vec![(0, 4)],
             vec![],
             vec![true, false, false],
+            None,
             None,
         ));
         f.run(&mut e).unwrap();
@@ -750,5 +801,180 @@ mod tests {
         put(&mut f, &rel, &row(1, Some(1), Some("a"))).unwrap();
         // `TableStore` が使われていること（未使用 import 防止）。
         assert!(f.storage.storage_exists(rel.locator).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    //! `insert_with_indexes` の待ちのループ（`InsertOutcome::WaitFor` → 待つ → 降下からやり直し。02 §5.9）。
+    use super::*;
+    use crate::catalog::ColumnDef;
+    use crate::catalog::fake::table_def;
+    use crate::executor::RuntimeInfo;
+    use crate::executor::nodes::test_util::{FakeIndexStore, Fixture, index_on};
+    use crate::storage::{
+        BuildStats, BuildUnique, IndexScan, IndexStore, ResolvedScanKeys, ScanDirection,
+    };
+    use crate::types::SqlType;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const T: Oid = 16400;
+    const PK: Oid = 100;
+
+    /// 先頭から順に `WaitFor` を返し、尽きたら本体に委ねる `IndexStore`。
+    #[derive(Debug, Default)]
+    struct Scripted {
+        inner: FakeIndexStore,
+        waits: Mutex<VecDeque<Xid>>,
+        calls: AtomicUsize,
+    }
+
+    impl IndexStore for Scripted {
+        fn init_index(&self, w: &WriteCtx, index: &IndexHandle) -> Result<()> {
+            self.inner.init_index(w, index)
+        }
+        fn insert(
+            &self,
+            w: &WriteCtx,
+            index: &IndexHandle,
+            key: &[Datum],
+            tid: Tid,
+            check: UniqueCheck<'_>,
+        ) -> Result<InsertOutcome> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(x) = self.waits.lock().unwrap().pop_front() {
+                return Ok(InsertOutcome::WaitFor(x));
+            }
+            self.inner.insert(w, index, key, tid, check)
+        }
+        fn build(
+            &self,
+            w: &WriteCtx,
+            index: &IndexHandle,
+            entries: &mut dyn Iterator<Item = (Vec<Datum>, Tid)>,
+            unique: BuildUnique,
+        ) -> Result<BuildStats> {
+            self.inner.build(w, index, entries, unique)
+        }
+        fn begin_scan(
+            &self,
+            index: &IndexHandle,
+            keys: &ResolvedScanKeys,
+            dir: ScanDirection,
+        ) -> Result<IndexScan> {
+            self.inner.begin_scan(index, keys, dir)
+        }
+        fn scan_next(&self, scan: &mut IndexScan) -> Result<Option<Tid>> {
+            self.inner.scan_next(scan)
+        }
+        fn nblocks(&self, index: &IndexHandle) -> Result<u32> {
+            self.inner.nblocks(index)
+        }
+        fn unlink_storage(&self, index: &IndexHandle) -> Result<()> {
+            self.inner.unlink_storage(index)
+        }
+    }
+
+    /// 待った XID を記録する `RuntimeInfo`。`fail_on` 番目の待ちでキャンセルされる。
+    #[derive(Debug, Default)]
+    struct Waiter {
+        waited: Mutex<Vec<Xid>>,
+        fail_on: Option<usize>,
+    }
+
+    impl RuntimeInfo for Waiter {
+        fn backend_pid(&self) -> i32 {
+            0
+        }
+        fn is_blocked_by(&self, _pid: i32, _among: &[i32]) -> bool {
+            false
+        }
+        fn check_interrupts(&self) -> Result<()> {
+            Ok(())
+        }
+        fn wait_for_xact(&self, xid: Xid) -> Result<()> {
+            let mut w = self.waited.lock().unwrap();
+            w.push(xid);
+            if self.fail_on == Some(w.len()) {
+                return Err(Error::new(sqlstate::DEADLOCK_DETECTED, "deadlock detected"));
+            }
+            Ok(())
+        }
+    }
+
+    fn rel() -> RelHandle {
+        let c = ColumnDef {
+            name: "a".into(),
+            attnum: 1,
+            ty: SqlType::INT4,
+            not_null: true,
+            default: None,
+            identity: None,
+        };
+        let mut rel = RelHandle::from_table(&table_def(T, "w1", vec![c], vec![]));
+        rel.indexes = std::sync::Arc::from(vec![index_on(
+            PK,
+            "w1_pkey",
+            "w1",
+            true,
+            &[(1, "a", SqlType::INT4)],
+        )]);
+        rel
+    }
+
+    #[test]
+    fn waits_for_each_xid_and_retries_until_inserted() {
+        let idx = Scripted::default();
+        idx.waits.lock().unwrap().extend([Xid(7), Xid(8)]);
+        let rt = Waiter::default();
+        let mut f = Fixture::new();
+        let mut ctx = f.ctx();
+        ctx.indexes = &idx;
+        ctx.runtime = &rt;
+        let w = ctx.write_ctx().unwrap();
+        let tid = insert_with_indexes(&mut ctx, &rel(), &w, &[Datum::Int4(1)]).unwrap();
+        assert_eq!(*rt.waited.lock().unwrap(), vec![Xid(7), Xid(8)]);
+        assert_eq!(idx.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(idx.inner.entries(PK), vec![(vec![Datum::Int4(1)], tid)]);
+    }
+
+    #[test]
+    fn an_error_while_waiting_is_returned_and_nothing_is_indexed() {
+        let idx = Scripted::default();
+        idx.waits.lock().unwrap().extend([Xid(7), Xid(8)]);
+        let rt = Waiter {
+            fail_on: Some(2),
+            ..Waiter::default()
+        };
+        let mut f = Fixture::new();
+        let mut ctx = f.ctx();
+        ctx.indexes = &idx;
+        ctx.runtime = &rt;
+        let w = ctx.write_ctx().unwrap();
+        let e = insert_with_indexes(&mut ctx, &rel(), &w, &[Datum::Int4(1)]).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::DEADLOCK_DETECTED);
+        assert_eq!(idx.inner.len(PK), 0);
+        assert_eq!(idx.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_unique_violation_after_a_wait_gets_its_detail() {
+        // 待った後の再試行で本物の重複（23505）に当たる。DETAIL はこの層が補う。
+        let idx = Scripted::default();
+        let rt = Waiter::default();
+        let mut f = Fixture::new();
+        let mut ctx = f.ctx();
+        ctx.indexes = &idx;
+        ctx.runtime = &rt;
+        let w = ctx.write_ctx().unwrap();
+        let r = rel();
+        insert_with_indexes(&mut ctx, &r, &w, &[Datum::Int4(1)]).unwrap();
+        idx.waits.lock().unwrap().push_back(Xid(9));
+        let e = insert_with_indexes(&mut ctx, &r, &w, &[Datum::Int4(1)]).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::UNIQUE_VIOLATION);
+        assert_eq!(e.detail.as_deref(), Some("Key (a)=(1) already exists."));
+        assert_eq!(*rt.waited.lock().unwrap(), vec![Xid(9)]);
     }
 }

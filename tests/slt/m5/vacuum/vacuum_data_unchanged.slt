@@ -1,0 +1,120 @@
+# VACUUM の前後で表の内容が変わらない（DELETE / UPDATE の後。ctid には依存しない）
+
+statement ok
+DROP TABLE IF EXISTS vacuum_data_unchanged_t
+
+statement ok
+DROP TABLE IF EXISTS vacuum_data_unchanged_p
+
+statement ok
+CREATE TABLE vacuum_data_unchanged_t (id int, v text, n int)
+
+statement ok
+CREATE TABLE vacuum_data_unchanged_p (id int PRIMARY KEY, v text)
+
+statement ok
+INSERT INTO vacuum_data_unchanged_t SELECT g, 'v' || g, g * 10 FROM generate_series(1, 300) g
+
+statement ok
+INSERT INTO vacuum_data_unchanged_p SELECT g, 'p' || g FROM generate_series(1, 300) g
+
+statement ok
+DELETE FROM vacuum_data_unchanged_t WHERE id % 3 = 0
+
+statement ok
+UPDATE vacuum_data_unchanged_t SET n = n + 1 WHERE id % 5 = 0
+
+statement ok
+DELETE FROM vacuum_data_unchanged_p WHERE id % 2 = 0
+
+statement ok
+UPDATE vacuum_data_unchanged_p SET v = v || 'u' WHERE id % 7 = 0
+
+query IIII
+SELECT count(*), sum(id), sum(n), count(DISTINCT v) FROM vacuum_data_unchanged_t
+----
+200 30000 300040 200
+
+query III
+SELECT count(*), sum(id), sum(length(v)) FROM vacuum_data_unchanged_p
+----
+150 22500 566
+
+statement ok
+VACUUM vacuum_data_unchanged_t
+
+statement ok
+VACUUM vacuum_data_unchanged_p
+
+statement ok
+VACUUM ANALYZE
+
+query IIII
+SELECT count(*), sum(id), sum(n), count(DISTINCT v) FROM vacuum_data_unchanged_t
+----
+200 30000 300040 200
+
+query III
+SELECT count(*), sum(id), sum(length(v)) FROM vacuum_data_unchanged_p
+----
+150 22500 566
+
+query IIT
+SELECT id, n, v FROM vacuum_data_unchanged_t WHERE id <= 6 ORDER BY id
+----
+1 10 v1
+2 20 v2
+4 40 v4
+5 51 v5
+
+# 索引経由の検索も同じ結果
+query IT
+SELECT id, v FROM vacuum_data_unchanged_p WHERE id IN (1, 2, 7, 299) ORDER BY id
+----
+1 p1
+7 p7u
+299 p299
+
+# VACUUM の後の INSERT / UPDATE / DELETE が動く
+statement ok
+INSERT INTO vacuum_data_unchanged_t SELECT g, 'w' || g, 0 FROM generate_series(1000, 1049) g
+
+statement ok
+INSERT INTO vacuum_data_unchanged_p VALUES (2, 'again')
+
+statement ok
+UPDATE vacuum_data_unchanged_t SET n = -1 WHERE id >= 1000
+
+statement ok
+DELETE FROM vacuum_data_unchanged_t WHERE id < 100
+
+query II
+SELECT count(*), sum(n) FROM vacuum_data_unchanged_t
+----
+184 267307
+
+# 全行を消して VACUUM しても動く
+statement ok
+DELETE FROM vacuum_data_unchanged_t
+
+statement ok
+VACUUM vacuum_data_unchanged_t
+
+query I
+SELECT count(*) FROM vacuum_data_unchanged_t
+----
+0
+
+statement ok
+INSERT INTO vacuum_data_unchanged_t VALUES (1, 'a', 1)
+
+query ITI
+SELECT * FROM vacuum_data_unchanged_t
+----
+1 a 1
+
+statement ok
+DROP TABLE vacuum_data_unchanged_t
+
+statement ok
+DROP TABLE vacuum_data_unchanged_p

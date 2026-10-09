@@ -116,3 +116,299 @@ jobs:
         run: |
           tests/yuzhu.sh clean || true
           tests/pg.sh stop || true
+
+  # ---------------------------------------------------------------------------
+  # M5（spec/design/m5/10-tests-plan.md §6.10.6）。以下は夜間のジョブ。失敗は notify ジョブが issue にする。
+  # テスト名・環境変数・スクリプトの一部は担当（TS-2 / TS-3 / TS-D11）の確定待ちで、ファイルが無いうちは
+  # `hashFiles(...)` で step を飛ばす。実装が揃ったら continue-on-error を外す（各ジョブの注記）。
+  # 注意: この YAML は構文を確認しただけで、actionlint は CI 上では未実行。
+  # ---------------------------------------------------------------------------
+
+  # 層 1 の長時間ランダム（全 N）、層 2（kill -9、200 回）、変異の全シード。
+  nightly-crash:
+    name: Crash tests (long random, layer 2 x200, all mutation seeds)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    continue-on-error: true   # 【外す条件】層 2 と変異の全シードが実装され、1 週間安定したら外す
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: 層 1 の長時間ランダムと変異の全シード（#[ignore]）
+        working-directory: impl/rust
+        env:
+          CRASH_SIM_ALL: "1"          # 想定の名前。全 N と変異の全シードを有効にする
+          CRASH_SIM_MUTATION_SEEDS: all
+        run: cargo test --release -p yuzhu-core --test crash_sim -- --ignored
+      - name: 層 2（kill -9 を 200 回）
+        working-directory: impl/rust
+        env:
+          CRASH_KILL9_ITERATIONS: "200"   # 想定の名前
+        run: cargo test --release -p yuzhu-server --test crash_kill9 -- --ignored
+      - name: 並行（concurrency）の長時間試験
+        if: hashFiles('impl/rust/crates/yuzhu-server/tests/concurrency.rs') != ''
+        working-directory: impl/rust
+        run: cargo test --release -p yuzhu-server --test concurrency -- --ignored
+
+  # S1〜S7 を 600 秒 × スレッド {2, 8, 16}。PostgreSQL にも同じ負荷を流す。
+  nightly-stress:
+    name: Stress (S1-S7, 600s x threads)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    continue-on-error: true   # 【外す条件】stress のテストが実装されたら外す
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [yuzhu, pg]
+        threads: [2, 8, 16]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: stress（プロセス内。yuzhu のみ）
+        if: matrix.target == 'yuzhu' && hashFiles('impl/rust/crates/yuzhu-core/tests/stress.rs', 'impl/rust/crates/yuzhu-core/tests/stress/**') != ''
+        working-directory: impl/rust
+        env:
+          STRESS_SECONDS: "600"
+          STRESS_THREADS: ${{ matrix.threads }}
+        run: cargo test --release -p yuzhu-core --test stress -- --include-ignored
+      - name: stress（wire）
+        if: hashFiles('impl/rust/crates/yuzhu-server/tests/stress_wire.rs') != ''
+        working-directory: impl/rust
+        env:
+          STRESS_TARGET: ${{ matrix.target }}
+          STRESS_SECONDS: "600"
+          STRESS_THREADS: ${{ matrix.threads }}
+        run: |
+          [ "$STRESS_TARGET" = pg ] && ../../tests/pg.sh start
+          cargo test --release -p yuzhu-server --test stress_wire -- --include-ignored
+      - name: Stop PostgreSQL
+        if: always() && matrix.target == 'pg'
+        run: tests/pg.sh stop || true
+
+  # ported の isolation を extended で（PR は simple のみ。M5-TS-Q1）。
+  isolation-ported-extended:
+    name: Isolation ported specs (extended, ${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true   # 【外す条件】yuzhu の ported が simple で全件通ったら、yuzhu も外す
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [pg, yuzhu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/tools/isolation
+      - name: Build yuzhu-isolation
+        run: cargo build --release --manifest-path tests/tools/isolation/Cargo.toml
+      - name: Run ported specs (extended)
+        run: |
+          ISO=tests/tools/isolation/target/release/yuzhu-isolation
+          if [ "${{ matrix.target }}" = pg ]; then
+            tests/pg.sh start
+            $ISO --port 55432 --protocol extended --skip-list tests/isolation/ported/skip.txt tests/isolation/ported/specs
+            rc=$?
+            tests/pg.sh stop
+          else
+            (cd impl/rust && cargo build --release -p yuzhu-server)
+            tests/yuzhu.sh start --port 5433
+            $ISO --port 5433 --protocol extended --variant yuzhu-m5 --skip-list tests/isolation/ported/skip.txt tests/isolation/ported/specs
+            rc=$?
+            tests/yuzhu.sh clean
+          fi
+          exit $rc
+
+  # ドライバの全部（psycopg / node-postgres / pgjdbc / tokio-postgres）と pgbench の G1〜G9。trust。
+  # キャッシュ: Cargo（rust-cache）、uv、Maven、npm。ドライバの版は各 lock ファイルで固定する。
+  drivers-full:
+    name: Drivers (all) and pgbench G1-G9
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true   # 【外す条件】M5 の完了判定（§7.3）が通ったら外す
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/compat/drivers/tokio-postgres
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/compat/drivers/psycopg/uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/compat/drivers/node-postgres/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache Maven (pgjdbc)
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-${{ hashFiles('tests/compat/drivers/pgjdbc/**') }}
+          restore-keys: maven-${{ runner.os }}-
+      - name: Install PostgreSQL 17 (server / client。PGDG)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 postgresql-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Start yuzhu-server
+        run: |
+          (cd impl/rust && cargo build --release -p yuzhu-server)
+          tests/yuzhu.sh start --port 5433
+      - name: tests/compat/run.sh（全ドライバと pgbench）
+        run: tests/compat/run.sh --target yuzhu --port 5433 --suite psql,copy,pgbench,drivers
+      - name: Stop yuzhu-server
+        if: always()
+        run: tests/yuzhu.sh clean || true
+
+  # SCRAM の全部: slt（m1〜m5）、isolation、ドライバ、pgbench、認証シナリオ。
+  scram-full:
+    name: SCRAM (full matrix)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true   # 【外す条件】yuzhu の --auth scram が実装されたら外す
+    env:
+      PGPASSWORD: yuzhu-test-pw
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/tools/isolation
+            tests/compat/drivers/tokio-postgres
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: tests/compat/drivers/psycopg/uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/compat/drivers/node-postgres/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache sqllogictest-bin
+        id: slt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqllogictest
+          key: sqllogictest-bin-0.29.1-${{ runner.os }}
+      - name: Install sqllogictest-bin 0.29.1
+        if: steps.slt-cache.outputs.cache-hit != 'true'
+        run: cargo install sqllogictest-bin --locked --version 0.29.1
+      - name: Install PostgreSQL 17 (client。PGDG)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 postgresql-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Build
+        run: |
+          (cd impl/rust && cargo build --release -p yuzhu-server)
+          cargo build --release --manifest-path tests/tools/isolation/Cargo.toml
+      - name: Start yuzhu-server (--auth scram)
+        run: tests/yuzhu.sh start --port 5433 --auth scram
+      - name: slt（m1〜m5、simple と extended）
+        run: |
+          rc=0
+          for p in simple extended; do
+            tests/run.sh --target yuzhu --port 5433 --protocol "$p" --password "$PGPASSWORD" || rc=1
+          done
+          exit $rc
+      - name: isolation（共有 specs）
+        run: tests/tools/isolation/target/release/yuzhu-isolation --port 5433 --variant yuzhu-m5 tests/isolation/specs
+      - name: ドライバ・pgbench・認証シナリオ
+        run: tests/compat/run.sh --target yuzhu --port 5433 --auth scram --suite pgbench,drivers,auth
+      - name: Stop yuzhu-server
+        if: always()
+        run: tests/yuzhu.sh clean || true
+
+  # 性能（P1〜P9）。前回の夜間の結果（actions/cache に保存）と比べ、15% を超える退行を失敗にする。
+  perf:
+    name: Performance (P1-P9, compare with previous night)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true   # 【外す条件】tests/perf/run.sh ができ、環境のばらつきを確かめたら外す（M5 の完了判定は §7.3）
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: Restore previous result
+        uses: actions/cache/restore@v4
+        with:
+          path: perf-previous.json
+          key: perf-result-${{ github.run_id }}
+          restore-keys: perf-result-
+      - name: Install PostgreSQL 17 client (pgbench。PGDG)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Build yuzhu-server
+        run: (cd impl/rust && cargo build --release -p yuzhu-server)
+      - name: tests/perf/run.sh
+        if: hashFiles('tests/perf/run.sh') != ''
+        run: |
+          compare=tests/perf/baseline.json
+          [ -f perf-previous.json ] && compare=perf-previous.json
+          tests/perf/run.sh --target yuzhu --compare "$compare" --out perf-result.json
+      - name: Save result for the next night
+        if: hashFiles('perf-result.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: perf-result.json
+          key: perf-result-${{ github.run_id }}
+      - name: Upload result
+        if: hashFiles('perf-result.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-result
+          path: perf-result.json
+
+  # 夜間ジョブの失敗を issue にする（continue-on-error のジョブは result が success になるので、
+  # 通知したいジョブは「失敗」ではなく「step の失敗」を見たい。実装が安定して continue-on-error を外した後に効く）。
+  notify:
+    name: Notify failures
+    runs-on: ubuntu-latest
+    needs: [rust-long, done-check, difffuzz, nightly-crash, nightly-stress, isolation-ported-extended, drivers-full, scram-full, perf]
+    if: always() && contains(needs.*.result, 'failure')
+    permissions:
+      issues: write
+    steps:
+      - name: Create issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Nightly failed: $(date -u +%Y-%m-%d)" \
+            --body "夜間ジョブが失敗した: $RUN_URL"

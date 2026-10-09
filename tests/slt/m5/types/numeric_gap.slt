@@ -1,0 +1,1267 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# numeric の穴埋め: gcd lcm min_scale trim_scale width_bucket factorial @ 関数形式のキャスト sqrt 系
+
+# 接頭辞: types_numeric_gap_（テーブルは作らない）
+
+# gcd
+
+query T
+SELECT (gcd(12, 18))::text
+----
+6
+
+query T
+SELECT (gcd(-12, 18))::text
+----
+6
+
+query T
+SELECT (gcd(12, -18))::text
+----
+6
+
+query T
+SELECT (gcd(-12, -18))::text
+----
+6
+
+query T
+SELECT (gcd(0, 0))::text
+----
+0
+
+query T
+SELECT (gcd(0, 5))::text
+----
+5
+
+query T
+SELECT (gcd(5, 0))::text
+----
+5
+
+query T
+SELECT (gcd(1.5, 3))::text
+----
+1.5
+
+query T
+SELECT (gcd(1.5, 0.75))::text
+----
+0.75
+
+query T
+SELECT (gcd(0.5, 0.3))::text
+----
+0.1
+
+query T
+SELECT (gcd(12.00, 18))::text
+----
+6.00
+
+query T
+SELECT (gcd(12, 18.000))::text
+----
+6.000
+
+query T
+SELECT (gcd(7, 13))::text
+----
+1
+
+query T
+SELECT (gcd(1, 1))::text
+----
+1
+
+query T
+SELECT (gcd('NaN'::numeric, 1))::text
+----
+NaN
+
+query T
+SELECT (gcd(1, 'NaN'::numeric))::text
+----
+NaN
+
+query T
+SELECT (gcd('Infinity'::numeric, 1))::text
+----
+NaN
+
+query T
+SELECT (gcd(1, '-Infinity'::numeric))::text
+----
+NaN
+
+query T
+SELECT (gcd(1e100, 1e50))::text
+----
+100000000000000000000000000000000000000000000000000
+
+query T
+SELECT (gcd(12345678901234567890, 9876543210))::text
+----
+90
+
+query T
+SELECT (gcd(NULL, 1))::text
+----
+NULL
+
+query T
+SELECT (gcd(1, NULL))::text
+----
+NULL
+
+query T
+SELECT (gcd(1e-10, 1e-5))::text
+----
+0.0000000001
+
+query T
+SELECT (gcd(100000000000000000000, 15))::text
+----
+5
+
+query T
+SELECT (pg_typeof(gcd(1, 2)))::text
+----
+integer
+
+query T
+SELECT (pg_typeof(gcd(1::numeric, 2::numeric)))::text
+----
+numeric
+
+query T
+SELECT (gcd(2.5, 1.5))::text
+----
+0.5
+
+query T
+SELECT (gcd(-0.0, 0))::text
+----
+0.0
+
+# lcm
+
+query T
+SELECT (lcm(4, 6))::text
+----
+12
+
+query T
+SELECT (lcm(-4, 6))::text
+----
+12
+
+query T
+SELECT (lcm(4, -6))::text
+----
+12
+
+query T
+SELECT (lcm(0, 5))::text
+----
+0
+
+query T
+SELECT (lcm(5, 0))::text
+----
+0
+
+query T
+SELECT (lcm(0, 0))::text
+----
+0
+
+query T
+SELECT (lcm(1.5, 2))::text
+----
+6.0
+
+query T
+SELECT (lcm(0.5, 0.3))::text
+----
+1.5
+
+query T
+SELECT (lcm(7, 13))::text
+----
+91
+
+query T
+SELECT (lcm(12.00, 18))::text
+----
+36.00
+
+query T
+SELECT (lcm(1e100, 3))::text
+----
+30000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query T
+SELECT (lcm(3, 1e100))::text
+----
+30000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query T
+SELECT (lcm('NaN'::numeric, 1))::text
+----
+NaN
+
+query T
+SELECT (lcm('Infinity'::numeric, 1))::text
+----
+NaN
+
+query T
+SELECT (lcm(1, '-Infinity'::numeric))::text
+----
+NaN
+
+query T
+SELECT (lcm(NULL, 1))::text
+----
+NULL
+
+query T
+SELECT (lcm(1, NULL))::text
+----
+NULL
+
+query T
+SELECT (lcm(1e500, 1e500))::text
+----
+100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query T
+SELECT (lcm(100000000000000000000, 15))::text
+----
+300000000000000000000
+
+query T
+SELECT (lcm(2.5, 1.5))::text
+----
+7.5
+
+query T
+SELECT (pg_typeof(lcm(1, 2)))::text
+----
+integer
+
+# min_scale
+
+query T
+SELECT (min_scale(1.500))::text
+----
+1
+
+query T
+SELECT (min_scale(1.5))::text
+----
+1
+
+query T
+SELECT (min_scale(0.00))::text
+----
+0
+
+query T
+SELECT (min_scale(0))::text
+----
+0
+
+query T
+SELECT (min_scale(100))::text
+----
+0
+
+query T
+SELECT (min_scale(100.00))::text
+----
+0
+
+query T
+SELECT (min_scale(0.001))::text
+----
+3
+
+query T
+SELECT (min_scale(0.0010))::text
+----
+3
+
+query T
+SELECT (min_scale(-1.50))::text
+----
+1
+
+query T
+SELECT (min_scale(1e-10))::text
+----
+10
+
+query T
+SELECT (min_scale(1.0000000000000000000000001))::text
+----
+25
+
+query T
+SELECT (min_scale('NaN'::numeric))::text
+----
+NULL
+
+query T
+SELECT (min_scale('Infinity'::numeric))::text
+----
+NULL
+
+query T
+SELECT (min_scale('-Infinity'::numeric))::text
+----
+NULL
+
+query T
+SELECT (min_scale(NULL::numeric))::text
+----
+NULL
+
+query T
+SELECT (min_scale(123456789.123456789000))::text
+----
+9
+
+query T
+SELECT (min_scale(1e100))::text
+----
+0
+
+query T
+SELECT (min_scale(1e-100))::text
+----
+100
+
+query T
+SELECT (pg_typeof(min_scale(1.5)))::text
+----
+integer
+
+# trim_scale
+
+query T
+SELECT (trim_scale(1.500))::text
+----
+1.5
+
+query T
+SELECT (trim_scale(1.5))::text
+----
+1.5
+
+query T
+SELECT (trim_scale(0.0010))::text
+----
+0.001
+
+query T
+SELECT (trim_scale(100.00))::text
+----
+100
+
+query T
+SELECT (trim_scale(100))::text
+----
+100
+
+query T
+SELECT (trim_scale(0.00))::text
+----
+0
+
+query T
+SELECT (trim_scale(0))::text
+----
+0
+
+query T
+SELECT (trim_scale(-1.50))::text
+----
+-1.5
+
+query T
+SELECT (trim_scale(-100.000))::text
+----
+-100
+
+query T
+SELECT (trim_scale(1e-10))::text
+----
+0.0000000001
+
+query T
+SELECT (trim_scale(1.0000000000000000000000001))::text
+----
+1.0000000000000000000000001
+
+query T
+SELECT (trim_scale('NaN'::numeric))::text
+----
+NaN
+
+query T
+SELECT (trim_scale('Infinity'::numeric))::text
+----
+Infinity
+
+query T
+SELECT (trim_scale('-Infinity'::numeric))::text
+----
+-Infinity
+
+query T
+SELECT (trim_scale(NULL::numeric))::text
+----
+NULL
+
+query T
+SELECT (trim_scale(123456789.123456789000))::text
+----
+123456789.123456789
+
+query T
+SELECT (trim_scale(10.10)::text)::text
+----
+10.1
+
+query T
+SELECT (scale(trim_scale(1.500)))::text
+----
+1
+
+query T
+SELECT (scale(trim_scale(100.00)))::text
+----
+0
+
+query T
+SELECT (pg_typeof(trim_scale(1.5)))::text
+----
+numeric
+
+# width_bucket（numeric）
+
+query T
+SELECT (width_bucket(5.35, 0.024, 10.06, 5))::text
+----
+3
+
+query T
+SELECT (width_bucket(0, 0, 10, 5))::text
+----
+1
+
+query T
+SELECT (width_bucket(-1, 0, 10, 5))::text
+----
+0
+
+query T
+SELECT (width_bucket(10, 0, 10, 5))::text
+----
+6
+
+query T
+SELECT (width_bucket(9.999, 0, 10, 5))::text
+----
+5
+
+query T
+SELECT (width_bucket(11, 0, 10, 5))::text
+----
+6
+
+query T
+SELECT (width_bucket(5, 0, 10, 1))::text
+----
+1
+
+query T
+SELECT (width_bucket(5, 0, 10, 2))::text
+----
+2
+
+query T
+SELECT (width_bucket(2, 0, 10, 5))::text
+----
+2
+
+query T
+SELECT (width_bucket(2.0, 0.0, 10.0, 5))::text
+----
+2
+
+query T
+SELECT (width_bucket(8, 10, 0, 5))::text
+----
+2
+
+query T
+SELECT (width_bucket(10, 10, 0, 5))::text
+----
+1
+
+query T
+SELECT (width_bucket(0, 10, 0, 5))::text
+----
+6
+
+query T
+SELECT (width_bucket(11, 10, 0, 5))::text
+----
+0
+
+query T
+SELECT (width_bucket(-1, 10, 0, 5))::text
+----
+6
+
+query T
+SELECT (width_bucket(5, 10, 0, 2))::text
+----
+2
+
+query T
+SELECT (width_bucket(2.5, 0, 10, 4))::text
+----
+2
+
+query T
+SELECT (width_bucket(2.4999, 0, 10, 4))::text
+----
+1
+
+query T
+SELECT (width_bucket(-5, -10, 10, 4))::text
+----
+2
+
+query T
+SELECT (width_bucket(0.0000001, 0, 1, 1000000))::text
+----
+1
+
+query T
+SELECT (width_bucket(0.5, 0, 1, 2147483646))::text
+----
+1073741824
+
+statement error (22003)
+SELECT (width_bucket(1, 0, 1, 2147483647))::text
+
+query T
+SELECT (width_bucket(0.5, 0, 1, 2147483647))::text
+----
+1073741824
+
+statement error (2201G)
+SELECT (width_bucket(5, 0, 10, 0))::text
+
+statement error (2201G)
+SELECT (width_bucket(5, 0, 10, -1))::text
+
+statement error (2201G)
+SELECT (width_bucket('NaN'::numeric, 0, 10, 5))::text
+
+statement error (2201G)
+SELECT (width_bucket(5, 'NaN'::numeric, 10, 5))::text
+
+statement error (2201G)
+SELECT (width_bucket(5, 0, 'NaN'::numeric, 5))::text
+
+statement error (2201G)
+SELECT (width_bucket(5, 5, 5, 5))::text
+
+statement error (2201G)
+SELECT (width_bucket(5, 0, 'Infinity'::numeric, 5))::text
+
+statement error (2201G)
+SELECT (width_bucket(5, '-Infinity'::numeric, 10, 5))::text
+
+query T
+SELECT (width_bucket('Infinity'::numeric, 0, 10, 5))::text
+----
+6
+
+query T
+SELECT (width_bucket('-Infinity'::numeric, 0, 10, 5))::text
+----
+0
+
+query T
+SELECT (width_bucket(NULL, 0, 10, 5))::text
+----
+NULL
+
+query T
+SELECT (width_bucket(5, NULL, 10, 5))::text
+----
+NULL
+
+query T
+SELECT (width_bucket(5, 0, NULL, 5))::text
+----
+NULL
+
+query T
+SELECT (width_bucket(5, 0, 10, NULL))::text
+----
+NULL
+
+query T
+SELECT (pg_typeof(width_bucket(5::numeric, 0::numeric, 10::numeric, 5)))::text
+----
+integer
+
+query T
+SELECT (width_bucket(5.5::float8, 0, 10, 5))::text
+----
+3
+
+query T
+SELECT (width_bucket(1, 0, 3, 3))::text
+----
+2
+
+query T
+SELECT (width_bucket(2, 0, 3, 3))::text
+----
+3
+
+query T
+SELECT (width_bucket(2.9999999999, 0, 3, 3))::text
+----
+3
+
+# factorial
+
+query T
+SELECT (factorial(0))::text
+----
+1
+
+query T
+SELECT (factorial(1))::text
+----
+1
+
+query T
+SELECT (factorial(2))::text
+----
+2
+
+query T
+SELECT (factorial(5))::text
+----
+120
+
+query T
+SELECT (factorial(10))::text
+----
+3628800
+
+query T
+SELECT (factorial(20))::text
+----
+2432902008176640000
+
+query T
+SELECT (factorial(21))::text
+----
+51090942171709440000
+
+query T
+SELECT (factorial(25))::text
+----
+15511210043330985984000000
+
+query T
+SELECT (factorial(30))::text
+----
+265252859812191058636308480000000
+
+query T
+SELECT (factorial(50))::text
+----
+30414093201713378043612608166064768844377641568960512000000000000
+
+query T
+SELECT (factorial(100))::text
+----
+93326215443944152681699238856266700490715968264381621468592963895217599993229915608941463976156518286253697920827223758251185210916864000000000000000000000000
+
+query T
+SELECT (factorial(170))::text
+----
+7257415615307998967396728211129263114716991681296451376543577798900561843401706157852350749242617459511490991237838520776666022565442753025328900773207510902400430280058295603966612599658257104398558294257568966313439612262571094946806711205568880457193340212661452800000000000000000000000000000000000000000
+
+query T
+SELECT (length(factorial(170)::text))::text
+----
+307
+
+query T
+SELECT (length(factorial(1000)::text))::text
+----
+2568
+
+query T
+SELECT (length(factorial(32177)::text))::text
+----
+131068
+
+statement error (22003)
+SELECT (factorial(32178))::text
+
+statement error (22003)
+SELECT (factorial(100000))::text
+
+statement error (22003)
+SELECT (factorial(-1))::text
+
+statement error (22003)
+SELECT (factorial(-100))::text
+
+query T
+SELECT (factorial(NULL))::text
+----
+NULL
+
+query T
+SELECT (factorial(5::int2))::text
+----
+120
+
+query T
+SELECT (factorial(5::int4))::text
+----
+120
+
+query T
+SELECT (factorial(5::int8))::text
+----
+120
+
+query T
+SELECT (pg_typeof(factorial(5)))::text
+----
+numeric
+
+query T
+SELECT (scale(factorial(5)))::text
+----
+0
+
+query T
+SELECT (factorial(20) = 2432902008176640000)::text
+----
+true
+
+query T
+SELECT (factorial(25) / factorial(23))::text
+----
+600.0000000000000000
+
+# @（前置の絶対値）
+
+query T
+SELECT (@ -5.50)::text
+----
+5.50
+
+query T
+SELECT (@ 5.50)::text
+----
+5.50
+
+query T
+SELECT (@ 0)::text
+----
+0
+
+query T
+SELECT (@ -0.0)::text
+----
+0.0
+
+query T
+SELECT (@ 'NaN'::numeric)::text
+----
+NaN
+
+query T
+SELECT (@ '-Infinity'::numeric)::text
+----
+Infinity
+
+query T
+SELECT (@ '-Infinity'::numeric)::text
+----
+Infinity
+
+query T
+SELECT (@ NULL::numeric)::text
+----
+NULL
+
+query T
+SELECT (@ -1e100)::text
+----
+10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query T
+SELECT (@ (-5)::numeric)::text
+----
+5
+
+query T
+SELECT (pg_typeof(@ -5.5))::text
+----
+numeric
+
+query T
+SELECT (@ -5)::text
+----
+5
+
+query T
+SELECT (pg_typeof(@ -5))::text
+----
+integer
+
+query T
+SELECT (@ -5.5::float8)::text
+----
+5.5
+
+query T
+SELECT (pg_typeof(@ -5.5::float8))::text
+----
+double precision
+
+# 関数形式のキャスト
+
+query T
+SELECT (int2(1.5))::text
+----
+2
+
+query T
+SELECT (int2(2.5))::text
+----
+3
+
+query T
+SELECT (int2(-1.5))::text
+----
+-2
+
+query T
+SELECT (int2(32767.4))::text
+----
+32767
+
+statement error (22003)
+SELECT (int2(32767.5))::text
+
+statement error (22003)
+SELECT (int2(-32768.5))::text
+
+statement error (22003)
+SELECT (int2(-32769))::text
+
+query T
+SELECT (int4(1.5))::text
+----
+2
+
+query T
+SELECT (int4(2.5))::text
+----
+3
+
+query T
+SELECT (int4(2147483647.4))::text
+----
+2147483647
+
+statement error (22003)
+SELECT (int4(2147483647.5))::text
+
+query T
+SELECT (int4(-2147483648.4))::text
+----
+-2147483648
+
+statement error (22003)
+SELECT (int4(-2147483649))::text
+
+query T
+SELECT (int8(1.5))::text
+----
+2
+
+query T
+SELECT (int8(9223372036854775807.4))::text
+----
+9223372036854775807
+
+statement error (22003)
+SELECT (int8(9223372036854775807.5))::text
+
+query T
+SELECT (int8(-9223372036854775808.4))::text
+----
+-9223372036854775808
+
+statement error (22003)
+SELECT (int8(-9223372036854775809))::text
+
+statement error (0A000)
+SELECT (int4('NaN'::numeric))::text
+
+statement error (0A000)
+SELECT (int4('Infinity'::numeric))::text
+
+statement error (0A000)
+SELECT (int8('-Infinity'::numeric))::text
+
+statement error (0A000)
+SELECT (int2('NaN'::numeric))::text
+
+query T
+SELECT (float4(1.5::numeric))::text
+----
+1.5
+
+query T
+SELECT (float4(0.1::numeric))::text
+----
+0.1
+
+statement error (22003)
+SELECT (float4(1e39::numeric))::text
+
+query T
+SELECT (float4('NaN'::numeric))::text
+----
+NaN
+
+query T
+SELECT (float4('-Infinity'::numeric))::text
+----
+-Infinity
+
+query T
+SELECT (float8(1.5::numeric))::text
+----
+1.5
+
+query T
+SELECT (float8(0.1::numeric))::text
+----
+0.1
+
+query T
+SELECT (float8(1e100::numeric))::text
+----
+1e+100
+
+query T
+SELECT (float8('NaN'::numeric))::text
+----
+NaN
+
+query T
+SELECT (float8('Infinity'::numeric))::text
+----
+Infinity
+
+query T
+SELECT ("numeric"(1))::text
+----
+1
+
+query T
+SELECT ("numeric"(1.5))::text
+----
+1.5
+
+query T
+SELECT ("numeric"(1::int2))::text
+----
+1
+
+query T
+SELECT ("numeric"(2147483647::int4))::text
+----
+2147483647
+
+query T
+SELECT ("numeric"(9223372036854775807::int8))::text
+----
+9223372036854775807
+
+query T
+SELECT ("numeric"(1.5::float4))::text
+----
+1.5
+
+query T
+SELECT ("numeric"(0.1::float8))::text
+----
+0.1
+
+query T
+SELECT ("numeric"(0.1::float4))::text
+----
+0.1
+
+query T
+SELECT ("numeric"(1e20::float8))::text
+----
+100000000000000000000
+
+query T
+SELECT ("numeric"('NaN'::float8))::text
+----
+NaN
+
+query T
+SELECT ("numeric"('Infinity'::float8))::text
+----
+Infinity
+
+query T
+SELECT ("numeric"('-Infinity'::float4))::text
+----
+-Infinity
+
+query T
+SELECT ("numeric"(1e300::float8))::text
+----
+1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query T
+SELECT (pg_typeof(int2(1.5)))::text
+----
+smallint
+
+query T
+SELECT (pg_typeof(int4(1.5)))::text
+----
+integer
+
+query T
+SELECT (pg_typeof(int8(1.5)))::text
+----
+bigint
+
+query T
+SELECT (pg_typeof(float4(1.5::numeric)))::text
+----
+real
+
+query T
+SELECT (pg_typeof(float8(1.5::numeric)))::text
+----
+double precision
+
+query T
+SELECT (pg_typeof("numeric"(1)))::text
+----
+numeric
+
+query T
+SELECT (int4(NULL::numeric))::text
+----
+NULL
+
+# sqrt 系: int / float8 の引数は float8 版（PG も同じ値）
+
+query T
+SELECT (sqrt(4::float8))::text
+----
+2
+
+query T
+SELECT (sqrt(2::float8))::text
+----
+1.4142135623730951
+
+query T
+SELECT (sqrt(0::float8))::text
+----
+0
+
+statement error (2201F)
+SELECT (sqrt(-1::float8))::text
+
+query T
+SELECT (sqrt(4))::text
+----
+2
+
+query T
+SELECT (sqrt(2))::text
+----
+1.4142135623730951
+
+query T
+SELECT (sqrt(NULL::float8))::text
+----
+NULL
+
+query T
+SELECT (pg_typeof(sqrt(4::float8)))::text
+----
+double precision
+
+query T
+SELECT (pg_typeof(sqrt(4)))::text
+----
+double precision
+
+query T
+SELECT (pg_typeof(sqrt(4::int2)))::text
+----
+double precision
+
+query T
+SELECT (pg_typeof(sqrt(4::int8)))::text
+----
+double precision
+
+query T
+SELECT (exp(0::float8))::text
+----
+1
+
+query T
+SELECT (ln(1::float8))::text
+----
+0
+
+statement error (2201E)
+SELECT (ln(0::float8))::text
+
+statement error (2201E)
+SELECT (ln(-1::float8))::text
+
+query T
+SELECT (log(100::float8))::text
+----
+2
+
+query T
+SELECT (pg_typeof(exp(1::float8)))::text
+----
+double precision
+
+query T
+SELECT (pg_typeof(ln(1::float8)))::text
+----
+double precision
+
+query T
+SELECT (pg_typeof(power(2::float8, 3::float8)))::text
+----
+double precision
+
+query T
+SELECT (power(2::float8, 10::float8))::text
+----
+1024
+
+query T
+SELECT (power(2, 10))::text
+----
+1024
+
+query T
+SELECT (pg_typeof(power(2, 10)))::text
+----
+double precision
+
+statement error (2201F)
+SELECT (power(0::float8, -1::float8))::text
+
+statement error (2201F)
+SELECT (power(-8::float8, 0.5::float8))::text
+
+# numeric の引数の sqrt 系は yuzhu では 0A000（KD-15。PG は numeric を返す）
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT sqrt(2.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT sqrt(2::numeric)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT exp(1.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT ln(2.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT log(100.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT log(10.0, 100.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT log10(100.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT power(2.0, 3.0)
+
+# KD-15
+onlyif yuzhu
+statement error (0A000)
+SELECT pow(2.0, 3.0)
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

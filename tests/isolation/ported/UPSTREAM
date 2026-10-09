@@ -1,0 +1,6 @@
+repository: https://github.com/postgres/postgres
+ref: REL_17_STABLE
+commit: d843a801b0f375349b18cf07f1bbe0169d699be9
+fetched: 2026-10-07 22:32 JST
+license: PostgreSQL License (https://www.postgresql.org/about/licence/)
+specs: deadlock-simple deadlock-hard deadlock-soft deadlock-soft-2 skip-locked skip-locked-2 skip-locked-3 nowait nowait-2 nowait-3 lock-nowait lock-update-traversal update-locked-tuple fk-contention fk-deadlock fk-deadlock2 multixact-no-forget timeouts

@@ -6,7 +6,9 @@
 //! - 受信したメッセージは libpq の `pqParseInput3` と同じ規則で解釈する。NOTICE と NOTIFY は
 //!   いつでも処理し、それ以外は「取り出されていない結果がある間は解釈を止める」。
 //! - 結果は文ごとに 1 つ作る（複数文のステップでは、エラーより前の文の結果も残る）。
-//! - プロトコルは Simple Query のみ（Extended Query を持たないサーバでも動かすため）。
+//! - ステップの送信は Simple Query（既定）と Extended Query（`send_extended`。文ごとに無名の
+//!   Parse / Bind / Describe / Execute、最後に 1 回 Sync）を選べる。制御接続は名前付きの文を
+//!   1 回 Parse して、判定のたびに Bind / Execute / Sync を送る（`prepare` / `exec_prepared`）。
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -16,10 +18,11 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 use fallible_iterator::FallibleIterator;
+use postgres_protocol::IsNull;
 use postgres_protocol::authentication;
 use postgres_protocol::authentication::sasl::{self, ChannelBinding, ScramSha256};
 use postgres_protocol::message::backend::{ErrorFields, Message};
-use postgres_protocol::message::frontend;
+use postgres_protocol::message::frontend::{self, BindError};
 
 /// 接続先。
 #[derive(Debug, Clone)]
@@ -367,6 +370,8 @@ pub(crate) struct Conn {
     notifies: VecDeque<Notify>,
     /// 実行中の問い合わせ（libpq の `cmd_queue_head->query`）。エラー位置の表示に使う。
     current_query: Option<String>,
+    /// Extended で送った文のうち、結果がまだ揃っていないもの（先頭が実行中。エラー位置の表示に使う）。
+    ext_queue: VecDeque<String>,
     /// 接続が切れた・プロトコル違反などで使えなくなった。
     broken: Option<String>,
     pub(crate) pid: i32,
@@ -375,6 +380,26 @@ pub(crate) struct Conn {
 
 fn proto_err(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
+/// テキスト形式のパラメータだけを持つ Bind を書く（結果もテキスト形式）。
+fn bind_text(portal: &str, statement: &str, params: &[&str], out: &mut BytesMut) -> io::Result<()> {
+    frontend::bind(
+        portal,
+        statement,
+        std::iter::empty::<i16>(),
+        params.iter().copied(),
+        |v: &str, buf: &mut BytesMut| {
+            buf.extend_from_slice(v.as_bytes());
+            Ok(IsNull::No)
+        },
+        std::iter::empty::<i16>(),
+        out,
+    )
+    .map_err(|e| match e {
+        BindError::Serialization(e) => e,
+        BindError::Conversion(e) => io::Error::new(io::ErrorKind::InvalidInput, e.to_string()),
+    })
 }
 
 impl Conn {
@@ -405,6 +430,7 @@ impl Conn {
             notices: Vec::new(),
             notifies: VecDeque::new(),
             current_query: None,
+            ext_queue: VecDeque::new(),
             broken: None,
             pid: 0,
             secret_key: 0,
@@ -614,6 +640,7 @@ impl Conn {
                     }
                 }
                 Message::CommandComplete(_) => {
+                    self.ext_queue.pop_front();
                     self.ready = Some(match self.partial.take() {
                         Some((fields, rows)) => QueryResult::Tuples { fields, rows },
                         None => QueryResult::Command,
@@ -621,6 +648,7 @@ impl Conn {
                     self.state = AsyncState::Ready;
                 }
                 Message::EmptyQueryResponse => {
+                    self.ext_queue.pop_front();
                     self.partial = None;
                     self.ready = Some(QueryResult::Empty);
                     self.state = AsyncState::Ready;
@@ -635,6 +663,7 @@ impl Conn {
                 Message::ReadyForQuery(_) => {
                     self.partial = None;
                     self.current_query = None;
+                    self.ext_queue.clear();
                     self.state = AsyncState::Idle;
                 }
                 Message::CopyInResponse(_) | Message::CopyOutResponse(_) => {
@@ -651,7 +680,10 @@ impl Conn {
         if self.state == AsyncState::Idle {
             None
         } else {
-            self.current_query.as_deref()
+            self.ext_queue
+                .front()
+                .map(String::as_str)
+                .or(self.current_query.as_deref())
         }
     }
 
@@ -701,6 +733,107 @@ impl Conn {
         self.current_query = Some(sql.to_owned());
         self.state = AsyncState::Busy;
         Ok(())
+    }
+
+    /// 文の並びを Extended Query で送る。文ごとに無名の Parse / Bind / Describe(portal) / Execute を
+    /// 続け、最後に 1 回 Sync する（libpq のパイプラインと同じ形）。結果は `send_query` と同じく
+    /// `get_result` で文ごとに取り出す。`stmts` が空なら空の問い合わせを 1 つ送る。
+    pub(crate) fn send_extended(&mut self, stmts: &[&str]) -> io::Result<()> {
+        if let Some(b) = &self.broken {
+            return Err(proto_err(b.clone()));
+        }
+        if self.state != AsyncState::Idle {
+            return Err(proto_err("another command is already in progress"));
+        }
+        let empty = [""];
+        let stmts = if stmts.is_empty() { &empty[..] } else { stmts };
+        let mut out = BytesMut::new();
+        for s in stmts {
+            frontend::parse("", s, std::iter::empty(), &mut out)?;
+            bind_text("", "", &[], &mut out)?;
+            frontend::describe(b'P', "", &mut out)?;
+            frontend::execute("", 0, &mut out)?;
+        }
+        frontend::sync(&mut out);
+        self.send(&out)?;
+        self.ext_queue = stmts.iter().map(|s| (*s).to_owned()).collect();
+        self.current_query = Some(stmts.join(";"));
+        self.state = AsyncState::Busy;
+        Ok(())
+    }
+
+    /// 名前付きの文を Parse して Sync し、`ReadyForQuery` まで読む。Idle のときだけ使える。
+    pub(crate) fn prepare(&mut self, name: &str, sql: &str) -> io::Result<()> {
+        if let Some(b) = &self.broken {
+            return Err(proto_err(b.clone()));
+        }
+        let mut out = BytesMut::new();
+        frontend::parse(name, sql, std::iter::empty(), &mut out)?;
+        frontend::sync(&mut out);
+        self.send(&out)?;
+        match self.read_until_ready() {
+            Ok((_, None)) => Ok(()),
+            Ok((_, Some(e))) => Err(proto_err(e.libpq_message(true).trim_end().to_owned())),
+            Err(e) => {
+                self.broken = Some(e.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    /// `prepare` した文を Bind（テキストのパラメータ）/ Execute / Sync で実行し、結果を返す。
+    /// 行は `Tuples`（列名は持たない）、行がなければ `Command`。Idle のときだけ使える。
+    pub(crate) fn exec_prepared(&mut self, name: &str, params: &[&str]) -> QueryResult {
+        if let Some(b) = &self.broken {
+            return QueryResult::Error(ErrorInfo::local(b));
+        }
+        let mut out = BytesMut::new();
+        let sent = bind_text("", name, params, &mut out)
+            .and_then(|()| frontend::execute("", 0, &mut out))
+            .map(|()| frontend::sync(&mut out))
+            .and_then(|()| self.send(&out));
+        match sent.and_then(|()| self.read_until_ready()) {
+            Ok((_, Some(e))) => QueryResult::Error(e),
+            Ok((rows, None)) if rows.is_empty() => QueryResult::Command,
+            Ok((rows, None)) => QueryResult::Tuples {
+                fields: Vec::new(),
+                rows,
+            },
+            Err(e) => {
+                self.broken = Some(e.to_string());
+                QueryResult::Error(ErrorInfo::local(&{
+                    let _ = &e;
+                    "invalid Bind parameters".to_owned()
+                }))
+            }
+        }
+    }
+
+    /// `ReadyForQuery` まで同期的に読み、行とエラーを集める。NOTICE は `notices` に積む。
+    fn read_until_ready(&mut self) -> io::Result<(Rows, Option<ErrorInfo>)> {
+        let mut rows = Vec::new();
+        let mut error = None;
+        loop {
+            match self.read_message_blocking()? {
+                Message::DataRow(body) => {
+                    let buf = body.buffer();
+                    let row = body
+                        .ranges()
+                        .map(|r| Ok(r.map(|r| String::from_utf8_lossy(&buf[r]).into_owned())))
+                        .collect::<Vec<_>>()?;
+                    rows.push(row);
+                }
+                Message::ErrorResponse(body) => {
+                    error = Some(ErrorInfo::from_fields(body.fields())?);
+                }
+                Message::NoticeResponse(body) => {
+                    let info = ErrorInfo::from_fields(body.fields())?;
+                    self.notices.push(info.libpq_message(false));
+                }
+                Message::ReadyForQuery(_) => return Ok((rows, error)),
+                _ => {}
+            }
+        }
     }
 
     /// 結果がまだ揃っていないか（`PQisBusy`）。届いているメッセージは解釈する。

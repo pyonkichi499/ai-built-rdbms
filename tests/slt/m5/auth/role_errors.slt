@@ -1,0 +1,91 @@
+# ロールの DDL のエラー（SQLSTATE で照合する）
+
+statement ok
+DROP ROLE IF EXISTS auth_role_errors_a
+
+statement ok
+DROP ROLE IF EXISTS auth_role_errors_d
+
+statement ok
+CREATE ROLE auth_role_errors_a
+
+# 重複
+statement error (42710)
+CREATE ROLE auth_role_errors_a
+
+statement error (42710)
+CREATE USER auth_role_errors_a
+
+# 予約された名前
+statement error (42939)
+CREATE ROLE pg_auth_role_errors
+
+statement error (42939)
+CREATE ROLE public
+
+statement error (42939)
+CREATE ROLE none
+
+# 矛盾したオプション・不明なオプション
+statement error (42601)
+CREATE ROLE auth_role_errors_b SUPERUSER NOSUPERUSER
+
+statement error (42601)
+CREATE ROLE auth_role_errors_b LOGIN NOLOGIN
+
+statement error (42601)
+CREATE ROLE auth_role_errors_b CONNECTION LIMIT 1 CONNECTION LIMIT 2
+
+statement error (42601)
+CREATE ROLE auth_role_errors_b FROBNICATE
+
+statement error (22023)
+CREATE ROLE auth_role_errors_b CONNECTION LIMIT -2
+
+statement error (22007)
+CREATE ROLE auth_role_errors_b VALID UNTIL 'garbage'
+
+# 失敗した CREATE はロールを残さない
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_role_errors_b'
+----
+0
+
+# ALTER
+statement error (42704)
+ALTER ROLE auth_role_errors_missing LOGIN
+
+statement error (42601)
+ALTER ROLE auth_role_errors_a SUPERUSER NOSUPERUSER
+
+statement error (42939)
+ALTER ROLE auth_role_errors_a RENAME TO pg_auth_role_errors
+
+statement error (42704)
+ALTER ROLE auth_role_errors_missing RENAME TO auth_role_errors_c
+
+statement ok
+CREATE ROLE auth_role_errors_d
+
+statement error (42710)
+ALTER ROLE auth_role_errors_d RENAME TO auth_role_errors_a
+
+# DROP
+statement error (42704)
+DROP ROLE auth_role_errors_missing
+
+# ブロック内でエラーになるとトランザクションは中止状態になる
+statement ok
+BEGIN
+
+statement error (42710)
+CREATE ROLE auth_role_errors_a
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+statement ok
+DROP ROLE auth_role_errors_a, auth_role_errors_d

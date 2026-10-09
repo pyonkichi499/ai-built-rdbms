@@ -1,4 +1,8 @@
-//! 葉への挿入（`BTREE_INSERT_LEAF`。`m4/06-btree.md` §5.3）。入らなければ `split::split_and_insert`。
+//! 葉への挿入（`BTREE_INSERT_LEAF`。`m4/06-btree.md` §5.3、`m5/02` §6.9）。入らなければ `split::split_and_insert`。
+//!
+//! 複数のライターが同時に挿入する（M5）。降下とラッチの間に葉が分割されうるので、葉を排他ラッチした後で
+//! `page_covers` を確かめ、外れていれば右へ移る（B1。右隣のラッチを取ってから左を放す）。一意検査は最初の葉
+//! `P0` の排他ラッチを持ったまま行い、挿入先が右の葉になるときも右隣を先にラッチしてから `P0` を放す（B6）。
 
 use std::cmp::Ordering;
 
@@ -6,27 +10,43 @@ use super::page::{BtSpecial, item, validate_page};
 use super::search::{Rest, SearchKey, StackEntry, cmp_key_item, descend, find_first, page_covers};
 use super::split::split_and_insert;
 use super::tuple::{IndexTuple, form_index_tuple};
-use super::unique::check_unique;
+use super::unique::{UniqueOutcome, check_unique};
 use super::wal::log_insert_leaf;
 use super::{BtCtx, INDEX_MAX_KEYS};
 use crate::error::{Error, Result};
 use crate::storage::buffer::{CriticalSection, PageWriteGuard, PinnedBuffer};
 use crate::storage::smgr::{BlockNumber, ForkNumber};
-use crate::storage::{UniqueCheck, WriteCtx};
+use crate::storage::{InsertOutcome, RelHandle, TableStore, UniqueCheck, WriteCtx};
+use crate::txn::Xid;
 use crate::types::{Datum, Tid};
 
 pub(crate) fn maxalign(n: usize) -> usize {
     (n + 7) & !7
 }
 
-/// `IndexStore::insert` の本体。
+/// 挿入の間に持ち回る値。
+struct Insertion<'a> {
+    ctx: &'a BtCtx<'a>,
+    w: &'a WriteCtx,
+    key: &'a [Datum],
+    tuple: Vec<u8>,
+    k_first: SearchKey<'a>,
+    k_new: SearchKey<'a>,
+    stack: Vec<StackEntry>,
+    /// 一意検査がまだなら `(heap, rel, own_xid)`。検査が済む（または不要）と `None`。
+    checking: Option<(&'a dyn TableStore, &'a RelHandle, Xid)>,
+    hops: u32,
+    nblocks: u32,
+}
+
+/// `IndexStore::insert` の本体。`WaitFor` のときは何も挿入しておらず、ラッチもピンも外れている。
 pub(crate) fn insert(
     ctx: &BtCtx<'_>,
     w: &WriteCtx,
     key: &[Datum],
     tid: Tid,
     check: UniqueCheck<'_>,
-) -> Result<()> {
+) -> Result<InsertOutcome> {
     let ncols = ctx.index.columns.len();
     if key.len() != ncols || ncols > INDEX_MAX_KEYS {
         return Err(Error::internal(format!(
@@ -37,7 +57,7 @@ pub(crate) fn insert(
     }
     // ラッチを取る前。ページに触れない（54000）。
     let tuple = form_index_tuple(ctx.index, key, tid)?;
-    let unique_check = match check {
+    let checking = match check {
         UniqueCheck::Check { heap, rel, own_xid }
             if ctx.index.unique && !key.iter().any(Datum::is_null) =>
         {
@@ -55,44 +75,83 @@ pub(crate) fn insert(
         tid: Some(tid),
         rest: Rest::Low,
     };
-    let d = descend(
-        ctx,
-        if unique_check.is_some() {
-            &k_first
-        } else {
-            &k_new
-        },
-    )?;
-
+    let d = descend(ctx, if checking.is_some() { &k_first } else { &k_new })?;
     let nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
-    let mut leaf: BlockNumber = d.leaf;
-    let mut checking = unique_check;
-    let mut hops = 0u32;
-    loop {
-        let pin = ctx.pool.read_buffer(ctx.tag(leaf))?;
-        let g = pin.write_tree()?;
-        let sp = validate_page(ctx, g.page(), leaf, Some(0))?;
-        let sk = if checking.is_some() { &k_first } else { &k_new };
-        if !page_covers(ctx, g.page(), leaf, &sp, sk)? {
-            leaf = sp.next;
-            hops += 1;
-            if hops > nblocks {
-                return Err(ctx.corrupted(leaf, "sibling chain is cyclic"));
-            }
-            continue;
-        }
-        if let Some((heap, rel, own)) = checking {
-            // 最初の葉の排他ラッチを持ったまま検査する。
-            check_unique(ctx, g.page(), leaf, key, heap, rel, own)?;
-            checking = None;
-            if !page_covers(ctx, g.page(), leaf, &sp, &k_new)? {
-                // 等値の連続が右の葉へ続き、tid が high key 以上。右へ移って挿入先を決める。
-                leaf = sp.next;
-                continue;
-            }
-        }
-        return insert_into_leaf(ctx, w, &pin, g, &d.stack, &tuple, &k_new, leaf);
+    let mut st = Insertion {
+        ctx,
+        w,
+        key,
+        tuple,
+        k_first,
+        k_new,
+        stack: d.stack,
+        checking,
+        hops: 0,
+        nblocks,
+    };
+    let pin = ctx.pool.read_buffer(ctx.tag(d.leaf))?;
+    let g = pin.write_tree()?;
+    insert_at(&mut st, &pin, g, d.leaf)
+}
+
+/// 葉 `blk`（排他ラッチ `g`）から挿入を進める。右へ移るときは右隣の排他ラッチを取ってから `g` を放す
+/// （カップリング。順序 `O` は左 → 右）。
+fn insert_at(
+    st: &mut Insertion<'_>,
+    pin: &PinnedBuffer,
+    g: PageWriteGuard<'_>,
+    blk: BlockNumber,
+) -> Result<InsertOutcome> {
+    let ctx = st.ctx;
+    let sp = validate_page(ctx, g.page(), blk, Some(0))?;
+    crate::sync_point!("btree.leaf.latched");
+    let sk = if st.checking.is_some() {
+        st.k_first
+    } else {
+        st.k_new
+    };
+    if !page_covers(ctx, g.page(), blk, &sp, &sk)? {
+        return move_right(st, g, blk, sp.next);
     }
+    if let Some((heap, rel, own)) = st.checking.take() {
+        // 最初の葉 `P0` の排他ラッチを持ったまま検査する。
+        match check_unique(ctx, g.page(), blk, st.key, heap, rel, own)? {
+            UniqueOutcome::Clear => {}
+            UniqueOutcome::Wait(x) => return Ok(InsertOutcome::WaitFor(x)),
+        }
+        crate::sync_point!("btree.unique.checked");
+        if !page_covers(ctx, g.page(), blk, &sp, &st.k_new)? {
+            // 等値の連続が右の葉へ続き、tid が high key 以上。右隣を先にラッチしてから `P0` を放す。
+            return move_right(st, g, blk, sp.next);
+        }
+    }
+    insert_into_leaf(ctx, st.w, pin, g, &st.stack, &st.tuple, &st.k_new, blk)?;
+    Ok(InsertOutcome::Inserted)
+}
+
+/// `next` の排他ラッチを取り、`g` を放して `insert_at` を続ける。
+fn move_right(
+    st: &mut Insertion<'_>,
+    g: PageWriteGuard<'_>,
+    from: BlockNumber,
+    next: BlockNumber,
+) -> Result<InsertOutcome> {
+    let ctx = st.ctx;
+    if next == 0 {
+        return Err(ctx.corrupted(from, "no right sibling for a key above the high key"));
+    }
+    st.hops += 1;
+    if st.hops > st.nblocks {
+        // 並行する分割でファイルが伸びたかもしれないので、読み直してから判定する。
+        st.nblocks = ctx.pool.nblocks(ctx.index.locator, ForkNumber::Main)?;
+        if st.hops > st.nblocks {
+            return Err(ctx.corrupted(next, "sibling chain is cyclic"));
+        }
+    }
+    let npin = ctx.pool.read_buffer(ctx.tag(next))?;
+    let ng = npin.write_tree()?;
+    drop(g);
+    insert_at(st, &npin, ng, next)
 }
 
 /// 葉 `g`（排他ラッチ）に `tuple` を入れる。入らなければ分割する（§5.5）。
@@ -477,5 +536,479 @@ mod prop {
         ) {
             run(i, &raw, pad, mode);
         }
+    }
+}
+
+#[cfg(test)]
+mod concurrent {
+    //! 複数ライターの試験（`m5/02` §7.5。B1〜B4・B6・B3）。止める場所は `util::sync_point` の同期点。
+
+    use super::*;
+    use crate::storage::btree::page::BtSpecial;
+    use crate::storage::btree::testing::{
+        FakeHeap, Lcg, TestIndex, check_tree, new_index, new_index_with, put, tid_of, tree_level,
+    };
+    use crate::storage::testing::{TestStorage, TestStorageOptions, test_rel};
+    use crate::storage::{DirtyResult, TupleDesc};
+    use crate::types::SqlType;
+    use crate::util::sync_point::Scenario;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::time::Duration;
+
+    const INT: [(SqlType, bool, bool); 1] = [(SqlType::INT4, false, false)];
+    const TEXT: [(SqlType, bool, bool); 1] = [(SqlType::TEXT, false, false)];
+
+    fn int(k: i32) -> Vec<Datum> {
+        vec![Datum::Int4(k)]
+    }
+
+    /// 約 1KB のキー（葉に 7 件ほどしか入らず、少ない件数で木が高くなる）。辞書順は `n` の順。
+    fn wide(n: u32) -> Vec<Datum> {
+        vec![Datum::Text(format!("{n:08}{}", "k".repeat(1000)))]
+    }
+
+    fn rel() -> RelHandle {
+        RelHandle {
+            oid: 16384,
+            locator: test_rel(16384),
+            desc: Arc::new(TupleDesc { attrs: vec![] }),
+            indexes: Arc::from(Vec::new()),
+            key_columns: Arc::from(Vec::new()),
+            ri: Arc::default(),
+        }
+    }
+
+    fn check_with<'a>(h: &'a FakeHeap, r: &'a RelHandle) -> UniqueCheck<'a> {
+        UniqueCheck::Check {
+            heap: h,
+            rel: r,
+            own_xid: Xid(3),
+        }
+    }
+
+    /// `wide(n)` の `n`。
+    fn key_no(k: &[Datum]) -> u32 {
+        match &k[0] {
+            Datum::Text(s) => s[..8].parse().unwrap(),
+            other => panic!("unexpected key {other:?}"),
+        }
+    }
+
+    /// ブロック `blk` が、`need` バイトの項目を入れられないほど詰まっているか。
+    fn is_full(t: &TestIndex, blk: u32, need: usize) -> bool {
+        let pages = t.snapshot_pages();
+        pages[blk as usize].free_space_unbounded() < maxalign(need)
+    }
+
+    /// 最も右の葉のブロック番号。
+    fn rightmost_leaf(t: &TestIndex) -> u32 {
+        let pages = t.snapshot_pages();
+        let (blk, _) = pages
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, p)| BtSpecial::read(p).is_some_and(|sp| sp.is_leaf() && sp.next == 0))
+            .expect("a rightmost leaf");
+        u32::try_from(blk).unwrap()
+    }
+
+    /// 別スレッドで `f` を走らせ、`secs` 秒以内に終わらなければ失敗にする（デッドロックの検出）。
+    fn run_with_watchdog<T: Send + 'static>(
+        secs: u64,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(secs))
+            .expect("the threads did not finish in time (deadlock?)")
+    }
+
+    /// B1: 降下の後、葉をラッチする前に別のライターがその葉を分割する。A は右へ移って正しいページに入れる。
+    #[test]
+    fn b1_insert_moves_right_when_the_leaf_splits_after_the_descent() {
+        let t = new_index(&INT, false);
+        for i in 1..=408 {
+            put(&t, &int(i * 2), tid_of(u32::try_from(i).unwrap())).unwrap();
+        }
+        for i in 0..39 {
+            put(
+                &t,
+                &int(2 * i + 1),
+                tid_of(5000 + u32::try_from(i).unwrap()),
+            )
+            .unwrap();
+        }
+        let sc = Scenario::new();
+        // 1 回目 = メタを放した後、2 回目 = ルートを放して葉を取る前。
+        let gate = sc.block_at_nth("btree.descend.parent_released", 2);
+        std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let _at = sc.attach();
+                put(&t, &int(700), tid_of(9000)).unwrap();
+            });
+            gate.wait_arrived();
+            for i in 0..60 {
+                put(
+                    &t,
+                    &int(2 * i + 41),
+                    tid_of(6000 + u32::try_from(i).unwrap()),
+                )
+                .unwrap();
+            }
+            gate.release();
+            a.join().unwrap();
+        });
+        let info = check_tree(&t);
+        assert_eq!(info.entries.len(), 408 + 39 + 60 + 1);
+        assert!(
+            info.entries
+                .iter()
+                .any(|(k, tid)| k[0] == Datum::Int4(700) && *tid == tid_of(9000))
+        );
+        t.assert_clean();
+    }
+
+    /// 葉の排他ラッチを持つ A が止まっている間、同じ葉への挿入は待たされる。放すと両方入る。
+    #[test]
+    fn a_writer_waits_for_the_leaf_latch_held_by_another() {
+        let t = new_index(&INT, false);
+        put(&t, &int(10), tid_of(1)).unwrap();
+        let sc = Scenario::new();
+        let gate = sc.block_at("btree.leaf.latched");
+        let b_done = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let _at = sc.attach();
+                put(&t, &int(20), tid_of(2)).unwrap();
+            });
+            gate.wait_arrived();
+            let b = s.spawn(|| {
+                put(&t, &int(30), tid_of(3)).unwrap();
+                b_done.store(true, AtomicOrdering::SeqCst);
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(
+                !b_done.load(AtomicOrdering::SeqCst),
+                "B must wait for A's latch"
+            );
+            gate.release();
+            a.join().unwrap();
+            b.join().unwrap();
+        });
+        assert_eq!(check_tree(&t).entries.len(), 3);
+        t.assert_clean();
+    }
+
+    /// 2 段の木（ルート + 4 枚以上の葉）。最も右の葉を満杯にして、次の追記が分割になる状態で返す。
+    /// 左端の葉の分割が右端の葉（A が持つ）の隣のラッチを要らないよう、葉は 4 枚以上にする。
+    fn two_level_tree_with_full_rightmost_leaf() -> (TestIndex, u32) {
+        let t = new_index(&TEXT, false);
+        let mut n = 1_000_000u32;
+        loop {
+            if tree_level(&t) == 1
+                && check_tree(&t).pages_per_level[0] >= 4
+                && is_full(&t, rightmost_leaf(&t), 1012)
+            {
+                return (t, n);
+            }
+            put(&t, &wide(n), tid_of(n)).unwrap();
+            n += 1;
+            assert!(n < 1_000_100, "could not build the tree");
+        }
+    }
+
+    /// B2・B4: A が葉を分割して親を探す前に、B が左端へ挿入を続けてルートを分割する。A のスタックの親は
+    /// もうルートではなく、ダウンリンクは右へ移っている。`find_parent` が右へたどって見つける。
+    #[test]
+    fn b2_b4_parent_and_root_split_between_the_descent_and_the_parent_lookup() {
+        let (t, mut n) = two_level_tree_with_full_rightmost_leaf();
+        let level0 = tree_level(&t);
+        let a_key = n;
+        let sc = Scenario::new();
+        let gate = sc.block_at("btree.split.before_parent_latch");
+        std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let _at = sc.attach();
+                put(&t, &wide(a_key), tid_of(a_key)).unwrap();
+            });
+            gate.wait_arrived();
+            // 左端へ（A の葉には触れない）、ルートが分割されるまで挿入する。
+            let mut low = 900_000u32;
+            while tree_level(&t) == level0 {
+                put(&t, &wide(low), tid_of(low)).unwrap();
+                low -= 1;
+                assert!(low > 899_000);
+            }
+            gate.release();
+            a.join().unwrap();
+        });
+        n += 1;
+        let _ = n;
+        assert!(tree_level(&t) > level0);
+        let info = check_tree(&t);
+        assert!(
+            info.entries
+                .iter()
+                .any(|(k, tid)| k == &wide(a_key) && *tid == tid_of(a_key)),
+            "A's entry must be in the tree"
+        );
+        t.assert_clean();
+    }
+
+    /// B4（スタックが尽きる）: A はルートが葉の木を降りた（スタックは空）。そのあと B がルートを分割し、A の
+    /// 行き先の葉は詰まっている。A の分割は親を最も左のページから探す。
+    #[test]
+    fn b4_the_root_leaf_is_split_after_the_descent_and_the_stack_is_empty() {
+        let t = new_index(&TEXT, false);
+        let sc = Scenario::new();
+        for i in 0..3u32 {
+            put(&t, &wide(100 + i), tid_of(100 + i)).unwrap();
+        }
+        assert_eq!(tree_level(&t), 0);
+        let gate = sc.block_at("btree.descend.parent_released");
+        let a_key = 150u32;
+        std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let _at = sc.attach();
+                put(&t, &wide(a_key), tid_of(a_key)).unwrap();
+            });
+            gate.wait_arrived();
+            // ルート（葉）を分割させる。
+            let mut k = 200u32;
+            while tree_level(&t) == 0 {
+                put(&t, &wide(k), tid_of(k)).unwrap();
+                k += 1;
+            }
+            // A の行き先（左の葉。キー 150 は左の葉の範囲）を詰める。次の挿入で分割になる手前まで。
+            let mut j = 0u32;
+            while !is_full(&t, 1, 1012) {
+                put(&t, &wide(110 + (j % 30)), tid_of(300 + j)).unwrap();
+                j += 1;
+                assert!(j < 100);
+            }
+            gate.release();
+            a.join().unwrap();
+        });
+        assert!(tree_level(&t) >= 1);
+        let info = check_tree(&t);
+        assert!(
+            info.entries
+                .iter()
+                .any(|(k, tid)| k == &wide(a_key) && *tid == tid_of(a_key))
+        );
+        t.assert_clean();
+    }
+
+    /// B6: A が一意検査を終えて（`P0` の排他ラッチを持ったまま）止まっている間、同じキーを入れる B は待たされる。
+    /// A の項目が生きていれば B は 23505、中断していれば B が入る。
+    fn same_key_race(a_visible: bool) {
+        let t = new_index(&INT, true);
+        let heap = FakeHeap::new();
+        heap.set(
+            tid_of(1),
+            if a_visible {
+                DirtyResult::Visible
+            } else {
+                DirtyResult::Invisible
+            },
+        );
+        let r = rel();
+        let check = || UniqueCheck::Check {
+            heap: &heap,
+            rel: &r,
+            own_xid: Xid(3),
+        };
+        let sc = Scenario::new();
+        let gate = sc.block_at("btree.unique.checked");
+        let b_done = AtomicBool::new(false);
+        let b_result = std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let _at = sc.attach();
+                insert(&t.ctx(), &t.write_ctx(), &int(7), tid_of(1), check()).unwrap()
+            });
+            gate.wait_arrived();
+            let b = s.spawn(|| {
+                let res = insert(&t.ctx(), &t.write_ctx(), &int(7), tid_of(2), check());
+                b_done.store(true, AtomicOrdering::SeqCst);
+                res
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(
+                !b_done.load(AtomicOrdering::SeqCst),
+                "B must wait at P0 until A has inserted"
+            );
+            gate.release();
+            assert_eq!(a.join().unwrap(), InsertOutcome::Inserted);
+            b.join().unwrap()
+        });
+        if a_visible {
+            assert_eq!(
+                b_result.unwrap_err().sqlstate,
+                crate::error::sqlstate::UNIQUE_VIOLATION
+            );
+            assert_eq!(check_tree(&t).entries.len(), 1);
+        } else {
+            assert_eq!(b_result.unwrap(), InsertOutcome::Inserted);
+            assert_eq!(check_tree(&t).entries.len(), 2);
+        }
+        t.assert_clean();
+    }
+
+    #[test]
+    fn b6_same_key_waits_at_p0_and_then_fails_when_the_first_is_alive() {
+        same_key_race(true);
+    }
+
+    #[test]
+    fn b6_same_key_waits_at_p0_and_then_inserts_when_the_first_aborted() {
+        same_key_race(false);
+    }
+
+    /// B6: 等値のキーが複数の葉にまたがる。A は最後の葉へ入る（右へ移動するときにカップリングする）。
+    /// その間に始めた B は最初の葉で待たされ、A の項目を見つけて 23505 になる。
+    #[test]
+    fn b6_equal_keys_spanning_leaves_are_still_seen_by_the_second_writer() {
+        let t = new_index(&INT, true);
+        let heap = FakeHeap::new(); // 既存の項目はすべて Invisible
+        let r = rel();
+        for i in 0..1200u32 {
+            let o = insert(
+                &t.ctx(),
+                &t.write_ctx(),
+                &int(5),
+                tid_of(i),
+                check_with(&heap, &r),
+            )
+            .unwrap();
+            assert_eq!(o, InsertOutcome::Inserted);
+        }
+        assert!(check_tree(&t).pages_per_level[0] >= 3);
+        heap.set(tid_of(9000), DirtyResult::Visible);
+        let sc = Scenario::new();
+        let gate = sc.block_at("btree.unique.checked");
+        let b_done = AtomicBool::new(false);
+        let res = std::thread::scope(|s| {
+            let a = s.spawn(|| {
+                let _at = sc.attach();
+                insert(
+                    &t.ctx(),
+                    &t.write_ctx(),
+                    &int(5),
+                    tid_of(9000),
+                    check_with(&heap, &r),
+                )
+                .unwrap()
+            });
+            gate.wait_arrived();
+            let b = s.spawn(|| {
+                let res = insert(
+                    &t.ctx(),
+                    &t.write_ctx(),
+                    &int(5),
+                    tid_of(9001),
+                    check_with(&heap, &r),
+                );
+                b_done.store(true, AtomicOrdering::SeqCst);
+                res
+            });
+            std::thread::sleep(Duration::from_millis(150));
+            assert!(!b_done.load(AtomicOrdering::SeqCst));
+            gate.release();
+            assert_eq!(a.join().unwrap(), InsertOutcome::Inserted);
+            b.join().unwrap()
+        });
+        assert_eq!(
+            res.unwrap_err().sqlstate,
+            crate::error::sqlstate::UNIQUE_VIOLATION
+        );
+        assert_eq!(check_tree(&t).entries.len(), 1201);
+        t.assert_clean();
+    }
+
+    /// B3・モデル: 幅の広いキーで分割を頻発させ、複数のスレッドがランダムなキーを同時に挿入する。
+    /// デッドロックせず、検査器が通り、挿入した (キー, TID) の集合が木の中身と一致する。
+    #[test]
+    fn b3_many_writers_do_not_deadlock_and_the_tree_stays_valid() {
+        const THREADS: u32 = 8;
+        const PER_THREAD: u32 = 150;
+        let ts = TestStorage::with_options(TestStorageOptions {
+            nframes: 512,
+            ..TestStorageOptions::default()
+        })
+        .unwrap();
+        let t = Arc::new(new_index_with(ts, &TEXT, false));
+        let t2 = Arc::clone(&t);
+        run_with_watchdog(120, move || {
+            std::thread::scope(|s| {
+                for th in 0..THREADS {
+                    let t = &t2;
+                    s.spawn(move || {
+                        let mut rng = Lcg(u64::from(th) * 7919 + 1);
+                        for i in 0..PER_THREAD {
+                            // 重複するキーも混ぜる（TID で区別される）。
+                            let k = u32::try_from(rng.below(400)).unwrap();
+                            put(t, &wide(k), tid_of(th * 10_000 + i)).unwrap();
+                        }
+                    });
+                }
+            });
+        });
+        let info = check_tree(&t);
+        let mut model = BTreeSet::new();
+        for th in 0..THREADS {
+            let mut rng = Lcg(u64::from(th) * 7919 + 1);
+            for i in 0..PER_THREAD {
+                let k = u32::try_from(rng.below(400)).unwrap();
+                let tid = tid_of(th * 10_000 + i);
+                model.insert((k, tid.block, tid.offset));
+            }
+        }
+        assert_eq!(info.entries.len(), model.len());
+        let got: BTreeSet<_> = info
+            .entries
+            .iter()
+            .map(|(k, tid)| (key_no(k), tid.block, tid.offset))
+            .collect();
+        assert_eq!(
+            got, model,
+            "the tree must hold exactly the inserted entries"
+        );
+        assert!(info.height >= 3, "height {}", info.height);
+        t.assert_clean();
+    }
+
+    /// B3: 昇順の追記と左端への挿入が同時に走る（分割が木の両端で連鎖する）。
+    #[test]
+    fn b3_appenders_and_prependers_do_not_deadlock() {
+        let ts = TestStorage::with_options(TestStorageOptions {
+            nframes: 512,
+            ..TestStorageOptions::default()
+        })
+        .unwrap();
+        let t = Arc::new(new_index_with(ts, &TEXT, false));
+        let t2 = Arc::clone(&t);
+        run_with_watchdog(120, move || {
+            std::thread::scope(|s| {
+                for th in 0..4u32 {
+                    let t = &t2;
+                    s.spawn(move || {
+                        for i in 0..120u32 {
+                            let k = if th % 2 == 0 {
+                                500_000 + th * 1000 + i
+                            } else {
+                                500_000 - th * 1000 - i
+                            };
+                            put(t, &wide(k), tid_of(th * 10_000 + i)).unwrap();
+                        }
+                    });
+                }
+            });
+        });
+        assert_eq!(check_tree(&t).entries.len(), 480);
+        t.assert_clean();
     }
 }

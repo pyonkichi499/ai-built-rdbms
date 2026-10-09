@@ -1,0 +1,83 @@
+ s 
+---
+ 7
+(1 row)
+
+  t  | n 
+-----+---
+ a b | f
+(1 row)
+
+   n   |     d      | b 
+-------+------------+---
+ 12.35 | 2024-02-29 | t
+(1 row)
+
+       a        
+----------------
+ {1,NULL,"x y"}
+(1 row)
+
+ x 
+---
+ 7
+(1 row)
+
+ x 
+---
+ 8
+(1 row)
+
+ one 
+-----
+   1
+(1 row)
+
+psql:<stdin>:10: ERROR:  invalid input syntax for type integer: "abc"
+psql:<stdin>:11: ERROR:  bind message supplies 0 parameters, but prepared statement "" requires 1
+psql:<stdin>:12: ERROR:  bind message supplies 1 parameters, but prepared statement "" requires 2
+ ?column? 
+----------
+        1
+(1 row)
+
+ ?column? 
+----------
+        2
+(1 row)
+
+ ?column? 
+----------
+ 1
+(1 row)
+
+psql:<stdin>:15: NOTICE:  table "tsx_bind" does not exist, skipping
+ id |  v  
+----+-----
+  1 | one
+(1 row)
+
+psql:<stdin>:18: ERROR:  duplicate key value violates unique constraint "tsx_bind_pkey"
+ id |  v  
+----+-----
+  2 | two
+(1 row)
+
+  v  
+-----
+ uno
+(1 row)
+
+ id |  v  
+----+-----
+  1 | uno
+(1 row)
+
+ int4 
+------
+(0 rows)
+
+           msg            
+--------------------------
+ after error still usable
+(1 row)

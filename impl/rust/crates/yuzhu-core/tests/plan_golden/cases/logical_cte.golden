@@ -1,0 +1,100 @@
+-- case cte_inline
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+with x as (select a, b from t where b > 1) select * from x where a = 2
+-- build
+Project [#0:t.a #1:t.b]
+  Filter (#0:t.a = 2)
+    Project [#0:t.a #1:t.b]
+      Filter (#1:t.b > 1)
+        Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a #1:t.b]
+  Filter (#0:t.a = 2)
+    Filter (#1:t.b > 1)
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- outer_join
+(unchanged)
+-- pushdown
+Project [#0:t.a #1:t.b]
+  Filter ((#0:t.a = 2) AND (#1:t.b > 1))
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case cte_twice
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+with x as (select a from t) select * from x join x y on x.a = y.a
+-- build
+Project [#3:x.a #4:y.a]
+  Join Inner on (#3:x.a = #4:y.a)
+    CteScan x [#3:x.a]
+    CteScan x as y [#4:y.a]
+CTE x [#0] output=[#0:t.a]
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case cte_agg_filter
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+with x as (select a, count(*) n from t group by a) select a from x where n > 1
+-- build
+Project [#0:t.a]
+  Filter (#3:count > 1)
+    Project [#0:t.a #3:count]
+      Aggregate group=[#0:t.a] aggs=[#3 := count(*)]
+        Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+Project [#0:t.a]
+  Filter (#3:count > 1)
+    Aggregate group=[#0:t.a] aggs=[#3 := count(*)]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)

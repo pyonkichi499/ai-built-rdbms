@@ -1,0 +1,56 @@
+# TimeZone に依存するキャストの関数形式（date(timestamptz)、timestamptz(date)、timestamptz(timestamp)）と、
+# regclass / regtype / regnamespace から整数への代入キャスト。
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT date(timestamptz '2024-05-06 20:00:00+00')
+----
+2024-05-07
+
+query T
+SELECT date(timestamptz '2024-05-06 10:00:00+00')
+----
+2024-05-06
+
+query T
+SELECT timestamptz(timestamp '2024-05-06 20:00:00')
+----
+2024-05-06 20:00:00+09
+
+query T
+SELECT timestamptz(date '2024-05-06')
+----
+2024-05-06 00:00:00+09
+
+query T
+SELECT pg_typeof(date(now())) || ',' || pg_typeof(timestamptz(date '2024-05-06'))
+----
+date,timestamp with time zone
+
+query T
+SELECT date(NULL::timestamptz) IS NULL
+----
+t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SELECT date(timestamptz '2024-05-06 20:00:00+00')
+----
+2024-05-06
+
+statement ok
+RESET TIME ZONE
+
+query T
+SELECT ('pg_class'::regclass::int4 > 0)::text || ',' || ('int4'::regtype::int4 = 23)::text || ',' || ('pg_catalog'::regnamespace::int4 = 11)::text
+----
+true,true,true
+
+query T
+SELECT ('pg_class'::regclass::int8 > 0)::text || ',' || ('int4'::regtype::int8 = 23)::text
+----
+true,true

@@ -191,7 +191,7 @@ create table p(id int4 primary key, v int4);
 update t set b = u.d from u where t.a = u.a
 -- build
 Update t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid new=[1:=#7:b]
-  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #7 := #5:u.d]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #7 := #5:u.d #4:u.a #5:u.d]
     Filter (#0:t.a = #4:u.a)
       Join Inner
         Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
@@ -206,7 +206,7 @@ Update t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid new=[1:=#7:b]
 (unchanged)
 -- pushdown
 Update t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid new=[1:=#7:b]
-  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #7 := #5:u.d]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #7 := #5:u.d #4:u.a #5:u.d]
     Join Inner on (#0:t.a = #4:u.a)
       Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
       Get u [#4:u.a #5:u.d #6:u.e]
@@ -216,7 +216,7 @@ Update t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid new=[1:=#7:b]
 (unchanged)
 -- prune
 Update t old=[#0:t.a #1:t.b #2:t.c] ctid=#3:t.ctid new=[1:=#7:b]
-  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #7 := #5:u.d]
+  Project [#0:t.a #1:t.b #2:t.c #3:t.ctid #7 := #5:u.d #4:u.a #5:u.d]
     Join Inner on (#0:t.a = #4:u.a)
       Get t [#0:t.a #1:t.b #2:t.c #3:t.ctid]
       Project [#4:u.a #5:u.d]

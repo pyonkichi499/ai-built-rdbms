@@ -1,0 +1,24 @@
+[package]
+name = "yuzhu-auth"
+description = "SCRAM-SHA-256, SASLprep and OS randomness for yuzhu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+sha2.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+subtle.workspace = true
+stringprep.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

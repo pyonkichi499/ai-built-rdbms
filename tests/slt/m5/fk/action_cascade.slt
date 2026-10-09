@@ -1,0 +1,95 @@
+# FOREIGN KEY: ON DELETE CASCADE / ON UPDATE CASCADE（多段を含む）
+# 接頭辞: fk_action_cascade_
+
+statement ok
+DROP TABLE IF EXISTS fk_action_cascade_g
+
+statement ok
+DROP TABLE IF EXISTS fk_action_cascade_c
+
+statement ok
+DROP TABLE IF EXISTS fk_action_cascade_p
+
+statement ok
+CREATE TABLE fk_action_cascade_p (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE fk_action_cascade_c (id int PRIMARY KEY, pid int REFERENCES fk_action_cascade_p ON DELETE CASCADE ON UPDATE CASCADE, v text)
+
+# 孫: 子の id を CASCADE で参照
+statement ok
+CREATE TABLE fk_action_cascade_g (id int PRIMARY KEY, cid int REFERENCES fk_action_cascade_c ON DELETE CASCADE ON UPDATE CASCADE)
+
+statement ok
+INSERT INTO fk_action_cascade_p VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+INSERT INTO fk_action_cascade_c VALUES (10, 1, 'x'), (11, 1, 'y'), (12, 2, 'z'), (13, NULL, 'n')
+
+statement ok
+INSERT INTO fk_action_cascade_g VALUES (100, 10), (101, 11), (102, 12)
+
+# ON UPDATE CASCADE（親のキーを変えると子が追従する。孫は子の id が変わらないので不変）
+statement ok
+UPDATE fk_action_cascade_p SET id = 20 WHERE id = 2
+
+query III
+SELECT id, pid, v FROM fk_action_cascade_c ORDER BY id
+----
+10 1 x
+11 1 y
+12 20 z
+13 NULL n
+
+# 子の id を更新すると孫が追従する（多段の UPDATE）
+statement ok
+UPDATE fk_action_cascade_c SET id = 120 WHERE id = 12
+
+query II
+SELECT id, cid FROM fk_action_cascade_g ORDER BY id
+----
+100 10
+101 11
+102 120
+
+# ON DELETE CASCADE（多段）
+statement ok
+DELETE FROM fk_action_cascade_p WHERE id = 1
+
+query I
+SELECT id FROM fk_action_cascade_c ORDER BY id
+----
+13
+120
+
+query I
+SELECT id FROM fk_action_cascade_g ORDER BY id
+----
+102
+
+# 親の行がなければ何も起きない。他の子は残る
+statement ok
+DELETE FROM fk_action_cascade_p WHERE id = 3
+
+query I
+SELECT count(*) FROM fk_action_cascade_c
+----
+2
+
+# 全行を消す
+statement ok
+DELETE FROM fk_action_cascade_p
+
+query III
+SELECT (SELECT count(*) FROM fk_action_cascade_p), (SELECT count(*) FROM fk_action_cascade_c), (SELECT count(*) FROM fk_action_cascade_g)
+----
+0 1 0
+
+statement ok
+DROP TABLE fk_action_cascade_g
+
+statement ok
+DROP TABLE fk_action_cascade_c
+
+statement ok
+DROP TABLE fk_action_cascade_p

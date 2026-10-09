@@ -1087,7 +1087,7 @@ fn catalog_tables_are_read_only() {
 fn int4_array_and_pg_typeof_and_pg_sleep_literal() {
     let c = catalog();
     assert_eq!(types(&c, "SELECT '{1,2}'::int4[]"), vec![oid::INT4_ARRAY]);
-    assert_eq!(err(&c, "SELECT '{1}'::text[]"), "0A000");
+    assert_eq!(types(&c, "SELECT '{1}'::text[]"), vec![oid::TEXT_ARRAY]);
     // `||` takes text only with anynonarray, so arrays never match.
     for q in [
         "SELECT '{1,2}'::int4[] || '{3}'",
@@ -1230,7 +1230,10 @@ fn insert_values_body_with_coercions_over_vars() {
 fn stubs_return_not_supported() {
     let c = catalog();
     // 呼び出し口の署名（N1〜N3・C1 が中身を書く）。
-    let a = Analyzer { catalog: &c };
+    let a = Analyzer {
+        catalog: &c,
+        params: None,
+    };
     let root = cte::CteScope::root();
     assert!(matches!(a.find_cte("x", &root), cte::CteLookup::NotFound));
     assert!(!a.is_future_cte("x", &root));

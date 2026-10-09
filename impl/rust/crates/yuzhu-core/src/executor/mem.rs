@@ -25,6 +25,13 @@ pub struct MemBudget {
     peak: Cell<usize>,
 }
 
+impl Default for MemBudget {
+    /// `std::mem::take` 用。上限は既定値（`DEFAULT_QUERY_MEM_LIMIT`）。
+    fn default() -> Self {
+        MemBudget::new(DEFAULT_QUERY_MEM_LIMIT)
+    }
+}
+
 impl MemBudget {
     /// 無制限は `usize::MAX`。
     pub fn new(limit: usize) -> Self {
@@ -96,6 +103,12 @@ pub fn estimate_datum_bytes(d: &Datum) -> usize {
         Datum::Int2Vector(v) => 2 * v.len(),
         Datum::OidVector(v) => 4 * v.len(),
         Datum::Int4Array(v) => 8 * v.len(),
+        Datum::Bytea(v) => v.len(),
+        Datum::Array(a) => {
+            std::mem::size_of::<crate::types::array::ArrayValue>()
+                + a.dims.len() * std::mem::size_of::<crate::types::array::ArrayDim>()
+                + a.items.iter().map(estimate_datum_bytes).sum::<usize>()
+        }
         Datum::Null
         | Datum::Bool(_)
         | Datum::Int2(_)
@@ -111,7 +124,10 @@ pub fn estimate_datum_bytes(d: &Datum) -> usize {
         | Datum::Void
         | Datum::Date(_)
         | Datum::Timestamp(_)
-        | Datum::TimestampTz(_) => 0,
+        | Datum::TimestampTz(_)
+        | Datum::Time(_)
+        | Datum::Interval(_)
+        | Datum::Uuid(_) => 0,
     };
     std::mem::size_of::<Datum>() + heap
 }

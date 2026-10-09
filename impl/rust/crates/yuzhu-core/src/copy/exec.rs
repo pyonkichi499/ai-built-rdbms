@@ -128,6 +128,8 @@ impl CopyIn {
     /// `CopyDone`: 未完の最後の行を処理して、挿入した総行数を返す。
     pub fn finish(&mut self, ctx: &mut ExecCtx<'_>, w: &WriteCtx) -> Result<u64> {
         self.drain(true, ctx, w)?;
+        // 遅延しない FK の検査を文の終わりに 1 回行う（07 R2）。
+        crate::executor::ri::finish_statement(ctx)?;
         Ok(self.rows)
     }
 

@@ -1,0 +1,60 @@
+# FOREIGN KEY: 表制約（名前付き・名前なし）、CREATE TABLE 内の前方参照の禁止
+# 接頭辞: fk_create_table_
+
+statement ok
+DROP TABLE IF EXISTS fk_create_table_c
+
+statement ok
+DROP TABLE IF EXISTS fk_create_table_c2
+
+statement ok
+DROP TABLE IF EXISTS fk_create_table_p
+
+statement ok
+CREATE TABLE fk_create_table_p (id int PRIMARY KEY, v text)
+
+# 表制約（名前なし）
+statement ok
+CREATE TABLE fk_create_table_c (id int PRIMARY KEY, pid int, FOREIGN KEY (pid) REFERENCES fk_create_table_p (id))
+
+# 表制約（名前付き）
+statement ok
+CREATE TABLE fk_create_table_c2 (id int PRIMARY KEY, pid int, CONSTRAINT fk_create_table_my_fk FOREIGN KEY (pid) REFERENCES fk_create_table_p)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_create_table_c'::regclass AND contype = 'f'
+----
+fk_create_table_c_pid_fkey
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_create_table_c2'::regclass AND contype = 'f'
+----
+fk_create_table_my_fk
+
+statement ok
+INSERT INTO fk_create_table_p VALUES (1, 'a')
+
+statement ok
+INSERT INTO fk_create_table_c VALUES (1, 1)
+
+statement error (?s)violates foreign key constraint "fk_create_table_my_fk"
+INSERT INTO fk_create_table_c2 VALUES (1, 2)
+
+# 存在しない親
+statement error (?s)does not exist
+CREATE TABLE fk_create_table_bad (id int, pid int REFERENCES fk_create_table_nonexistent)
+
+# 失敗した CREATE TABLE は何も残さない
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'fk_create_table_bad'
+----
+0
+
+statement ok
+DROP TABLE fk_create_table_c
+
+statement ok
+DROP TABLE fk_create_table_c2
+
+statement ok
+DROP TABLE fk_create_table_p

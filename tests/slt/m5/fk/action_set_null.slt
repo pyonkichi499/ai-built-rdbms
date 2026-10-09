@@ -1,0 +1,88 @@
+# FOREIGN KEY: ON DELETE SET NULL / ON UPDATE SET NULL（全列・(cols)）
+# 接頭辞: fk_action_set_null_
+
+statement ok
+DROP TABLE IF EXISTS fk_action_set_null_c2
+
+statement ok
+DROP TABLE IF EXISTS fk_action_set_null_c
+
+statement ok
+DROP TABLE IF EXISTS fk_action_set_null_p
+
+statement ok
+CREATE TABLE fk_action_set_null_p (id int, k int, PRIMARY KEY (id, k))
+
+statement ok
+CREATE TABLE fk_action_set_null_c (n int PRIMARY KEY, a int, b int, FOREIGN KEY (a, b) REFERENCES fk_action_set_null_p ON DELETE SET NULL ON UPDATE SET NULL)
+
+# 列を指定した SET NULL（PG15 以降）
+statement ok
+CREATE TABLE fk_action_set_null_c2 (n int PRIMARY KEY, a int NOT NULL, b int, FOREIGN KEY (a, b) REFERENCES fk_action_set_null_p ON DELETE SET NULL (b))
+
+statement ok
+INSERT INTO fk_action_set_null_p VALUES (1, 1), (2, 2), (3, 3)
+
+statement ok
+INSERT INTO fk_action_set_null_c VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3)
+
+statement ok
+INSERT INTO fk_action_set_null_c2 VALUES (1, 1, 1), (2, 2, 2)
+
+# DELETE: 全列が NULL になる
+statement ok
+DELETE FROM fk_action_set_null_p WHERE id = 1
+
+query III
+SELECT n, a, b FROM fk_action_set_null_c ORDER BY n
+----
+1 NULL NULL
+2 2 2
+3 3 3
+
+# (cols): b だけが NULL になる
+query III
+SELECT n, a, b FROM fk_action_set_null_c2 ORDER BY n
+----
+1 1 NULL
+2 2 2
+
+# UPDATE: キーを変えると全列が NULL
+statement ok
+UPDATE fk_action_set_null_p SET id = 30 WHERE id = 3
+
+query III
+SELECT n, a, b FROM fk_action_set_null_c ORDER BY n
+----
+1 NULL NULL
+2 2 2
+3 NULL NULL
+
+# ON UPDATE を省略すると NO ACTION なので、キーの変更は違反
+statement error (?s)update or delete on table "fk_action_set_null_p" violates foreign key constraint "fk_action_set_null_c2_a_b_fkey" on table "fk_action_set_null_c2"
+UPDATE fk_action_set_null_p SET id = 20 WHERE id = 2
+
+# SET NULL が NOT NULL 列に当たる -> 23502
+statement ok
+ALTER TABLE fk_action_set_null_c2 DROP CONSTRAINT fk_action_set_null_c2_a_b_fkey
+
+statement ok
+ALTER TABLE fk_action_set_null_c2 ADD FOREIGN KEY (a, b) REFERENCES fk_action_set_null_p ON DELETE SET NULL
+
+statement error (?s)null value in column "a" of relation "fk_action_set_null_c2" violates not-null constraint
+DELETE FROM fk_action_set_null_p WHERE id = 2
+
+# 失敗した文は何も変えない
+query I
+SELECT count(*) FROM fk_action_set_null_p
+----
+2
+
+statement ok
+DROP TABLE fk_action_set_null_c2
+
+statement ok
+DROP TABLE fk_action_set_null_c
+
+statement ok
+DROP TABLE fk_action_set_null_p

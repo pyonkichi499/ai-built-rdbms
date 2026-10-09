@@ -142,7 +142,8 @@ fn figure_colname_internal(e: &Expr) -> (Option<String>, u8) {
         Expr::NullIf { .. } => (Some("nullif".to_owned()), 2),
         Expr::Exists { .. } => (Some("exists".to_owned()), 2),
         Expr::Subquery { query, .. } => (Some(super::sublink::subquery_colname(query)), 2),
-        Expr::Collate { expr, .. } => figure_colname_internal(expr),
+        Expr::Collate { expr, .. } | Expr::Subscript { expr, .. } => figure_colname_internal(expr),
+        Expr::ArrayConstructor { .. } | Expr::ArraySubquery { .. } => (Some("array".to_owned()), 2),
         Expr::Row { .. } => (Some("row".to_owned()), 2),
         Expr::SessionValue { kind, .. } => {
             let n = match kind {
@@ -233,11 +234,24 @@ impl Analyzer<'_> {
                 let parts = self.column_ref_parts(parts, *span)?;
                 cx.scopes.resolve_column(parts, *span)
             }
-            Expr::Parameter { index, span } => Err(Error::new(
-                sqlstate::UNDEFINED_PARAMETER,
-                format!("there is no parameter ${index}"),
-            )
-            .with_span(*span)),
+            Expr::Parameter { index, span } => {
+                // H1: `$n`。`params` が無い文脈（Simple Query、DEFAULT・CHECK）は 42P02。
+                let Some(ctx) = self.params else {
+                    return Err(Error::new(
+                        sqlstate::UNDEFINED_PARAMETER,
+                        format!("there is no parameter ${index}"),
+                    )
+                    .with_span(*span));
+                };
+                let ty = ctx.reference(*index, *span)?;
+                let i = u16::try_from(*index - 1)
+                    .map_err(|_| Error::internal("parameter index out of range"))?;
+                Ok(BoundExpr::new(
+                    BoundExprKind::ExternParam(i),
+                    SqlType::of(ty),
+                    *span,
+                ))
+            }
             Expr::BinaryOp {
                 op,
                 op_schema,
@@ -402,7 +416,18 @@ impl Analyzer<'_> {
                 span,
                 ..
             } => {
-                let target = self.resolve_type_name(type_name)?;
+                let target = self.resolve_cast_type(type_name)?;
+                if let Expr::ArrayConstructor { elems, span: aspan } = &**expr
+                    && let Some(te) = super::coerce::regular_array_elem(target.oid)
+                {
+                    let a = self.transform_array_ctor(
+                        elems,
+                        Some(SqlType::new(te, target.typmod)),
+                        *aspan,
+                        cx,
+                    )?;
+                    return self.coerce_explicit(a, target, *span);
+                }
                 let a = self.transform_expr(expr, cx)?;
                 self.coerce_explicit(a, target, *span)
             }
@@ -497,7 +522,13 @@ impl Analyzer<'_> {
             Expr::Row { span, .. } => {
                 Err(Error::not_supported("row constructors is not supported yet").with_span(*span))
             }
-            Expr::InSubquery { span, .. }
+            Expr::ArrayConstructor { elems, span } => {
+                self.transform_array_ctor(elems, None, *span, cx)
+            }
+            Expr::Subscript { .. } => self.transform_subscript(e, cx),
+            Expr::QuantifiedArray { .. } => self.transform_quantified_array(e, cx),
+            Expr::ArraySubquery { span, .. }
+            | Expr::InSubquery { span, .. }
             | Expr::QuantifiedSubquery { span, .. }
             | Expr::Exists { span, .. }
             | Expr::Subquery { span, .. } => {

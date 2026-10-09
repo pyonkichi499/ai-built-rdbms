@@ -11,7 +11,7 @@
 
 use super::Analyzer;
 use super::bound::{BoundAggCall, BoundExpr, BoundExprKind, BoundSelect, Rte, RteKind};
-use super::coerce::{CoercionContext, resolve_unknown, tname};
+use super::coerce::{CoercionContext, tname};
 use super::expr::ExprCtx;
 use super::scope::ParseExprKind;
 use crate::catalog::BuiltinAggregate;
@@ -401,7 +401,11 @@ impl Analyzer<'_> {
     /// 引数を宣言型へ暗黙キャストする。`ANY` は変換しない（unknown の定数は text にする）。
     fn coerce_agg_arg(&self, arg: BoundExpr, declared: Oid) -> Result<BoundExpr> {
         if declared == ANY_OID {
-            return Ok(resolve_unknown(arg));
+            // 未確定の `$n` は text にせず残す（他で確定しなければ finish が 42P18 にする）。
+            if super::params::extern_param_index(&arg).is_some() {
+                return Ok(arg);
+            }
+            return self.resolve_unknown(arg);
         }
         let (src, span) = (arg.ty.oid, arg.span);
         self.coerce_type(arg, declared, CoercionContext::Implicit)?

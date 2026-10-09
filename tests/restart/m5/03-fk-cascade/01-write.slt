@@ -1,0 +1,100 @@
+# フェーズ 1: 外部キーの動作をコミット・未コミットで作り、kill -9 される。
+#   c: ON DELETE CASCADE（コミット済みの親の削除 → 子も消える。未コミット（other）の親の削除 → 親も子も残る）
+#   n: ON DELETE SET NULL（コミット済み）
+#   r: ON DELETE RESTRICT（違反は何も変えない）
+
+statement ok
+DROP TABLE IF EXISTS crm5_03_child_c
+
+statement ok
+DROP TABLE IF EXISTS crm5_03_parent_c
+
+statement ok
+DROP TABLE IF EXISTS crm5_03_child_n
+
+statement ok
+DROP TABLE IF EXISTS crm5_03_parent_n
+
+statement ok
+DROP TABLE IF EXISTS crm5_03_child_r
+
+statement ok
+DROP TABLE IF EXISTS crm5_03_parent_r
+
+statement ok
+CREATE TABLE crm5_03_parent_c (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE crm5_03_child_c (id int PRIMARY KEY, pid int REFERENCES crm5_03_parent_c (id) ON DELETE CASCADE)
+
+statement ok
+CREATE TABLE crm5_03_parent_n (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE crm5_03_child_n (id int PRIMARY KEY, pid int REFERENCES crm5_03_parent_n (id) ON DELETE SET NULL)
+
+statement ok
+CREATE TABLE crm5_03_parent_r (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE crm5_03_child_r (id int PRIMARY KEY, pid int REFERENCES crm5_03_parent_r (id) ON DELETE RESTRICT)
+
+statement count 3
+INSERT INTO crm5_03_parent_c VALUES (1), (2), (3)
+
+statement count 4
+INSERT INTO crm5_03_child_c VALUES (10, 1), (11, 1), (20, 2), (30, 3)
+
+statement count 2
+INSERT INTO crm5_03_parent_n VALUES (1), (2)
+
+statement count 3
+INSERT INTO crm5_03_child_n VALUES (10, 1), (11, 1), (20, 2)
+
+statement count 2
+INSERT INTO crm5_03_parent_r VALUES (1), (2)
+
+statement count 2
+INSERT INTO crm5_03_child_r VALUES (10, 1), (20, 2)
+
+# CASCADE: 親 1 の削除をコミット（子 10、11 も消える）
+statement count 1
+DELETE FROM crm5_03_parent_c WHERE id = 1
+
+# CASCADE: 親 2 の削除は other が未コミットのまま残す
+connection other
+statement ok
+BEGIN
+
+connection other
+statement count 1
+DELETE FROM crm5_03_parent_c WHERE id = 2
+
+connection other
+query I
+SELECT count(*) FROM crm5_03_child_c WHERE pid = 2
+----
+0
+
+# SET NULL: 親 1 の削除をコミット（子 10、11 の pid が NULL になる）
+statement count 1
+DELETE FROM crm5_03_parent_n WHERE id = 1
+
+# RESTRICT: 違反は何も変えない
+statement error (23503)
+DELETE FROM crm5_03_parent_r WHERE id = 1
+
+statement error (23503)
+INSERT INTO crm5_03_child_r VALUES (30, 99)
+
+query I
+SELECT count(*) FROM crm5_03_child_c
+----
+2
+
+query II
+SELECT id, pid FROM crm5_03_child_n ORDER BY id
+----
+10 NULL
+11 NULL
+20 2

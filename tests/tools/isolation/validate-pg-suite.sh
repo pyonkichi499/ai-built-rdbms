@@ -2,7 +2,7 @@
 # ランナー自身の検証用: PostgreSQL 17 本体の isolation テスト（spec と期待ファイル）を取得し、
 # 本物の PostgreSQL に対して実行して、isolationtester と同じ出力になるかを確かめる。
 #
-#   tests/tools/isolation/validate-pg-suite.sh [--port N] [--host H] [--detection pg|timeout] [テスト名...]
+#   tests/tools/isolation/validate-pg-suite.sh [--port N] [--host H] [--detection pg|timeout] [--protocol simple|extended] [テスト名...]
 #
 # 事前に `createdb isolation_regression` しておくこと（pg_isolation_regress と同じ DB 名を使う。
 # application_name などに現れるため）。取得したファイルは $WORK（既定: 一時ディレクトリ）に置く。
@@ -13,12 +13,14 @@ set -euo pipefail
 HOST=127.0.0.1
 PORT=55432
 DETECTION=pg
+PROTOCOL=simple
 while [ $# -gt 0 ]; do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
         --detection) DETECTION="$2"; shift 2 ;;
-        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        --protocol) PROTOCOL="$2"; shift 2 ;;
+        -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
         *) break ;;
     esac
 done
@@ -46,8 +48,9 @@ SPECS=()
 for t in "${TESTS[@]}"; do SPECS+=("$WORK/specs/$t.spec"); done
 
 # pg_isolation_regress は PGDATESTYLE="Postgres, MDY" を設定して isolationtester を起動する。
-exec "$HERE/target/release/yuzhu-isolation" \
+BIN="${CARGO_TARGET_DIR:-$HERE/target}/release/yuzhu-isolation"
+exec "$BIN" \
     --host "$HOST" --port "$PORT" --dbname isolation_regression \
-    --blocking-detection "$DETECTION" \
+    --blocking-detection "$DETECTION" --protocol "$PROTOCOL" \
     --set 'datestyle=Postgres, MDY' \
     "${SPECS[@]}"

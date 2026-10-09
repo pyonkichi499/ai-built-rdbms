@@ -5,8 +5,10 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use super::hio::{page_error, tag};
+use super::prune::{PruneCtx, prune_before_read};
 use super::tuple::{TupleHeader, deform_tuple};
 use super::visibility::visible;
+use super::xmax::xmax_is_lock_only;
 use crate::error::Result;
 use crate::storage::buffer::BufferPool;
 use crate::storage::page::{LpFlags, Page};
@@ -41,11 +43,14 @@ impl HeapScan {
     }
 
     /// Returns the next visible tuple, reading one block at a time. Neither
-    /// a pin nor a latch outlives the call.
+    /// a pin nor a latch outlives the call. With `prune`, a page that is a
+    /// candidate is pruned opportunistically before it is read (`m5/03` §5.2.3);
+    /// the page is then scanned in its content after pruning.
     pub(crate) fn next_tuple(
         &mut self,
         pool: &Arc<BufferPool>,
         clog: &Clog,
+        prune: Option<&PruneCtx<'_>>,
     ) -> Result<Option<HeapTuple>> {
         loop {
             if let Some(t) = self.buf.pop_front() {
@@ -57,7 +62,10 @@ impl HeapScan {
             let blk = self.next_block;
             self.next_block += 1;
             let pinned = pool.read_buffer(tag(self.rel.locator, blk))?;
-            let guard = pinned.read()?;
+            let mut guard = pinned.read()?;
+            if let Some(ctx) = prune {
+                guard = prune_before_read(ctx, pool, &pinned, guard)?;
+            }
             self.buf = collect_visible(&guard, &self.rel, blk, &self.snapshot, clog)?;
         }
     }
@@ -111,7 +119,7 @@ pub(crate) fn decode_if_visible(
     Ok(Some(HeapTuple {
         tid,
         xmin: hdr.xmin,
-        xmax: if hdr.xmax_invalid() {
+        xmax: if hdr.xmax_invalid() || xmax_is_lock_only(&hdr) {
             crate::txn::Xid::INVALID
         } else {
             hdr.xmax

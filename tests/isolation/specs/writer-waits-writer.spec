@@ -2,7 +2,7 @@
 #
 # A が先に更新（未コミット）、B が後から同じ行を更新する。B は A の終了まで待ち、
 # A の COMMIT なら最新の値を基に、ROLLBACK なら元の値を基に実行される。
-# 別の行への更新は PostgreSQL では待たない（yuzhu の M3 は待つ）ので、必ず同じ行を使う。
+# 別の行への書き込みは待たない（行ロックは行ごと）。末尾の permutation で確かめる。
 
 setup
 {
@@ -21,6 +21,7 @@ step a_inc { UPDATE www_t SET v = v + 1 WHERE id = 1; }
 step a_zero { UPDATE www_t SET v = 0 WHERE id = 2; }
 step a_del { DELETE FROM www_t WHERE id = 3; }
 step a_set500 { UPDATE www_t SET v = 500 WHERE id = 1; }
+step a_ins { INSERT INTO www_t VALUES (4, 40); }
 step a_c { COMMIT; }
 step a_r { ROLLBACK; }
 
@@ -30,6 +31,9 @@ step b_mul { UPDATE www_t SET v = v * 10 WHERE id = 1; }
 step b_cond { UPDATE www_t SET v = -1 WHERE id = 2 AND v = 20; }
 step b_upd3 { UPDATE www_t SET v = 99 WHERE id = 3; }
 step b_del1 { DELETE FROM www_t WHERE id = 1; }
+step b_upd2other { UPDATE www_t SET v = v + 5 WHERE id = 2; }
+step b_del2 { DELETE FROM www_t WHERE id = 2; }
+step b_ins { INSERT INTO www_t VALUES (5, 50); }
 step b_c { COMMIT; }
 
 session c
@@ -48,3 +52,11 @@ permutation a_b a_inc b_b b_del1 a_c b_c c_sel
 permutation a_b a_inc b_b b_del1 a_r b_c c_sel
 # 自動コミットの文でも同じ
 permutation a_b a_inc b_mul a_c c_sel
+# 別の行への更新は待たない（<waiting> が出ない）
+permutation a_b a_inc b_b b_upd2other a_c b_c c_sel
+# 別の行の DELETE も待たない
+permutation a_b a_inc b_b b_del2 a_c b_c c_sel
+# INSERT は他の行の更新と干渉しない
+permutation a_b a_inc b_b b_ins a_c b_c c_sel
+permutation a_b a_ins b_b b_upd2other a_c b_c c_sel
+permutation a_b a_inc b_b b_upd2other a_r b_c c_sel

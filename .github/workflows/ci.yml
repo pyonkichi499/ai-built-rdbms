@@ -1,11 +1,33 @@
 name: CI
 
+# M5 のジョブ構成は spec/design/m5/10-tests-plan.md §6.10.6 に従う。
+#
+# 方針（まだ実装・テストが無いものの扱い）:
+# - M5 の実装やテストが揃っていない job / step は、`continue-on-error: true` か
+#   `hashFiles(...) != ''`（対象ファイルがあるときだけ実行）で守る。
+# - 実装が揃ったら、該当する job の `continue-on-error` を外して必須にする。
+#   外す場所は各 job の直前に「【外す条件】」として書いてある（M5 の統合段階で見直す）。
+# - PR のジョブは並列に走るので、壁時間の合計 15 分以内が目標（R-11）。
+#   `drivers` / `scram` は最小のシナリオだけ、`crash-sim` / `stress` は固定シード。
+#   超えたら夜間（nightly.yml）へ移す。
+# - 夜間ジョブは .github/workflows/nightly.yml。
+#
+# 注意: この YAML は構文を目視と簡易チェックで確認しただけで、actionlint は CI 上では未実行。
+
 on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  # PostgreSQL 17 の版。services の image は env を参照できないので、
+  # リポジトリ変数 PG_IMAGE（未設定なら postgres:17）を使う。期待値を作った版は tests/PG_VERSION。
+  PG_IMAGE: ${{ vars.PG_IMAGE || 'postgres:17' }}
+  SLT_BIN_VERSION: "0.29.1"
 
 jobs:
   rust:
@@ -46,13 +68,32 @@ jobs:
       - name: consistency.slt.part が各コピーと一致する
         run: tests/tools/slttools/target/release/slttools consistency --check
 
-  # 共有 sqllogictest スイートの期待値が、本物の PostgreSQL 17 で正しいことを確かめる。
-  slt-pg:
-    name: SLT on PostgreSQL 17 (expected values)
+  # M5（10 §6.6, §10.3）: テストと既知の差の台帳（tests/known-diffs.toml）の突き合わせ、Q の索引。サーバ不要。
+  # 【外す条件】なし（必須）。
+  lint-tests:
+    name: Lint tests (known-diffs / Q index)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tests/tools/lint-tests.sh
+        run: tests/tools/lint-tests.sh
+      - name: tests/tools/q-index.sh --check
+        run: tests/tools/q-index.sh --check
+
+  # 共有 sqllogictest スイート（m1〜m5）の期待値が、本物の PostgreSQL 17 で正しいことを確かめる。simple と extended の 2 通り。
+  # 【外す条件】extended の continue-on-error は、m1〜m4 に extended 用の skipif（複数文・regtype 列・浮動小数点の
+  #   整形差。TS-5a2 の報告）が入り、extended が PostgreSQL で全件通るようになったら外す。
+  slt-pg:
+    name: SLT on PostgreSQL 17 (${{ matrix.protocol }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.protocol == 'extended' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [simple, extended]
     services:
       postgres:
-        image: postgres:17
+        image: ${{ vars.PG_IMAGE || 'postgres:17' }}
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
@@ -72,21 +113,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/sqllogictest
-          key: sqllogictest-bin-0.29.1-${{ runner.os }}
-      - name: Install sqllogictest-bin 0.29.1
+          key: sqllogictest-bin-${{ env.SLT_BIN_VERSION }}-${{ runner.os }}
+      - name: Install sqllogictest-bin
         if: steps.slt-cache.outputs.cache-hit != 'true'
         # --locked は必須（tokio-postgres 0.7.12 を使うため。spec/research/research-slt.md 参照）
-        run: cargo install sqllogictest-bin --locked --version 0.29.1
+        run: cargo install sqllogictest-bin --locked --version "$SLT_BIN_VERSION"
+      - name: SHOW server_version（ログの先頭に版を出す）
+        run: |
+          sudo apt-get install -y --no-install-recommends postgresql-client >/dev/null 2>&1 || true
+          psql "host=127.0.0.1 port=55432 user=postgres dbname=postgres" -Atc "SHOW server_version" || true
+          echo "tests/PG_VERSION: $(cat tests/PG_VERSION 2>/dev/null || echo none)"
       - name: Run tests/slt against PostgreSQL
-        # m1〜m4。最後に m4/z_final（no_leftovers は専用の空の PostgreSQL が前提）
-        run: tests/run.sh --target pg --host 127.0.0.1 --port 55432
+        # m1〜m5。最後に m4/z_final（no_leftovers は専用の空の PostgreSQL が前提）
+        run: tests/run.sh --target pg --host 127.0.0.1 --port 55432 --protocol ${{ matrix.protocol }}
 
-  # yuzhu-server に対して共有スイートを流す。
+  # yuzhu-server に対して共有スイート（m1〜m5）を流す。simple と extended。
+  # 【外す条件】M5 の実装（TS-5 の統合）が揃い、tests/done-check.sh が yuzhu で通ったら continue-on-error を外す。
   slt-yuzhu:
-    name: SLT on yuzhu-server
+    name: SLT on yuzhu-server (${{ matrix.protocol }})
     runs-on: ubuntu-latest
-    # フェーズ 4（11 §4.4）から外す（D11-9）。M4 の完了判定はローカルの tests/done-check.sh。
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [simple, extended]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -98,29 +148,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/sqllogictest
-          key: sqllogictest-bin-0.29.1-${{ runner.os }}
-      - name: Install sqllogictest-bin 0.29.1
+          key: sqllogictest-bin-${{ env.SLT_BIN_VERSION }}-${{ runner.os }}
+      - name: Install sqllogictest-bin
         if: steps.slt-cache.outputs.cache-hit != 'true'
-        run: cargo install sqllogictest-bin --locked --version 0.29.1
+        run: cargo install sqllogictest-bin --locked --version "$SLT_BIN_VERSION"
       - name: Build yuzhu-server
         working-directory: impl/rust
         run: cargo build --release -p yuzhu-server
       - name: Start yuzhu-server
-        run: |
-          impl/rust/target/release/yuzhu-server --listen 127.0.0.1 --port 5433 > yuzhu-server.log 2>&1 &
-          for _ in $(seq 1 60); do
-            if (echo > /dev/tcp/127.0.0.1/5433) 2>/dev/null; then echo "yuzhu-server is up"; exit 0; fi
-            sleep 0.5
-          done
-          echo "yuzhu-server did not start" >&2
-          cat yuzhu-server.log >&2
-          exit 1
+        run: tests/yuzhu.sh start --port 5433
       - name: Run tests/slt against yuzhu-server
-        # tests/slt の m1〜m4 を流す（m3/txn/savepoint_unsupported.slt は yuzhu 専用）
-        run: tests/run.sh --target yuzhu --host 127.0.0.1 --port 5433
+        # m3/txn/savepoint_unsupported.slt のような yuzhu 専用のファイルは run.sh が選ぶ
+        run: tests/run.sh --target yuzhu --host 127.0.0.1 --port 5433 --protocol ${{ matrix.protocol }}
       - name: Show yuzhu-server log
         if: always()
-        run: cat yuzhu-server.log || true
+        run: tests/yuzhu.sh status || true
+      - name: Stop yuzhu-server
+        if: always()
+        run: tests/yuzhu.sh clean || true
 
   # Docker イメージがビルドでき、起動して 5432 を listen することを確かめる（push はしない）。
   docker:
@@ -150,7 +195,7 @@ jobs:
           docker rm -f yuzhu-smoke
           exit 1
 
-  # M3: クラッシュをまたぐ再起動テスト（tests/restart の全シナリオ。m3 は kill -9 のクラッシュを含む）。
+  # 再起動・クラッシュ（kill -9）をまたぐテスト。tests/restart の m3・m4 と、M5 の tests/restart/m5。
   restart-pg:
     name: Restart/crash tests on PostgreSQL 17 (expected values)
     runs-on: ubuntu-latest
@@ -161,24 +206,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/sqllogictest
-          key: sqllogictest-bin-0.29.1-${{ runner.os }}
-      - name: Install sqllogictest-bin 0.29.1
+          key: sqllogictest-bin-${{ env.SLT_BIN_VERSION }}-${{ runner.os }}
+      - name: Install sqllogictest-bin
         if: steps.slt-cache.outputs.cache-hit != 'true'
-        run: cargo install sqllogictest-bin --locked --version 0.29.1
+        run: cargo install sqllogictest-bin --locked --version "$SLT_BIN_VERSION"
       - name: Start PostgreSQL 17
         run: tests/pg.sh start
       - name: Restart tests (tests/restart と tests/restart/m4 の restart / both)
         run: tests/run.sh --target pg --restart --port 55432
       - name: Crash tests (tests/restart/m3 と tests/restart/m4 の crash / both / mixed)
         run: tests/run.sh --target pg --crash --port 55432
+      - name: Restart/crash tests (tests/restart/m5)
+        # run.sh の既定のシナリオに m5 が入るまでは、ディレクトリを明示して流す。
+        # 【外す条件】run.sh の既定に m5 が入ったらこの step を消す。
+        if: hashFiles('tests/restart/m5/**') != ''
+        continue-on-error: true
+        run: tests/run.sh --target pg --crash --port 55432 tests/restart/m5
       - name: Stop PostgreSQL
         if: always()
         run: tests/pg.sh stop
 
+  # 【外す条件】M5 の実装が揃い、yuzhu で restart / crash が全件通ったら continue-on-error を外す。
   restart-yuzhu:
     name: Restart/crash tests on yuzhu-server
     runs-on: ubuntu-latest
-    # フェーズ 4 から外す（D11-9）。
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -191,10 +242,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/sqllogictest
-          key: sqllogictest-bin-0.29.1-${{ runner.os }}
-      - name: Install sqllogictest-bin 0.29.1
+          key: sqllogictest-bin-${{ env.SLT_BIN_VERSION }}-${{ runner.os }}
+      - name: Install sqllogictest-bin
         if: steps.slt-cache.outputs.cache-hit != 'true'
-        run: cargo install sqllogictest-bin --locked --version 0.29.1
+        run: cargo install sqllogictest-bin --locked --version "$SLT_BIN_VERSION"
       - name: Build yuzhu-server and yuzhu-initdb
         working-directory: impl/rust
         run: cargo build --release -p yuzhu-server
@@ -204,19 +255,27 @@ jobs:
         run: tests/run.sh --target yuzhu --restart --port 5433
       - name: Crash tests (tests/restart/m3 と tests/restart/m4 の crash / both / mixed)
         run: tests/run.sh --target yuzhu --crash --port 5433
+      - name: Restart/crash tests (tests/restart/m5)
+        if: hashFiles('tests/restart/m5/**') != ''
+        run: tests/run.sh --target yuzhu --crash --port 5433 tests/restart/m5
       - name: Stop yuzhu-server
         if: always()
         run: tests/yuzhu.sh clean
 
-  # M3・M4: isolationtester 互換の spec（tests/isolation/specs。M3 の 6 本 + M4 の index-*、seq-nonblocking）。PostgreSQL で期待値を確かめ、yuzhu でも流す。
+  # 分離性（isolationtester 互換の spec）。
+  # - 共有 specs（tests/isolation/specs）: pg / yuzhu × simple / extended（PR で必須。M5-TS-Q1）。
+  # - ported（PostgreSQL 由来の移植分）: simple のみ PR。extended は夜間（nightly.yml）。
+  # 【外す条件】yuzhu の continue-on-error は、M5 のロック・行ロックの実装が揃い、
+  #   variant 込みで共有 specs と ported が通ったら外す。
   isolation:
-    name: Isolation tests (${{ matrix.target }})
+    name: Isolation tests (${{ matrix.target }}, ${{ matrix.protocol }})
     runs-on: ubuntu-latest
     continue-on-error: ${{ matrix.target == 'yuzhu' }}
     strategy:
       fail-fast: false
       matrix:
         target: [pg, yuzhu]
+        protocol: [simple, extended]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -231,20 +290,33 @@ jobs:
         if: matrix.target == 'pg'
         run: |
           tests/pg.sh start
-          tests/tools/isolation/target/release/yuzhu-isolation --port 55432 tests/isolation/specs
+          ISO=tests/tools/isolation/target/release/yuzhu-isolation
+          $ISO --port 55432 --protocol ${{ matrix.protocol }} tests/isolation/specs
+          if [ "${{ matrix.protocol }}" = simple ] && [ -d tests/isolation/ported/specs ]; then
+            $ISO --port 55432 --skip-list tests/isolation/ported/skip.txt tests/isolation/ported/specs
+          fi
           tests/pg.sh stop
       - name: Run against yuzhu-server
         if: matrix.target == 'yuzhu'
         run: |
           (cd impl/rust && cargo build --release -p yuzhu-server)
           tests/yuzhu.sh start --port 5433
-          tests/tools/isolation/target/release/yuzhu-isolation --port 5433 --blocking-detection timeout --variant yuzhu-m3 tests/isolation/specs
+          ISO=tests/tools/isolation/target/release/yuzhu-isolation
+          rc=0
+          $ISO --port 5433 --protocol ${{ matrix.protocol }} --variant yuzhu-m5 tests/isolation/specs || rc=1
+          if [ "${{ matrix.protocol }}" = simple ] && [ -d tests/isolation/ported/specs ]; then
+            $ISO --port 5433 --variant yuzhu-m5 --skip-list tests/isolation/ported/skip.txt tests/isolation/ported/specs || rc=1
+          fi
           tests/yuzhu.sh clean
+          exit $rc
 
-  # M3: クラッシュ試験 層 1（SimVfs。固定シード。長時間のランダム実行は #[ignore] で夜間ジョブ）。
+  # クラッシュ試験 層 1（SimVfs。固定シード。W1〜W11。決定性の試験が先、合計 180 秒以内。変異テストを含む）。
+  # 長時間のランダム実行・変異の全シードは #[ignore] にして夜間（nightly-crash）。
+  # 【外す条件】なし（必須）。
   crash-sim:
     name: Crash simulation (layer 1)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: impl/rust
@@ -257,7 +329,44 @@ jobs:
       - name: cargo test (crash_sim)
         run: cargo test --release -p yuzhu-core --test crash_sim
 
-  # M4: 周辺ツール互換（psql 17 の \dt など、COPY、pgbench）。tests/compat/run.sh ができるまでは何もしない。
+  # ストレス: プロセス内 S1〜S5（各 5 秒、固定シード）と、wire 版（S1・S2・S5。yuzhu と PostgreSQL）。
+  # テスト名はテスト作者（TS-3）の確定待ち。ファイルが無いうちは step を飛ばす。
+  # 【外す条件】プロセス内 stress が実装されたら job の continue-on-error を外す。
+  #   wire 版のテストの名前と起動方法が決まったら、下の step を実際の呼び出しに合わせる。
+  stress:
+    name: Stress (S1-S5, in-process and wire)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: impl/rust
+      - name: cargo test (stress, in-process S1-S5)
+        if: hashFiles('impl/rust/crates/yuzhu-core/tests/stress.rs', 'impl/rust/crates/yuzhu-core/tests/stress/**') != ''
+        working-directory: impl/rust
+        run: cargo test --release -p yuzhu-core --test stress
+      - name: Stress (wire S1, S2, S5) on yuzhu-server
+        if: hashFiles('impl/rust/crates/yuzhu-server/tests/stress_wire.rs') != ''
+        working-directory: impl/rust
+        env:
+          STRESS_TARGET: yuzhu
+          STRESS_SECONDS: "5"
+        run: cargo test --release -p yuzhu-server --test stress_wire -- --include-ignored
+      - name: Stress (wire S1, S2, S5) on PostgreSQL 17
+        if: hashFiles('impl/rust/crates/yuzhu-server/tests/stress_wire.rs') != ''
+        working-directory: impl/rust
+        env:
+          STRESS_TARGET: pg
+          STRESS_SECONDS: "5"
+        run: |
+          ../../tests/pg.sh start
+          cargo test --release -p yuzhu-server --test stress_wire -- --include-ignored
+          ../../tests/pg.sh stop
+
+  # 周辺ツール互換（psql 17 の \dt など、COPY、pgbench）。
   compat:
     name: Compat tests (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -292,3 +401,107 @@ jobs:
         run: |
           if [ "${{ matrix.target }}" = yuzhu ]; then (cd impl/rust && cargo build --release -p yuzhu-server); fi
           tests/compat/run.sh --target ${{ matrix.target }}
+
+  # ドライバ（trust）。PR は最小: tokio-postgres と psql と pgbench（G1・G2・G3 を各 20 秒）。
+  # 残りのドライバ（psycopg / node-postgres / pgjdbc）と G4〜G9 は夜間（nightly.yml の drivers-full）。
+  # tokio-postgres は Cargo（rust-cache に tests/compat/drivers/tokio-postgres を足す）。
+  # 【外す条件】M5 の Extended Query が実装され、tokio-postgres と pgbench -M prepared が yuzhu で通ったら continue-on-error を外す。
+  drivers:
+    name: Drivers minimal (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: ${{ matrix.target == 'yuzhu' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [pg, yuzhu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/compat/drivers/tokio-postgres
+      - name: Install PostgreSQL 17 (server / client。PGDG)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 postgresql-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Start server
+        run: |
+          if [ "${{ matrix.target }}" = yuzhu ]; then
+            (cd impl/rust && cargo build --release -p yuzhu-server)
+            tests/yuzhu.sh start --port 5433
+          else
+            tests/pg.sh start
+          fi
+      - name: psql と tokio-postgres（trust）
+        run: |
+          port=55432; [ "${{ matrix.target }}" = yuzhu ] && port=5433
+          tests/compat/run.sh --target ${{ matrix.target }} --port "$port" --suite psql,drivers --driver tokio-postgres
+      - name: pgbench（G1・G2・G3 各 20 秒）
+        # シナリオの秒数の指定方法は tests/compat/pgbench/run.sh の実装に従う（PGBENCH_SECONDS は想定の名前）。
+        env:
+          PGBENCH_SECONDS: "20"
+        run: |
+          port=55432; [ "${{ matrix.target }}" = yuzhu ] && port=5433
+          tests/compat/run.sh --target ${{ matrix.target }} --port "$port" --suite pgbench
+      - name: Stop server
+        if: always()
+        run: |
+          if [ "${{ matrix.target }}" = yuzhu ]; then tests/yuzhu.sh clean || true; else tests/pg.sh stop || true; fi
+
+  # SCRAM-SHA-256（M5 の認証）。PR は最小: slt（m5 の一部）と tokio-postgres と A2・A3・A4。全部は夜間。
+  # 【外す条件】yuzhu-server の `--auth scram`（tests/yuzhu.sh start --auth scram）と tests/compat/auth/run.sh が
+  #   実装されたら continue-on-error を外す。
+  scram:
+    name: SCRAM (minimal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    env:
+      PGPASSWORD: yuzhu-test-pw
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            impl/rust
+            tests/compat/drivers/tokio-postgres
+      - name: Cache sqllogictest-bin
+        id: slt-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/sqllogictest
+          key: sqllogictest-bin-${{ env.SLT_BIN_VERSION }}-${{ runner.os }}
+      - name: Install sqllogictest-bin
+        if: steps.slt-cache.outputs.cache-hit != 'true'
+        run: cargo install sqllogictest-bin --locked --version "$SLT_BIN_VERSION"
+      - name: Install PostgreSQL 17 client (psql。PGDG)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Build yuzhu-server
+        working-directory: impl/rust
+        run: cargo build --release -p yuzhu-server
+      - name: Start yuzhu-server (--auth scram)
+        run: tests/yuzhu.sh start --port 5433 --auth scram
+      - name: slt（m5 の認証・ロール）を SCRAM で
+        if: hashFiles('tests/slt/m5/auth/**') != ''
+        run: tests/run.sh --target yuzhu --port 5433 --password "$PGPASSWORD" tests/slt/m5/auth
+      - name: tokio-postgres を SCRAM で
+        run: tests/compat/run.sh --target yuzhu --port 5433 --auth scram --suite drivers --driver tokio-postgres
+      - name: 認証シナリオ A2・A3・A4
+        run: tests/compat/run.sh --target yuzhu --port 5433 --auth scram --suite auth
+      - name: Stop yuzhu-server
+        if: always()
+        run: tests/yuzhu.sh clean || true

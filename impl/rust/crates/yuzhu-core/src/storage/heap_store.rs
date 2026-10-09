@@ -1,28 +1,53 @@
 //! `HeapStore`: the `TableStore` implementation over the buffer pool and
 //! the heap (`m2.md` §4.4, §6.5; WAL: `m3.md` §5.1).
+//!
+//! M5 (`m5/02-row-lock-rr.md` RW-1c): `delete` / `update` / `lock_tuple` follow
+//! PostgreSQL's `l1:` / `l2:` / `l3:` loops. Whenever a conflicting holder must
+//! be waited for, the page latch and the pin are released first (convention 1),
+//! the wait happens in [`wait_for_holders`], and the whole decision is taken
+//! again from the top (RW-D5).
+//!
+//! The environment for "who is running" and MultiXact lookups comes from
+//! [`HeapStore::set_vacuum_env`], the lock manager from
+//! [`HeapStore::set_lock_env`]. Until the cluster has wired them (the assembly in
+//! `m5/01` §5.12), a store behaves like M4: "running" is derived from the caller's
+//! snapshot and a write that would have to wait returns `BeingModified`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use crate::control::{ControlData, ControlFileHandle};
 use crate::error::{Error, Result};
 use crate::storage::buffer::{BufferPool, CriticalSection, PageWriteGuard};
-use crate::storage::heap::hio::{self, InsertHints, page_error, tag};
+use crate::storage::fsm::FreeSpaceMap;
+use crate::storage::heap::hio::{self, HioCtx, page_error, tag};
+use crate::storage::heap::lock::{TupleLockGuard, WaitEnv, WaitResult, wait_for_holders};
+use crate::storage::heap::modstat;
+use crate::storage::heap::prune::{HeapEnv, PruneCtx, RunningXids, prune_before_read};
 use crate::storage::heap::scan::decode_if_visible;
-use crate::storage::heap::tuple::{
-    HEAP_KEYS_UPDATED, HEAP_XMAX_LOCK_BITS, TupleFlags, TupleHeader, form_tuple,
+use crate::storage::heap::tuple::{TupleFlags, TupleHeader, deform_tuple, form_tuple};
+use crate::storage::heap::visibility::{
+    VisEnv, classify_env, satisfies_dirty_env, satisfies_update_env, visible,
 };
-use crate::storage::heap::visibility::{classify, satisfies_dirty, satisfies_update};
 use crate::storage::heap::wal::{
-    HEAP_DELETE, HEAP_INIT_PAGE, HEAP_UPDATE, HeapDeleteMain, HeapUpdateMain,
+    HEAP_DELETE, HEAP_INIT_PAGE, HEAP_LOCK, HEAP_UPDATE, HeapDeleteMain, HeapLockMain,
+    HeapUpdateMain,
+};
+use crate::storage::heap::xmax::{
+    LockDecision, RawXmax, UpdateDecision, XmaxEnv, XmaxWrite, keys_changed, mode_from_bits,
+    plan_lock, plan_update, stamp_updater, xmax_is_lock_only, xmin_is_frozen,
 };
 use crate::storage::page::LpFlags;
-use crate::storage::smgr::{ForkNumber, RelFileLocator};
+use crate::storage::smgr::{BlockNumber, ForkNumber, RelFileLocator};
 use crate::storage::smgr_wal::log_and_create;
+use crate::storage::vfs::{SimVfs, Vfs};
 use crate::storage::{
-    DirtyResult, HeapScan, HeapTuple, RelHandle, TableStore, TmResult, TupleState, UpdateOutcome,
-    WriteCtx,
+    DirtyResult, HeapScan, HeapTuple, LockOutcome, RelHandle, RowWait, TableStore, TmResult,
+    TupleState, UpdateOutcome, WriteCtx,
 };
-use crate::txn::clog::Clog;
-use crate::txn::{Snapshot, Xid};
+use crate::txn::clog::{Clog, XidStatus};
+use crate::txn::lock::{LockManager, LockTag, WaitCtx};
+use crate::txn::multixact::MultiXactTable;
+use crate::txn::{LockTupleMode, Snapshot, Xid};
 use crate::types::{Datum, Tid};
 use crate::wal::{Lsn, RecordBuilder, RegFlags, RmgrId, Wal};
 
@@ -31,17 +56,245 @@ pub struct HeapStore {
     pool: Arc<BufferPool>,
     clog: Arc<Clog>,
     wal: Arc<Wal>,
-    hints: InsertHints,
+    hio: HioCtx,
+    /// 実行中 XID の窓口と MultiXact 表。機会的 pruning（`m5/03` §5.2.3）、`env()`、行の更新競合の判定
+    /// （`m5/02` §5.1）に使う。`Cluster::open` が `set_vacuum_env` で渡す。
+    /// 未設定の間は pruning せず、競合の判定は呼び出しの snapshot から導く（M4 の動作）。
+    vacuum_env: OnceLock<(Arc<dyn RunningXids>, Arc<MultiXactTable>)>,
+    /// タプルロックと XID の終了待ちに使う。`set_lock_env` で渡す。未設定なら待たない。
+    locks: OnceLock<Arc<LockManager>>,
+    /// `vacuum_env` が未設定の間だけ使う空の MultiXact 表（ロックだけの xmax が無い前提）。
+    fallback_multi: OnceLock<Arc<MultiXactTable>>,
+}
+
+/// `vacuum_env` が未設定のとき、呼び出しの snapshot から「実行中」を導く（M4 の `satisfies_update` と同じ）:
+/// clog が `IN_PROGRESS` で、snapshot の `xmax` 以上か `xip` にある XID。
+#[derive(Debug)]
+struct SnapRunning<'a> {
+    clog: &'a Clog,
+    snap: &'a Snapshot,
+}
+
+impl RunningXids for SnapRunning<'_> {
+    fn is_in_progress(&self, x: Xid) -> bool {
+        (x >= self.snap.xmax || self.snap.xip.binary_search(&x).is_ok())
+            && matches!(self.clog.status(x), Ok(XidStatus::InProgress))
+    }
+
+    fn next_xid(&self) -> Xid {
+        self.snap.xmax
+    }
+
+    fn oldest_xmin(&self) -> Xid {
+        self.snap.xmin
+    }
+
+    fn oldest_xmin_hint(&self) -> Xid {
+        self.snap.xmin
+    }
+}
+
+/// `vacuum_env` が未設定のとき、snapshot の無い呼び出し（`tuple_state` / `fetch_dirty`）が使う:
+/// 実行中の XID は無い（clog が `IN_PROGRESS` のものは中断扱い。M4 の単一ライター）。
+#[derive(Debug)]
+struct NoneRunning;
+
+impl RunningXids for NoneRunning {
+    fn is_in_progress(&self, _: Xid) -> bool {
+        false
+    }
+
+    fn next_xid(&self) -> Xid {
+        Xid::INVALID
+    }
+
+    fn oldest_xmin(&self) -> Xid {
+        Xid::INVALID
+    }
+
+    fn oldest_xmin_hint(&self) -> Xid {
+        Xid::INVALID
+    }
+}
+
+/// 1 回の呼び出しが使う「誰が実行中か」と MultiXact 表。
+#[derive(Clone, Copy)]
+struct RunEnv<'a> {
+    procs: &'a dyn RunningXids,
+    multi: &'a MultiXactTable,
+}
+
+/// `satisfies_update_env` の結果を、書いてよいか・返すか・待つかに分けたもの。
+#[derive(Debug)]
+enum Gate {
+    /// xmax を書いてよい（xmax なし、終了したロックだけ、自分のロックだけ、中断した更新者）。
+    Go,
+    /// そのまま呼び出し側に返す（`Invisible` / `SelfModified` / `Updated` / `Deleted`）。
+    Done(TmResult),
+    /// 衝突する保持者がいる。
+    Wait { xids: Vec<Xid>, i_am_member: bool },
 }
 
 impl HeapStore {
     pub fn new(pool: Arc<BufferPool>, clog: Arc<Clog>, wal: Arc<Wal>) -> HeapStore {
+        let hio = HioCtx::new(
+            Arc::clone(&pool),
+            Arc::new(FreeSpaceMap::new(Arc::clone(&pool))),
+            Arc::clone(&clog),
+            Arc::clone(&wal),
+        );
         HeapStore {
             pool,
             clog,
             wal,
-            hints: InsertHints::default(),
+            hio,
+            vacuum_env: OnceLock::new(),
+            locks: OnceLock::new(),
+            fallback_multi: OnceLock::new(),
         }
+    }
+
+    /// The free space map (derived data; VACUUM rebuilds it with `record_batch`).
+    pub fn fsm(&self) -> &Arc<FreeSpaceMap> {
+        self.hio.fsm()
+    }
+
+    /// Hands over the running-XID registry and the MultiXact table (once). Until then
+    /// no opportunistic pruning happens and [`env`](Self::env) fails. `false` if
+    /// already set.
+    pub fn set_vacuum_env(
+        &self,
+        procs: Arc<dyn RunningXids>,
+        multixact: Arc<MultiXactTable>,
+    ) -> bool {
+        self.hio.set_env(Arc::clone(&procs), Arc::clone(&multixact));
+        self.vacuum_env.set((procs, multixact)).is_ok()
+    }
+
+    /// Hands over the lock manager (once): the tuple locks and the waits for XIDs
+    /// (`m5/02` §5.5). Until then a write that has to wait fails with an internal
+    /// error, and `lock_tuple` is unavailable. `false` if already set.
+    pub fn set_lock_env(&self, locks: Arc<LockManager>) -> bool {
+        self.locks.set(locks).is_ok()
+    }
+
+    /// The environment of `satisfies_vacuum` (`m5/03` §4.1).
+    pub fn env(&self) -> Result<HeapEnv<'_>> {
+        let (procs, multixact) = self
+            .vacuum_env
+            .get()
+            .ok_or_else(|| Error::internal("the heap store has no running-XID registry yet"))?;
+        Ok(HeapEnv {
+            clog: &self.clog,
+            procs: procs.as_ref(),
+            multixact,
+        })
+    }
+
+    fn prune_ctx(&self) -> Option<PruneCtx<'_>> {
+        Some(PruneCtx {
+            env: self.env().ok()?,
+            wal: &self.wal,
+        })
+    }
+
+    /// The environment of one call. `fallback` is the stand-in for the running-XID
+    /// registry when `set_vacuum_env` has not been called.
+    fn run_env<'a>(&'a self, fallback: &'a dyn RunningXids) -> Result<RunEnv<'a>> {
+        if let Some((procs, multi)) = self.vacuum_env.get() {
+            return Ok(RunEnv {
+                procs: procs.as_ref(),
+                multi,
+            });
+        }
+        let multi = match self.fallback_multi.get() {
+            Some(m) => m,
+            None => {
+                let vfs: Arc<dyn Vfs> = Arc::new(SimVfs::new(0));
+                let control = Arc::new(ControlFileHandle::create(
+                    &vfs,
+                    &ControlData::initial(1, 2, 131_072),
+                )?);
+                let _ = self
+                    .fallback_multi
+                    .set(Arc::new(MultiXactTable::new(control)));
+                self.fallback_multi
+                    .get()
+                    .ok_or_else(|| Error::internal("MultiXact stand-in vanished"))?
+            }
+        };
+        Ok(RunEnv {
+            procs: fallback,
+            multi,
+        })
+    }
+
+    fn lock_manager(&self) -> Result<&Arc<LockManager>> {
+        self.locks.get().ok_or_else(|| {
+            Error::internal("the heap store has no lock manager (cannot wait for a row)")
+        })
+    }
+
+    /// `satisfies_update` followed by `plan_update` (`m5/02` §5.2): may the caller put its
+    /// XID in xmax now?
+    fn gate_update(
+        &self,
+        renv: RunEnv<'_>,
+        hdr: &TupleHeader,
+        snap: &Snapshot,
+        tid: Tid,
+        w: &WriteCtx,
+    ) -> Result<Gate> {
+        let venv = VisEnv {
+            clog: &self.clog,
+            procs: renv.procs,
+            multi: renv.multi,
+        };
+        match satisfies_update_env(&venv, hdr, snap, tid)? {
+            TmResult::Ok => Ok(Gate::Go),
+            TmResult::BeingModified { .. } => {
+                let running = |x: Xid| renv.procs.is_in_progress(x);
+                let xenv = XmaxEnv {
+                    me: w.xid,
+                    is_running: &running,
+                    multi: renv.multi,
+                };
+                Ok(match plan_update(hdr, &xenv)? {
+                    UpdateDecision::Proceed => Gate::Go,
+                    UpdateDecision::Wait { xids, i_am_member } => Gate::Wait { xids, i_am_member },
+                })
+            }
+            other => Ok(Gate::Done(other)),
+        }
+    }
+
+    /// Waits for `xids` with the latch and the pin already released. `Block` never
+    /// returns `WouldBlock`.
+    #[allow(clippy::too_many_arguments)]
+    fn wait_holders(
+        &self,
+        renv: RunEnv<'_>,
+        wait: &WaitCtx<'_>,
+        tuplock: &mut TupleLockGuard,
+        rel: &RelHandle,
+        tid: Tid,
+        xids: &[Xid],
+        policy: RowWait,
+        i_am_member: bool,
+    ) -> Result<WaitResult> {
+        let env = WaitEnv {
+            locks: self.lock_manager()?,
+            procs: renv.procs,
+        };
+        wait_for_holders(
+            &env,
+            wait,
+            tuplock,
+            tuple_tag(rel, tid),
+            xids,
+            policy,
+            i_am_member,
+        )
     }
 
     /// Reads the header of a live tuple under the latch, or `None` if the
@@ -71,6 +324,29 @@ impl HeapStore {
         Ok(tid.offset != 0 && tid.block < self.pool.nblocks(rel, ForkNumber::Main)?)
     }
 
+    /// The lock strength an UPDATE of the tuple at `tid` to `new_row` needs: `Exclusive`
+    /// when a key column changes, else `NoKeyExclusive` (`m5/02` §5.3).
+    fn update_lockmode(
+        rel: &RelHandle,
+        guard: &PageWriteGuard<'_>,
+        tid: Tid,
+        new_row: &[Datum],
+    ) -> Result<LockTupleMode> {
+        if !rel.key_columns.iter().any(|k| *k) {
+            return Ok(LockTupleMode::NoKeyExclusive);
+        }
+        let bytes = guard
+            .page()
+            .item(tid.offset)
+            .map_err(|e| page_error(e, rel.locator, tid.block))?;
+        let old = deform_tuple(&rel.desc, bytes)?;
+        Ok(if keys_changed(&rel.key_columns, &old, new_row) {
+            LockTupleMode::Exclusive
+        } else {
+            LockTupleMode::NoKeyExclusive
+        })
+    }
+
     /// Writes `HEAP_DELETE` for the header just stamped on `guard`.
     fn log_delete(
         &self,
@@ -83,6 +359,22 @@ impl HeapStore {
         let mut rec = RecordBuilder::new(RmgrId::Heap, HEAP_DELETE, w.xid);
         rec.register_block(tag, guard.page(), RegFlags::STANDARD);
         rec.main_data(&HeapDeleteMain::from_header(off, stamped).encode());
+        Ok(self.wal.insert(rec)?.end)
+    }
+
+    /// Writes `HEAP_LOCK` for the header just stamped on `guard` (`m5/02` §3.6).
+    fn log_lock(
+        &self,
+        guard: &PageWriteGuard<'_>,
+        tag: crate::storage::smgr::BufferTag,
+        off: u16,
+        stamped: &TupleHeader,
+        lock_mode: LockTupleMode,
+        w: &WriteCtx,
+    ) -> Result<Lsn> {
+        let mut rec = RecordBuilder::new(RmgrId::Heap, HEAP_LOCK, w.xid);
+        rec.register_block(tag, guard.page(), RegFlags::STANDARD);
+        rec.main_data(&HeapLockMain::from_header(off, stamped, lock_mode as u8).encode());
         Ok(self.wal.insert(rec)?.end)
     }
 
@@ -122,8 +414,19 @@ impl HeapStore {
     }
 }
 
-/// Writes xmax / cmax (and optionally the new ctid) into the old version and returns
-/// the header as written. Must run inside a critical section.
+/// The tuple lock's tag for the row at `tid` (`m5/02` §5.5).
+fn tuple_tag(rel: &RelHandle, tid: Tid) -> LockTag {
+    LockTag::Tuple {
+        db: rel.locator.db_oid,
+        rel: rel.oid,
+        block: tid.block,
+        offset: tid.offset,
+    }
+}
+
+/// Writes the updater's / deleter's xmax and cmax (and optionally the new `ctid`) into the
+/// old version, marks the page prunable and returns the header as written. Must run inside
+/// a critical section.
 fn stamp_xmax(
     guard: &mut PageWriteGuard<'_>,
     off: u16,
@@ -132,12 +435,7 @@ fn stamp_xmax(
     keys_updated: bool,
     new_ctid: Option<Tid>,
 ) -> Result<TupleHeader> {
-    hdr.xmax = w.xid;
-    hdr.cmax = w.cid;
-    hdr.infomask &= !HEAP_XMAX_LOCK_BITS;
-    if keys_updated {
-        hdr.infomask2 |= HEAP_KEYS_UPDATED;
-    }
+    stamp_updater(&hdr, w.xid, w.cid, keys_updated).apply(&mut hdr);
     if let Some(c) = new_ctid {
         hdr.ctid = c;
     }
@@ -146,7 +444,34 @@ fn stamp_xmax(
         .item_mut(off)
         .map_err(|_| Error::internal("tuple vanished while being marked"))?;
     hdr.write(item);
+    guard.page_mut().set_prunable(w.xid);
     Ok(hdr)
+}
+
+/// Writes a row lock (`XmaxWrite` from `plan_lock`) into the tuple and returns the header as
+/// written. `cmax` and `ctid` stay. Must run inside a critical section.
+fn stamp_lock(
+    guard: &mut PageWriteGuard<'_>,
+    off: u16,
+    mut hdr: TupleHeader,
+    write: &XmaxWrite,
+) -> Result<TupleHeader> {
+    write.apply(&mut hdr);
+    let item = guard
+        .page_mut()
+        .item_mut(off)
+        .map_err(|_| Error::internal("tuple vanished while being locked"))?;
+    hdr.write(item);
+    Ok(hdr)
+}
+
+/// `HeapTuple.xmax` is the deleter / updater; a lock holder is not one.
+fn deleter_xmax(h: &TupleHeader) -> Xid {
+    if h.xmax_invalid() || xmax_is_lock_only(h) {
+        Xid::INVALID
+    } else {
+        h.xmax
+    }
 }
 
 impl TableStore for HeapStore {
@@ -160,43 +485,81 @@ impl TableStore for HeapStore {
 
     fn unlink_storage(&self, rel: RelFileLocator) -> Result<()> {
         self.pool.drop_relation_buffers(rel)?;
-        self.hints.forget(rel)?;
+        self.hio.forget(rel)?;
         self.pool.smgr().unlink(rel)
     }
 
     fn insert(&self, rel: &RelHandle, w: &WriteCtx, row: &[Datum]) -> Result<Tid> {
         let data = form_tuple(&rel.desc, row, w, TupleFlags::default())?;
-        hio::insert_tuple(
-            &self.pool,
-            &self.wal,
-            &self.hints,
-            rel.locator,
-            w.xid,
-            &data,
-        )
+        self.hio.insert_tuple(rel.locator, w.xid, &data)
     }
 
-    fn delete(&self, rel: &RelHandle, w: &WriteCtx, snap: &Snapshot, tid: Tid) -> Result<TmResult> {
+    fn delete(
+        &self,
+        rel: &RelHandle,
+        w: &WriteCtx,
+        snap: &Snapshot,
+        tid: Tid,
+        wait: Option<&WaitCtx<'_>>,
+        crosscheck: Option<&Snapshot>,
+    ) -> Result<TmResult> {
         if !self.block_exists(rel.locator, tid)? {
             return Ok(TmResult::Invisible);
         }
-        let buf = self.pool.read_buffer(tag(rel.locator, tid.block))?;
-        let mut guard = buf.write()?;
-        let Some(hdr) = Self::locate(&guard, rel.locator, tid)? else {
-            return Ok(TmResult::Invisible);
+        let snap_procs = SnapRunning {
+            clog: &self.clog,
+            snap,
         };
-        let res = satisfies_update(&self.clog, &hdr, snap, tid)?;
-        if res != TmResult::Ok {
-            return Ok(res);
+        let renv = self.run_env(&snap_procs)?;
+        // Dropped last: the tuple lock is released after the latch and the pin (§5.2).
+        let mut tuplock = TupleLockGuard::none();
+        loop {
+            // l1:
+            let buf = self.pool.read_buffer(tag(rel.locator, tid.block))?;
+            let mut guard = buf.write()?;
+            let Some(hdr) = Self::locate(&guard, rel.locator, tid)? else {
+                return Ok(TmResult::Invisible);
+            };
+            match self.gate_update(renv, &hdr, snap, tid, w)? {
+                Gate::Go => {}
+                Gate::Done(res) => return Ok(res),
+                Gate::Wait { xids, i_am_member } => {
+                    let Some(wait) = wait else {
+                        return Ok(TmResult::BeingModified { xmax: xids[0] });
+                    };
+                    drop(guard);
+                    drop(buf);
+                    self.wait_holders(
+                        renv,
+                        wait,
+                        &mut tuplock,
+                        rel,
+                        tid,
+                        &xids,
+                        RowWait::Block,
+                        i_am_member,
+                    )?;
+                    continue;
+                }
+            }
+            if let Some(cc) = crosscheck
+                && !visible(&self.clog, &hdr, cc)?
+            {
+                return Ok(TmResult::Updated {
+                    ctid: tid,
+                    xmax: Xid::INVALID,
+                });
+            }
+            let cs = CriticalSection::enter(&self.pool);
+            let stamped = stamp_xmax(&mut guard, tid.offset, hdr, w, true, None)
+                .map_err(|e| cs.escalate(e))?;
+            let end = self
+                .log_delete(&guard, buf.tag(), tid.offset, &stamped, w)
+                .map_err(|e| cs.escalate(e))?;
+            guard.set_lsn(end.0);
+            modstat::note_modified(rel.locator, 1);
+            return Ok(TmResult::Ok);
         }
-        let cs = CriticalSection::enter(&self.pool);
-        let stamped =
-            stamp_xmax(&mut guard, tid.offset, hdr, w, true, None).map_err(|e| cs.escalate(e))?;
-        let end = self
-            .log_delete(&guard, buf.tag(), tid.offset, &stamped, w)
-            .map_err(|e| cs.escalate(e))?;
-        guard.set_lsn(end.0);
-        Ok(TmResult::Ok)
     }
 
     fn update(
@@ -206,62 +569,115 @@ impl TableStore for HeapStore {
         snap: &Snapshot,
         tid: Tid,
         new_row: &[Datum],
+        wait: Option<&WaitCtx<'_>>,
+        crosscheck: Option<&Snapshot>,
     ) -> Result<UpdateOutcome> {
         let data = form_tuple(&rel.desc, new_row, w, TupleFlags { updated: true })?;
-        let outcome = |result| UpdateOutcome {
+        let outcome = |result, lockmode| UpdateOutcome {
             result,
             new_tid: None,
+            lockmode,
         };
+        let mut lockmode = LockTupleMode::NoKeyExclusive;
         if !self.block_exists(rel.locator, tid)? {
-            return Ok(outcome(TmResult::Invisible));
+            return Ok(outcome(TmResult::Invisible, lockmode));
         }
-        let obuf = self.pool.read_buffer(tag(rel.locator, tid.block))?;
-        let mut oguard = obuf.write()?;
-        let Some(hdr) = Self::locate(&oguard, rel.locator, tid)? else {
-            return Ok(outcome(TmResult::Invisible));
+        let snap_procs = SnapRunning {
+            clog: &self.clog,
+            snap,
         };
-        let res = satisfies_update(&self.clog, &hdr, snap, tid)?;
-        if res != TmResult::Ok {
-            return Ok(outcome(res));
-        }
-        let done = |new_tid| UpdateOutcome {
-            result: TmResult::Ok,
-            new_tid: Some(new_tid),
-        };
-
-        if hio::fits(oguard.page(), data.len()) {
-            let cs = CriticalSection::enter(&self.pool);
-            let (new_tid, stamped) = hio::place_in_page(&mut oguard, tid.block, &data)
-                .and_then(|n| {
-                    Ok((
-                        n,
-                        stamp_xmax(&mut oguard, tid.offset, hdr, w, false, Some(n))?,
-                    ))
-                })
-                .map_err(|e| cs.escalate(e))?;
-            let end = self
-                .log_update(
-                    (&oguard, obuf.tag(), false),
-                    None,
-                    new_tid.offset,
-                    tid.offset,
-                    &stamped,
-                    w,
-                )
-                .map_err(|e| cs.escalate(e))?;
-            oguard.set_lsn(end.0);
-            return Ok(done(new_tid));
-        }
-
-        // The new version goes to another page: latch both in block order (§5.9).
-        drop(oguard);
+        let renv = self.run_env(&snap_procs)?;
+        let mut tuplock = TupleLockGuard::none();
+        // Pages that turned out to have no room for the new version (the old page is excluded).
+        let mut tried: Vec<BlockNumber> = vec![tid.block];
         loop {
-            let nbuf = hio::find_target(&self.pool, &self.hints, rel.locator, data.len())?;
-            let nblk = nbuf.tag().block;
-            if nblk == tid.block {
-                // The old page has room after all; start over through the same-page path.
-                return self.update(rel, w, snap, tid, new_row);
+            // l2:
+            let obuf = self.pool.read_buffer(tag(rel.locator, tid.block))?;
+            let mut oguard = obuf.write()?;
+            let Some(hdr) = Self::locate(&oguard, rel.locator, tid)? else {
+                return Ok(outcome(TmResult::Invisible, lockmode));
+            };
+            lockmode = Self::update_lockmode(rel, &oguard, tid, new_row)?;
+            let keys_updated = lockmode == LockTupleMode::Exclusive;
+            match self.gate_update(renv, &hdr, snap, tid, w)? {
+                Gate::Go => {}
+                Gate::Done(res) => return Ok(outcome(res, lockmode)),
+                Gate::Wait { xids, i_am_member } => {
+                    let Some(wait) = wait else {
+                        return Ok(outcome(TmResult::BeingModified { xmax: xids[0] }, lockmode));
+                    };
+                    drop(oguard);
+                    drop(obuf);
+                    self.wait_holders(
+                        renv,
+                        wait,
+                        &mut tuplock,
+                        rel,
+                        tid,
+                        &xids,
+                        RowWait::Block,
+                        i_am_member,
+                    )?;
+                    continue;
+                }
             }
+            if let Some(cc) = crosscheck
+                && !visible(&self.clog, &hdr, cc)?
+            {
+                return Ok(outcome(
+                    TmResult::Updated {
+                        ctid: tid,
+                        xmax: Xid::INVALID,
+                    },
+                    lockmode,
+                ));
+            }
+            let done = |new_tid| UpdateOutcome {
+                result: TmResult::Ok,
+                new_tid: Some(new_tid),
+                lockmode,
+            };
+
+            let mut room = hio::fits(oguard.page(), data.len());
+            if !room
+                && self
+                    .hio
+                    .try_prune_for_space(rel.locator, tid.block, &mut oguard)?
+            {
+                room = hio::fits(oguard.page(), data.len());
+            }
+            if room {
+                let cs = CriticalSection::enter(&self.pool);
+                let (new_tid, stamped) = hio::place_in_page(&mut oguard, tid.block, &data)
+                    .and_then(|n| {
+                        Ok((
+                            n,
+                            stamp_xmax(&mut oguard, tid.offset, hdr, w, keys_updated, Some(n))?,
+                        ))
+                    })
+                    .map_err(|e| cs.escalate(e))?;
+                let end = self
+                    .log_update(
+                        (&oguard, obuf.tag(), false),
+                        None,
+                        new_tid.offset,
+                        tid.offset,
+                        &stamped,
+                        w,
+                    )
+                    .map_err(|e| cs.escalate(e))?;
+                oguard.set_lsn(end.0);
+                modstat::note_modified(rel.locator, 1);
+                return Ok(done(new_tid));
+            }
+
+            // The new version goes to another page: latch both in block order (§5.9). While
+            // the old page is unlatched somebody may change the old version's xmax; that is
+            // detected below and handled by starting over (no wait needed for the comparison).
+            let seen = RawXmax::of(&hdr);
+            drop(oguard);
+            let nbuf = self.hio.find_target(rel.locator, data.len(), &tried)?;
+            let nblk = nbuf.tag().block;
             let (mut nguard, mut oguard);
             if nblk < tid.block {
                 nguard = nbuf.write()?;
@@ -271,12 +687,26 @@ impl TableStore for HeapStore {
                 nguard = nbuf.write()?;
             }
             let Some(now) = Self::locate(&oguard, rel.locator, tid)? else {
-                return Err(Error::internal("old tuple version vanished during UPDATE"));
+                continue;
             };
-            if now != hdr {
-                return Err(Error::internal("old tuple version changed during UPDATE"));
+            if RawXmax::of(&now) != seen {
+                continue;
             }
-            if !hio::fits(nguard.page(), data.len()) {
+            let mut room = hio::fits(nguard.page(), data.len());
+            if !room
+                && self
+                    .hio
+                    .try_prune_for_space(rel.locator, nblk, &mut nguard)?
+            {
+                room = hio::fits(nguard.page(), data.len());
+            }
+            if !room {
+                let free = nguard.page().free_space();
+                drop(nguard);
+                drop(oguard);
+                drop(nbuf);
+                self.hio.note_no_fit(rel.locator, nblk, free);
+                tried.push(nblk);
                 continue;
             }
             let init = nguard.page().is_new();
@@ -285,7 +715,7 @@ impl TableStore for HeapStore {
                 .and_then(|n| {
                     Ok((
                         n,
-                        stamp_xmax(&mut oguard, tid.offset, hdr, w, false, Some(n))?,
+                        stamp_xmax(&mut oguard, tid.offset, now, w, keys_updated, Some(n))?,
                     ))
                 })
                 .map_err(|e| cs.escalate(e))?;
@@ -304,8 +734,154 @@ impl TableStore for HeapStore {
             drop(nguard);
             drop(oguard);
             drop(cs);
-            self.hints.set(rel.locator, nblk)?;
+            self.hio.note_used(rel.locator, nblk)?;
+            modstat::note_modified(rel.locator, 1);
             return Ok(done(new_tid));
+        }
+    }
+
+    fn lock_tuple(
+        &self,
+        rel: &RelHandle,
+        w: &WriteCtx,
+        snap: &Snapshot,
+        tid: Tid,
+        mode: LockTupleMode,
+        policy: RowWait,
+        follow_updates: bool,
+        wait: &WaitCtx<'_>,
+    ) -> Result<LockOutcome> {
+        let done = |result| {
+            Ok(LockOutcome {
+                result,
+                latest: None,
+            })
+        };
+        let snap_procs = SnapRunning {
+            clog: &self.clog,
+            snap,
+        };
+        let renv = self.run_env(&snap_procs)?;
+        let venv = VisEnv {
+            clog: &self.clog,
+            procs: renv.procs,
+            multi: renv.multi,
+        };
+        let running = |x: Xid| renv.procs.is_in_progress(x);
+        let xenv = XmaxEnv {
+            me: w.xid,
+            is_running: &running,
+            multi: renv.multi,
+        };
+        // Dropped last, after the latch and the pin.
+        let mut tuplock = TupleLockGuard::none();
+        let mut cur = tid;
+        let mut prior_xmax: Option<Xid> = None;
+        let mut all_nonkey = true;
+        loop {
+            // l3:
+            renv.multi.ensure_reserved()?;
+            let traversed = prior_xmax.is_some();
+            let gone = || {
+                if let Some(px) = prior_xmax {
+                    TmResult::Deleted { xmax: px }
+                } else {
+                    TmResult::Invisible
+                }
+            };
+            if !self.block_exists(rel.locator, cur)? {
+                return done(gone());
+            }
+            let buf = self.pool.read_buffer(tag(rel.locator, cur.block))?;
+            let mut guard = buf.write()?;
+            let Some(hdr) = Self::locate(&guard, rel.locator, cur)? else {
+                return done(gone());
+            };
+            if let Some(px) = prior_xmax
+                && !xmin_is_frozen(&hdr)
+                && hdr.xmin != px
+            {
+                // The line pointer was reused: the chain broke.
+                return done(TmResult::Deleted { xmax: px });
+            }
+            match satisfies_update_env(&venv, &hdr, snap, cur)? {
+                TmResult::Invisible => return done(gone()),
+                res @ (TmResult::SelfModified { .. } | TmResult::Deleted { .. }) => {
+                    return done(res);
+                }
+                TmResult::Updated { ctid, xmax } => {
+                    let keyshare_nonkey = mode == LockTupleMode::KeyShare
+                        && hdr.infomask2 & crate::storage::heap::tuple::HEAP_KEYS_UPDATED == 0;
+                    if !(follow_updates || keyshare_nonkey) {
+                        return done(TmResult::Updated { ctid, xmax });
+                    }
+                    drop(guard);
+                    drop(buf);
+                    prior_xmax = Some(xmax);
+                    cur = ctid;
+                    all_nonkey &= keyshare_nonkey;
+                    continue;
+                }
+                TmResult::Ok | TmResult::BeingModified { .. } => {}
+                TmResult::WouldBlock => {
+                    return Err(Error::internal("satisfies_update returned WouldBlock"));
+                }
+            }
+            let stamped = match plan_lock(&hdr, mode, &xenv)? {
+                LockDecision::AlreadyHeld => hdr,
+                LockDecision::Write(write) => {
+                    let held = mode_from_bits(write.infomask, write.infomask2)?;
+                    let cs = CriticalSection::enter(&self.pool);
+                    let stamped = stamp_lock(&mut guard, cur.offset, hdr, &write)
+                        .map_err(|e| cs.escalate(e))?;
+                    let end = self
+                        .log_lock(&guard, buf.tag(), cur.offset, &stamped, held, w)
+                        .map_err(|e| cs.escalate(e))?;
+                    guard.set_lsn(end.0);
+                    stamped
+                }
+                LockDecision::Wait { xids, i_am_member } => {
+                    drop(guard);
+                    drop(buf);
+                    match self.wait_holders(
+                        renv,
+                        wait,
+                        &mut tuplock,
+                        rel,
+                        cur,
+                        &xids,
+                        policy,
+                        i_am_member,
+                    )? {
+                        WaitResult::WouldBlock => return done(TmResult::WouldBlock),
+                        WaitResult::Waited => continue,
+                    }
+                }
+            };
+            // Done. Decode the locked version while the latch is held.
+            let latest = if traversed && !(mode == LockTupleMode::KeyShare && all_nonkey) {
+                let bytes = guard
+                    .page()
+                    .item(cur.offset)
+                    .map_err(|e| page_error(e, rel.locator, cur.block))?;
+                Some(HeapTuple {
+                    tid: cur,
+                    xmin: stamped.xmin,
+                    xmax: deleter_xmax(&stamped),
+                    cmin: stamped.cmin,
+                    cmax: stamped.cmax,
+                    row: deform_tuple(&rel.desc, bytes)?,
+                })
+            } else {
+                None
+            };
+            drop(guard);
+            drop(buf);
+            drop(tuplock);
+            return Ok(LockOutcome {
+                result: TmResult::Ok,
+                latest,
+            });
         }
     }
 
@@ -315,7 +891,7 @@ impl TableStore for HeapStore {
     }
 
     fn scan_next(&self, scan: &mut HeapScan) -> Result<Option<HeapTuple>> {
-        scan.next_tuple(&self.pool, &self.clog)
+        scan.next_tuple(&self.pool, &self.clog, self.prune_ctx().as_ref())
     }
 
     fn fetch(&self, rel: &RelHandle, snap: &Snapshot, tid: Tid) -> Result<Option<HeapTuple>> {
@@ -323,7 +899,10 @@ impl TableStore for HeapStore {
             return Ok(None);
         }
         let buf = self.pool.read_buffer(tag(rel.locator, tid.block))?;
-        let guard = buf.read()?;
+        let mut guard = buf.read()?;
+        if let Some(ctx) = self.prune_ctx() {
+            guard = prune_before_read(&ctx, &self.pool, &buf, guard)?;
+        }
         let page = &*guard;
         if page.is_new() || tid.offset > page.max_offset() {
             return Ok(None);
@@ -354,7 +933,15 @@ impl TableStore for HeapStore {
     }
 
     fn tuple_state(&self, t: &HeapTuple, own: Option<Xid>) -> Result<TupleState> {
-        classify(&self.clog, t.xmin, t.xmax, own)
+        let none = NoneRunning;
+        let renv = self.run_env(&none)?;
+        let venv = VisEnv {
+            clog: &self.clog,
+            procs: renv.procs,
+            multi: renv.multi,
+        };
+        // `HeapTuple.xmax` is the deleter / updater only (a lock holder is `INVALID`).
+        classify_env(&venv, t.xmin, t.xmax, false, own)
     }
 
     fn fetch_dirty(&self, rel: &RelHandle, own: Option<Xid>, tid: Tid) -> Result<DirtyResult> {
@@ -379,8 +966,15 @@ impl TableStore for HeapStore {
                 .map_err(|e| page_error(e, rel.locator, tid.block))?;
             TupleHeader::read(bytes)?
         };
-        // Latch and pin are released; only now consult the clog.
-        satisfies_dirty(&self.clog, &hdr, own)
+        // Latch and pin are released; only now consult the clog and the registry.
+        let none = NoneRunning;
+        let renv = self.run_env(&none)?;
+        let venv = VisEnv {
+            clog: &self.clog,
+            procs: renv.procs,
+            multi: renv.multi,
+        };
+        satisfies_dirty_env(&venv, &hdr, own)
     }
 
     fn nblocks(&self, rel: &RelHandle) -> Result<u32> {
@@ -437,6 +1031,8 @@ mod tests {
                 ],
             }),
             indexes: Arc::from([]),
+            key_columns: Arc::from([]),
+            ri: Arc::default(),
         };
         Fixture { ts, rel }
     }
@@ -521,16 +1117,19 @@ mod tests {
         let h = &f.ts.stack.heap;
         let t = h.insert(&f.rel, &w(4, 0), &row(1, "a")).unwrap();
         let s = Fixture::snap(Some(5), 6, 0);
-        assert_eq!(h.delete(&f.rel, &w(5, 0), &s, t).unwrap(), TmResult::Ok);
+        assert_eq!(
+            h.delete(&f.rel, &w(5, 0), &s, t, None, None).unwrap(),
+            TmResult::Ok
+        );
         let s1 = Fixture::snap(Some(5), 6, 1);
         assert!(f.all(&s1).is_empty());
         assert_eq!(f.all(&Fixture::snap(None, 6, 0)).len(), 1);
         assert_eq!(
-            h.delete(&f.rel, &w(5, 0), &s, t).unwrap(),
+            h.delete(&f.rel, &w(5, 0), &s, t, None, None).unwrap(),
             TmResult::SelfModified { cmax: 0 }
         );
         assert_eq!(
-            h.delete(&f.rel, &w(5, 1), &s1, t).unwrap(),
+            h.delete(&f.rel, &w(5, 1), &s1, t, None, None).unwrap(),
             TmResult::Invisible
         );
         let bogus = Tid {
@@ -538,7 +1137,7 @@ mod tests {
             offset: 1,
         };
         assert_eq!(
-            h.delete(&f.rel, &w(5, 1), &s1, bogus).unwrap(),
+            h.delete(&f.rel, &w(5, 1), &s1, bogus, None, None).unwrap(),
             TmResult::Invisible
         );
     }
@@ -551,7 +1150,9 @@ mod tests {
         let h = &f.ts.stack.heap;
         let t = h.insert(&f.rel, &w(4, 0), &row(1, "a")).unwrap();
         let s = Fixture::snap(Some(5), 6, 0);
-        let out = h.update(&f.rel, &w(5, 0), &s, t, &row(1, "z")).unwrap();
+        let out = h
+            .update(&f.rel, &w(5, 0), &s, t, &row(1, "z"), None, None)
+            .unwrap();
         assert_eq!(out.result, TmResult::Ok);
         let nt = out.new_tid.unwrap();
         assert_eq!(
@@ -594,7 +1195,15 @@ mod tests {
         // make sure it lands somewhere valid.
         let s = Fixture::snap(Some(5), 6, 0);
         let out = h
-            .update(&f.rel, &w(5, 0), &s, tids[0], &row(0, &"y".repeat(5000)))
+            .update(
+                &f.rel,
+                &w(5, 0),
+                &s,
+                tids[0],
+                &row(0, &"y".repeat(5000)),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(out.result, TmResult::Ok);
         let s1 = Fixture::snap(Some(5), 6, 1);
@@ -618,7 +1227,7 @@ mod tests {
         h.insert(&f.rel, &w(5, 0), &row(2, "aborted")).unwrap();
         h.insert(&f.rel, &w(6, 0), &row(3, "own")).unwrap();
         let snap = Fixture::snap(Some(6), 7, 5);
-        h.delete(&f.rel, &w(6, 1), &snap, t1).unwrap();
+        h.delete(&f.rel, &w(6, 1), &snap, t1, None, None).unwrap();
         let mut s = h.begin_scan_all(&f.rel).unwrap();
         for i in 0..30 {
             h.insert(&f.rel, &w(6, 1), &row(i, &"q".repeat(900)))
@@ -662,10 +1271,24 @@ mod tests {
         let c = h.insert(&f.rel, &w(6, 9), &row(3, "own")).unwrap();
         let d = h.insert(&f.rel, &w(4, 0), &row(4, "del")).unwrap();
         let e = h.insert(&f.rel, &w(4, 0), &row(5, "delc")).unwrap();
-        h.delete(&f.rel, &w(6, 0), &Fixture::snap(Some(6), 8, 0), d)
-            .unwrap();
-        h.delete(&f.rel, &w(7, 0), &Fixture::snap(Some(7), 8, 0), e)
-            .unwrap();
+        h.delete(
+            &f.rel,
+            &w(6, 0),
+            &Fixture::snap(Some(6), 8, 0),
+            d,
+            None,
+            None,
+        )
+        .unwrap();
+        h.delete(
+            &f.rel,
+            &w(7, 0),
+            &Fixture::snap(Some(7), 8, 0),
+            e,
+            None,
+            None,
+        )
+        .unwrap();
         let fd = |tid| h.fetch_dirty(&f.rel, own, tid).unwrap();
         assert_eq!(fd(a), DirtyResult::Visible);
         assert_eq!(fd(b), DirtyResult::Invisible);
@@ -821,17 +1444,25 @@ mod tests {
             .collect();
         let s = Fixture::snap(Some(5), 6, 0);
         assert_eq!(
-            h.delete(&f.rel, &w(5, 0), &s, tids[3]).unwrap(),
+            h.delete(&f.rel, &w(5, 0), &s, tids[3], None, None).unwrap(),
             TmResult::Ok
         );
         // Same page: a page is full of 1000-byte rows, so shrink the row.
         let out = h
-            .update(&f.rel, &w(5, 0), &s, tids[4], &row(4, "s"))
+            .update(&f.rel, &w(5, 0), &s, tids[4], &row(4, "s"), None, None)
             .unwrap();
         assert_eq!(out.new_tid.unwrap().block, tids[4].block);
         // Another page: grow the row past the free space of its page.
         let out = h
-            .update(&f.rel, &w(5, 0), &s, tids[5], &row(5, &"y".repeat(2000)))
+            .update(
+                &f.rel,
+                &w(5, 0),
+                &s,
+                tids[5],
+                &row(5, &"y".repeat(2000)),
+                None,
+                None,
+            )
             .unwrap();
         assert_ne!(out.new_tid.unwrap().block, tids[5].block);
         tids
@@ -1033,10 +1664,18 @@ mod tests {
             .insert(&f.rel, &w(4, 0), &row(2, &"m".repeat(6200)))
             .unwrap();
         assert_eq!(old.block, 1);
-        h.hints.set(f.rel.locator, 0).unwrap();
+        h.hio.note_used(f.rel.locator, 0).unwrap();
         let s = Fixture::snap(Some(5), 6, 0);
         let out = h
-            .update(&f.rel, &w(5, 0), &s, old, &row(2, &"n".repeat(5000)))
+            .update(
+                &f.rel,
+                &w(5, 0),
+                &s,
+                old,
+                &row(2, &"n".repeat(5000)),
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(out.new_tid.unwrap().block, 0);
         let recs = wal_records(&f.ts);

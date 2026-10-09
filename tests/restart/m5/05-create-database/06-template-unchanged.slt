@@ -1,0 +1,18 @@
+# フェーズ 6（crm5_05_tpl に接続）: テンプレートはコピー先への書き込みの影響を受けていない。
+
+query IT
+SELECT id, v FROM crm5_05_t ORDER BY id
+----
+1 a
+2 b
+3 c
+
+query I
+SELECT count(*) FROM crm5_05_big
+----
+500
+
+query I
+SELECT count(*) FROM pg_class WHERE relname = 'crm5_05_only_copy'
+----
+0

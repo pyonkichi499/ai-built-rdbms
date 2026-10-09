@@ -159,6 +159,53 @@ SHOW default_transaction_isolation
 ----
 read committed
 
+# REPEATABLE READ（M5）
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+statement ok
+COMMIT
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
+statement ok
+BEGIN
+
+statement ok
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+query T
+SHOW transaction_isolation
+----
+repeatable read
+
+statement ok
+ROLLBACK
+
+statement ok
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ
+
+query T
+SHOW default_transaction_isolation
+----
+repeatable read
+
+statement ok
+RESET default_transaction_isolation
+
+query T
+SHOW transaction_isolation
+----
+read committed
+
 statement ok
 DROP TABLE il_t
 

@@ -11,12 +11,14 @@
 #![forbid(unsafe_code)]
 
 pub mod analyzer;
+pub mod backend;
 pub mod bootstrap;
 pub mod catalog;
 pub mod checkpoint;
 pub mod control;
 pub mod copy;
 pub mod datadir;
+pub mod dbase;
 pub mod ddl;
 pub mod debug_knobs;
 pub mod deparse;
@@ -36,11 +38,15 @@ pub mod testing;
 pub mod txn;
 pub mod types;
 pub mod util;
+pub mod vacuum;
 pub mod wal;
 
 pub use debug_knobs::DebugKnobs;
 pub use engine::{Cluster, ClusterOptions, DatabaseHandle};
 pub use error::{Error, Result, Severity, Span, SqlState, sqlstate};
 pub use interrupt::InterruptFlag;
-pub use session::{ColumnDesc, Notice, ResultSink, Session, StartupParams, TransactionStatus};
+pub use session::{
+    ColumnDesc, ExtOutcome, Format, Notice, ResultSink, Session, StartupParams,
+    StatementDescription, TransactionStatus,
+};
 pub use types::Oid;

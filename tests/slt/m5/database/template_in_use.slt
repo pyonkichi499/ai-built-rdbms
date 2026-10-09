@@ -1,0 +1,41 @@
+# テンプレートに他の接続があると CREATE DATABASE が 55006。DB 名は database_template_in_use_ で始める
+# PostgreSQL はテンプレートの使用中を最大 5 秒待ってから失敗するので、このファイルは遅い
+
+statement ok
+DROP DATABASE IF EXISTS database_template_in_use_x
+
+statement ok
+DROP DATABASE IF EXISTS database_template_in_use_y
+
+# 別の接続を postgres に保持する
+connection other
+query I
+SELECT 1
+----
+1
+
+# postgres をテンプレートにすると、他の接続（other）がいるので失敗する
+statement error (55006)
+CREATE DATABASE database_template_in_use_x TEMPLATE postgres
+
+query I
+SELECT count(*) FROM pg_database WHERE datname LIKE 'database\_template\_in\_use\_%'
+----
+0
+
+# テンプレートに使わない DB は、接続があっても作れる
+statement ok
+CREATE DATABASE database_template_in_use_y TEMPLATE template0
+
+query I
+SELECT count(*) FROM pg_database WHERE datname = 'database_template_in_use_y'
+----
+1
+
+statement ok
+DROP DATABASE database_template_in_use_y
+
+query I
+SELECT count(*) FROM pg_database WHERE datname LIKE 'database\_template\_in\_use\_%'
+----
+0

@@ -147,11 +147,7 @@ impl TestStorage {
         };
         let stack = StorageStack::new(
             shared,
-            &StackConfig {
-                rel_seg_blocks: options.rel_seg_blocks,
-                nframes: options.nframes,
-                knobs: options.knobs,
-            },
+            &StackConfig::new(options.rel_seg_blocks, options.nframes, options.knobs),
             wal,
             options.next_xid,
         )?;
@@ -281,11 +277,7 @@ mod tests {
         let wal =
             Wal::initialize(Arc::clone(&vfs), wal_config(&TestStorageOptions::default())).unwrap();
         for (seg, frames) in [(0, 4), (4, 0)] {
-            let cfg = StackConfig {
-                rel_seg_blocks: seg,
-                nframes: frames,
-                knobs: DebugKnobs::default(),
-            };
+            let cfg = StackConfig::new(seg, frames, DebugKnobs::default());
             assert!(StorageStack::new(Arc::clone(&vfs), &cfg, Arc::clone(&wal), Xid(3)).is_err());
         }
     }

@@ -390,8 +390,12 @@ impl Analyzer<'_> {
                 && t.oid != oid::UNKNOWN
             {
                 let a = &args[0];
-                let is_unknown_literal =
-                    a.ty.oid == oid::UNKNOWN && matches!(a.kind, BoundExprKind::Literal(_));
+                // H4: unknown の `$n` も unknown のリテラルとして扱う。
+                let is_unknown_literal = a.ty.oid == oid::UNKNOWN
+                    && matches!(
+                        a.kind,
+                        BoundExprKind::Literal(_) | BoundExprKind::ExternParam(_)
+                    );
                 if is_unknown_literal
                     || matches!(
                         self.find_coercion_pathway(t.oid, a.ty.oid, CoercionContext::Explicit),
@@ -439,6 +443,12 @@ impl Analyzer<'_> {
                 }
         };
         let func = all[chosen];
+        // `date(timestamptz)` など、TimeZone に依存するキャストの関数形式は明示キャストに書き換える
+        // （`Cast(Env)` は実行時に TypeEnv の TimeZone を使う）。
+        if matches!(func.oid, 1178 | 2027 | 1174 | 2028) {
+            let a = args.into_iter().next().expect("one argument");
+            return self.coerce_explicit(a, SqlType::of(func.result), span);
+        }
         if !allow_set && matches!(func.kind, FnKind::Set(_)) {
             return Err(Error::not_supported(
                 "set-returning functions are only supported in the FROM clause",

@@ -1,0 +1,16 @@
+# フェーズ 2: 反映されている。さらに変更して、もう一度 kill -9 される。
+
+query TTT
+SELECT rolname, rolcanlogin::text, rolcreatedb::text FROM pg_roles WHERE rolname LIKE 'crm5_07_%' ORDER BY rolname
+----
+crm5_07_a true true
+crm5_07_b false false
+
+statement ok
+ALTER ROLE crm5_07_b LOGIN
+
+statement ok
+DROP ROLE crm5_07_a
+
+statement ok
+CREATE ROLE crm5_07_d LOGIN

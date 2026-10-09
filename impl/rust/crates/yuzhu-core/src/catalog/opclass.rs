@@ -4,7 +4,7 @@
 //! OID は PostgreSQL 17 の `pg_opfamily` / `pg_opclass` / `pg_amop` / `pg_amproc` から写した
 //! （`pg_opclass` の 10000 番台は initdb が振る値で、版によってずれうる）。
 //!
-//! `AMOPS`（120 行）と `AMPROCS`（24 行）は、24 組の `COMPARISONS` から `const fn` で展開する。
+//! `AMOPS`（130 行）と `AMPROCS`（26 行）は、26 組の `COMPARISONS` から `const fn` で展開する。
 
 use crate::types::{Datum, Oid, cmp_datum};
 
@@ -16,10 +16,12 @@ const BOOL_OPS: Oid = 424;
 const BPCHAR_OPS: Oid = 426;
 const DATETIME_OPS: Oid = 434;
 const FLOAT_OPS: Oid = 1970;
+const INTERVAL_OPS: Oid = 1982;
 const INTEGER_OPS: Oid = 1976;
 const NUMERIC_OPS: Oid = 1988;
 const OID_OPS: Oid = 1989;
 const TEXT_OPS: Oid = 1994;
+const TIME_OPS: Oid = 1996;
 
 #[derive(Debug)]
 pub struct OpFamily {
@@ -84,6 +86,10 @@ pub static OPFAMILIES: &[OpFamily] = &[
         name: "integer_ops",
     },
     OpFamily {
+        oid: INTERVAL_OPS,
+        name: "interval_ops",
+    },
+    OpFamily {
         oid: NUMERIC_OPS,
         name: "numeric_ops",
     },
@@ -94,6 +100,10 @@ pub static OPFAMILIES: &[OpFamily] = &[
     OpFamily {
         oid: TEXT_OPS,
         name: "text_ops",
+    },
+    OpFamily {
+        oid: TIME_OPS,
+        name: "time_ops",
     },
 ];
 
@@ -122,13 +132,21 @@ pub static OPCLASSES: &[OpClass] = &[
     class(10012, "float4_ops", FLOAT_OPS, 700, true),
     class(3123, "float8_ops", FLOAT_OPS, 701, true),
     class(1979, "int2_ops", INTEGER_OPS, 21, true),
+    class(10022, "interval_ops", INTERVAL_OPS, 1186, true),
     class(1978, "int4_ops", INTEGER_OPS, 23, true),
     class(3124, "int8_ops", INTEGER_OPS, 20, true),
     class(3125, "numeric_ops", NUMERIC_OPS, 1700, true),
     class(1981, "oid_ops", OID_OPS, 26, true),
     class(3126, "text_ops", TEXT_OPS, 25, true),
     class(10044, "varchar_ops", TEXT_OPS, 25, false),
+    class(10038, "time_ops", TIME_OPS, 1083, true),
     class(10028, "name_ops", TEXT_OPS, 19, true),
+    // ===== region: TY-4 (bytea / uuid) =====
+    // TY-4 が足す行（m5/05 §5.1.4。OID は PG17.11 の実機の値。足したら `table_sizes` の件数と、
+    // OPERATORS / PROCS に行があること（`amops_exist_in_operators` / `amprocs_exist_in_pg_proc`）を揃える）:
+    //   class(10006, "bytea_ops", BYTEA_OPS, 17, true)   // BYTEA_OPS = 428（opfamily）
+    //   class(10065, "uuid_ops", UUID_OPS, 2950, true)   // UUID_OPS = 2968（opfamily）
+    // ===== region: end =====
 ];
 
 /// 同じ（族、左の型、右の型）の比較演算子 5 つと比較関数。
@@ -160,7 +178,7 @@ const fn cmpn(
     }
 }
 
-const COMPARISON_COUNT: usize = 24;
+const COMPARISON_COUNT: usize = 26;
 
 /// `m4/06-btree.md` §4.7 の `AMOPS` と `AMPROCS` の表。
 static COMPARISONS: [Comparison; COMPARISON_COUNT] = [
@@ -309,6 +327,14 @@ static COMPARISONS: [Comparison; COMPARISON_COUNT] = [
         "btint8cmp",
     ),
     cmpn(
+        INTERVAL_OPS,
+        1186,
+        1186,
+        [1332, 1333, 1330, 1335, 1334],
+        1315,
+        "interval_cmp",
+    ),
+    cmpn(
         NUMERIC_OPS,
         1700,
         1700,
@@ -335,6 +361,19 @@ static COMPARISONS: [Comparison; COMPARISON_COUNT] = [
         "bttextnamecmp",
     ),
     cmpn(TEXT_OPS, 25, 25, [664, 665, 98, 667, 666], 360, "bttextcmp"),
+    cmpn(
+        TIME_OPS,
+        1083,
+        1083,
+        [1110, 1111, 1108, 1113, 1112],
+        1107,
+        "time_cmp",
+    ),
+    // ===== region: TY-4 (bytea / uuid) =====
+    // cmpn(BYTEA_OPS, 17, 17, [1957, 1958, 1955, 1960, 1959], 1954, "byteacmp"),
+    // cmpn(UUID_OPS, 2950, 2950, [2974, 2976, 2972, 2977, 2975], 2960, "uuid_cmp"),
+    // 足すときは `COMPARISON_COUNT` を増やし、`OPFAMILIES` に 428 `bytea_ops` / 2968 `uuid_ops` を足す。
+    // ===== region: end =====
 ];
 
 const AMOP_COUNT: usize = COMPARISON_COUNT * 5;
@@ -463,6 +502,8 @@ pub fn datum_type_oid(d: &Datum) -> Option<Oid> {
         Datum::Date(_) => 1082,
         Datum::Timestamp(_) => 1114,
         Datum::TimestampTz(_) => 1184,
+        Datum::Interval(_) => 1186,
+        Datum::Time(_) => 1083,
         _ => return None,
     })
 }
@@ -494,10 +535,10 @@ mod tests {
 
     #[test]
     fn table_sizes() {
-        assert_eq!(OPFAMILIES.len(), 8);
-        assert_eq!(OPCLASSES.len(), 15);
-        assert_eq!(AMOPS.len(), 120);
-        assert_eq!(AMPROCS.len(), 24);
+        assert_eq!(OPFAMILIES.len(), 10);
+        assert_eq!(OPCLASSES.len(), 17);
+        assert_eq!(AMOPS.len(), 130);
+        assert_eq!(AMPROCS.len(), 26);
         assert_eq!(btree_am_oid(), 403);
     }
 
@@ -519,7 +560,7 @@ mod tests {
     #[test]
     fn every_pair_has_five_strategies_and_a_proc() {
         let pairs: HashSet<_> = AMOPS.iter().map(|a| (a.family, a.left, a.right)).collect();
-        assert_eq!(pairs.len(), 24);
+        assert_eq!(pairs.len(), 26);
         for &(f, l, r) in &pairs {
             let mut s: Vec<u8> = AMOPS
                 .iter()
@@ -573,7 +614,9 @@ mod tests {
 
     #[test]
     fn amops_exist_in_operators_with_matching_shape() {
-        for a in AMOPS {
+        // time（1083）の行は `builtin::datetime::TIME_*` にあり、表の結合（mod.rs）までは `OPERATORS` に無い。
+        // 形の検査は `builtin::datetime` の `time_opclass_rows_match_the_tables` が行う。
+        for a in AMOPS.iter().filter(|a| a.left != 1083) {
             let op = builtin::OPERATORS
                 .iter()
                 .find(|o| o.oid == a.operator)
@@ -588,7 +631,7 @@ mod tests {
 
     #[test]
     fn amprocs_exist_in_pg_proc() {
-        for p in AMPROCS {
+        for p in AMPROCS.iter().filter(|p| p.left != 1083) {
             let row = builtin::PROCS
                 .iter()
                 .find(|r| r.oid == p.proc_oid)
@@ -612,12 +655,15 @@ mod tests {
         assert_eq!(name(24), Some("oid_ops"));
         assert_eq!(name(19), Some("name_ops"));
         assert_eq!(name(1042), Some("bpchar_ops"));
-        assert_eq!(name(1186), None); // interval
+        assert_eq!(name(1186), Some("interval_ops"));
+        assert_eq!(name(1083), Some("time_ops"));
+        assert_eq!(family_of_type(1083), Some(1996));
+        assert_eq!(opclass_by_name("time_ops").unwrap().oid, 10038);
         assert_eq!(name(28), None); // xid
         assert_eq!(name(18), None); // "char"
         assert_eq!(family_of_type(1043), Some(1994));
         assert_eq!(family_of_type(23), Some(1976));
-        assert_eq!(family_of_type(1186), None);
+        assert_eq!(family_of_type(1186), Some(1982));
         let v = opclass_by_name("varchar_ops").unwrap();
         assert_eq!(v.input_type, 25);
         assert!(opclass_by_name("nope").is_none());
@@ -635,6 +681,12 @@ mod tests {
         assert!(column_comparator(1043, &Datum::Text("a".into())).is_some());
         assert!(column_comparator(1082, &Datum::Int4(1)).is_none());
         assert!(column_comparator(1186, &Datum::Int4(1)).is_none());
+        let iv = Datum::Interval(yuzhu_datetime::Interval {
+            months: 0,
+            days: 1,
+            micros: 0,
+        });
+        assert!(column_comparator(1186, &iv).is_some());
         assert!(column_comparator(23, &Datum::Null).is_none());
     }
 
@@ -690,13 +742,31 @@ mod tests {
             1184 => [-100, 0, 1, 9_000_000_000]
                 .map(|d| Datum::TimestampTz(TimestampTz(d)))
                 .to_vec(),
+            1083 => [0, 1, 3_600_000_000, 86_400_000_000]
+                .map(Datum::Time)
+                .to_vec(),
+            1186 => [
+                (0, 0, -5),
+                (0, 0, 0),
+                (0, 1, 0),
+                (1, 0, 0),
+                (0, 0, 86_400_000_000),
+            ]
+            .map(|(months, days, micros)| {
+                Datum::Interval(yuzhu_datetime::Interval {
+                    months,
+                    days,
+                    micros,
+                })
+            })
+            .to_vec(),
             _ => panic!("no samples for {t}"),
         }
     }
 
     #[test]
     fn operators_agree_with_cmp() {
-        for a in AMOPS {
+        for a in AMOPS.iter().filter(|a| a.left != 1083) {
             let op = builtin::OPERATORS
                 .iter()
                 .find(|o| o.oid == a.operator)

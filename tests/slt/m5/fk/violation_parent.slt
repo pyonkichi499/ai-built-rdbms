@@ -1,0 +1,76 @@
+# FOREIGN KEY: 親側（DELETE / UPDATE）の違反（NO ACTION）。メッセージと DETAIL
+# 接頭辞: fk_violation_parent_
+
+statement ok
+DROP TABLE IF EXISTS fk_violation_parent_c
+
+statement ok
+DROP TABLE IF EXISTS fk_violation_parent_p
+
+statement ok
+CREATE TABLE fk_violation_parent_p (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE fk_violation_parent_c (n int PRIMARY KEY, pid int REFERENCES fk_violation_parent_p)
+
+statement ok
+INSERT INTO fk_violation_parent_p VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+statement ok
+INSERT INTO fk_violation_parent_c VALUES (1, 1), (2, 1), (3, 2)
+
+# DELETE
+statement error (?s)update or delete on table "fk_violation_parent_p" violates foreign key constraint "fk_violation_parent_c_pid_fkey" on table "fk_violation_parent_c".*Key \(id\)=\(1\) is still referenced from table "fk_violation_parent_c"\.
+DELETE FROM fk_violation_parent_p WHERE id = 1
+
+# UPDATE（キーの変更）
+statement error (?s)update or delete on table "fk_violation_parent_p" violates foreign key constraint "fk_violation_parent_c_pid_fkey" on table "fk_violation_parent_c".*Key \(id\)=\(2\) is still referenced from table "fk_violation_parent_c"\.
+UPDATE fk_violation_parent_p SET id = 20 WHERE id = 2
+
+# 失敗した文は何も変えない
+query IT
+SELECT id, v FROM fk_violation_parent_p ORDER BY id
+----
+1 a
+2 b
+3 c
+
+# キー以外の列の UPDATE は通る
+statement ok
+UPDATE fk_violation_parent_p SET v = 'bb' WHERE id = 2
+
+# キーが同じ値への UPDATE は通る
+statement ok
+UPDATE fk_violation_parent_p SET id = id WHERE id = 2
+
+# 参照されていない行は消せる・キーを変えられる
+statement ok
+UPDATE fk_violation_parent_p SET id = 30 WHERE id = 3
+
+statement ok
+DELETE FROM fk_violation_parent_p WHERE id = 30
+
+# 子を先に消せば親も消せる
+statement ok
+DELETE FROM fk_violation_parent_c WHERE pid = 1
+
+statement ok
+DELETE FROM fk_violation_parent_p WHERE id = 1
+
+# 子が NULL なら参照していない
+statement ok
+INSERT INTO fk_violation_parent_c VALUES (10, NULL)
+
+statement error (23503)
+DELETE FROM fk_violation_parent_p
+
+query I
+SELECT count(*) FROM fk_violation_parent_p
+----
+1
+
+statement ok
+DROP TABLE fk_violation_parent_c
+
+statement ok
+DROP TABLE fk_violation_parent_p

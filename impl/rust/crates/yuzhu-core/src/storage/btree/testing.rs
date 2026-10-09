@@ -215,6 +215,8 @@ impl TableStore for FakeHeap {
         _w: &WriteCtx,
         _snap: &Snapshot,
         _tid: Tid,
+        _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+        _crosscheck: Option<&Snapshot>,
     ) -> Result<TmResult> {
         unsupported()
     }
@@ -225,6 +227,8 @@ impl TableStore for FakeHeap {
         _snap: &Snapshot,
         _tid: Tid,
         _new_row: &[Datum],
+        _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+        _crosscheck: Option<&Snapshot>,
     ) -> Result<UpdateOutcome> {
         unsupported()
     }
@@ -358,6 +362,8 @@ mod tests {
             locator: test_rel(1),
             desc: Arc::new(crate::storage::TupleDesc { attrs: vec![] }),
             indexes: Arc::from(Vec::new()),
+            key_columns: Arc::from(Vec::new()),
+            ri: Arc::default(),
         };
         let t = Tid {
             block: 1,
@@ -568,6 +574,7 @@ pub(crate) fn put(t: &TestIndex, key: &[Datum], tid: Tid) -> Result<()> {
         tid,
         crate::storage::UniqueCheck::Skip,
     )
+    .map(|_| ())
 }
 
 /// 決定的な擬似乱数（テスト用の LCG）。

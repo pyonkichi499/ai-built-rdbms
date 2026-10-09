@@ -1,0 +1,133 @@
+# FOREIGN KEY と DROP / TRUNCATE
+# 接頭辞: fk_drop_truncate_
+
+statement ok
+DROP TABLE IF EXISTS fk_drop_truncate_c
+
+statement ok
+DROP TABLE IF EXISTS fk_drop_truncate_c2
+
+statement ok
+DROP TABLE IF EXISTS fk_drop_truncate_p
+
+statement ok
+DROP TABLE IF EXISTS fk_drop_truncate_q
+
+statement ok
+CREATE TABLE fk_drop_truncate_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_drop_truncate_c (n int PRIMARY KEY, pid int REFERENCES fk_drop_truncate_p)
+
+statement ok
+INSERT INTO fk_drop_truncate_p VALUES (1)
+
+statement ok
+INSERT INTO fk_drop_truncate_c VALUES (1, 1)
+
+# 親の DROP は拒否される
+statement error (2BP01)
+DROP TABLE fk_drop_truncate_p
+
+statement error (?s)cannot drop table fk_drop_truncate_p because other objects depend on it
+DROP TABLE fk_drop_truncate_p
+
+# 親の主キー制約の DROP も拒否される
+statement error (?s)cannot drop constraint fk_drop_truncate_p_pkey on table fk_drop_truncate_p because other objects depend on it
+ALTER TABLE fk_drop_truncate_p DROP CONSTRAINT fk_drop_truncate_p_pkey
+
+# 拒否されたら何も消えていない
+query I
+SELECT count(*) FROM fk_drop_truncate_p
+----
+1
+
+# TRUNCATE: 参照されている表は拒否（子が空でも）
+statement error (0A000)
+TRUNCATE fk_drop_truncate_p
+
+statement error (?s)cannot truncate a table referenced in a foreign key constraint
+TRUNCATE fk_drop_truncate_p
+
+# 参照する側（子）の TRUNCATE は通る
+statement ok
+TRUNCATE fk_drop_truncate_c
+
+# 両方を同時に TRUNCATE すれば通る
+statement ok
+INSERT INTO fk_drop_truncate_c VALUES (1, 1)
+
+statement ok
+TRUNCATE fk_drop_truncate_p, fk_drop_truncate_c
+
+query II
+SELECT (SELECT count(*) FROM fk_drop_truncate_p), (SELECT count(*) FROM fk_drop_truncate_c)
+----
+0 0
+
+# 子の DROP は通り、制約も一緒に消える
+statement ok
+DROP TABLE fk_drop_truncate_c
+
+query I
+SELECT count(*) FROM pg_constraint WHERE confrelid = 'fk_drop_truncate_p'::regclass
+----
+0
+
+# 親を消せるようになる
+statement ok
+DROP TABLE fk_drop_truncate_p
+
+# DROP CASCADE: 子の表は残り、FK だけが消える
+statement ok
+CREATE TABLE fk_drop_truncate_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_drop_truncate_c (n int PRIMARY KEY, pid int REFERENCES fk_drop_truncate_p)
+
+statement ok
+INSERT INTO fk_drop_truncate_p VALUES (1)
+
+statement ok
+INSERT INTO fk_drop_truncate_c VALUES (1, 1)
+
+statement ok
+DROP TABLE fk_drop_truncate_p CASCADE
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conrelid = 'fk_drop_truncate_c'::regclass AND contype = 'f'
+----
+0
+
+# 参照先が無くなったので、どんな値でも入る
+statement ok
+INSERT INTO fk_drop_truncate_c VALUES (2, 999)
+
+# 複数テーブルの DROP: 親と子を同時に消せる
+statement ok
+CREATE TABLE fk_drop_truncate_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_drop_truncate_c2 (n int PRIMARY KEY, pid int REFERENCES fk_drop_truncate_p)
+
+statement ok
+DROP TABLE fk_drop_truncate_p, fk_drop_truncate_c2
+
+# 参照先の列を含む一意インデックスの DROP は拒否
+statement ok
+CREATE TABLE fk_drop_truncate_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_drop_truncate_c2 (n int PRIMARY KEY, pid int REFERENCES fk_drop_truncate_p)
+
+statement error (2BP01)
+DROP INDEX fk_drop_truncate_p_pkey
+
+statement ok
+DROP TABLE fk_drop_truncate_c2
+
+statement ok
+DROP TABLE fk_drop_truncate_p
+
+statement ok
+DROP TABLE fk_drop_truncate_c

@@ -7,14 +7,18 @@ pub mod check;
 pub mod depend;
 #[cfg(test)]
 pub(crate) mod fake;
+pub mod fk;
 pub mod names;
 pub mod naming;
 pub mod opclass;
 pub mod reader;
+pub mod roles;
 pub mod rows;
 pub mod schema;
 pub mod seq_params;
 pub mod store;
+pub mod store_db;
+pub mod virtual_rel;
 
 use std::sync::Arc;
 
@@ -26,7 +30,7 @@ use crate::error::Result;
 use crate::executor::{RuntimeInfo, SessionInfo};
 use crate::storage::smgr::RelFileLocator;
 use crate::types::ops::BuiltinFn;
-use crate::types::{Datum, Oid, SqlType, oid};
+use crate::types::{Datum, Oid, SqlType, TypeEnv, oid};
 
 /// Source text of a stored expression (DEFAULT). It is parsed and analyzed
 /// again every time it is used.
@@ -92,6 +96,9 @@ pub enum RelKind {
     Index,
     /// `S`（M4）。列とヒープを持ち SELECT できる。
     Sequence,
+    /// `v`（M5 LK-5）。行を提供関数が作る仮想リレーション（`pg_locks` など。00 §4.10）。
+    /// `relfilenode = 0` でヒープを持たず、`TableDef.locator` は使わない。
+    Virtual,
 }
 
 impl RelKind {
@@ -101,6 +108,7 @@ impl RelKind {
             RelKind::Table => 'r',
             RelKind::Index => 'i',
             RelKind::Sequence => 'S',
+            RelKind::Virtual => 'v',
         }
     }
 
@@ -109,6 +117,7 @@ impl RelKind {
             'r' => Some(RelKind::Table),
             'i' => Some(RelKind::Index),
             'S' => Some(RelKind::Sequence),
+            'v' => Some(RelKind::Virtual),
             _ => None,
         }
     }
@@ -119,11 +128,12 @@ impl RelKind {
             RelKind::Table => "table",
             RelKind::Index => "index",
             RelKind::Sequence => "sequence",
+            RelKind::Virtual => "view",
         }
     }
 }
 
-/// `pg_constraint.contype`（M4 は c / p / u だけ）。
+/// `pg_constraint.contype`（M4 は c / p / u、M5 で f）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ConstraintKind {
     /// `c`.
@@ -132,6 +142,8 @@ pub enum ConstraintKind {
     PrimaryKey,
     /// `u`.
     Unique,
+    /// `f`（M5）。
+    ForeignKey,
 }
 
 /// `pg_constraint` の 1 行。`pg_get_constraintdef` と DROP の説明が使う。
@@ -237,6 +249,14 @@ pub struct TableDef {
     pub sequence: Option<SequenceParams>,
     /// IDENTITY 列と暗黙のシーケンスの対応: (attnum, シーケンスの OID)。
     pub identity_seqs: Vec<(i16, Oid)>,
+    /// キー列（attnum - 1 の順）。一意インデックス（部分・式でない）の列の和集合（00 §4.5）。
+    /// UPDATE がキー列を変えたか（`KEYS_UPDATED`）の判定に使う。空は「まだ計算していない」で、
+    /// 長さ不足の添字は偽として扱う。計算関数 `key_columns_from` は RW-1b が書き、`TableDef` を作る場所から呼ぶ。
+    pub key_columns: Vec<bool>,
+    /// この表が子（`conrelid`）の外部キー（OID 昇順。`kind = Table` のときだけ。M5 07 R3）。
+    pub foreign_keys: Vec<Arc<fk::ForeignKeyDef>>,
+    /// この表が親（`confrelid`）の外部キー（OID 昇順。自己参照は両方に入る）。
+    pub referenced_by: Vec<Arc<fk::ForeignKeyDef>>,
 }
 
 impl TableDef {
@@ -356,6 +376,21 @@ pub trait CatalogReader: std::fmt::Debug {
         Ok(None)
     }
 
+    /// 子（`conrelid`）が `table` の外部キー。OID 昇順（M5 07 R3。実装は FK-1）。
+    fn foreign_keys_of(&self, _table: Oid) -> Result<Vec<Arc<fk::ForeignKeyDef>>> {
+        Ok(Vec::new())
+    }
+
+    /// 親（`confrelid`）が `table` の外部キー。OID 昇順。
+    fn foreign_keys_referencing(&self, _table: Oid) -> Result<Vec<Arc<fk::ForeignKeyDef>>> {
+        Ok(Vec::new())
+    }
+
+    /// 名前空間の中に、この名前の制約があるか（自動命名の衝突回避）。
+    fn constraint_name_exists(&self, _namespace: Oid, _name: &str) -> Result<bool> {
+        Ok(false)
+    }
+
     /// 集約関数。既定は静的な表。
     fn aggregates_named(&self, name: &str) -> Vec<&'static BuiltinAggregate> {
         builtin::aggregates_named(name)
@@ -411,6 +446,9 @@ pub enum FnKind {
     Runtime(fn(&[Datum], &dyn RuntimeInfo) -> Result<Datum>),
     /// FROM 句でだけ呼べる集合返却関数（`generate_series`。`m4/09-types-functions.md` §10.1）。
     Set(SetFn),
+    /// `TypeEnv`（`DateStyle`・`TimeZone`・`bytea_output`・regclass の名前）を使う。stable なので定数畳み込みしない
+    /// （M5。`array_to_string` など。`CastMethod::Env` と対）。
+    Env(fn(&[Datum], &TypeEnv<'_>) -> Result<Datum>),
 }
 
 /// 集合返却関数の実装。
@@ -443,6 +481,7 @@ impl std::fmt::Debug for FnKind {
             FnKind::Context(_) => f.write_str("FnKind::Context(..)"),
             FnKind::Runtime(_) => f.write_str("FnKind::Runtime(..)"),
             FnKind::Set(s) => write!(f, "FnKind::Set({s:?})"),
+            FnKind::Env(_) => f.write_str("FnKind::Env(..)"),
         }
     }
 }
@@ -457,12 +496,13 @@ mod tests {
             (RelKind::Table, 'r', "table"),
             (RelKind::Index, 'i', "index"),
             (RelKind::Sequence, 'S', "sequence"),
+            (RelKind::Virtual, 'v', "view"),
         ] {
             assert_eq!(k.code(), c);
             assert_eq!(RelKind::from_code(c), Some(k));
             assert_eq!(k.noun(), noun);
         }
-        assert_eq!(RelKind::from_code('v'), None);
+        assert_eq!(RelKind::from_code('x'), None);
         assert_eq!(IdentityKind::from_code('a'), Some(IdentityKind::Always));
         assert_eq!(IdentityKind::ByDefault.code(), 'd');
         assert_eq!(IdentityKind::from_code(' '), None);
@@ -516,5 +556,86 @@ mod tests {
         assert!(c.constraint_by_oid(1).unwrap().is_none());
         assert!(!builtin::aggregates_named("count").is_empty());
         assert!(!builtin::AGGREGATES.is_empty());
+    }
+}
+
+impl TableDef {
+    /// `key_columns` の計算（m5/02 §6.2）。一意インデックスの列の和集合を attnum - 1 の順で返す。
+    /// M4 には部分・式インデックスも DEFERRABLE も無いので、PostgreSQL の `INDEX_ATTR_BITMAP_KEY` と一致する。
+    /// システム列（attnum <= 0）と `ncols` を超える attnum は無視する。
+    pub fn key_columns_from(indexes: &[Arc<IndexDef>], ncols: usize) -> Vec<bool> {
+        let mut keys = vec![false; ncols];
+        for col in indexes
+            .iter()
+            .filter(|ix| ix.unique)
+            .flat_map(|ix| ix.columns.iter())
+        {
+            if let Some(slot) = usize::try_from(i32::from(col.attnum) - 1)
+                .ok()
+                .and_then(|i| keys.get_mut(i))
+            {
+                *slot = true;
+            }
+        }
+        keys
+    }
+}
+
+#[cfg(test)]
+mod key_columns_tests {
+    use super::*;
+
+    fn index(unique: bool, attnums: &[i16]) -> Arc<IndexDef> {
+        Arc::new(IndexDef {
+            oid: 20000,
+            name: "ix".into(),
+            namespace: 2200,
+            table_oid: 16400,
+            locator: RelFileLocator {
+                spc_oid: 0,
+                db_oid: 0,
+                rel_number: crate::storage::smgr::RelFileNumber(0),
+            },
+            columns: attnums
+                .iter()
+                .map(|&attnum| IndexColumn {
+                    attnum,
+                    opclass: 0,
+                    opfamily: 0,
+                    descending: false,
+                    nulls_first: false,
+                })
+                .collect(),
+            unique,
+            primary: false,
+            constraint: None,
+        })
+    }
+
+    #[test]
+    fn union_of_unique_index_columns() {
+        let ixs = [index(true, &[1]), index(false, &[2]), index(true, &[4, 3])];
+        assert_eq!(
+            TableDef::key_columns_from(&ixs, 5),
+            vec![true, false, true, true, false]
+        );
+    }
+
+    #[test]
+    fn no_unique_index_gives_all_false() {
+        assert_eq!(
+            TableDef::key_columns_from(&[index(false, &[1])], 2),
+            vec![false, false]
+        );
+        assert_eq!(TableDef::key_columns_from(&[], 0), Vec::<bool>::new());
+    }
+
+    #[test]
+    fn out_of_range_attnums_are_ignored() {
+        let ixs = [index(true, &[0, -1, 9, 2])];
+        assert_eq!(
+            TableDef::key_columns_from(&ixs, 3),
+            vec![false, true, false]
+        );
     }
 }

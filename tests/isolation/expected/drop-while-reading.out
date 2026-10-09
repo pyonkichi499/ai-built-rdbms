@@ -1,0 +1,36 @@
+Parsed test spec with 3 sessions
+
+starting permutation: a_b a_sel b_drop a_sel a_c
+step a_b: BEGIN;
+step a_sel: SELECT id, v FROM dwr_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step b_drop: DROP TABLE dwr_t; <waiting ...>
+step a_sel: SELECT id, v FROM dwr_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_c: COMMIT;
+step b_drop: <... completed>
+
+starting permutation: a_b a_sel b_drop a_c c_sel
+step a_b: BEGIN;
+step a_sel: SELECT id, v FROM dwr_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step b_drop: DROP TABLE dwr_t; <waiting ...>
+step a_c: COMMIT;
+step b_drop: <... completed>
+step c_sel: SELECT count(*) FROM dwr_t;
+ERROR:  relation "dwr_t" does not exist

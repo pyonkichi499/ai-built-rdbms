@@ -221,6 +221,12 @@ impl Parser<'_> {
 
     pub(super) fn parse_alter(&mut self) -> Result<Statement> {
         let start = self.advance().span.start;
+        if self.at_role_keyword() {
+            return self.parse_alter_role(start);
+        }
+        if self.is_kw("database") {
+            return self.parse_alter_database(start);
+        }
         if self.is_kw("sequence") {
             return self.parse_alter_sequence(start);
         }

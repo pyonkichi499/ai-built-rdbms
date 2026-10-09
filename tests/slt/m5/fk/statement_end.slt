@@ -1,0 +1,136 @@
+# FOREIGN KEY: 検査は文の終わりに行う（NO ACTION と RESTRICT の差を含む）
+# 接頭辞: fk_statement_end_
+
+statement ok
+DROP TABLE IF EXISTS fk_statement_end_c1
+
+statement ok
+DROP TABLE IF EXISTS fk_statement_end_c2
+
+statement ok
+DROP TABLE IF EXISTS fk_statement_end_p1
+
+statement ok
+DROP TABLE IF EXISTS fk_statement_end_p2
+
+statement ok
+DROP TABLE IF EXISTS fk_statement_end_s
+
+# 自己参照の複数行 INSERT: 後ろの行が前の行の親でも通る
+statement ok
+CREATE TABLE fk_statement_end_s (id int PRIMARY KEY, parent int REFERENCES fk_statement_end_s)
+
+statement ok
+INSERT INTO fk_statement_end_s VALUES (2, 1), (1, NULL)
+
+# 親が最後まで現れなければ失敗し、全行が取り消される
+statement error (?s)violates foreign key constraint "fk_statement_end_s_parent_fkey".*Key \(parent\)=\(8\) is not present in table "fk_statement_end_s"\.
+INSERT INTO fk_statement_end_s VALUES (3, 8), (4, 1)
+
+query I
+SELECT count(*) FROM fk_statement_end_s
+----
+2
+
+# キーをずらす UPDATE: 途中の状態は検査されない
+statement ok
+UPDATE fk_statement_end_s SET id = id + 10, parent = parent + 10
+
+query II
+SELECT id, parent FROM fk_statement_end_s ORDER BY id
+----
+11 NULL
+12 11
+
+# NO ACTION と RESTRICT の差。行は挿入順（5, 1, 9）で、5 -> 6、1 -> 5、9 -> 1 と回す
+statement ok
+CREATE TABLE fk_statement_end_p1 (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_statement_end_p2 (id int PRIMARY KEY)
+
+statement ok
+INSERT INTO fk_statement_end_p1 VALUES (5), (1), (9)
+
+statement ok
+INSERT INTO fk_statement_end_p2 VALUES (5), (1), (9)
+
+statement ok
+CREATE TABLE fk_statement_end_c1 (n int PRIMARY KEY, pid int REFERENCES fk_statement_end_p1 ON UPDATE NO ACTION)
+
+statement ok
+CREATE TABLE fk_statement_end_c2 (n int PRIMARY KEY, pid int REFERENCES fk_statement_end_p2 ON UPDATE RESTRICT)
+
+statement ok
+INSERT INTO fk_statement_end_c1 VALUES (1, 5), (2, 1)
+
+statement ok
+INSERT INTO fk_statement_end_c2 VALUES (1, 5), (2, 1)
+
+# NO ACTION: 文の終わりに 5, 1 が存在するので通る
+statement ok
+UPDATE fk_statement_end_p1 SET id = CASE id WHEN 5 THEN 6 WHEN 1 THEN 5 WHEN 9 THEN 1 END
+
+query I
+SELECT id FROM fk_statement_end_p1 ORDER BY id
+----
+1
+5
+6
+
+# RESTRICT: 旧キーを参照する子がいるので 23503
+statement error (?s)update or delete on table "fk_statement_end_p2" violates foreign key constraint "fk_statement_end_c2_pid_fkey" on table "fk_statement_end_c2"
+UPDATE fk_statement_end_p2 SET id = CASE id WHEN 5 THEN 6 WHEN 1 THEN 5 WHEN 9 THEN 1 END
+
+query I
+SELECT id FROM fk_statement_end_p2 ORDER BY id
+----
+1
+5
+9
+
+# ブロックの中: 最初の文で 23503（文末で検査する。コミットまで先送りしない）
+statement ok
+BEGIN
+
+statement error (23503)
+DELETE FROM fk_statement_end_p1 WHERE id = 1
+
+statement ok
+ROLLBACK
+
+# ブロックの中で、DELETE と同じ文の後の INSERT で埋め合わせることはできない
+statement ok
+BEGIN
+
+statement error (23503)
+DELETE FROM fk_statement_end_p1 WHERE id = 5
+
+statement ok
+ROLLBACK
+
+# 1 文の中なら、DELETE と INSERT を CTE で組み合わせて通る
+statement ok
+WITH d AS (DELETE FROM fk_statement_end_p1 WHERE id = 5 RETURNING 1) INSERT INTO fk_statement_end_p1 SELECT 5 FROM d
+
+query I
+SELECT id FROM fk_statement_end_p1 ORDER BY id
+----
+1
+5
+6
+
+statement ok
+DROP TABLE fk_statement_end_c1
+
+statement ok
+DROP TABLE fk_statement_end_c2
+
+statement ok
+DROP TABLE fk_statement_end_p1
+
+statement ok
+DROP TABLE fk_statement_end_p2
+
+statement ok
+DROP TABLE fk_statement_end_s

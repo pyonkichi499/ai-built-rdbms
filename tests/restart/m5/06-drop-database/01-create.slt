@@ -1,0 +1,7 @@
+# フェーズ 1（postgres に接続）: データベースを作る。
+
+statement ok
+DROP DATABASE IF EXISTS crm5_06_d
+
+statement ok
+CREATE DATABASE crm5_06_d

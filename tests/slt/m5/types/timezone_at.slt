@@ -1,0 +1,614 @@
+# AT TIME ZONE・AT LOCAL・DST の境界・timestamptz と interval
+# 接頭辞: types_timezone_at_
+
+statement ok
+DROP TABLE IF EXISTS types_timezone_at_t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+# timestamptz AT TIME ZONE → timestamp
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'Asia/Tokyo')::text
+----
+2024-03-04 14:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'America/New_York')::text
+----
+2024-03-04 00:06:07
+
+query T
+SELECT (timestamptz '2024-07-04 05:06:07+00' AT TIME ZONE 'America/New_York')::text
+----
+2024-07-04 01:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'UTC')::text
+----
+2024-03-04 05:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'Asia/Kolkata')::text
+----
+2024-03-04 10:36:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'Europe/London')::text
+----
+2024-03-04 05:06:07
+
+query T
+SELECT (timestamptz '2024-07-04 05:06:07+00' AT TIME ZONE 'Europe/London')::text
+----
+2024-07-04 06:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE '+09')::text
+----
+2024-03-03 20:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE '-05:30')::text
+----
+2024-03-04 10:36:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'EST')::text
+----
+2024-03-04 00:06:07
+
+query T
+SELECT (timestamptz '2024-07-04 05:06:07+00' AT TIME ZONE 'EST')::text
+----
+2024-07-04 00:06:07
+
+query T
+SELECT (timestamptz '2024-07-04 05:06:07+00' AT TIME ZONE 'PDT')::text
+----
+2024-07-03 22:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'JST')::text
+----
+2024-03-04 14:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'UTC')::text
+----
+2024-03-04 05:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE interval '+09:00')::text
+----
+2024-03-04 14:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE interval '-03:30')::text
+----
+2024-03-04 01:36:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07.123456+00' AT TIME ZONE 'Asia/Tokyo')::text
+----
+2024-03-04 14:06:07.123456
+
+query T
+SELECT (pg_typeof(timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'Asia/Tokyo'))::text
+----
+timestamp without time zone
+
+# timestamp AT TIME ZONE → timestamptz
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE 'Asia/Tokyo')::text
+----
+2024-03-03 20:06:07+00
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE 'UTC')::text
+----
+2024-03-04 05:06:07+00
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE 'America/New_York')::text
+----
+2024-03-04 10:06:07+00
+
+query T
+SELECT (timestamp '2024-07-04 05:06:07' AT TIME ZONE 'America/New_York')::text
+----
+2024-07-04 09:06:07+00
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE '+09')::text
+----
+2024-03-04 14:06:07+00
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE interval '+09:00')::text
+----
+2024-03-03 20:06:07+00
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE 'EST')::text
+----
+2024-03-04 10:06:07+00
+
+query T
+SELECT (pg_typeof(timestamp '2024-03-04 05:06:07' AT TIME ZONE 'Asia/Tokyo'))::text
+----
+timestamp with time zone
+
+# セッションのタイムゾーンと組み合わせる
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT TIME ZONE 'America/New_York')::text
+----
+2024-03-04 19:06:07+09
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'America/New_York')::text
+----
+2024-03-04 00:06:07
+
+query T
+SELECT ((timestamp '2024-03-04 05:06:07' AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')::text
+----
+2024-03-04 00:06:07
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'UTC')::text
+----
+2024-03-04 05:06:07
+
+# AT LOCAL
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT LOCAL)::text
+----
+2024-03-04 14:06:07
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT LOCAL)::text
+----
+2024-03-04 05:06:07+09
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SELECT (timestamptz '2024-03-04 05:06:07+00' AT LOCAL)::text
+----
+2024-03-04 00:06:07
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' AT LOCAL)::text
+----
+2024-03-04 05:06:07-05
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# 演算子の優先順位
+
+statement error (42883)
+SELECT timestamp '2024-03-04 05:06:07' + interval '1 day' AT TIME ZONE 'Asia/Tokyo'
+
+
+query T
+SELECT ((timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'Asia/Tokyo')::date)::text
+----
+2024-03-04
+
+# DST の境界（America/New_York: 2024-03-10 02:00 に春、2024-11-03 02:00 に秋）
+
+statement ok
+SET TIME ZONE 'America/New_York'
+
+query T
+SELECT (timestamptz '2024-03-10 01:59:59-05')::text
+----
+2024-03-10 01:59:59-05
+
+query T
+SELECT (timestamptz '2024-03-10 03:00:00-04')::text
+----
+2024-03-10 03:00:00-04
+
+query T
+SELECT (timestamptz '2024-03-10 06:59:59+00')::text
+----
+2024-03-10 01:59:59-05
+
+query T
+SELECT (timestamptz '2024-03-10 07:00:00+00')::text
+----
+2024-03-10 03:00:00-04
+
+query T
+SELECT (timestamptz '2024-03-10 02:30:00')::text
+----
+2024-03-10 03:30:00-04
+
+query T
+SELECT (timestamptz '2024-03-10 02:00:00')::text
+----
+2024-03-10 03:00:00-04
+
+query T
+SELECT (timestamptz '2024-11-03 00:59:59')::text
+----
+2024-11-03 00:59:59-04
+
+query T
+SELECT (timestamptz '2024-11-03 01:30:00')::text
+----
+2024-11-03 01:30:00-05
+
+query T
+SELECT (timestamptz '2024-11-03 01:30:00-04')::text
+----
+2024-11-03 01:30:00-04
+
+query T
+SELECT (timestamptz '2024-11-03 01:30:00-05')::text
+----
+2024-11-03 01:30:00-05
+
+query T
+SELECT (timestamptz '2024-11-03 05:30:00+00')::text
+----
+2024-11-03 01:30:00-04
+
+query T
+SELECT (timestamptz '2024-11-03 06:30:00+00')::text
+----
+2024-11-03 01:30:00-05
+
+query T
+SELECT (timestamptz '2024-11-03 02:00:00')::text
+----
+2024-11-03 02:00:00-05
+
+query T
+SELECT (timestamp '2024-03-10 02:30:00' AT TIME ZONE 'America/New_York')::text
+----
+2024-03-10 03:30:00-04
+
+query T
+SELECT (timestamp '2024-11-03 01:30:00' AT TIME ZONE 'America/New_York')::text
+----
+2024-11-03 01:30:00-05
+
+# timestamptz ± interval（日・月は壁時計で進み、時間は絶対時間で進む）
+
+query T
+SELECT (timestamptz '2024-03-09 12:00:00' + interval '1 day')::text
+----
+2024-03-10 12:00:00-04
+
+query T
+SELECT (timestamptz '2024-03-09 12:00:00' + interval '24 hours')::text
+----
+2024-03-10 13:00:00-04
+
+query T
+SELECT (timestamptz '2024-03-09 12:00:00' + interval '1 day 1 hour')::text
+----
+2024-03-10 13:00:00-04
+
+query T
+SELECT (timestamptz '2024-03-10 12:00:00' - interval '1 day')::text
+----
+2024-03-09 12:00:00-05
+
+query T
+SELECT (timestamptz '2024-03-10 12:00:00' - interval '24 hours')::text
+----
+2024-03-09 11:00:00-05
+
+query T
+SELECT (timestamptz '2024-03-01 12:00:00' + interval '1 month')::text
+----
+2024-04-01 12:00:00-04
+
+query T
+SELECT (timestamptz '2024-02-10 02:30:00' + interval '1 month')::text
+----
+2024-03-10 03:30:00-04
+
+query T
+SELECT (timestamptz '2024-11-02 12:00:00' + interval '1 day')::text
+----
+2024-11-03 12:00:00-05
+
+query T
+SELECT (timestamptz '2024-11-02 12:00:00' + interval '24 hours')::text
+----
+2024-11-03 11:00:00-05
+
+query T
+SELECT (timestamptz '2024-11-03 12:00:00' - interval '1 day')::text
+----
+2024-11-02 12:00:00-04
+
+query T
+SELECT (timestamptz '2024-03-11 12:00:00' - timestamptz '2024-03-10 12:00:00')::text
+----
+1 day
+
+query T
+SELECT (timestamptz '2024-03-11 12:00:00' - timestamptz '2024-03-09 12:00:00')::text
+----
+1 day 23:00:00
+
+query T
+SELECT (timestamptz '2024-11-04 12:00:00' - timestamptz '2024-11-03 12:00:00')::text
+----
+1 day
+
+query T
+SELECT (age(timestamptz '2024-03-11 12:00:00', timestamptz '2024-03-09 12:00:00'))::text
+----
+2 days
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-03-10 15:00:00'))::text
+----
+2024-03-10 00:00:00-05
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-11-03 15:00:00'))::text
+----
+2024-11-03 00:00:00-04
+
+query T
+SELECT (date_trunc('hour', timestamptz '2024-11-03 01:30:00-05'))::text
+----
+2024-11-03 01:00:00-05
+
+query T
+SELECT (date_trunc('hour', timestamptz '2024-11-03 01:30:00-04'))::text
+----
+2024-11-03 01:00:00-04
+
+query T
+SELECT (date_trunc('month', timestamptz '2024-03-20 15:00:00'))::text
+----
+2024-03-01 00:00:00-05
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-03-10 15:00:00', 'Asia/Tokyo'))::text
+----
+2024-03-10 11:00:00-04
+
+query T
+SELECT (generate_series(timestamptz '2024-03-09 12:00', timestamptz '2024-03-11 12:00', interval '1 day')::text)::text
+----
+2024-03-09 12:00:00-05
+2024-03-10 12:00:00-04
+2024-03-11 12:00:00-04
+
+statement ok
+SET TIME ZONE 'UTC'
+
+query T
+SELECT generate_series(timestamptz '2024-03-09 12:00+00', timestamptz '2024-03-11 12:00+00', interval '1 day')::text
+----
+2024-03-09 12:00:00+00
+2024-03-10 12:00:00+00
+2024-03-11 12:00:00+00
+
+statement ok
+SET TIME ZONE 'Europe/London'
+
+query T
+SELECT (timestamptz '2024-03-31 00:59:59+00')::text
+----
+2024-03-31 00:59:59+00
+
+query T
+SELECT (timestamptz '2024-03-31 01:00:00+00')::text
+----
+2024-03-31 02:00:00+01
+
+query T
+SELECT (timestamptz '2024-10-27 00:30:00+00')::text
+----
+2024-10-27 01:30:00+01
+
+query T
+SELECT (timestamptz '2024-10-27 01:30:00+00')::text
+----
+2024-10-27 01:30:00+00
+
+query T
+SELECT (timestamptz '2024-03-31 01:30:00')::text
+----
+2024-03-31 02:30:00+01
+
+statement ok
+SET TIME ZONE 'Australia/Lord_Howe'
+
+query T
+SELECT (timestamptz '2024-04-06 12:00:00+00')::text
+----
+2024-04-06 23:00:00+11
+
+query T
+SELECT (timestamptz '2024-04-07 12:00:00+00')::text
+----
+2024-04-07 22:30:00+10:30
+
+query T
+SELECT (timestamptz '2024-10-05 12:00:00+00')::text
+----
+2024-10-05 22:30:00+10:30
+
+query T
+SELECT (timestamptz '2024-10-06 12:00:00+00')::text
+----
+2024-10-06 23:00:00+11
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (timestamptz '1950-05-01 12:00:00+00')::text
+----
+1950-05-01 21:00:00+09
+
+query T
+SELECT (timestamptz '1951-06-01 12:00:00+00')::text
+----
+1951-06-01 22:00:00+10
+
+query T
+SELECT (timestamptz '2024-01-01 00:00:00+00')::text
+----
+2024-01-01 09:00:00+09
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# extract と timestamptz
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (extract(hour from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+5
+
+query T
+SELECT (extract(day from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+5
+
+query T
+SELECT (extract(timezone from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+32400
+
+query T
+SELECT (extract(timezone_hour from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+9
+
+query T
+SELECT (extract(timezone_minute from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+0
+
+query T
+SELECT (extract(epoch from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+1709582400.000000
+
+statement ok
+SET TIME ZONE 'Asia/Kolkata'
+
+query T
+SELECT (extract(timezone from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+19800
+
+query T
+SELECT (extract(timezone_hour from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+5
+
+query T
+SELECT (extract(timezone_minute from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+30
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# テーブルと並べ替え（絶対時間の順）
+
+statement ok
+CREATE TABLE types_timezone_at_t (id int, tz timestamptz)
+
+statement ok
+INSERT INTO types_timezone_at_t VALUES (1, '2024-03-04 05:00:00+09'), (2, '2024-03-04 05:00:00+00'), (3, '2024-03-03 20:00:00+00'), (4, NULL), (5, '2024-03-04 00:00:00-05')
+
+query IT
+SELECT id, tz::text FROM types_timezone_at_t ORDER BY tz, id
+----
+1	2024-03-03 20:00:00+00
+3	2024-03-03 20:00:00+00
+2	2024-03-04 05:00:00+00
+5	2024-03-04 05:00:00+00
+4	NULL
+
+query IT
+SELECT id, (tz AT TIME ZONE 'Asia/Tokyo')::text FROM types_timezone_at_t ORDER BY tz, id
+----
+1	2024-03-04 05:00:00
+3	2024-03-04 05:00:00
+2	2024-03-04 14:00:00
+5	2024-03-04 14:00:00
+4	NULL
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query IT
+SELECT id, tz::text FROM types_timezone_at_t ORDER BY tz, id
+----
+1	2024-03-04 05:00:00+09
+3	2024-03-04 05:00:00+09
+2	2024-03-04 14:00:00+09
+5	2024-03-04 14:00:00+09
+4	NULL
+
+query I
+SELECT count(*) FROM types_timezone_at_t WHERE tz = timestamptz '2024-03-03 20:00:00+00'
+----
+2
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# エラー
+
+statement error (22023)
+SELECT timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'Nowhere/Land'
+
+statement error (22023)
+SELECT timestamp '2024-03-04 05:06:07' AT TIME ZONE 'Nowhere/Land'
+
+statement error (22023)
+SELECT timestamptz '2024-03-04 05:06:07+00' AT TIME ZONE 'foo'
+
+statement error (22023)
+SELECT timestamptz '2024-03-04 05:06:07 Nowhere/Land'
+
+statement error (22007)
+SELECT timestamptz 'foo'
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_timezone_at_t

@@ -1,0 +1,89 @@
+amop	2097:1	2326	1042 1042	
+amop	2097:2	2327	1042 1042	
+amop	2097:3	1054	1042 1042	
+amop	2097:4	2329	1042 1042	
+amop	2097:5	2330	1042 1042	
+amop	2231:1	1054	1042 1042	
+amop	4076:1	1058	1042 1042	
+amop	4076:2	1059	1042 1042	
+amop	4076:3	1054	1042 1042	
+amop	4076:4	1061	1042 1042	
+amop	4076:5	1060	1042 1042	
+amop	426:1	1058	1042 1042	
+amop	426:2	1059	1042 1042	
+amop	426:3	1054	1042 1042	
+amop	426:4	1061	1042 1042	
+amop	426:5	1060	1042 1042	
+amop	427:1	1054	1042 1042	
+amop	4586:1	1054	1042 1042	
+cast	1042>1042	if	668	
+cast	1042>1043	if	401	
+cast	1042>142	ef	2896	
+cast	1042>18	af	944	
+cast	1042>19	if	409	
+cast	1042>25	if	401	
+cast	1043>1042	ib	0	
+cast	142>1042	ab	0	
+cast	16>1042	af	2971	
+cast	18>1042	af	860	
+cast	19>1042	af	408	
+cast	25>1042	ib	0	
+cast	650>1042	af	730	
+cast	869>1042	af	730	
+oper	1054	=	1042 1042	16
+oper	1055	~	1042 25	16
+oper	1056	!~	1042 25	16
+oper	1057	<>	1042 1042	16
+oper	1058	<	1042 1042	16
+oper	1059	<=	1042 1042	16
+oper	1060	>	1042 1042	16
+oper	1061	>=	1042 1042	16
+oper	1211	~~	1042 25	16
+oper	1212	!~~	1042 25	16
+oper	1234	~*	1042 25	16
+oper	1235	!~*	1042 25	16
+oper	1629	~~*	1042 25	16
+oper	1630	!~~*	1042 25	16
+oper	2326	~<~	1042 1042	16
+oper	2327	~<=~	1042 1042	16
+oper	2329	~>=~	1042 1042	16
+oper	2330	~>~	1042 1042	16
+proc	1044	bpcharin	2275 26 23	1042
+proc	1045	bpcharout	1042	2275
+proc	1048	bpchareq	1042 1042	16
+proc	1049	bpcharlt	1042 1042	16
+proc	1050	bpcharle	1042 1042	16
+proc	1051	bpchargt	1042 1042	16
+proc	1052	bpcharge	1042 1042	16
+proc	1053	bpcharne	1042 1042	16
+proc	1063	bpchar_larger	1042 1042	1042
+proc	1064	bpchar_smaller	1042 1042	1042
+proc	1078	bpcharcmp	1042 1042	23
+proc	1080	hashbpchar	1042	23
+proc	1318	length	1042	23
+proc	1367	character_length	1042	23
+proc	1372	char_length	1042	23
+proc	1375	octet_length	1042	23
+proc	1631	bpcharlike	1042 25	16
+proc	1632	bpcharnlike	1042 25	16
+proc	1656	bpcharicregexeq	1042 25	16
+proc	1657	bpcharicregexne	1042 25	16
+proc	1658	bpcharregexeq	1042 25	16
+proc	1659	bpcharregexne	1042 25	16
+proc	1660	bpchariclike	1042 25	16
+proc	1661	bpcharicnlike	1042 25	16
+proc	2174	bpchar_pattern_lt	1042 1042	16
+proc	2175	bpchar_pattern_le	1042 1042	16
+proc	2177	bpchar_pattern_ge	1042 1042	16
+proc	2178	bpchar_pattern_gt	1042 1042	16
+proc	2180	btbpchar_pattern_cmp	1042 1042	23
+proc	2244	max	1042	1042
+proc	2245	min	1042	1042
+proc	2430	bpcharrecv	2281 26 23	1042
+proc	2431	bpcharsend	1042	17
+proc	401	text	1042	25
+proc	408	bpchar	19	1042
+proc	409	name	1042	19
+proc	668	bpchar	1042 23 16	1042
+proc	860	bpchar	18	1042
+proc	972	hashbpcharextended	1042 20	20

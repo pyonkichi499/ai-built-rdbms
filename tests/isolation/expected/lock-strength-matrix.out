@@ -1,0 +1,107 @@
+Parsed test spec with 2 sessions
+
+starting permutation: a_b a_update b_b b_update b_r a_c
+step a_b: BEGIN;
+step a_update: SELECT id FROM lsm_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_update: SELECT id FROM lsm_t WHERE id = 1 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lsm_t"
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+
+starting permutation: a_b a_update b_b b_share b_r a_c
+step a_b: BEGIN;
+step a_update: SELECT id FROM lsm_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_share: SELECT id FROM lsm_t WHERE id = 1 FOR SHARE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lsm_t"
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+
+starting permutation: a_b a_update b_b b_keyshare b_r a_c
+step a_b: BEGIN;
+step a_update: SELECT id FROM lsm_t WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_keyshare: SELECT id FROM lsm_t WHERE id = 1 FOR KEY SHARE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lsm_t"
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+
+starting permutation: a_b a_share b_b b_share b_c a_c
+step a_b: BEGIN;
+step a_share: SELECT id FROM lsm_t WHERE id = 1 FOR SHARE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_share: SELECT id FROM lsm_t WHERE id = 1 FOR SHARE NOWAIT;
+id
+--
+ 1
+(1 row)
+
+step b_c: COMMIT;
+step a_c: COMMIT;
+
+starting permutation: a_b a_share b_b b_update b_r a_c
+step a_b: BEGIN;
+step a_share: SELECT id FROM lsm_t WHERE id = 1 FOR SHARE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_update: SELECT id FROM lsm_t WHERE id = 1 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lsm_t"
+step b_r: ROLLBACK;
+step a_c: COMMIT;
+
+starting permutation: a_b a_keyshare b_b b_keyshare b_c a_c
+step a_b: BEGIN;
+step a_keyshare: SELECT id FROM lsm_t WHERE id = 1 FOR KEY SHARE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_keyshare: SELECT id FROM lsm_t WHERE id = 1 FOR KEY SHARE NOWAIT;
+id
+--
+ 1
+(1 row)
+
+step b_c: COMMIT;
+step a_c: COMMIT;
+
+starting permutation: a_b a_keyshare b_b b_update b_r a_c
+step a_b: BEGIN;
+step a_keyshare: SELECT id FROM lsm_t WHERE id = 1 FOR KEY SHARE;
+id
+--
+ 1
+(1 row)
+
+step b_b: BEGIN;
+step b_update: SELECT id FROM lsm_t WHERE id = 1 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lsm_t"
+step b_r: ROLLBACK;
+step a_c: COMMIT;

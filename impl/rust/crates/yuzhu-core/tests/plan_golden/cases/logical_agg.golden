@@ -1,0 +1,143 @@
+-- case agg_group
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select b, count(*), sum(a) from t group by b
+-- build
+Project [#1:t.b #3:count #4:sum]
+  Aggregate group=[#1:t.b] aggs=[#3 := count(*) #4 := sum(#0:t.a)]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case agg_having
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select b from t group by b having count(*) > 1
+-- build
+Project [#1:t.b]
+  Filter (#3:count > 1)
+    Aggregate group=[#1:t.b] aggs=[#3 := count(*)]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case agg_plain
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select max(a), min(b), avg(a) from t
+-- build
+Project [#3:max #4:min #5:avg]
+  Aggregate group=[] aggs=[#3 := max(#0:t.a) #4 := min(#1:t.b) #5 := avg(#0:t.a)]
+    Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case agg_distinct
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select count(distinct a) from t where b > 1
+-- build
+Project [#3:count]
+  Aggregate group=[] aggs=[#3 := count(DISTINCT #0:t.a)]
+    Filter (#1:t.b > 1)
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case agg_order
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select b, sum(a) from t group by b order by sum(a) desc
+-- build
+Sort [#3:sum DESC NULLS FIRST]
+  Project [#1:t.b #3:sum]
+    Aggregate group=[#1:t.b] aggs=[#3 := sum(#0:t.a)]
+      Get t [#0:t.a #1:t.b #2:t.c]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)

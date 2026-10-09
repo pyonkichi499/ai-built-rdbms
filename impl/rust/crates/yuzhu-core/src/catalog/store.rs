@@ -29,9 +29,18 @@ use super::{
 use crate::datadir::OidAllocator;
 use crate::error::{Error, Result, sqlstate};
 use crate::storage::smgr::{DEFAULTTABLESPACE_OID, RelFileLocator, RelFileNumber};
-use crate::storage::{BuildStats, HeapTuple, RelHandle, TableStore, TmResult, WriteCtx};
+use crate::storage::{BuildStats, HeapTuple, RelHandle, SimpleHeapOp, TableStore, WriteCtx};
 use crate::txn::{CommandId, Snapshot, Xid};
 use crate::types::{Datum, Oid, Row, SqlType, oid};
+
+// VACUUM 用の読み書き（`yz_relxid` / `yz_datxid`。VC-3a）。非公開の項目を使うため子モジュールにする。
+#[path = "store_vac.rs"]
+mod store_vac;
+pub use store_vac::{RelxidMin, VacRelInfo};
+
+// 外部キー（`pg_constraint` contype `f`）の読み書き（FK-1b）。
+#[path = "store_fk.rs"]
+pub mod store_fk;
 
 /// How many OIDs `get_new_oid` tries before it gives up (PostgreSQL warns
 /// after a million; a counter that keeps colliding means a broken catalog).
@@ -127,18 +136,6 @@ fn as_oidvector<'a>(d: &'a Datum, catalog: &str, column: &str) -> Result<&'a [Oi
     match d {
         Datum::OidVector(v) => Ok(v),
         other => Err(bad_value(catalog, column, other)),
-    }
-}
-
-/// Turns the result of a catalog `delete` into an error unless it worked.
-/// With the single-writer lock a catalog row cannot be changed by anyone
-/// else, so every other outcome is a bug or a damaged catalog.
-fn expect_deleted(result: TmResult, what: &str) -> Result<()> {
-    match result {
-        TmResult::Ok => Ok(()),
-        other => Err(Error::internal(format!(
-            "could not delete a {what} row: {other:?}"
-        ))),
     }
 }
 
@@ -419,6 +416,17 @@ impl CatalogStore {
         scan_rel(&*self.storage, self.rel(catalog_oid)?, snap, &mut keep)
     }
 
+    /// [`CatalogStore::scan`] の別名（他のデータベースの `pg_class` などの走査用。08 C1）。
+    #[allow(dead_code, reason = "AU-3 / DB が使うまでの口（08 C1）")]
+    pub(crate) fn scan_catalog(
+        &self,
+        snap: &Snapshot,
+        catalog_oid: Oid,
+        keep: impl FnMut(&Row) -> Result<bool>,
+    ) -> Result<Vec<HeapTuple>> {
+        self.scan(snap, catalog_oid, keep)
+    }
+
     fn catalog_name(catalog_oid: Oid) -> &'static str {
         schema::catalog_def(catalog_oid).map_or("catalog", |d| d.name)
     }
@@ -549,6 +557,7 @@ impl CatalogStore {
             b'c' => ConstraintKind::Check,
             b'p' => ConstraintKind::PrimaryKey,
             b'u' => ConstraintKind::Unique,
+            b'f' => ConstraintKind::ForeignKey,
             other => {
                 return Err(Error::corrupted(format!(
                     "constraint {oid} has the unsupported contype '{}'",
@@ -559,7 +568,9 @@ impl CatalogStore {
         let indid = as_oid(&row[col("conindid")], "pg_constraint", "conindid")?;
         let columns = match &row[col("conkey")] {
             Datum::Null => Vec::new(),
-            d => as_int2vector(d, "pg_constraint", "conkey")?.to_vec(),
+            d => crate::types::array::array_view(d)
+                .ok_or_else(|| bad_value("pg_constraint", "conkey", d))?
+                .to_int2s()?,
         };
         let check_sql = match &row[col("conbin")] {
             Datum::Null => None,
@@ -787,14 +798,20 @@ impl CatalogStore {
             indexes: Vec::new(),
             sequence: None,
             identity_seqs: Vec::new(),
+            key_columns: Vec::new(),
+            foreign_keys: Vec::new(),
+            referenced_by: Vec::new(),
         };
         match rel.kind {
             RelKind::Table => {
                 def.checks = self.load_checks(snap, oid, nchecks)?;
                 def.indexes = self.load_indexes(snap, oid, &def.columns)?;
                 def.identity_seqs = self.load_identity_seqs(snap, oid, &def.columns)?;
+                (def.foreign_keys, def.referenced_by) = self.load_foreign_keys(snap, oid)?;
             }
             RelKind::Sequence => def.sequence = Some(self.load_sequence_params(snap, oid)?),
+            // 仮想リレーション（`relfilenode = 0`）。列だけで、ヒープも索引も持たない。
+            RelKind::Virtual => {}
             RelKind::Index => return Ok(None),
         }
         Ok(Some(def))
@@ -1222,15 +1239,10 @@ impl CatalogStore {
             )));
         };
         let new = new_row(&old.row);
-        let out = self
-            .storage
-            .update(self.rel(catalog_oid)?, w, snap, old.tid, &new)?;
-        match out.result {
-            TmResult::Ok => Ok(()),
-            other => Err(Error::internal(format!(
-                "could not update a {name} row: {other:?}"
-            ))),
-        }
+        let out =
+            self.storage
+                .update(self.rel(catalog_oid)?, w, snap, old.tid, &new, None, None)?;
+        out.result.expect_simple(SimpleHeapOp::Update)
     }
 
     /// 走査で TID を集めてから消す（走査と更新を混ぜない）。消した件数を返す。
@@ -1241,15 +1253,36 @@ impl CatalogStore {
         catalog_oid: Oid,
         pred: impl FnMut(&Row) -> Result<bool>,
     ) -> Result<usize> {
-        let name = Self::catalog_name(catalog_oid);
         let victims = self.scan(snap, catalog_oid, pred)?;
         for t in &victims {
             let result = self
                 .storage
-                .delete(self.rel(catalog_oid)?, w, snap, t.tid)?;
-            expect_deleted(result, name)?;
+                .delete(self.rel(catalog_oid)?, w, snap, t.tid, None, None)?;
+            result.expect_simple(SimpleHeapOp::Delete)?;
         }
         Ok(victims.len())
+    }
+
+    /// `yz_relxid`（03 §3.4）に `(relid, xid)` の行を足す。CREATE TABLE が呼ぶ。`xid` は作ったトランザクション
+    /// （この表の凍結境界の初期値）。VC-4 が読み書きの残りを `store_vac.rs` に足す。
+    pub fn insert_relxid(&self, w: &WriteCtx, relid: Oid, xid: Xid) -> Result<()> {
+        let frozen = i64::try_from(xid.0)
+            .map_err(|_| Error::internal("transaction ID does not fit relfrozenxid8"))?;
+        let row = rows::RowBuilder::new(oids::YZ_RELXID)
+            .set("relid", Datum::Oid(relid))
+            .set("relfrozenxid8", Datum::Int8(frozen))
+            .build();
+        self.insert_row(w, oids::YZ_RELXID, &row)
+    }
+
+    /// `yz_relxid` の `relid` の行を消す（DROP TABLE）。行が無くてもエラーにしない
+    /// （VC は行の無い表を最古の境界として扱う。fail-closed）。
+    pub fn delete_relxid(&self, w: &WriteCtx, snap: &Snapshot, relid: Oid) -> Result<()> {
+        let col = column_index(oids::YZ_RELXID, "relid");
+        self.delete_where(w, snap, oids::YZ_RELXID, |r| {
+            Ok(matches!(r.get(col), Some(Datum::Oid(o)) if *o == relid))
+        })?;
+        Ok(())
     }
 
     /// `pg_class`・`pg_attribute`（システム列を含む）・`pg_attrdef`・`pg_constraint`（CHECK）に加えて、
@@ -1980,6 +2013,8 @@ pub struct SharedCatalogStore {
     database: (Arc<TableDef>, RelHandle),
     authid: (Arc<TableDef>, RelHandle),
     tablespace: (Arc<TableDef>, RelHandle),
+    /// `yz_datxid`（03 §3.4。共有・マップなし）。
+    datxid: (Arc<TableDef>, RelHandle),
 }
 
 fn shared_rel(catalog_oid: Oid) -> (Arc<TableDef>, RelHandle) {
@@ -1998,7 +2033,27 @@ impl SharedCatalogStore {
             database: shared_rel(oids::PG_DATABASE),
             authid: shared_rel(oids::PG_AUTHID),
             tablespace: shared_rel(oids::PG_TABLESPACE),
+            datxid: shared_rel(oids::YZ_DATXID),
         }
+    }
+
+    /// The pinned `TableDef` and `RelHandle` of a shared catalog (`pg_database`, `pg_authid`,
+    /// `pg_tablespace`, `yz_datxid`); `None` for any other OID (08 C1).
+    #[allow(dead_code, reason = "AU-3 / DB が使うまでの口（08 C1）")]
+    pub(crate) fn rel(&self, catalog_oid: Oid) -> Option<&(Arc<TableDef>, RelHandle)> {
+        match catalog_oid {
+            oids::PG_DATABASE => Some(&self.database),
+            oids::PG_AUTHID => Some(&self.authid),
+            oids::PG_TABLESPACE => Some(&self.tablespace),
+            oids::YZ_DATXID => Some(&self.datxid),
+            _ => None,
+        }
+    }
+
+    /// The table store that holds the shared catalogs (08 C1).
+    #[allow(dead_code, reason = "AU-3 / DB が使うまでの口（08 C1）")]
+    pub(crate) fn storage(&self) -> &Arc<dyn TableStore> {
+        &self.storage
     }
 
     pub fn database_by_name(&self, snap: &Snapshot, name: &str) -> Result<Option<DatabaseRow>> {
@@ -2041,11 +2096,12 @@ impl SharedCatalogStore {
     }
 
     /// The pinned definitions of the shared catalogs.
-    pub fn defs(&self) -> [Arc<TableDef>; 3] {
+    pub fn defs(&self) -> [Arc<TableDef>; 4] {
         [
             Arc::clone(&self.database.0),
             Arc::clone(&self.authid.0),
             Arc::clone(&self.tablespace.0),
+            Arc::clone(&self.datxid.0),
         ]
     }
 
@@ -2056,6 +2112,7 @@ impl SharedCatalogStore {
             (oids::PG_DATABASE, &self.database.1),
             (oids::PG_AUTHID, &self.authid.1),
             (oids::PG_TABLESPACE, &self.tablespace.1),
+            (oids::YZ_DATXID, &self.datxid.1),
         ] {
             self.storage.create_storage(w, rel.locator)?;
             for row in rows::initial_rows(oid, params) {
@@ -2105,7 +2162,7 @@ pub(crate) mod fake_store {
 
     use super::*;
     use crate::catalog::rows::datum_matches_type;
-    use crate::storage::{HeapScan, UpdateOutcome};
+    use crate::storage::{HeapScan, TmResult, UpdateOutcome};
     use crate::types::Tid;
 
     #[derive(Debug, Clone)]
@@ -2233,6 +2290,8 @@ pub(crate) mod fake_store {
             w: &WriteCtx,
             snap: &Snapshot,
             tid: Tid,
+            _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+            _crosscheck: Option<&Snapshot>,
         ) -> Result<TmResult> {
             let mut g = self.inner.lock().unwrap();
             let t = g
@@ -2258,18 +2317,22 @@ pub(crate) mod fake_store {
             snap: &Snapshot,
             tid: Tid,
             new_row: &[Datum],
+            _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+            _crosscheck: Option<&Snapshot>,
         ) -> Result<UpdateOutcome> {
-            let result = self.delete(rel, w, snap, tid)?;
+            let result = self.delete(rel, w, snap, tid, None, None)?;
             if result != TmResult::Ok {
                 return Ok(UpdateOutcome {
                     result,
                     new_tid: None,
+                    lockmode: crate::txn::LockTupleMode::NoKeyExclusive,
                 });
             }
             let new_tid = self.insert(rel, w, new_row)?;
             Ok(UpdateOutcome {
                 result: TmResult::Ok,
                 new_tid: Some(new_tid),
+                lockmode: crate::txn::LockTupleMode::NoKeyExclusive,
             })
         }
 
@@ -2343,6 +2406,7 @@ pub(crate) mod test_env {
     pub(crate) fn params() -> InitParams {
         InitParams {
             superuser: "postgres".into(),
+            superuser_secret: None,
         }
     }
 
@@ -2575,6 +2639,25 @@ mod tests {
     use super::test_env::*;
     use super::*;
     use crate::control::{ControlData, ControlFileHandle};
+    use crate::storage::TmResult;
+
+    #[test]
+    fn catalog_write_results_use_postgresql_messages() {
+        let msg = |r: TmResult| r.expect_simple(SimpleHeapOp::Update).unwrap_err().message;
+        assert!(TmResult::Ok.expect_simple(SimpleHeapOp::Update).is_ok());
+        assert_eq!(
+            msg(TmResult::SelfModified { cmax: 0 }),
+            "tuple already updated by self"
+        );
+        assert_eq!(
+            msg(TmResult::BeingModified { xmax: Xid(5) }),
+            "tuple concurrently updated"
+        );
+        assert_eq!(
+            msg(TmResult::Deleted { xmax: Xid(5) }),
+            "tuple concurrently deleted"
+        );
+    }
     use crate::storage::vfs::{SimVfs, Vfs};
 
     fn count(e: &Env, catalog: Oid) -> usize {
@@ -2589,7 +2672,10 @@ mod tests {
     fn bootstrap_fills_the_catalogs() {
         let e = env();
         let any = snapshot_any();
-        assert_eq!(count(&e, oids::PG_CLASS), 22);
+        assert_eq!(
+            count(&e, oids::PG_CLASS),
+            24 + crate::catalog::virtual_rel::registry().len()
+        );
         assert_eq!(count(&e, oids::PG_NAMESPACE), 4);
         assert_eq!(
             count(&e, oids::PG_TYPE),
@@ -2649,7 +2735,7 @@ mod tests {
             Some("pg_database_owner")
         );
         assert_eq!(e.shared.role_name(&s, 99_999).unwrap(), None);
-        assert_eq!(e.shared.defs().len(), 3);
+        assert_eq!(e.shared.defs().len(), 4);
         let other = CatalogStore::new(1, e.fake.clone());
         assert_eq!(
             other.nailed_def(oids::PG_DATABASE).unwrap().locator,
@@ -3342,7 +3428,7 @@ mod tests {
                 |r| Ok(r[0] == Datum::Oid(spec.oid)),
                 |old| {
                     let mut r = old.clone();
-                    r[k] = Datum::Char(b'v');
+                    r[k] = Datum::Char(b'x');
                     r
                 },
             )

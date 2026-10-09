@@ -1,0 +1,30 @@
+# フェーズ 2: 内容が同じで、索引でも引け、INSERT / UPDATE / VACUUM が通る。
+
+query III
+SELECT count(*), sum(v), sum(id) FROM crm5_09_t
+----
+20000 10000 300000000
+
+query II
+SELECT id, v FROM crm5_09_t WHERE id IN (3, 4, 5, 29999, 30000) ORDER BY id
+----
+4 1
+5 0
+29999 0
+
+statement count 10000
+INSERT INTO crm5_09_t SELECT g, 2, 'n' FROM generate_series(30001, 40000) g
+
+statement count 30000
+UPDATE crm5_09_t SET v = v + 10
+
+statement ok
+VACUUM crm5_09_t
+
+query III
+SELECT count(*), sum(v), min(v) FROM crm5_09_t
+----
+30000 330000 10
+
+statement ok
+DROP TABLE crm5_09_t

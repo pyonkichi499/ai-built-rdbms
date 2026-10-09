@@ -1,0 +1,89 @@
+# YUZHU-ONLY: yz_relxid（OID 9801）は yuzhu のカタログ。PostgreSQL には無いので onlyif yuzhu の別レコードにする
+# KNOWN-DIFF: KD-8 yz_relxid / yz_datxid は 64 ビットの凍結境界を持つ yuzhu 独自のカタログ
+
+statement ok
+DROP TABLE IF EXISTS catalog_yz_relxid_before
+
+statement ok
+DROP TABLE IF EXISTS catalog_yz_relxid_t
+
+statement ok
+CREATE TABLE catalog_yz_relxid_t (a int)
+
+statement ok
+INSERT INTO catalog_yz_relxid_t SELECT g FROM generate_series(1, 10) g
+
+# YUZHU-ONLY: テーブル 1 つにつき 1 行
+onlyif yuzhu
+query I
+SELECT count(*) FROM yz_relxid WHERE relid = 'catalog_yz_relxid_t'::regclass
+----
+1
+
+# YUZHU-ONLY: 境界は 3 以上（BOOTSTRAP / FROZEN の次）で、pg_class.relfrozenxid は下位 32 ビットの鏡
+onlyif yuzhu
+query T
+SELECT (x.relfrozenxid8 >= 3 AND c.relfrozenxid::text::bigint = x.relfrozenxid8 % 4294967296)::text FROM yz_relxid x JOIN pg_class c ON c.oid = x.relid WHERE x.relid = 'catalog_yz_relxid_t'::regclass
+----
+true
+
+# YUZHU-ONLY: VACUUM FREEZE の後も境界は単調非減少
+onlyif yuzhu
+statement ok
+CREATE TABLE catalog_yz_relxid_before AS SELECT relfrozenxid8 AS f FROM yz_relxid WHERE relid = 'catalog_yz_relxid_t'::regclass
+
+onlyif yuzhu
+statement ok
+VACUUM FREEZE catalog_yz_relxid_t
+
+onlyif yuzhu
+query T
+SELECT (x.relfrozenxid8 >= b.f)::text FROM yz_relxid x, catalog_yz_relxid_before b WHERE x.relid = 'catalog_yz_relxid_t'::regclass
+----
+true
+
+# YUZHU-ONLY: TRUNCATE のロールバックで行が戻り、DROP で行が消える
+onlyif yuzhu
+statement ok
+BEGIN
+
+onlyif yuzhu
+statement ok
+TRUNCATE catalog_yz_relxid_t
+
+onlyif yuzhu
+statement ok
+ROLLBACK
+
+onlyif yuzhu
+query I
+SELECT count(*) FROM yz_relxid WHERE relid = 'catalog_yz_relxid_t'::regclass
+----
+1
+
+# YUZHU-ONLY: インデックス・シーケンスは行を持たない
+onlyif yuzhu
+query I
+SELECT count(*) FROM yz_relxid x JOIN pg_class c ON c.oid = x.relid WHERE c.relkind <> 'r'
+----
+0
+
+# YUZHU-ONLY: データベースの境界は表の境界の下限以下
+onlyif yuzhu
+query T
+SELECT ((SELECT datfrozenxid8 FROM yz_datxid WHERE datid = (SELECT oid FROM pg_database WHERE datname = current_database())) <= (SELECT min(relfrozenxid8) FROM yz_relxid))::text
+----
+true
+
+statement ok
+DROP TABLE catalog_yz_relxid_t
+
+onlyif yuzhu
+query I
+SELECT count(*) FROM yz_relxid x WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = x.relid)
+----
+0
+
+onlyif yuzhu
+statement ok
+DROP TABLE catalog_yz_relxid_before

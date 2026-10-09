@@ -1,0 +1,191 @@
+amop	1988:1	1754	1700 1700	
+amop	1988:2	1755	1700 1700	
+amop	1988:3	1752	1700 1700	
+amop	1988:4	1757	1700 1700	
+amop	1988:5	1756	1700 1700	
+amop	1998:1	1752	1700 1700	
+amop	4055:1	1754	1700 1700	
+amop	4055:2	1755	1700 1700	
+amop	4055:3	1752	1700 1700	
+amop	4055:4	1757	1700 1700	
+amop	4055:5	1756	1700 1700	
+amop	4574:1	1752	1700 1700	
+amop	4603:1	1754	1700 1700	
+amop	4603:2	1755	1700 1700	
+amop	4603:3	1752	1700 1700	
+amop	4603:4	1757	1700 1700	
+amop	4603:5	1756	1700 1700	
+cast	1700>1700	if	1703	
+cast	1700>20	af	1779	
+cast	1700>21	af	1783	
+cast	1700>23	af	1744	
+cast	1700>700	if	1745	
+cast	1700>701	if	1746	
+cast	1700>790	af	3824	
+cast	20>1700	if	1781	
+cast	21>1700	if	1782	
+cast	23>1700	if	1740	
+cast	3802>1700	ef	3449	
+cast	700>1700	af	1742	
+cast	701>1700	af	1743	
+cast	790>1700	af	3823	
+oper	1038	^	1700 1700	1700
+oper	1751	-	0 1700	1700
+oper	1752	=	1700 1700	16
+oper	1753	<>	1700 1700	16
+oper	1754	<	1700 1700	16
+oper	1755	<=	1700 1700	16
+oper	1756	>	1700 1700	16
+oper	1757	>=	1700 1700	16
+oper	1758	+	1700 1700	1700
+oper	1759	-	1700 1700	1700
+oper	1760	*	1700 1700	1700
+oper	1761	/	1700 1700	1700
+oper	1762	%	1700 1700	1700
+oper	1763	@	0 1700	1700
+oper	1921	+	0 1700	1700
+oper	3228	-	3220 3220	1700
+oper	5025	+	3220 1700	3220
+oper	5026	+	1700 3220	3220
+oper	5027	-	3220 1700	3220
+proc	1376	factorial	20	1700
+proc	1481	log10	1700	1700
+proc	1701	numeric_in	2275 26 23	1700
+proc	1702	numeric_out	1700	2275
+proc	1703	numeric	1700 23	1700
+proc	1704	numeric_abs	1700	1700
+proc	1705	abs	1700	1700
+proc	1706	sign	1700	1700
+proc	1707	round	1700 23	1700
+proc	1708	round	1700	1700
+proc	1709	trunc	1700 23	1700
+proc	1710	trunc	1700	1700
+proc	1711	ceil	1700	1700
+proc	1712	floor	1700	1700
+proc	1718	numeric_eq	1700 1700	16
+proc	1719	numeric_ne	1700 1700	16
+proc	1720	numeric_gt	1700 1700	16
+proc	1721	numeric_ge	1700 1700	16
+proc	1722	numeric_lt	1700 1700	16
+proc	1723	numeric_le	1700 1700	16
+proc	1724	numeric_add	1700 1700	1700
+proc	1725	numeric_sub	1700 1700	1700
+proc	1726	numeric_mul	1700 1700	1700
+proc	1727	numeric_div	1700 1700	1700
+proc	1728	mod	1700 1700	1700
+proc	1729	numeric_mod	1700 1700	1700
+proc	1730	sqrt	1700	1700
+proc	1731	numeric_sqrt	1700	1700
+proc	1732	exp	1700	1700
+proc	1733	numeric_exp	1700	1700
+proc	1734	ln	1700	1700
+proc	1735	numeric_ln	1700	1700
+proc	1736	log	1700 1700	1700
+proc	1737	numeric_log	1700 1700	1700
+proc	1738	pow	1700 1700	1700
+proc	1739	numeric_power	1700 1700	1700
+proc	1740	numeric	23	1700
+proc	1741	log	1700	1700
+proc	1742	numeric	700	1700
+proc	1743	numeric	701	1700
+proc	1744	int4	1700	23
+proc	1745	float4	1700	700
+proc	1746	float8	1700	701
+proc	1764	numeric_inc	1700	1700
+proc	1766	numeric_smaller	1700 1700	1700
+proc	1767	numeric_larger	1700 1700	1700
+proc	1769	numeric_cmp	1700 1700	23
+proc	1771	numeric_uminus	1700	1700
+proc	1772	to_char	1700 25	25
+proc	1777	to_number	25 25	1700
+proc	1779	int8	1700	20
+proc	1781	numeric	20	1700
+proc	1782	numeric	21	1700
+proc	1783	int2	1700	21
+proc	1833	numeric_accum	2281 1700	2281
+proc	1837	numeric_avg	2281	1700
+proc	1838	numeric_var_samp	2281	1700
+proc	1839	numeric_stddev_samp	2281	1700
+proc	1842	int8_sum	1700 20	1700
+proc	1915	numeric_uplus	1700	1700
+proc	1964	int8_avg	1016	1700
+proc	1973	div	1700 1700	1700
+proc	1980	numeric_div_trunc	1700 1700	1700
+proc	2100	avg	20	1700
+proc	2101	avg	23	1700
+proc	2102	avg	21	1700
+proc	2103	avg	1700	1700
+proc	2107	sum	20	1700
+proc	2114	sum	1700	1700
+proc	2130	max	1700	1700
+proc	2146	min	1700	1700
+proc	2148	variance	20	1700
+proc	2149	variance	23	1700
+proc	2150	variance	21	1700
+proc	2153	variance	1700	1700
+proc	2154	stddev	20	1700
+proc	2155	stddev	23	1700
+proc	2156	stddev	21	1700
+proc	2159	stddev	1700	1700
+proc	2167	ceiling	1700	1700
+proc	2169	power	1700 1700	1700
+proc	2170	width_bucket	1700 1700 1700 23	23
+proc	2460	numeric_recv	2281 26 23	1700
+proc	2461	numeric_send	1700	17
+proc	2514	numeric_var_pop	2281	1700
+proc	2596	numeric_stddev_pop	2281	1700
+proc	2641	var_samp	20	1700
+proc	2642	var_samp	23	1700
+proc	2643	var_samp	21	1700
+proc	2646	var_samp	1700	1700
+proc	2712	stddev_samp	20	1700
+proc	2713	stddev_samp	23	1700
+proc	2714	stddev_samp	21	1700
+proc	2717	stddev_samp	1700	1700
+proc	2718	var_pop	20	1700
+proc	2719	var_pop	23	1700
+proc	2720	var_pop	21	1700
+proc	2723	var_pop	1700	1700
+proc	2724	stddev_pop	20	1700
+proc	2725	stddev_pop	23	1700
+proc	2726	stddev_pop	21	1700
+proc	2729	stddev_pop	1700	1700
+proc	2858	numeric_avg_accum	2281 1700	2281
+proc	3165	pg_wal_lsn_diff	3220 3220	1700
+proc	3166	pg_size_pretty	1700	25
+proc	3178	numeric_sum	2281	1700
+proc	3237	pg_lsn_mi	3220 3220	1700
+proc	3259	generate_series	1700 1700 1700	1700
+proc	3260	generate_series	1700 1700	1700
+proc	3281	scale	1700	23
+proc	3388	numeric_poly_sum	2281	1700
+proc	3389	numeric_poly_avg	2281	1700
+proc	3390	numeric_poly_var_pop	2281	1700
+proc	3391	numeric_poly_var_samp	2281	1700
+proc	3392	numeric_poly_stddev_pop	2281	1700
+proc	3393	numeric_poly_stddev_samp	2281	1700
+proc	3449	numeric	3802	1700
+proc	3548	numeric_accum_inv	2281 1700	2281
+proc	3823	numeric	790	1700
+proc	3824	money	1700	790
+proc	3844	numrange	1700 1700	3906
+proc	3845	numrange	1700 1700 25	3906
+proc	3924	numrange_subdiff	1700 1700	701
+proc	4141	in_range	1700 1700 1700 16 16	16
+proc	432	hash_numeric	1700	23
+proc	5022	pg_lsn_pli	3220 1700	3220
+proc	5023	numeric_pl_pg_lsn	1700 3220	3220
+proc	5024	pg_lsn_mii	3220 1700	3220
+proc	5042	min_scale	1700	23
+proc	5043	trim_scale	1700	1700
+proc	5048	gcd	1700 1700	1700
+proc	5049	lcm	1700 1700	1700
+proc	6103	pg_lsn	1700	3220
+proc	6199	extract	25 1082	1700
+proc	6200	extract	25 1083	1700
+proc	6201	extract	25 1266	1700
+proc	6202	extract	25 1114	1700
+proc	6203	extract	25 1184	1700
+proc	6204	extract	25 1186	1700
+proc	6341	random	1700 1700	1700
+proc	780	hash_numeric_extended	1700 20	20

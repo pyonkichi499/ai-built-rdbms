@@ -1,0 +1,114 @@
+# pg_roles ビューの列・伏せ字・ロールバック・別接続からの見え方
+
+statement ok
+DROP ROLE IF EXISTS auth_pg_roles_a
+
+statement ok
+DROP ROLE IF EXISTS auth_pg_roles_b
+
+# 列の名前・順序・型（oid は最後）
+query ITT
+SELECT a.attnum, a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a WHERE a.attrelid = 'pg_roles'::regclass AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum
+----
+1 rolname name
+2 rolsuper boolean
+3 rolinherit boolean
+4 rolcreaterole boolean
+5 rolcreatedb boolean
+6 rolcanlogin boolean
+7 rolreplication boolean
+8 rolconnlimit integer
+9 rolpassword text
+10 rolvaliduntil timestamp with time zone
+11 rolbypassrls boolean
+12 rolconfig text[]
+13 oid oid
+
+# rolpassword は常に伏せ字（パスワードがなくても）
+statement ok
+CREATE ROLE auth_pg_roles_a
+
+statement ok
+CREATE ROLE auth_pg_roles_b PASSWORD 'secret'
+
+query TTT
+SELECT rolname, rolpassword, rolconfig::text FROM pg_roles WHERE rolname LIKE 'auth\_pg\_roles\_%' ORDER BY rolname
+----
+auth_pg_roles_a ******** NULL
+auth_pg_roles_b ******** NULL
+
+# ロール OID は 16384 以上
+query B
+SELECT min(oid::int) >= 16384 FROM pg_roles WHERE rolname LIKE 'auth\_pg\_roles\_%'
+----
+t
+
+# スーパーユーザー
+query TB
+SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'postgres'
+----
+postgres t
+
+# 所属関係は無い
+query I
+SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname LIKE 'auth\_pg\_roles\_%'
+----
+0
+
+# ビューなので INSERT できない
+statement error (55000)
+INSERT INTO pg_roles (rolname) VALUES ('auth_pg_roles_x')
+
+# ROLLBACK で CREATE ROLE が消える
+statement ok
+BEGIN
+
+statement ok
+CREATE ROLE auth_pg_roles_c
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_pg_roles_c'
+----
+1
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_pg_roles_c'
+----
+0
+
+# COMMIT 前は別接続から見えない（ロールの作成は待ちを起こさない）
+connection con_w
+statement ok
+BEGIN
+
+connection con_w
+statement ok
+CREATE ROLE auth_pg_roles_d
+
+connection con_w
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_pg_roles_d'
+----
+1
+
+connection con_r
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_pg_roles_d'
+----
+0
+
+connection con_w
+statement ok
+COMMIT
+
+connection con_r
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_pg_roles_d'
+----
+1
+
+statement ok
+DROP ROLE auth_pg_roles_a, auth_pg_roles_b, auth_pg_roles_d

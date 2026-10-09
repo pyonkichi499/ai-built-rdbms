@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# PostgreSQL 17 の pg_proc から builtin.rs の BuiltinProc 行を生成する（手で写さない）。
+# PostgreSQL 17 の pg_proc から catalog/builtin/*.rs の BuiltinProc 行を生成する（手で写さない）。
 #
 #   tools/gen_procs.sh [--agg] [OID...]
 #
-# OID を引数か標準入力（空白・改行区切り）で渡す。--agg のときは builtin.rs の AGGREGATES の OID を使う。
+# OID を引数か標準入力（空白・改行区切り）で渡す。--agg のときは catalog/builtin/core.rs の AGGREGATES の OID を使う。
 # 接続先: PGHOST（既定 127.0.0.1）、PGPORT（既定 55432）、PGUSER（既定 postgres）、PGDATABASE（既定 postgres）。
 # 先に sandbox/pg.sh start で PG17 を起動しておく。出力は oid 昇順。
 set -euo pipefail
 
 export PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-55432}" PGUSER="${PGUSER:-postgres}" PGDATABASE="${PGDATABASE:-postgres}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILTIN="$ROOT/impl/rust/crates/yuzhu-core/src/catalog/builtin.rs"
+BUILTIN="$ROOT/impl/rust/crates/yuzhu-core/src/catalog/builtin/core.rs"
 
 oids=()
 if [ "${1:-}" = "--agg" ]; then

@@ -11,7 +11,6 @@ yuzhu だけで意味を持つ検査は `# YUZHU-ONLY: 理由`。PG 側 `skipif 
 | KD-2 | `FULL JOIN ... ON true`（ハッシュ可能な等値のない FULL）は `0A000`。PostgreSQL は通す | 03-Q1、04-D10 |
 | KD-3 | `LATERAL`（明示・暗黙）は `0A000` | 03-Q5 |
 | KD-4 | `WITH RECURSIVE` の再帰、データ変更 CTE、`WITH ... INSERT/UPDATE/DELETE` は `0A000` | 03-Q6、03-Q7 |
-| KD-5 | `IS [NOT] DISTINCT FROM` は `0A000`（M4 後半の任意項目で入れるかもしれない） | 03-Q12 |
 | KD-6 | `FOR UPDATE` / `FOR SHARE` は `0A000` | 03 §8 |
 | KD-7 | ウィンドウ関数、`GROUPING SETS` / `ROLLUP` / `CUBE`、集約内の `ORDER BY`、`string_agg` ほか未対応の集約は `0A000` | 00 §3、03-Q16 |
 | KD-8 | 外側の問い合わせに属する集約（`(select max(t.a))`）は `0A000` | 03-Q4、02-Q4 |

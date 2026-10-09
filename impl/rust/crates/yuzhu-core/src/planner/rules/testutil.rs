@@ -48,6 +48,9 @@ fn table_def(oid: Oid, name: &str, columns: Vec<ColumnDef>) -> TableDef {
         indexes: Vec::new(),
         sequence: None,
         identity_seqs: Vec::new(),
+        key_columns: Vec::new(),
+        foreign_keys: Vec::new(),
+        referenced_by: Vec::new(),
     }
 }
 
@@ -217,6 +220,8 @@ impl TableStore for BlocksStore {
         _w: &WriteCtx,
         _snap: &Snapshot,
         _tid: Tid,
+        _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+        _crosscheck: Option<&Snapshot>,
     ) -> Result<TmResult> {
         unused()
     }
@@ -227,6 +232,8 @@ impl TableStore for BlocksStore {
         _snap: &Snapshot,
         _tid: Tid,
         _new_row: &[Datum],
+        _wait: Option<&crate::txn::lock::WaitCtx<'_>>,
+        _crosscheck: Option<&Snapshot>,
     ) -> Result<UpdateOutcome> {
         unused()
     }

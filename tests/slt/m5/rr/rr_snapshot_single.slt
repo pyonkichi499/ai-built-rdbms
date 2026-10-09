@@ -1,0 +1,89 @@
+# RR のスナップショット（1 接続。自分の変更は見える）
+
+statement ok
+DROP TABLE IF EXISTS rr_rr_snapshot_single_t
+
+statement ok
+CREATE TABLE rr_rr_snapshot_single_t (id int PRIMARY KEY, v int)
+
+statement ok
+INSERT INTO rr_rr_snapshot_single_t VALUES (1, 10), (2, 20)
+
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+query I
+SELECT count(*) FROM rr_rr_snapshot_single_t
+----
+2
+
+# 自分の INSERT / UPDATE / DELETE は同じトランザクションから見える
+statement ok
+INSERT INTO rr_rr_snapshot_single_t VALUES (3, 30)
+
+statement ok
+UPDATE rr_rr_snapshot_single_t SET v = v + 1 WHERE id = 1
+
+statement ok
+DELETE FROM rr_rr_snapshot_single_t WHERE id = 2
+
+query II
+SELECT id, v FROM rr_rr_snapshot_single_t ORDER BY id
+----
+1 11
+3 30
+
+statement ok
+UPDATE rr_rr_snapshot_single_t SET v = v + 1 WHERE id = 1
+
+query I
+SELECT v FROM rr_rr_snapshot_single_t WHERE id = 1
+----
+12
+
+statement ok
+ROLLBACK
+
+query II
+SELECT id, v FROM rr_rr_snapshot_single_t ORDER BY id
+----
+1 10
+2 20
+
+# 最初の文が書き込みでも同じ
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+statement ok
+UPDATE rr_rr_snapshot_single_t SET v = 0
+
+query II
+SELECT id, v FROM rr_rr_snapshot_single_t ORDER BY id
+----
+1 0
+2 0
+
+statement ok
+COMMIT
+
+query II
+SELECT id, v FROM rr_rr_snapshot_single_t ORDER BY id
+----
+1 0
+2 0
+
+# 失敗した文のあとは 25P02
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+statement error (23505)
+INSERT INTO rr_rr_snapshot_single_t VALUES (1, 1)
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE rr_rr_snapshot_single_t

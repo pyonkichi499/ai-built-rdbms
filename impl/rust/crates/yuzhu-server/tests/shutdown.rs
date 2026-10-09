@@ -227,6 +227,7 @@ fn restart_on_a_real_directory_keeps_committed_data() {
             no_sync: true,
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
             wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
+            ..InitdbOptions::default()
         },
     )
     .unwrap();
@@ -265,6 +266,7 @@ fn second_server_on_the_same_directory_is_refused() {
             no_sync: true,
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
             wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
+            ..InitdbOptions::default()
         },
     )
     .unwrap();
@@ -292,6 +294,7 @@ fn unclean_directory_is_recovered_on_the_next_start() {
             no_sync: true,
             rel_seg_blocks: DEFAULT_RELSEG_SIZE,
             wal_segment_size: DEFAULT_WAL_SEGMENT_SIZE,
+            ..InitdbOptions::default()
         },
     )
     .unwrap();

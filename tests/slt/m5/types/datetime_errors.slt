@@ -1,0 +1,513 @@
+# 日時型のエラー（22007・22008・22009・22015・22023・42846・42883）
+# 接頭辞: types_datetime_errors_
+
+statement ok
+DROP TABLE IF EXISTS types_datetime_errors_t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+# 22007: 書式
+
+statement error (22007)
+SELECT date 'foo'
+
+statement error (22007)
+SELECT date ''
+
+statement error (22007)
+SELECT timestamp 'foo'
+
+statement error (22007)
+SELECT timestamp '2024-03-04 foo'
+
+statement error (22007)
+SELECT timestamptz 'foo'
+
+statement error (22007)
+SELECT date '2024-03'
+
+statement error (22007)
+SELECT date '2024/13/45/67'
+
+statement error (22007)
+SELECT timestamp '2024-03-04T25'
+
+statement error (22007)
+SELECT interval 'foo'
+
+statement error (22007)
+SELECT time 'foo'
+
+statement error (22007)
+SELECT timestamp '04:05:06'
+
+statement error (22007)
+SELECT '2024-03-04 05:06:07'::date::text::interval
+
+statement error (22007)
+SELECT 'abc'::timestamp
+
+statement error (22007)
+SELECT 'abc'::timestamptz
+
+statement error (22007)
+SELECT 'abc'::date
+
+statement error (22007)
+SELECT 'abc'::time
+
+statement error (22007)
+SELECT 'abc'::interval
+
+# 22008: 範囲
+
+statement error (22008)
+SELECT date '2024-13-01'
+
+
+statement error (22008)
+SELECT date '2024-02-30'
+
+statement error (22008)
+SELECT date '2023-02-29'
+
+statement error (22008)
+SELECT date '2024-04-31'
+
+statement error (22008)
+SELECT date '2024-00-10'
+
+
+statement error (22008)
+SELECT date '2024-01-00'
+
+
+statement error (22008)
+SELECT date '5874898-01-01'
+
+statement error (22008)
+SELECT date '0000-01-01'
+
+statement error (22008)
+SELECT timestamp '2024-03-04 24:00:01'
+
+statement error (22008)
+SELECT timestamp '2024-03-04 25:00:00'
+
+statement error (22008)
+SELECT timestamp '2024-03-04 12:60:00'
+
+statement error (22008)
+SELECT timestamp '2024-03-04 12:00:61'
+
+statement error (22008)
+SELECT timestamp '294277-01-01 00:00:00'
+
+statement error (22008)
+SELECT timestamptz '294277-01-01 00:00:00+00'
+
+statement error (22009)
+SELECT timestamptz '2024-03-04 05:06:07+99'
+
+statement error (22008)
+SELECT time '24:00:01'
+
+statement error (22008)
+SELECT time '25:00'
+
+statement error (22008)
+SELECT date '2024-03-04' + 2147483647
+
+statement error (22008)
+SELECT date '5874897-12-31' + 1
+
+statement error (22008)
+SELECT date '4714-11-23 BC' - 1
+
+statement error (22008)
+SELECT timestamp '294276-12-31 23:59:59' + interval '1 year'
+
+statement error (22008)
+SELECT timestamp '4713-01-01 BC' - interval '1000 years'
+
+statement error (22008)
+SELECT to_timestamp(1e18)
+
+statement error (22008)
+SELECT make_date(2024, 13, 1)
+
+statement error (22008)
+SELECT make_date(2024, 2, 30)
+
+statement error (22008)
+SELECT make_date(2024, 0, 1)
+
+statement error (22008)
+SELECT make_date(0, 1, 1)
+
+statement error (22008)
+SELECT make_timestamp(2024, 3, 4, 25, 0, 0)
+
+statement error (22008)
+SELECT make_timestamp(2024, 3, 4, 5, 60, 0)
+
+statement error (22008)
+SELECT make_timestamp(2024, 3, 4, 5, 6, 61)
+
+statement error (22008)
+SELECT make_timestamp(2024, 2, 30, 0, 0, 0)
+
+statement error (22008)
+SELECT make_timestamptz(2024, 13, 1, 0, 0, 0)
+
+# 22009: タイムゾーン
+
+statement error (22023)
+SELECT timestamptz '2024-03-04 05:06:07' AT TIME ZONE 'Mars/Olympus'
+
+statement error (22023)
+SELECT make_timestamptz(2024, 3, 4, 5, 6, 7, 'Mars/Olympus')
+
+# 22015: interval のフィールド
+
+statement error (22015)
+SELECT interval '9999999999 years'
+
+statement error (22015)
+SELECT interval '99999999999 days'
+
+statement error (22015)
+SELECT interval '99999999999999 hours'
+
+statement error (22012)
+SELECT interval '1 day' / 0
+
+statement error (22008)
+SELECT interval '1 day' * 1e30
+
+statement error (22008)
+SELECT interval '2147483647 days' + interval '1 day'
+
+statement error (22008)
+SELECT interval '2147483647 mon' + interval '1 mon'
+
+statement error (22023)
+SELECT date_trunc('foo', timestamp '2024-03-04')
+
+statement error (22023)
+SELECT date_trunc('foo', timestamptz '2024-03-04 00:00+00')
+
+statement error (22023)
+SELECT date_trunc('foo', interval '1 day')
+
+statement error (22023)
+SELECT date_trunc('day', timestamptz '2024-03-04 00:00+00', 'Mars/Olympus')
+
+statement error (22023)
+SELECT extract(foo from timestamp '2024-03-04')
+
+statement error (22023)
+SELECT extract(foo from date '2024-03-04')
+
+statement error (22023)
+SELECT extract(foo from interval '1 day')
+
+statement error (0A000)
+SELECT extract(hour from date '2024-03-04')
+
+statement error (0A000)
+SELECT extract(timezone from timestamp '2024-03-04')
+
+statement error (0A000)
+SELECT extract(dow from interval '1 day')
+
+statement error (22023)
+SELECT date_part('foo', timestamp '2024-03-04')
+
+statement error (22023)
+SELECT generate_series(timestamp '2024-03-04', timestamp '2024-03-05', interval '0 days')::text
+
+statement error (42601)
+SELECT '2024-03-04'::timestamp(-1)
+
+statement error (42601)
+SELECT timestamp(1, 2) '2024-03-04'
+
+# 42846: 存在しないキャスト
+
+statement error (42846)
+SELECT 1::date
+
+statement error (42846)
+SELECT 1::timestamp
+
+statement error (42846)
+SELECT 1::timestamptz
+
+statement error (42846)
+SELECT 1::interval
+
+statement error (42846)
+SELECT 1.5::interval
+
+statement error (42846)
+SELECT true::date
+
+statement error (42846)
+SELECT date '2024-03-04'::int
+
+statement error (42846)
+SELECT timestamp '2024-03-04'::int
+
+statement error (42846)
+SELECT interval '1 day'::int
+
+statement error (42846)
+SELECT interval '1 day'::float8
+
+statement error (42846)
+SELECT interval '1 day'::date
+
+statement error (42846)
+SELECT interval '1 day'::timestamp
+
+statement error (42846)
+SELECT time '04:05:06'::date
+
+statement error (42846)
+SELECT time '04:05:06'::timestamp
+
+statement error (42846)
+SELECT time '04:05:06'::timestamptz
+
+statement error (42846)
+SELECT date '2024-03-04'::time
+
+statement error (42846)
+SELECT date '2024-03-04'::interval
+
+statement error (42846)
+SELECT timestamp '2024-03-04'::interval
+
+# 42883: 存在しない演算子・関数
+
+statement error (42883)
+SELECT date '2024-03-04' + date '2024-03-04'
+
+
+statement error (42883)
+SELECT date '2024-03-04' * 2
+
+
+statement error (42883)
+SELECT timestamp '2024-03-04' + timestamp '2024-03-04'
+
+
+statement error (42883)
+SELECT timestamp '2024-03-04' + 1
+
+
+statement error (42883)
+SELECT timestamp '2024-03-04' - 1
+
+
+statement error (42883)
+SELECT timestamptz '2024-03-04 00:00+00' + timestamptz '2024-03-04 00:00+00'
+
+
+statement error (42883)
+SELECT timestamp '2024-03-04' = date_trunc('day', 1)
+
+
+statement error (42883)
+SELECT interval '1 day' * interval '1 day'
+
+
+statement error (42883)
+SELECT interval '1 day' / interval '1 day'
+
+
+statement error (42883)
+SELECT interval '1 day' + 1
+
+
+statement error (42883)
+SELECT interval '1 day' < 1
+
+
+statement error (42883)
+SELECT 1 + interval '1 day'
+
+
+statement error (42725)
+SELECT time '04:05:06' + time '04:05:06'
+
+
+statement error (42883)
+SELECT time '04:05:06' + 1
+
+
+statement error (42883)
+SELECT time '04:05:06' < 1
+
+
+statement error (42883)
+SELECT timestamp '2024-03-04' < 1
+
+
+statement error (42883)
+SELECT date '2024-03-04' < 1
+
+
+statement error (42883)
+SELECT date '2024-03-04' < interval '1 day'
+
+
+statement error (42883)
+SELECT age(1)
+
+
+statement error (42883)
+SELECT age(1, 2)
+
+
+statement error (42883)
+SELECT isfinite(1)
+
+
+statement error (42725)
+SELECT isfinite('2024-03-04')
+
+
+statement error (42883)
+SELECT justify_days(1)
+
+
+statement error (22P02)
+SELECT make_date('a', 1, 1)
+
+statement error (42883)
+SELECT make_date(1, 1)
+
+
+statement error (22P02)
+SELECT make_interval('a')
+
+statement error (42883)
+SELECT to_timestamp('abc'::bytea)
+
+
+statement error (42883)
+SELECT extract(year from 1)
+
+
+statement error (42883)
+SELECT extract(year from 'abc'::text)
+
+
+statement error (42883)
+SELECT date_trunc('day', 1)
+
+
+statement error (42883)
+SELECT date_trunc('day', 'abc'::text)
+
+
+statement error (42883)
+SELECT sum(date '2024-03-04')
+
+
+statement error (42883)
+SELECT avg(timestamp '2024-03-04')
+
+
+statement error (42883)
+SELECT sum(timestamp '2024-03-04')
+
+
+statement error (42883)
+SELECT avg(date '2024-03-04')
+
+
+statement error (42883)
+SELECT sum(timestamptz '2024-03-04 00:00+00')
+
+
+statement error (42883)
+SELECT -date '2024-03-04'
+
+
+statement error (42883)
+SELECT -timestamp '2024-03-04'
+
+
+# トランザクションの後始末
+
+statement ok
+CREATE TABLE types_datetime_errors_t (id int, d date, ts timestamp, i interval, t time)
+
+statement error (22007)
+INSERT INTO types_datetime_errors_t VALUES (1, 'foo', NULL, NULL, NULL)
+
+statement error (22007)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, 'foo', NULL, NULL)
+
+statement error (22007)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, NULL, 'foo', NULL)
+
+statement error (22007)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, NULL, NULL, 'foo')
+
+statement error (22008)
+INSERT INTO types_datetime_errors_t VALUES (1, '2024-02-30', NULL, NULL, NULL)
+
+statement error (22008)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, NULL, NULL, '25:00')
+
+statement error (42804)
+INSERT INTO types_datetime_errors_t VALUES (1, 1, NULL, NULL, NULL)
+
+
+statement error (42804)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, 1, NULL, NULL)
+
+
+statement error (42804)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, NULL, 1, NULL)
+
+
+statement error (42804)
+INSERT INTO types_datetime_errors_t VALUES (1, NULL, NULL, NULL, 1)
+
+
+statement error (42804)
+UPDATE types_datetime_errors_t SET d = 1
+
+
+statement error (42804)
+UPDATE types_datetime_errors_t SET ts = 1.5
+
+
+query I
+SELECT count(*) FROM types_datetime_errors_t
+----
+0
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_datetime_errors_t

@@ -1,0 +1,39 @@
+# フェーズ 2: 本体のコミットだけが残る。other の未コミットの INSERT / UPDATE は見えず、
+# other がロックしていた行 1・4 も、ロックされずにすぐ書ける。
+
+statement ok
+SET lock_timeout = '5s'
+
+query IT
+SELECT id, v FROM crm5_01_t ORDER BY id
+----
+1 a
+2 bb
+3 cc
+4 d
+
+statement count 1
+UPDATE crm5_01_t SET v = 'aa' WHERE id = 1
+
+statement count 1
+DELETE FROM crm5_01_t WHERE id = 4
+
+query IT
+SELECT id, v FROM crm5_01_t WHERE id IN (2, 3) ORDER BY id FOR UPDATE NOWAIT
+----
+2 bb
+3 cc
+
+statement count 1
+INSERT INTO crm5_01_t VALUES (100, 'new')
+
+query IT
+SELECT id, v FROM crm5_01_t ORDER BY id
+----
+1 aa
+2 bb
+3 cc
+100 new
+
+statement ok
+DROP TABLE crm5_01_t

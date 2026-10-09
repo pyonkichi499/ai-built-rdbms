@@ -44,6 +44,7 @@ fn not_supported_for(kind: RelKind) -> &'static str {
         RelKind::Sequence => "This operation is not supported for sequences.",
         RelKind::Index => "This operation is not supported for indexes.",
         RelKind::Table => "This operation is not supported for tables.",
+        RelKind::Virtual => "This operation is not supported for views.",
     }
 }
 
@@ -92,7 +93,7 @@ impl Analyzer<'_> {
         let table = match self.lookup_relation(&ci.table)? {
             None => return Err(does_not_exist(&ci.table)),
             Some((_, RelKind::Table)) => self.relation_def(&ci.table)?,
-            Some((_, RelKind::Sequence)) => {
+            Some((_, kind @ (RelKind::Sequence | RelKind::Virtual))) => {
                 return Err(Error::new(
                     sqlstate::WRONG_OBJECT_TYPE,
                     format!(
@@ -100,7 +101,7 @@ impl Analyzer<'_> {
                         ci.table.name().value
                     ),
                 )
-                .with_detail(not_supported_for(RelKind::Sequence))
+                .with_detail(not_supported_for(kind))
                 .with_span(ci.table.span));
             }
             Some((_, RelKind::Index)) => {
@@ -244,6 +245,9 @@ impl Analyzer<'_> {
                 Some((_, RelKind::Sequence)) => {
                     return Err(wrong("Use DROP SEQUENCE to remove a sequence."));
                 }
+                Some((_, RelKind::Virtual)) => {
+                    return Err(wrong("Use DROP VIEW to remove a view."));
+                }
                 Some((_, RelKind::Index)) => {
                     let schema = n.schema().map(|s| s.value.as_str());
                     let Some(idx) = self.catalog.index_by_name(schema, &n.name().value)? else {
@@ -288,6 +292,9 @@ impl Analyzer<'_> {
                 }
                 Some((_, RelKind::Sequence)) => {
                     return Err(wrong("Use DROP SEQUENCE to remove a sequence."));
+                }
+                Some((_, RelKind::Virtual)) => {
+                    return Err(wrong("Use DROP VIEW to remove a view."));
                 }
                 Some((_, RelKind::Table)) => {
                     let t = self.relation_def(n)?;
@@ -507,42 +514,66 @@ mod tests {
         let Statement::CreateIndex(ci) = parse1(sql) else {
             panic!("not CREATE INDEX: {sql}");
         };
-        Analyzer { catalog: c }.analyze_create_index(&ci)
+        Analyzer {
+            catalog: c,
+            params: None,
+        }
+        .analyze_create_index(&ci)
     }
 
     fn drop_index(c: &FakeCatalog, sql: &str) -> Result<BoundDropIndex> {
         let Statement::DropIndex(d) = parse1(sql) else {
             panic!("not DROP INDEX: {sql}");
         };
-        Analyzer { catalog: c }.analyze_drop_index(&d)
+        Analyzer {
+            catalog: c,
+            params: None,
+        }
+        .analyze_drop_index(&d)
     }
 
     fn drop_table(c: &FakeCatalog, sql: &str) -> Result<BoundDropTable> {
         let Statement::DropTable(d) = parse1(sql) else {
             panic!("not DROP TABLE: {sql}");
         };
-        Analyzer { catalog: c }.analyze_drop_table_behavior(&d)
+        Analyzer {
+            catalog: c,
+            params: None,
+        }
+        .analyze_drop_table_behavior(&d)
     }
 
     fn alter(c: &FakeCatalog, sql: &str) -> Result<BoundAlterTable> {
         let Statement::AlterTable(a) = parse1(sql) else {
             panic!("not ALTER TABLE: {sql}");
         };
-        Analyzer { catalog: c }.analyze_alter_table(&a)
+        Analyzer {
+            catalog: c,
+            params: None,
+        }
+        .analyze_alter_table(&a)
     }
 
     fn truncate(c: &FakeCatalog, sql: &str) -> Result<BoundTruncate> {
         let Statement::Truncate(t) = parse1(sql) else {
             panic!("not TRUNCATE: {sql}");
         };
-        Analyzer { catalog: c }.analyze_truncate(&t)
+        Analyzer {
+            catalog: c,
+            params: None,
+        }
+        .analyze_truncate(&t)
     }
 
     fn vacuum(c: &FakeCatalog, sql: &str) -> Result<BoundVacuum> {
         let Statement::Vacuum(v) = parse1(sql) else {
             panic!("not VACUUM: {sql}");
         };
-        Analyzer { catalog: c }.analyze_vacuum(&v)
+        Analyzer {
+            catalog: c,
+            params: None,
+        }
+        .analyze_vacuum(&v)
     }
 
     fn check<T: std::fmt::Debug>(r: Result<T>, state: &str, message: &str) -> Error {

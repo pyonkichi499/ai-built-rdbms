@@ -211,8 +211,14 @@ fn run_case(o: &Opts, domain: &str, case: u64) -> Result<CaseResult, String> {
             continue;
         }
         let (sp, sy) = (pg.send(sql), yz.send(sql));
-        let rp = pg.finish(sql, sp, o.timeout);
-        let ry = yz.finish(sql, sy, o.timeout);
+        // CHECKPOINT は全バッファの書き出しと fsync を伴い、PG を共有して並列に流す環境では 10 秒を超えることがある（負荷による揺らぎ）。
+        let timeout = if sql.trim_start().starts_with("CHECKPOINT") {
+            o.timeout * 6
+        } else {
+            o.timeout
+        };
+        let rp = pg.finish(sql, sp, timeout);
+        let ry = yz.finish(sql, sy, timeout);
         if o.verbose {
             eprintln!(
                 "[{i}] {sql}\n    pg:    {}\n    yuzhu: {}",

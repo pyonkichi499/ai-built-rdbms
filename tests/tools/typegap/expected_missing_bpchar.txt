@@ -1,0 +1,35 @@
+# PG17 にあって yuzhu にない行（kind<TAB>id<TAB>name<TAB>分類<TAB>理由）。m5/05 §5.2 の分類: M6 / 不要 / 型なし
+cast	1042>1042	if	不要	typmod の長さ強制の行は入れない（8 点チェックリスト 5）
+cast	1042>142	ef	型なし	money / jsonb / xml / inet / cidr は未実装の型
+cast	142>1042	ab	型なし	money / jsonb / xml / inet / cidr は未実装の型
+cast	650>1042	af	型なし	money / jsonb / xml / inet / cidr は未実装の型
+cast	869>1042	af	型なし	money / jsonb / xml / inet / cidr は未実装の型
+oper	2326	~<~	M6	pattern_ops は M6（行を作らない）
+oper	2327	~<=~	M6	pattern_ops は M6（行を作らない）
+oper	2329	~>=~	M6	pattern_ops は M6（行を作らない）
+oper	2330	~>~	M6	pattern_ops は M6（行を作らない）
+proc	1063	bpchar_larger	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	1064	bpchar_smaller	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	1080	hashbpchar	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	2174	bpchar_pattern_lt	M6	pattern_ops は M6（行を作らない）
+proc	2175	bpchar_pattern_le	M6	pattern_ops は M6（行を作らない）
+proc	2177	bpchar_pattern_ge	M6	pattern_ops は M6（行を作らない）
+proc	2178	bpchar_pattern_gt	M6	pattern_ops は M6（行を作らない）
+proc	2180	btbpchar_pattern_cmp	M6	pattern_ops は M6（行を作らない）
+proc	2244	max	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	2245	min	不要	集約（AGGREGATES が持つ）または内部の補助
+proc	668	bpchar	不要	内部の補助・typmod 強制・extract(numeric) は TD
+proc	972	hashbpcharextended	不要	内部の補助・typmod 強制・extract(numeric) は TD
+amop	2097:1	2326	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	2097:2	2327	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	2097:3	1054	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	2097:4	2329	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	2097:5	2330	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	2231:1	1054	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4076:1	1058	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4076:2	1059	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4076:3	1054	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4076:4	1061	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4076:5	1060	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	427:1	1054	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）
+amop	4586:1	1054	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）

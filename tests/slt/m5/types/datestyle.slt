@@ -1,0 +1,514 @@
+# DateStyle の出力形式・日付順・入力・SET LOCAL
+# 接頭辞: types_datestyle_
+
+statement ok
+DROP TABLE IF EXISTS types_datestyle_t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+statement ok
+CREATE TABLE types_datestyle_t (id int, d date, ts timestamp, tz timestamptz)
+
+statement ok
+INSERT INTO types_datestyle_t VALUES (1, '2024-03-04', '2024-03-04 05:06:07.89', '2024-03-04 05:06:07.89+00'), (2, '1999-12-31', '1999-12-31 23:59:59', '1999-12-31 23:59:59+09')
+
+statement ok
+INSERT INTO types_datestyle_t VALUES (3, '2024-01-02', '2024-01-02 00:00:00', '2024-01-02 00:00:00+00')
+
+# ISO
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	2024-03-04	2024-03-04 05:06:07.89	2024-03-04 05:06:07.89+00
+2	1999-12-31	1999-12-31 23:59:59	1999-12-31 14:59:59+00
+3	2024-01-02	2024-01-02 00:00:00	2024-01-02 00:00:00+00
+
+statement ok
+SET DateStyle = 'ISO, DMY'
+
+query T
+SHOW DateStyle
+----
+ISO, DMY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	2024-03-04	2024-03-04 05:06:07.89	2024-03-04 05:06:07.89+00
+2	1999-12-31	1999-12-31 23:59:59	1999-12-31 14:59:59+00
+3	2024-01-02	2024-01-02 00:00:00	2024-01-02 00:00:00+00
+
+# SQL
+
+statement ok
+SET DateStyle = 'SQL, MDY'
+
+query T
+SHOW DateStyle
+----
+SQL, MDY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	03/04/2024	03/04/2024 05:06:07.89	03/04/2024 05:06:07.89 UTC
+2	12/31/1999	12/31/1999 23:59:59	12/31/1999 14:59:59 UTC
+3	01/02/2024	01/02/2024 00:00:00	01/02/2024 00:00:00 UTC
+
+statement ok
+SET DateStyle = 'SQL, DMY'
+
+query T
+SHOW DateStyle
+----
+SQL, DMY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	04/03/2024	04/03/2024 05:06:07.89	04/03/2024 05:06:07.89 UTC
+2	31/12/1999	31/12/1999 23:59:59	31/12/1999 14:59:59 UTC
+3	02/01/2024	02/01/2024 00:00:00	02/01/2024 00:00:00 UTC
+
+# Postgres
+
+statement ok
+SET DateStyle = 'Postgres, MDY'
+
+query T
+SHOW DateStyle
+----
+Postgres, MDY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	03-04-2024	Mon Mar 04 05:06:07.89 2024	Mon Mar 04 05:06:07.89 2024 UTC
+2	12-31-1999	Fri Dec 31 23:59:59 1999	Fri Dec 31 14:59:59 1999 UTC
+3	01-02-2024	Tue Jan 02 00:00:00 2024	Tue Jan 02 00:00:00 2024 UTC
+
+statement ok
+SET DateStyle = 'Postgres, DMY'
+
+query T
+SHOW DateStyle
+----
+Postgres, DMY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	04-03-2024	Mon 04 Mar 05:06:07.89 2024	Mon 04 Mar 05:06:07.89 2024 UTC
+2	31-12-1999	Fri 31 Dec 23:59:59 1999	Fri 31 Dec 14:59:59 1999 UTC
+3	02-01-2024	Tue 02 Jan 00:00:00 2024	Tue 02 Jan 00:00:00 2024 UTC
+
+# German
+
+statement ok
+SET DateStyle = 'German'
+
+query T
+SHOW DateStyle
+----
+German, DMY
+
+query ITTT
+SELECT id, d::text, ts::text, tz::text FROM types_datestyle_t ORDER BY id
+----
+1	04.03.2024	04.03.2024 05:06:07.89	04.03.2024 05:06:07.89 UTC
+2	31.12.1999	31.12.1999 23:59:59	31.12.1999 14:59:59 UTC
+3	02.01.2024	02.01.2024 00:00:00	02.01.2024 00:00:00 UTC
+
+statement ok
+SET DateStyle = 'German, MDY'
+
+query T
+SHOW DateStyle
+----
+German, MDY
+
+# 順序だけを変える（形式は保つ）
+
+statement ok
+SET DateStyle = 'SQL'
+
+query T
+SHOW DateStyle
+----
+SQL, MDY
+
+statement ok
+SET DateStyle = 'DMY'
+
+query T
+SHOW DateStyle
+----
+SQL, DMY
+
+query T
+SELECT d::text FROM types_datestyle_t WHERE id = 1
+----
+04/03/2024
+
+statement ok
+SET DateStyle = 'YMD'
+
+query T
+SHOW DateStyle
+----
+SQL, YMD
+
+query T
+SELECT (date '04/05/06')::text
+----
+05/06/2004
+
+query T
+SELECT (date '2024-03-04')::text
+----
+03/04/2024
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+# 入力の日付順
+
+query T
+SELECT (date '01/02/2024')::text
+----
+2024-01-02
+
+query T
+SELECT (date '12/31/2024')::text
+----
+2024-12-31
+
+query T
+SELECT (date '1/2/2024')::text
+----
+2024-01-02
+
+query T
+SELECT (timestamp '01/02/2024 03:04:05')::text
+----
+2024-01-02 03:04:05
+
+query T
+SELECT (date 'January 8, 1999')::text
+----
+1999-01-08
+
+query T
+SELECT (date '1999-01-08')::text
+----
+1999-01-08
+
+query T
+SELECT (date '19990108')::text
+----
+1999-01-08
+
+query T
+SELECT (date '990108')::text
+----
+1999-01-08
+
+query T
+SELECT (date '08-Jan-1999')::text
+----
+1999-01-08
+
+query T
+SELECT (date 'Jan-08-1999')::text
+----
+1999-01-08
+
+query T
+SELECT (date '1999 Jan 08')::text
+----
+1999-01-08
+
+query T
+SELECT (date '2024.060')::text
+----
+2024-02-29
+
+statement ok
+SET DateStyle = 'ISO, DMY'
+
+query T
+SELECT (date '01/02/2024')::text
+----
+2024-02-01
+
+query T
+SELECT (date '1/2/2024')::text
+----
+2024-02-01
+
+query T
+SELECT (date '31/12/2024')::text
+----
+2024-12-31
+
+query T
+SELECT (timestamp '01/02/2024 03:04:05')::text
+----
+2024-02-01 03:04:05
+
+query T
+SELECT (date '08-01-1999')::text
+----
+1999-01-08
+
+query T
+SELECT (date '990108')::text
+----
+1999-01-08
+
+query T
+SELECT (date 'January 8, 1999')::text
+----
+1999-01-08
+
+query T
+SELECT (date '8.1.1999')::text
+----
+1999-01-08
+
+statement error (22008)
+SELECT date '12/31/2024'
+
+
+statement ok
+SET DateStyle = 'ISO, YMD'
+
+query T
+SELECT (date '01/02/03')::text
+----
+2001-02-03
+
+query T
+SELECT (date '99/01/08')::text
+----
+1999-01-08
+
+query T
+SELECT (date '2024-03-04')::text
+----
+2024-03-04
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement error (22008)
+SELECT date '31/12/2024'
+
+
+statement error (22008)
+SELECT date '2024-13-01'
+
+
+# 出力は date_trunc 等でも同じ形式
+
+statement ok
+SET DateStyle = 'SQL, DMY'
+
+query T
+SELECT (date_trunc('day', timestamp '2024-03-04 05:06:07'))::text
+----
+04/03/2024 00:00:00
+
+query T
+SELECT (timestamp '2024-03-04 05:06:07' + interval '1 day')::text
+----
+05/03/2024 05:06:07
+
+query T
+SELECT ((timestamp '2024-03-04 05:06:07')::date)::text
+----
+04/03/2024
+
+query T
+SELECT (make_date(2024, 3, 4))::text
+----
+04/03/2024
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+# 無限
+
+statement ok
+SET DateStyle = 'SQL, MDY'
+
+query T
+SELECT (date 'infinity')::text
+----
+infinity
+
+query T
+SELECT (date '-infinity')::text
+----
+-infinity
+
+query T
+SELECT (timestamp 'infinity')::text
+----
+infinity
+
+query T
+SELECT (timestamptz '-infinity')::text
+----
+-infinity
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+# SET LOCAL / ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+SET LOCAL DateStyle = 'German'
+
+query T
+SHOW DateStyle
+----
+German, DMY
+
+query T
+SELECT (date '2024-03-04')::text
+----
+04.03.2024
+
+statement ok
+ROLLBACK
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+query T
+SELECT (date '2024-03-04')::text
+----
+2024-03-04
+
+statement ok
+BEGIN
+
+statement ok
+SET DateStyle = 'SQL, DMY'
+
+statement ok
+ROLLBACK
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+statement ok
+BEGIN
+
+statement ok
+SET DateStyle = 'SQL, DMY'
+
+statement ok
+COMMIT
+
+query T
+SHOW DateStyle
+----
+SQL, DMY
+
+statement ok
+RESET DateStyle
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+statement ok
+SET DateStyle TO 'sql', 'dmy'
+
+query T
+SHOW DateStyle
+----
+SQL, DMY
+
+statement ok
+SET DateStyle = DEFAULT
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+statement ok
+SET DateStyle TO ISO, MDY
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+# 不正値
+
+statement error (22023)
+SET DateStyle = 'bogus'
+
+
+statement error (22023)
+SET DateStyle = 'ISO, bogus'
+
+
+statement error (22023)
+SET DateStyle = 'ISO, MDY, DMY'
+
+
+query T
+SHOW DateStyle
+----
+ISO, MDY
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_datestyle_t

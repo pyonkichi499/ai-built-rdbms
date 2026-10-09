@@ -137,7 +137,15 @@ impl TableStore for FakeStore {
         rows.push(Some(row.to_vec()));
         Ok(tid_of(rows.len() - 1))
     }
-    fn delete(&self, rel: &RelHandle, w: &WriteCtx, _: &Snapshot, tid: Tid) -> Result<TmResult> {
+    fn delete(
+        &self,
+        rel: &RelHandle,
+        w: &WriteCtx,
+        _: &Snapshot,
+        tid: Tid,
+        _: Option<&crate::txn::lock::WaitCtx<'_>>,
+        _: Option<&Snapshot>,
+    ) -> Result<TmResult> {
         self.writes.lock().unwrap().push((w.xid, w.cid));
         if let Some(r) = self.forced.lock().unwrap().pop_front() {
             return Ok(r);
@@ -158,12 +166,15 @@ impl TableStore for FakeStore {
         _: &Snapshot,
         tid: Tid,
         new_row: &[Datum],
+        _: Option<&crate::txn::lock::WaitCtx<'_>>,
+        _: Option<&Snapshot>,
     ) -> Result<UpdateOutcome> {
         self.writes.lock().unwrap().push((w.xid, w.cid));
         if let Some(r) = self.forced.lock().unwrap().pop_front() {
             return Ok(UpdateOutcome {
                 result: r,
                 new_tid: None,
+                lockmode: crate::txn::LockTupleMode::NoKeyExclusive,
             });
         }
         let mut t = self.tables.lock().unwrap();
@@ -175,11 +186,13 @@ impl TableStore for FakeStore {
                 Ok(UpdateOutcome {
                     result: TmResult::Ok,
                     new_tid: Some(tid_of(rows.len() - 1)),
+                    lockmode: crate::txn::LockTupleMode::NoKeyExclusive,
                 })
             }
             _ => Ok(UpdateOutcome {
                 result: TmResult::Invisible,
                 new_tid: None,
+                lockmode: crate::txn::LockTupleMode::NoKeyExclusive,
             }),
         }
     }
@@ -307,7 +320,7 @@ impl IndexStore for FakeIndexStore {
         key: &[Datum],
         tid: Tid,
         check: UniqueCheck<'_>,
-    ) -> Result<()> {
+    ) -> Result<crate::storage::InsertOutcome> {
         let mut all = self.entries.lock().unwrap();
         let list = all.entry(index.oid).or_default();
         if let UniqueCheck::Check { heap, rel, own_xid } = check
@@ -331,8 +344,8 @@ impl IndexStore for FakeIndexStore {
                         .with_constraint(index.name.clone()));
                     }
                     DirtyResult::Invisible => {}
-                    DirtyResult::WaitFor(_) => {
-                        return Err(Error::internal("unique check would have to wait"));
+                    DirtyResult::WaitFor(x) => {
+                        return Ok(crate::storage::InsertOutcome::WaitFor(x));
                     }
                 }
             }
@@ -343,7 +356,7 @@ impl IndexStore for FakeIndexStore {
                 .is_lt()
         });
         list.insert(pos, (key.to_vec(), tid));
-        Ok(())
+        Ok(crate::storage::InsertOutcome::Inserted)
     }
 
     fn build(

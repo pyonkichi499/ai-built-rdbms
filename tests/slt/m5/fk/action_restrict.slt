@@ -1,0 +1,53 @@
+# FOREIGN KEY: ON DELETE RESTRICT / ON UPDATE RESTRICT
+# 接頭辞: fk_action_restrict_
+
+statement ok
+DROP TABLE IF EXISTS fk_action_restrict_c
+
+statement ok
+DROP TABLE IF EXISTS fk_action_restrict_p
+
+statement ok
+CREATE TABLE fk_action_restrict_p (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE fk_action_restrict_c (n int PRIMARY KEY, pid int REFERENCES fk_action_restrict_p ON DELETE RESTRICT ON UPDATE RESTRICT)
+
+statement ok
+INSERT INTO fk_action_restrict_p VALUES (1, 'a'), (2, 'b')
+
+statement ok
+INSERT INTO fk_action_restrict_c VALUES (1, 1)
+
+statement error (?s)update or delete on table "fk_action_restrict_p" violates foreign key constraint "fk_action_restrict_c_pid_fkey" on table "fk_action_restrict_c".*Key \(id\)=\(1\) is still referenced from table "fk_action_restrict_c"\.
+DELETE FROM fk_action_restrict_p WHERE id = 1
+
+statement error (?s)violates foreign key constraint "fk_action_restrict_c_pid_fkey" on table "fk_action_restrict_c"
+UPDATE fk_action_restrict_p SET id = 10 WHERE id = 1
+
+statement error (23503)
+DELETE FROM fk_action_restrict_p WHERE id = 1
+
+# キー以外の更新、参照されていない行は通る
+statement ok
+UPDATE fk_action_restrict_p SET v = 'x' WHERE id = 1
+
+statement ok
+DELETE FROM fk_action_restrict_p WHERE id = 2
+
+statement ok
+UPDATE fk_action_restrict_c SET pid = NULL
+
+statement ok
+DELETE FROM fk_action_restrict_p WHERE id = 1
+
+query I
+SELECT count(*) FROM fk_action_restrict_p
+----
+0
+
+statement ok
+DROP TABLE fk_action_restrict_c
+
+statement ok
+DROP TABLE fk_action_restrict_p

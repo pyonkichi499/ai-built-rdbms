@@ -1,0 +1,101 @@
+# DROP ROLE: IF EXISTS、複数、存在しない、自分自身、システムのロール
+# 所有物のあるロールの DROP（2BP01）は SET ROLE が要るので Rust のテストで確かめる
+
+statement ok
+DROP ROLE IF EXISTS auth_role_drop_a
+
+statement ok
+DROP ROLE IF EXISTS auth_role_drop_b
+
+statement ok
+DROP ROLE IF EXISTS auth_role_drop_c
+
+statement ok
+CREATE ROLE auth_role_drop_a
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_role_drop_a'
+----
+1
+
+statement ok
+DROP ROLE auth_role_drop_a
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_role_drop_a'
+----
+0
+
+# 存在しない
+statement error (42704)
+DROP ROLE auth_role_drop_a
+
+statement ok
+DROP ROLE IF EXISTS auth_role_drop_a
+
+# 複数
+statement ok
+CREATE ROLE auth_role_drop_a
+
+statement ok
+CREATE ROLE auth_role_drop_b
+
+statement ok
+CREATE ROLE auth_role_drop_c
+
+statement ok
+DROP ROLE auth_role_drop_a, auth_role_drop_b, auth_role_drop_c
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname LIKE 'auth\_role\_drop\_%'
+----
+0
+
+# 複数のうち 1 つが無いとき、IF EXISTS なしは全体が失敗してほかも残る
+statement ok
+CREATE ROLE auth_role_drop_a
+
+statement error (42704)
+DROP ROLE auth_role_drop_a, auth_role_drop_b
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_role_drop_a'
+----
+1
+
+statement ok
+DROP ROLE IF EXISTS auth_role_drop_a, auth_role_drop_b
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname LIKE 'auth\_role\_drop\_%'
+----
+0
+
+# 自分自身
+statement error (55006)
+DROP ROLE postgres
+
+# システムのロール
+statement error (2BP01)
+DROP ROLE pg_database_owner
+
+# ブロック内の DROP はロールバックで戻る
+statement ok
+CREATE ROLE auth_role_drop_a
+
+statement ok
+BEGIN
+
+statement ok
+DROP ROLE auth_role_drop_a
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_roles WHERE rolname = 'auth_role_drop_a'
+----
+1
+
+statement ok
+DROP ROLE auth_role_drop_a

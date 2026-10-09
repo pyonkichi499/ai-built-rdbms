@@ -20,7 +20,9 @@ use crate::wal::{MAX_WAL_SEGMENT_SIZE, MIN_WAL_SEGMENT_SIZE};
 
 /// Path of the control file, relative to the data directory.
 pub const CONTROL_FILE_PATH: &str = "global/yuzhu_control";
-pub const CONTROL_FORMAT_VERSION: u32 = 2;
+/// Format version 3 (M5): `next_multi` at offset 120 and `mock_auth_nonce` at offset 128.
+/// Version 2 is the M3 / M4 layout, which M5 refuses to start on (00 D35).
+pub const CONTROL_FORMAT_VERSION: u32 = 3;
 /// The default WAL segment size (initdb may choose another power of two).
 pub const WAL_SEGMENT_SIZE: u32 = 16 * 1024 * 1024;
 /// `flags` bit 0: `full_page_writes`.
@@ -35,6 +37,12 @@ const SLOT_OFFSET: [u64; 2] = [0, 4096];
 const SLOT_SIZE: usize = 512;
 const CRC_OFFSET: usize = 508;
 const FILE_SIZE: usize = 8192;
+/// Offset of `next_multi` (u64) in a slot. Frozen (99-questions §4).
+const OFFSET_NEXT_MULTI: usize = 120;
+/// Offset of `mock_auth_nonce` in a slot. Frozen (99-questions §4).
+const OFFSET_MOCK_AUTH_NONCE: usize = 128;
+/// Length of `mock_auth_nonce`.
+pub const MOCK_AUTH_NONCE_LEN: usize = 32;
 
 /// The fields of `m2.md` §3.2 (without magic, generation and crc32c).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +65,10 @@ pub struct ControlData {
     pub rel_seg_blocks: u32,
     pub data_layout_version: u32,
     pub builtin_hash: u64,
+    /// Upper bound of the `MultiXactId`s handed out (offset 120; see `02-row-lock-rr.md` §3.7). Never decreases.
+    pub next_multi: u64,
+    /// Cluster-wide secret for the mock SCRAM salt (offset 128; `08-auth-roles.md` §3.3). Never changes.
+    pub mock_auth_nonce: [u8; MOCK_AUTH_NONCE_LEN],
 }
 
 impl ControlData {
@@ -83,6 +95,8 @@ impl ControlData {
             rel_seg_blocks,
             data_layout_version: u32::from(PAGE_LAYOUT_VERSION),
             builtin_hash,
+            next_multi: 1,
+            mock_auth_nonce: [0; MOCK_AUTH_NONCE_LEN],
         }
     }
 }
@@ -162,6 +176,9 @@ fn encode_slot(d: &ControlData, generation: u64) -> [u8; SLOT_SIZE] {
     put_u32(&mut b, 104, d.rel_seg_blocks);
     put_u32(&mut b, 108, d.data_layout_version);
     put_u64(&mut b, 112, d.builtin_hash);
+    put_u64(&mut b, OFFSET_NEXT_MULTI, d.next_multi);
+    b[OFFSET_MOCK_AUTH_NONCE..OFFSET_MOCK_AUTH_NONCE + MOCK_AUTH_NONCE_LEN]
+        .copy_from_slice(&d.mock_auth_nonce);
     let crc = crc32c(&b[..CRC_OFFSET]);
     put_u32(&mut b, CRC_OFFSET, crc);
     b
@@ -194,6 +211,10 @@ fn decode_slot(b: &[u8]) -> Option<(ControlData, u64)> {
         rel_seg_blocks: get_u32(b, 104),
         data_layout_version: get_u32(b, 108),
         builtin_hash: get_u64(b, 112),
+        next_multi: get_u64(b, OFFSET_NEXT_MULTI),
+        mock_auth_nonce: b[OFFSET_MOCK_AUTH_NONCE..OFFSET_MOCK_AUTH_NONCE + MOCK_AUTH_NONCE_LEN]
+            .try_into()
+            .expect("32 bytes"),
     };
     Some((data, get_u64(b, 16)))
 }
@@ -226,7 +247,13 @@ fn invalid_control_file() -> Error {
 
 fn incompatible_format(found: u32) -> Error {
     let detail = if found == 1 {
-        "The database cluster was initialized without WAL (format version 1), but the server requires format version 2.".to_string()
+        format!(
+            "The database cluster was initialized without WAL (format version 1), but the server requires format version {CONTROL_FORMAT_VERSION}."
+        )
+    } else if found == 2 {
+        format!(
+            "The database cluster was initialized by an M3 / M4 server (control file format version 2), which M5 cannot start on; the server requires format version {CONTROL_FORMAT_VERSION}."
+        )
     } else {
         format!(
             "The database cluster has control file format version {found}, but the server requires format version {CONTROL_FORMAT_VERSION}."
@@ -449,6 +476,18 @@ fn validate_update(old: &ControlData, new: &ControlData, allow_xid_decrease: boo
             old.next_xid, new.next_xid
         ));
     }
+    if new.next_multi < old.next_multi {
+        return bad(format!(
+            "control file next_multi must not decrease ({} -> {})",
+            old.next_multi, new.next_multi
+        ));
+    }
+    if new.oldest_xid < old.oldest_xid {
+        return bad(format!(
+            "control file oldest_xid must not decrease ({} -> {})",
+            old.oldest_xid, new.oldest_xid
+        ));
+    }
     if new.next_oid < old.next_oid {
         // Only the wrap-around back to the normal range is allowed.
         let wrapped = old.next_oid > u32::MAX / 2
@@ -464,6 +503,7 @@ fn validate_update(old: &ControlData, new: &ControlData, allow_xid_decrease: boo
     if new.format_version != old.format_version
         || new.system_identifier != old.system_identifier
         || new.page_size != old.page_size
+        || new.mock_auth_nonce != old.mock_auth_nonce
     {
         return bad("control file identity fields must not change".to_string());
     }
@@ -700,8 +740,73 @@ mod tests {
                 .contains("without WAL (format version 1)")
         );
         assert_eq!(e.hint.as_deref(), Some("Re-run yuzhu-initdb."));
-        assert_eq!(CONTROL_FORMAT_VERSION, 2);
+        assert_eq!(CONTROL_FORMAT_VERSION, 3);
         assert_eq!(data().flags, FLAG_FULL_PAGE_WRITES | FLAG_PAGE_CHECKSUMS);
+    }
+
+    #[test]
+    fn m3_m4_format_version_2_is_refused_clearly() {
+        let (_sim, vfs) = setup();
+        let mut d = data();
+        d.format_version = 2;
+        d.catalog_version = 2_026_100_601;
+        ControlFileHandle::create(&vfs, &d).unwrap();
+        let e = ControlFileHandle::open(&vfs).unwrap_err();
+        assert_eq!(e.severity, Severity::Fatal);
+        assert_eq!(e.message, "database files are incompatible with server");
+        let detail = e.detail.as_deref().unwrap();
+        assert!(
+            detail.contains("M3 / M4") && detail.contains("format version 3"),
+            "{detail}"
+        );
+        assert_eq!(e.hint.as_deref(), Some("Re-run yuzhu-initdb."));
+    }
+
+    #[test]
+    fn old_catalog_version_is_refused_by_check_compatible() {
+        let (_sim, vfs) = setup();
+        let mut d = data();
+        d.catalog_version = 2_026_100_601;
+        let h = ControlFileHandle::create(&vfs, &d).unwrap();
+        let e = h.check_compatible(d.builtin_hash).unwrap_err();
+        assert_eq!(e.severity, Severity::Fatal);
+        assert!(e.detail.as_deref().unwrap().contains("CATALOG_VERSION_NO"));
+    }
+
+    #[test]
+    fn m5_fields_have_frozen_offsets_and_roundtrip() {
+        let (sim, vfs) = setup();
+        let mut d = data();
+        d.next_multi = 0x0102_0304_0506_0708;
+        d.mock_auth_nonce = std::array::from_fn(|i| u8::try_from(i).unwrap() + 1);
+        ControlFileHandle::create(&vfs, &d).unwrap();
+        let file = sim.file_contents(Path::new(CONTROL_FILE_PATH)).unwrap();
+        assert_eq!(get_u64(&file, 120), 0x0102_0304_0506_0708);
+        assert_eq!(&file[128..160], &d.mock_auth_nonce);
+        assert_eq!(get_u32(&file, 8), 3);
+        assert_eq!(ControlFileHandle::open(&vfs).unwrap().get(), d);
+        assert_eq!(data().next_multi, 1);
+    }
+
+    #[test]
+    fn next_multi_oldest_xid_and_nonce_checks() {
+        let (_sim, vfs) = setup();
+        let h = ControlFileHandle::create(&vfs, &data()).unwrap();
+        h.update(|c| {
+            c.next_multi = 1025;
+            c.oldest_xid = 100;
+        })
+        .unwrap();
+        assert!(h.update(|c| c.next_multi = 1024).is_err());
+        assert!(h.update_for_shutdown(|c| c.next_multi = 1).is_err());
+        assert!(h.update(|c| c.oldest_xid = 99).is_err());
+        assert!(h.update(|c| c.mock_auth_nonce = [7; 32]).is_err());
+        assert_eq!(h.get().next_multi, 1025);
+        h.update(|c| c.next_multi = 1025 + 1024).unwrap();
+        assert_eq!(
+            ControlFileHandle::open(&vfs).unwrap().get().next_multi,
+            2049
+        );
     }
 
     #[test]

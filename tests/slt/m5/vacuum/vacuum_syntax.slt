@@ -1,0 +1,101 @@
+# VACUUM / VACUUM ANALYZE の構文の全形がコマンドとして成功する。VERBOSE の出力（INFO）の内容は比べない（KD-8）
+
+statement ok
+DROP TABLE IF EXISTS vacuum_syntax_t
+
+statement ok
+CREATE TABLE vacuum_syntax_t (a int PRIMARY KEY, b text)
+
+statement ok
+INSERT INTO vacuum_syntax_t SELECT g, 'x' || g FROM generate_series(1, 20) g
+
+statement ok
+DELETE FROM vacuum_syntax_t WHERE a % 2 = 0
+
+statement ok
+VACUUM
+
+statement ok
+VACUUM vacuum_syntax_t
+
+statement ok
+VACUUM public.vacuum_syntax_t
+
+statement ok
+VACUUM vacuum_syntax_t, vacuum_syntax_t
+
+statement ok
+VACUUM (VERBOSE) vacuum_syntax_t
+
+statement ok
+VACUUM VERBOSE vacuum_syntax_t
+
+statement ok
+VACUUM (ANALYZE) vacuum_syntax_t
+
+statement ok
+VACUUM ANALYZE vacuum_syntax_t
+
+statement ok
+VACUUM (ANALYZE) vacuum_syntax_t (a, b)
+
+statement ok
+VACUUM ANALYZE vacuum_syntax_t (b)
+
+statement ok
+VACUUM (VERBOSE, ANALYZE) vacuum_syntax_t
+
+statement ok
+VACUUM FREEZE vacuum_syntax_t
+
+statement ok
+VACUUM (FREEZE) vacuum_syntax_t
+
+statement ok
+VACUUM (FREEZE true, ANALYZE false) vacuum_syntax_t
+
+statement ok
+VACUUM (VERBOSE off) vacuum_syntax_t
+
+statement ok
+VACUUM (SKIP_LOCKED) vacuum_syntax_t
+
+statement ok
+VACUUM (TRUNCATE false) vacuum_syntax_t
+
+statement ok
+VACUUM (TRUNCATE true) vacuum_syntax_t
+
+statement ok
+VACUUM (INDEX_CLEANUP off) vacuum_syntax_t
+
+statement ok
+VACUUM (INDEX_CLEANUP on) vacuum_syntax_t
+
+statement ok
+VACUUM (INDEX_CLEANUP auto) vacuum_syntax_t
+
+statement ok
+VACUUM (SKIP_LOCKED, TRUNCATE false, INDEX_CLEANUP off) vacuum_syntax_t
+
+statement ok
+VACUUM (SKIP_LOCKED 1, TRUNCATE 0, VERBOSE 'on') vacuum_syntax_t
+
+statement ok
+VACUUM (PARALLEL 0) vacuum_syntax_t
+
+statement ok
+VACUUM (DISABLE_PAGE_SKIPPING) vacuum_syntax_t
+
+# コマンドタグ
+query T
+SELECT count(*)::text FROM vacuum_syntax_t
+----
+10
+
+# インデックスは WARNING を出して成功する
+statement ok
+VACUUM vacuum_syntax_t_pkey
+
+statement ok
+DROP TABLE vacuum_syntax_t

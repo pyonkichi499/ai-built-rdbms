@@ -249,10 +249,16 @@ fn info_is_valid(rmgr: RmgrId, info: u8) -> bool {
     match rmgr {
         RmgrId::Xlog => matches!(info, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50),
         RmgrId::Xact | RmgrId::Smgr => matches!(info, 0x00 | 0x10),
-        RmgrId::Heap => matches!(info & 0x7F, 0x00 | 0x10 | 0x20),
+        // 0x40 = HEAP_LOCK（M5 RW。00 §3.3）。
+        RmgrId::Heap => matches!(info & 0x7F, 0x00 | 0x10 | 0x20 | 0x40),
         // BTREE_INSERT_LEAF = 0x00、BTREE_PAGES = 0x10、SEQ_LOG = 0x00（00 §13.4）。
-        RmgrId::Btree => matches!(info, 0x00 | 0x10),
+        // 0x20 = BTREE_VACUUM（M5 VC。00 §3.3）。
+        RmgrId::Btree => matches!(info, 0x00 | 0x10 | 0x20),
         RmgrId::Seq => info == 0x00,
+        // HEAP2: PRUNE_FREEZE 0x00、VACUUM_UNUSED 0x10、MULTI_INSERT 0x20、INPLACE 0x30（0x40 以降は予約）。
+        RmgrId::Heap2 => matches!(info, 0x00 | 0x10 | 0x20 | 0x30),
+        // DBASE: CREATE_FILE_COPY 0x00、DROP 0x10。
+        RmgrId::Dbase => matches!(info, 0x00 | 0x10),
     }
 }
 
@@ -661,7 +667,7 @@ mod tests {
         );
         assert_eq!(mutate(&|b| b[24] = 9, true), RecordError::BadRmgr);
         assert_eq!(mutate(&|b| b[25] = 0x01, true), RecordError::BadInfo);
-        assert_eq!(mutate(&|b| b[25] = 0x40, true), RecordError::BadInfo);
+        assert_eq!(mutate(&|b| b[25] = 0x60, true), RecordError::BadInfo);
         assert_eq!(mutate(&|b| b[27] = 1, true), RecordError::BadInfo);
         assert_eq!(
             mutate(&|b| b[26] = 33, true),

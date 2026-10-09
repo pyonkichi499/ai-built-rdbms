@@ -1,0 +1,89 @@
+# UPDATE ... RETURNING
+
+statement ok
+DROP TABLE IF EXISTS returning_update_t
+
+statement ok
+CREATE TABLE returning_update_t (id int PRIMARY KEY, a int, b text DEFAULT 'dflt')
+
+statement ok
+INSERT INTO returning_update_t VALUES (1, 10, 'x'), (2, 20, 'y'), (3, 30, 'z')
+
+# 更新後の値
+query III
+UPDATE returning_update_t SET a = a + 1 WHERE id = 1 RETURNING id, a, a * 2
+----
+1 11 22
+
+query IT rowsort
+UPDATE returning_update_t SET a = 0, b = 'u' WHERE id IN (2, 3) RETURNING id, b
+----
+2 u
+3 u
+
+# 0 行
+query I
+UPDATE returning_update_t SET a = 0 WHERE id = 999 RETURNING id
+----
+
+# 値が同じ行も返る
+query II
+UPDATE returning_update_t SET a = a WHERE id = 1 RETURNING id, a
+----
+1 11
+
+# SET の右辺は更新前の値、RETURNING は新しい値
+query II
+UPDATE returning_update_t SET a = id, id = id + 1000 WHERE id = 1 RETURNING id, a
+----
+1001 1
+
+# DEFAULT
+query IT
+UPDATE returning_update_t SET b = DEFAULT WHERE id = 1001 RETURNING id, b
+----
+1001 dflt
+
+# *
+query IIT
+UPDATE returning_update_t SET a = 5 WHERE id = 2 RETURNING *
+----
+2 5 u
+
+query IIT
+UPDATE returning_update_t SET a = 6 WHERE id = 2 RETURNING returning_update_t.*
+----
+2 6 u
+
+# 別名
+query II
+UPDATE returning_update_t AS t SET a = 7 WHERE t.id = 2 RETURNING t.id, t.a
+----
+2 7
+
+# 件数
+statement count 3
+UPDATE returning_update_t SET a = 1 RETURNING id
+
+# 同じ行を 2 回更新したあと
+query I
+UPDATE returning_update_t SET a = a + 1 WHERE id = 2 RETURNING a
+----
+2
+
+query I
+UPDATE returning_update_t SET a = a + 1 WHERE id = 2 RETURNING a
+----
+3
+
+# 制約違反のときは行も変わらない
+statement error (23505)
+UPDATE returning_update_t SET id = 2 WHERE id = 3 RETURNING id
+
+query I
+SELECT id FROM returning_update_t WHERE id = 3
+----
+3
+
+statement ok
+DROP TABLE returning_update_t

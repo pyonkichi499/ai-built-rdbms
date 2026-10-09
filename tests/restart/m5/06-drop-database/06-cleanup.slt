@@ -1,0 +1,4 @@
+# フェーズ 6（postgres に接続）: 後片付け。
+
+statement ok
+DROP DATABASE crm5_06_d

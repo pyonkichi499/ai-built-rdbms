@@ -12,7 +12,7 @@ use super::{DdlCtx, RelOptTarget, validate_reloptions};
 use crate::analyzer::query::{
     BoundCreateSequence, BoundCreateTable, BoundDropTable, IndexConstraintKind, SeqOwner,
 };
-use crate::catalog::depend::{ObjectAddress, cascade_notice, plan_drop};
+use crate::catalog::depend::{DropKind, ObjectAddress, cascade_notice, plan_drop};
 use crate::catalog::naming::{choose_index_column_names, choose_index_name};
 use crate::catalog::store::{
     EMPTY_INDEX_STATS, NewConstraint, NewIndex, NewTable, TableOidRequest,
@@ -128,6 +128,9 @@ pub fn create_table(ctx: &mut DdlCtx<'_>, b: &BoundCreateTable) -> Result<String
         indexes: Vec::new(),
         sequence: None,
         identity_seqs: Vec::new(),
+        key_columns: Vec::new(),
+        foreign_keys: Vec::new(),
+        referenced_by: Vec::new(),
     };
     // 9.
     let mut taken: HashSet<String> = HashSet::new();
@@ -212,6 +215,7 @@ pub fn create_table(ctx: &mut DdlCtx<'_>, b: &BoundCreateTable) -> Result<String
         .collect();
     let extra_depends = default_value_depends(&attrdef_pairs, &serial_pairs, &b.default_refs);
     // 11.
+    let table_oid = oids.table;
     ctx.db.catalog.create_table(
         &w,
         snap,
@@ -228,6 +232,8 @@ pub fn create_table(ctx: &mut DdlCtx<'_>, b: &BoundCreateTable) -> Result<String
             extra_depends,
         },
     )?;
+    // 11b. `yz_relxid`（03 §3.4）: 作ったトランザクションの XID を凍結境界の初期値にする。
+    ctx.db.catalog.insert_relxid(&w, table_oid, w.xid)?;
     // 12.
     ctx.mark_catalog_dirty();
     Ok("CREATE TABLE".into())
@@ -309,6 +315,12 @@ pub fn drop_table(ctx: &mut DdlCtx<'_>, b: &BoundDropTable) -> Result<String> {
     // 5.
     let w = ctx.write_ctx()?;
     let locators = ctx.db.catalog.drop_objects(&w, ctx.snapshot, &plan)?;
+    // 5b. `yz_relxid` の行（CASCADE で消える表の分も）。
+    for item in plan.items.iter().filter(|i| i.kind == DropKind::Table) {
+        ctx.db
+            .catalog
+            .delete_relxid(&w, ctx.snapshot, item.addr.obj_id)?;
+    }
     // 6.
     ctx.schedule_unlinks(&locators)?;
     // 7.
@@ -363,8 +375,10 @@ mod tests {
     use crate::analyzer::query::BoundDdl;
     use crate::catalog::CatalogReader;
     use crate::catalog::depend::DropBehavior;
+    use crate::catalog::schema::oids;
     use crate::catalog::{ConstraintKind, TableDef};
     use crate::ddl::testkit::{Harness, check_def, col, create_table_ddl, drop_ddl, key};
+    use crate::types::Oid;
     use crate::types::SqlType;
     use std::sync::Arc;
 
@@ -388,6 +402,39 @@ mod tests {
         let name = b.name.clone();
         assert_eq!(h.exec_w(BoundDdl::CreateTable(b)).unwrap(), "CREATE TABLE");
         h.table(&name).unwrap()
+    }
+
+    /// `yz_relxid` の中の `relid` の行（`relfrozenxid8`）。
+    fn relxid_of(h: &Harness, relid: Oid) -> Vec<i64> {
+        let snap = h.tc.cluster.txn_manager().snapshot(h.txn.xid, h.txn.cid);
+        h.db.catalog
+            .scan(&snap, oids::YZ_RELXID, |r| {
+                Ok(matches!(r.first(), Some(crate::types::Datum::Oid(o)) if *o == relid))
+            })
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| match t.row.get(1) {
+                Some(crate::types::Datum::Int8(v)) => Some(*v),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn create_and_drop_table_maintain_yz_relxid() {
+        let mut h = Harness::new();
+        let t = create(&mut h, pk_unique_table("rx"));
+        let xid = h.txn.xid.expect("a writer transaction").0;
+        // 作ったトランザクションの XID が凍結境界の初期値（03 §3.4）。索引には行を作らない。
+        assert_eq!(relxid_of(&h, t.oid), vec![i64::try_from(xid).unwrap()]);
+        assert!(relxid_of(&h, t.indexes[0].oid).is_empty());
+        h.commit();
+        h.begin();
+        h.exec_w(drop_ddl(vec![t.clone()], DropBehavior::Restrict))
+            .unwrap();
+        assert!(relxid_of(&h, t.oid).is_empty());
+        h.rollback();
+        assert_eq!(relxid_of(&h, t.oid).len(), 1);
     }
 
     #[test]

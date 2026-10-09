@@ -129,6 +129,17 @@ impl Raw {
         }
     }
 
+    /// Reads until ReadyForQuery (true) or an ErrorResponse (false).
+    fn reaches_ready(&mut self) -> bool {
+        loop {
+            match self.read_msg().tag {
+                b'Z' => return true,
+                b'E' => return false,
+                _ => {}
+            }
+        }
+    }
+
     fn expect_eof(&mut self) {
         let mut buf = [0u8; 16];
         let n = self.s.read(&mut buf).unwrap_or(0);
@@ -581,6 +592,7 @@ fn unknown_database_is_rejected() {
     let addr = start_server(10);
     let mut c = Raw::connect(addr);
     c.send_startup(&[("user", "postgres"), ("database", "no_such_db")]);
+    assert_eq!(c.read_msg().tag, b'R', "AuthenticationOk comes first");
     let err = c.read_msg();
     assert_eq!(err.tag, b'E');
     assert_eq!(err.fields()[&b'S'], "FATAL");
@@ -594,6 +606,7 @@ fn too_many_connections() {
     let (first, _) = Raw::handshake(addr);
     let mut second = Raw::connect(addr);
     second.send_startup(&[("user", "postgres"), ("database", "postgres")]);
+    assert_eq!(second.read_msg().tag, b'R', "AuthenticationOk comes first");
     let err = second.read_msg();
     assert_eq!(err.tag, b'E');
     assert_eq!(err.fields()[&b'S'], "FATAL");
@@ -606,7 +619,7 @@ fn too_many_connections() {
     for _ in 0..100 {
         let mut c = Raw::connect(addr);
         c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
-        if c.read_msg().tag == b'R' {
+        if c.reaches_ready() {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -674,7 +687,7 @@ fn thread_ceiling_rejects_immediately() {
     for _ in 0..100 {
         let mut c = Raw::connect(addr);
         c.send_startup(&[("user", "postgres"), ("database", "postgres")]);
-        if c.read_msg().tag == b'R' {
+        if c.reaches_ready() {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));

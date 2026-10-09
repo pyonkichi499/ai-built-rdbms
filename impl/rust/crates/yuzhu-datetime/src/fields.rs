@@ -11,6 +11,7 @@ use crate::date::Date;
 use crate::error::{DateTimeError, Result, sqlstate};
 use crate::interval::Interval;
 use crate::parse::decode_units;
+use crate::time::Time;
 use crate::timestamp::{EPOCH_TIMESTAMP, Timestamp, TimestampTz};
 #[allow(clippy::wildcard_imports)]
 use crate::tokens::*;
@@ -467,6 +468,63 @@ pub fn extract_date(units: &str, d: Date) -> Result<Option<NumericValue>> {
         return Err(not_recognized(&lowunits, DATE_NAME));
     };
     Ok(Some(NumericValue::int(intresult)))
+}
+
+const TIME_NAME: &str = "time without time zone";
+
+fn time_part(units: &str, t: Time, retnumeric: bool) -> Result<Option<Part>> {
+    let lowunits = lower_units(units);
+    let (ty, val) = decode_part_units(&lowunits);
+    if ty == UNITS {
+        let (_, _, sec, fsec) = t.to_hmsu();
+        let usec_in_min = i64::from(sec) * 1_000_000 + i64::from(fsec);
+        let (hour, min, _, _) = t.to_hmsu();
+        let int = match val {
+            DTK_MICROSEC => usec_in_min,
+            DTK_MILLISEC => {
+                return Ok(Some(if retnumeric {
+                    Part::Numeric(NumericValue::scaled(i128::from(usec_in_min), 3))
+                } else {
+                    Part::Float(f64::from(sec) * 1000.0 + f64::from(fsec) / 1000.0)
+                }));
+            }
+            DTK_SECOND => {
+                return Ok(Some(if retnumeric {
+                    Part::Numeric(NumericValue::scaled(i128::from(usec_in_min), 6))
+                } else {
+                    Part::Float(f64::from(sec) + f64::from(fsec) / 1_000_000.0)
+                }));
+            }
+            DTK_MINUTE => i64::from(min),
+            DTK_HOUR => i64::from(hour),
+            _ => return Err(not_supported(&lowunits, TIME_NAME)),
+        };
+        #[allow(clippy::cast_precision_loss)]
+        return Ok(Some(if retnumeric {
+            Part::Numeric(NumericValue::int(int))
+        } else {
+            Part::Float(int as f64)
+        }));
+    }
+    if ty == RESERV && val == DTK_EPOCH {
+        #[allow(clippy::cast_precision_loss)]
+        return Ok(Some(if retnumeric {
+            Part::Numeric(NumericValue::scaled(i128::from(t.0), 6))
+        } else {
+            Part::Float(t.0 as f64 / 1_000_000.0)
+        }));
+    }
+    Err(not_recognized(&lowunits, TIME_NAME))
+}
+
+/// `extract(field from time)`; `None` is SQL NULL.
+pub fn extract_time(units: &str, t: Time) -> Result<Option<NumericValue>> {
+    time_part(units, t, true).map(numeric)
+}
+
+/// `date_part(text, time)`.
+pub fn date_part_time(units: &str, t: Time) -> Result<Option<f64>> {
+    time_part(units, t, false).map(float)
 }
 
 #[allow(clippy::cast_precision_loss)]

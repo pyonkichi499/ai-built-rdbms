@@ -1,0 +1,37 @@
+# shared_buffers の下限（512kB = 64 フレーム）での CREATE INDEX と、大きなキー（約 1/3 ページ）の INSERT。
+# 索引の作成中にバッファプールが足りなくならないことを確かめる。
+
+statement ok
+CREATE TABLE m4r_mb_t (a int, t text NOT NULL, n numeric)
+
+statement count 30000
+INSERT INTO m4r_mb_t SELECT g, repeat('k' || g, 100), g::numeric / 7 FROM generate_series(1, 30000) g
+
+statement ok
+CREATE INDEX m4r_mb_a ON m4r_mb_t (a)
+
+statement ok
+CREATE INDEX m4r_mb_t_t ON m4r_mb_t (t)
+
+statement ok
+CREATE UNIQUE INDEX m4r_mb_n ON m4r_mb_t (n, a)
+
+# 2600 バイトのキー（1/3 ページの内側）
+statement ok
+INSERT INTO m4r_mb_t VALUES (0, repeat('z', 2600), 1)
+
+statement ok
+SET enable_seqscan = off
+
+query I
+SELECT count(*) FROM m4r_mb_t WHERE a BETWEEN 100 AND 200
+----
+101
+
+query I
+SELECT count(*) FROM m4r_mb_t WHERE t > 'k5'
+----
+5556
+
+statement ok
+RESET enable_seqscan

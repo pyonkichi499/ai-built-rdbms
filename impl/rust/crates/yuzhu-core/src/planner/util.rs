@@ -251,9 +251,11 @@ pub fn subqueries_mut(e: &mut LExpr) -> Vec<&mut LogicalSubquery> {
             | ExprKind::And(args)
             | ExprKind::Or(args)
             | ExprKind::Coalesce(args)
-            | ExprKind::MinMax { args, .. } => args.iter_mut().for_each(|a| go(a, out)),
+            | ExprKind::MinMax { args, .. }
+            | ExprKind::ArrayCtor { elems: args, .. } => args.iter_mut().for_each(|a| go(a, out)),
             ExprKind::Cast { expr, .. }
             | ExprKind::CoerceTypmod { expr, .. }
+            | ExprKind::ArrayCoerce { expr, .. }
             | ExprKind::Not(expr)
             | ExprKind::IsNull(expr)
             | ExprKind::IsNotNull(expr)
@@ -300,10 +302,22 @@ pub fn subqueries_mut(e: &mut LExpr) -> Vec<&mut LogicalSubquery> {
                     go(&mut k.expr, out);
                 }
             }
+            ExprKind::ArraySubscript { array, indexes } => {
+                go(array, out);
+                for a in indexes {
+                    go(a, out);
+                }
+            }
+
+            ExprKind::ScalarArrayOp { left, array, .. } => {
+                go(left, out);
+                go(array, out);
+            }
             ExprKind::Literal(_)
             | ExprKind::Column(_)
             | ExprKind::SessionValue(_)
-            | ExprKind::SubLinkOutput(_) => {}
+            | ExprKind::SubLinkOutput(_)
+            | ExprKind::ExternParam(_) => {}
         }
     }
     let mut out = Vec::new();

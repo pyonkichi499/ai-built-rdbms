@@ -1,0 +1,121 @@
+-- case setop_union
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select a from t union select a from u
+-- build
+SetOp Union all=false cols=[#6:a] left=[#0:t.a] right=[#3:u.a]
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+  Project [#3:u.a]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case setop_union_all
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select a from t union all select d from u
+-- build
+SetOp Union all=true cols=[#6:a] left=[#0:t.a] right=[#4:u.d]
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+  Project [#4:u.d]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case setop_intersect
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select a from t intersect select a from u
+-- build
+SetOp Intersect all=false cols=[#6:a] left=[#0:t.a] right=[#3:u.a]
+  Project [#0:t.a]
+    Get t [#0:t.a #1:t.b #2:t.c]
+  Project [#3:u.a]
+    Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)
+-- case setop_except_order
+-- schema
+create table t(a int4, b int4, c text);
+create table u(a int4, d int4, e text);
+create table p(id int4 primary key, v int4);
+create table w(k int4 unique, v int4);
+-- sql
+select a from t except select a from u order by 1
+-- build
+Sort [#6:a ASC NULLS LAST]
+  SetOp Except all=false cols=[#6:a] left=[#0:t.a] right=[#3:u.a]
+    Project [#0:t.a]
+      Get t [#0:t.a #1:t.b #2:t.c]
+    Project [#3:u.a]
+      Get u [#3:u.a #4:u.d #5:u.e]
+-- const_fold
+(unchanged)
+-- sublink
+(unchanged)
+-- subquery_pullup
+(unchanged)
+-- outer_join
+(unchanged)
+-- pushdown
+(unchanged)
+-- join_keys
+(unchanged)
+-- join_order
+(unchanged)
+-- prune
+(unchanged)

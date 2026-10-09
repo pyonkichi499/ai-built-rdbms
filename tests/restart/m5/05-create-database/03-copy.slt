@@ -1,0 +1,9 @@
+# フェーズ 3（postgres に接続）: CREATE DATABASE ... TEMPLATE をコミットして、kill -9 される。
+
+statement ok
+CREATE DATABASE crm5_05_copy TEMPLATE crm5_05_tpl
+
+query I
+SELECT count(*) FROM pg_database WHERE datname IN ('crm5_05_tpl', 'crm5_05_copy')
+----
+2

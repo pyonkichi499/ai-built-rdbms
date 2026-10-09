@@ -1,0 +1,209 @@
+Parsed test spec with 3 sessions
+
+starting permutation: b_rr b_sel a_upd1 b_upd1 b_r c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_upd1: UPDATE rru_t SET v = v + 1 WHERE id = 1;
+step b_upd1: UPDATE rru_t SET v = v + 100 WHERE id = 1;
+ERROR:  could not serialize access due to concurrent update
+step b_r: ROLLBACK;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 2|20
+ 3|30
+(3 rows)
+
+
+starting permutation: b_rr b_sel a_b a_b_upd1 b_upd1 a_r b_c c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_b: BEGIN;
+step a_b_upd1: UPDATE rru_t SET v = v + 1 WHERE id = 1;
+step b_upd1: UPDATE rru_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step a_r: ROLLBACK;
+step b_upd1: <... completed>
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id|  v
+--+---
+ 1|110
+ 2| 20
+ 3| 30
+(3 rows)
+
+
+starting permutation: b_rr b_sel a_b a_b_upd1 b_upd1 a_c b_r c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_b: BEGIN;
+step a_b_upd1: UPDATE rru_t SET v = v + 1 WHERE id = 1;
+step b_upd1: UPDATE rru_t SET v = v + 100 WHERE id = 1; <waiting ...>
+step a_c: COMMIT;
+step b_upd1: <... completed>
+ERROR:  could not serialize access due to concurrent update
+step b_r: ROLLBACK;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 2|20
+ 3|30
+(3 rows)
+
+
+starting permutation: b_rr b_sel a_del2 b_upd2 b_r c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_del2: DELETE FROM rru_t WHERE id = 2;
+step b_upd2: UPDATE rru_t SET v = v + 100 WHERE id = 2;
+ERROR:  could not serialize access due to concurrent delete
+step b_r: ROLLBACK;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 3|30
+(2 rows)
+
+
+starting permutation: b_rr b_sel a_del2 b_del2 b_r c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_del2: DELETE FROM rru_t WHERE id = 2;
+step b_del2: DELETE FROM rru_t WHERE id = 2;
+ERROR:  could not serialize access due to concurrent delete
+step b_r: ROLLBACK;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 3|30
+(2 rows)
+
+
+starting permutation: b_rr a_upd1 b_upd1 b_c c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step a_upd1: UPDATE rru_t SET v = v + 1 WHERE id = 1;
+step b_upd1: UPDATE rru_t SET v = v + 100 WHERE id = 1;
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id|  v
+--+---
+ 1|111
+ 2| 20
+ 3| 30
+(3 rows)
+
+
+starting permutation: b_rr b_sel a_upd1 b_forupd1 b_r c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+(3 rows)
+
+step a_upd1: UPDATE rru_t SET v = v + 1 WHERE id = 1;
+step b_forupd1: SELECT id, v FROM rru_t WHERE id = 1 FOR UPDATE;
+ERROR:  could not serialize access due to concurrent update
+step b_r: ROLLBACK;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 2|20
+ 3|30
+(3 rows)
+
+
+starting permutation: b_rr b_cnt a_ins b_cnt b_c c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_cnt: SELECT count(*) FROM rru_t;
+count
+-----
+    3
+(1 row)
+
+step a_ins: INSERT INTO rru_t VALUES (4, 40);
+step b_cnt: SELECT count(*) FROM rru_t;
+count
+-----
+    3
+(1 row)
+
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+ 3|30
+ 4|40
+(4 rows)
+
+
+starting permutation: b_rr b_sum a_updall b_sum b_ins b_c c_sel
+step b_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step b_sum: SELECT sum(v) FROM rru_t;
+sum
+---
+ 60
+(1 row)
+
+step a_updall: UPDATE rru_t SET v = v + 1000;
+step b_sum: SELECT sum(v) FROM rru_t;
+sum
+---
+ 60
+(1 row)
+
+step b_ins: INSERT INTO rru_t VALUES (5, 50);
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM rru_t ORDER BY id;
+id|   v
+--+----
+ 1|1010
+ 2|1020
+ 3|1030
+ 5|  50
+(4 rows)
+

@@ -1,0 +1,63 @@
+# M2 の catalog_columns.slt の回帰（M5 の後も pg_class の列が PostgreSQL 17 と同じ）。
+# relfrozenxid / relminmxid の型は xid（OID 28）のまま。64 ビットの境界は別カタログ yz_relxid に持つ（00 D14）
+
+query IITIII
+SELECT attrelid, attnum, attname, atttypid, attlen, attcollation FROM pg_attribute WHERE attrelid = 1259 AND attnum > 0 ORDER BY 1, 2
+----
+1259 1 oid 26 4 0
+1259 2 relname 19 64 950
+1259 3 relnamespace 26 4 0
+1259 4 reltype 26 4 0
+1259 5 reloftype 26 4 0
+1259 6 relowner 26 4 0
+1259 7 relam 26 4 0
+1259 8 relfilenode 26 4 0
+1259 9 reltablespace 26 4 0
+1259 10 relpages 23 4 0
+1259 11 reltuples 700 4 0
+1259 12 relallvisible 23 4 0
+1259 13 reltoastrelid 26 4 0
+1259 14 relhasindex 16 1 0
+1259 15 relisshared 16 1 0
+1259 16 relpersistence 18 1 0
+1259 17 relkind 18 1 0
+1259 18 relnatts 21 2 0
+1259 19 relchecks 21 2 0
+1259 20 relhasrules 16 1 0
+1259 21 relhastriggers 16 1 0
+1259 22 relhassubclass 16 1 0
+1259 23 relrowsecurity 16 1 0
+1259 24 relforcerowsecurity 16 1 0
+1259 25 relispopulated 16 1 0
+1259 26 relreplident 18 1 0
+1259 27 relispartition 16 1 0
+1259 28 relrewrite 26 4 0
+1259 29 relfrozenxid 28 4 0
+1259 30 relminmxid 28 4 0
+1259 31 relacl 1034 -1 0
+1259 32 reloptions 1009 -1 950
+1259 33 relpartbound 194 -1 950
+
+query TT
+SELECT format_type(atttypid, atttypmod), attnotnull::text FROM pg_attribute WHERE attrelid = 'pg_class'::regclass AND attname = 'relfrozenxid'
+----
+xid true
+
+query TT
+SELECT format_type(atttypid, atttypmod), attnotnull::text FROM pg_attribute WHERE attrelid = 'pg_database'::regclass AND attname = 'datfrozenxid'
+----
+xid true
+
+statement ok
+DROP TABLE IF EXISTS catalog_catalog_columns_m5_t
+
+statement ok
+CREATE TABLE catalog_catalog_columns_m5_t (a int)
+
+query TT
+SELECT pg_typeof(relfrozenxid)::text, (relfrozenxid::text::bigint >= 0)::text FROM pg_class WHERE oid = 'catalog_catalog_columns_m5_t'::regclass
+----
+xid true
+
+statement ok
+DROP TABLE catalog_catalog_columns_m5_t

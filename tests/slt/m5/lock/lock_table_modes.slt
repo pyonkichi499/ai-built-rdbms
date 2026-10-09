@@ -1,0 +1,117 @@
+# LOCK TABLE の 8 モード。トランザクション内で取れ、COMMIT / ROLLBACK で解放される。
+# 接頭辞: lock_lock_table_modes_
+
+statement ok
+DROP TABLE IF EXISTS lock_lock_table_modes_t
+
+statement ok
+CREATE TABLE lock_lock_table_modes_t (id int, v text)
+
+statement ok
+INSERT INTO lock_lock_table_modes_t VALUES (1, 'a')
+
+statement ok
+BEGIN
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ACCESS SHARE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ROW SHARE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ROW EXCLUSIVE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN SHARE UPDATE EXCLUSIVE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN SHARE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN SHARE ROW EXCLUSIVE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN EXCLUSIVE MODE
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ACCESS EXCLUSIVE MODE
+
+# 同じトランザクション内の自分のロックとは衝突しない
+query IT
+SELECT id, v FROM lock_lock_table_modes_t
+----
+1 a
+
+statement ok
+COMMIT
+
+# モード省略は ACCESS EXCLUSIVE
+statement ok
+BEGIN
+
+statement ok
+LOCK TABLE lock_lock_table_modes_t
+
+query T
+SELECT mode FROM pg_locks WHERE relation = 'lock_lock_table_modes_t'::regclass AND locktype = 'relation' AND pid = pg_backend_pid()
+----
+AccessExclusiveLock
+
+statement ok
+ROLLBACK
+
+# TABLE キーワード省略・ONLY
+statement ok
+BEGIN
+
+statement ok
+LOCK lock_lock_table_modes_t IN ROW EXCLUSIVE MODE
+
+statement ok
+LOCK TABLE ONLY lock_lock_table_modes_t IN SHARE MODE
+
+statement ok
+ROLLBACK
+
+# 解放されている
+query I
+SELECT count(*) FROM pg_locks WHERE relation = 'lock_lock_table_modes_t'::regclass AND locktype = 'relation'
+----
+0
+
+# 別接続: 衝突しないモード同士は同時に取れる
+connection a
+statement ok
+BEGIN
+
+connection a
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ROW EXCLUSIVE MODE
+
+connection b
+statement ok
+BEGIN
+
+connection b
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ROW SHARE MODE
+
+connection b
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN ROW EXCLUSIVE MODE NOWAIT
+
+connection b
+statement ok
+LOCK TABLE lock_lock_table_modes_t IN SHARE UPDATE EXCLUSIVE MODE NOWAIT
+
+connection b
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE lock_lock_table_modes_t

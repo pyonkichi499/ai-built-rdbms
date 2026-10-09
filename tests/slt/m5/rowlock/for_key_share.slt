@@ -1,0 +1,101 @@
+# SELECT ... FOR KEY SHARE / FOR NO KEY UPDATE の衝突表（NOWAIT で待たずに確かめる）
+
+statement ok
+DROP TABLE IF EXISTS rowlock_for_key_share_t
+
+statement ok
+CREATE TABLE rowlock_for_key_share_t (id int PRIMARY KEY, v int)
+
+statement ok
+INSERT INTO rowlock_for_key_share_t VALUES (1, 0)
+
+connection a
+statement ok
+BEGIN
+
+connection a
+query I
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR KEY SHARE
+----
+1
+
+# KEY SHARE は NO KEY UPDATE と衝突しない
+connection b
+query I
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR NO KEY UPDATE NOWAIT
+----
+1
+
+# KEY SHARE は KEY SHARE / SHARE / NO KEY SHARE と衝突しない
+connection b
+query I
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR SHARE NOWAIT
+----
+1
+
+connection b
+query I
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR KEY SHARE NOWAIT
+----
+1
+
+# KEY SHARE は FOR UPDATE と衝突する
+connection b
+statement error (55P03)
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR UPDATE NOWAIT
+
+# キーを変えない UPDATE（NO KEY UPDATE 相当）は KEY SHARE と衝突しない。
+# 待たないことを lock_timeout で確かめる（衝突するなら 55P03 になる）
+connection b
+statement ok
+SET lock_timeout = '300ms'
+
+connection b
+statement ok
+UPDATE rowlock_for_key_share_t SET v = 1 WHERE id = 1
+
+connection b
+statement ok
+RESET lock_timeout
+
+connection a
+statement ok
+COMMIT
+
+connection a
+query II
+SELECT id, v FROM rowlock_for_key_share_t
+----
+1 1
+
+# NO KEY UPDATE を持つ側から見た衝突
+connection a
+statement ok
+BEGIN
+
+connection a
+query I
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR NO KEY UPDATE
+----
+1
+
+connection b
+query I
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR KEY SHARE NOWAIT
+----
+1
+
+connection b
+statement error (55P03)
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR SHARE NOWAIT
+
+connection b
+statement error (55P03)
+SELECT id FROM rowlock_for_key_share_t WHERE id = 1 FOR NO KEY UPDATE NOWAIT
+
+connection a
+statement ok
+ROLLBACK
+
+statement ok
+DROP TABLE rowlock_for_key_share_t

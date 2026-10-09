@@ -65,6 +65,7 @@ impl<'a> SizeCtx<'a> {
             }
             L::Project { input, .. }
             | L::Sort { input, .. }
+            | L::LockRows { input, .. }
             | L::Distinct { input, .. }
             | L::Insert { input, .. }
             | L::Update { input, .. }
@@ -127,6 +128,10 @@ impl<'a> SizeCtx<'a> {
 
     /// キャッシュつきのブロック数。0 ブロックの表は呼び出し側が `max(.., 1)` とする。
     pub fn nblocks(&self, rel: &RelHandle) -> Result<u32> {
+        // 仮想リレーションはファイルを持たない（1 ブロック相当）。
+        if crate::catalog::virtual_rel::find(rel.oid).is_some() {
+            return Ok(1);
+        }
         if let Some(n) = self.nblocks.borrow().get(&rel.oid) {
             return Ok(*n);
         }

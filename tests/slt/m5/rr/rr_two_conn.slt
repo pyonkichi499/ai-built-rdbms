@@ -1,0 +1,226 @@
+# RR の 2 接続（相手がコミット済みの状態で確かめる。待たない）
+
+statement ok
+DROP TABLE IF EXISTS rr_rr_two_conn_t
+
+statement ok
+CREATE TABLE rr_rr_two_conn_t (id int PRIMARY KEY, v int)
+
+statement ok
+INSERT INTO rr_rr_two_conn_t VALUES (1, 10), (2, 20), (3, 30)
+
+# --- スナップショットは最初の問い合わせで決まる ---
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t
+----
+3
+
+connection b
+statement ok
+INSERT INTO rr_rr_two_conn_t VALUES (4, 40)
+
+connection b
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 11 WHERE id = 1
+
+connection b
+statement ok
+DELETE FROM rr_rr_two_conn_t WHERE id = 3
+
+# a には変更が見えない
+connection a
+query II
+SELECT id, v FROM rr_rr_two_conn_t ORDER BY id
+----
+1 10
+2 20
+3 30
+
+# b がコミット済みの行の更新は 40001
+connection a
+statement error (40001)
+UPDATE rr_rr_two_conn_t SET v = 12 WHERE id = 1
+
+connection a
+statement error (25P02)
+SELECT 1
+
+connection a
+statement ok
+ROLLBACK
+
+# --- 削除された行の更新 / 削除も 40001 ---
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t
+----
+3
+
+connection b
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 21 WHERE id = 2
+
+connection b
+statement ok
+DELETE FROM rr_rr_two_conn_t WHERE id = 1
+
+connection a
+statement error (40001)
+DELETE FROM rr_rr_two_conn_t WHERE id = 1
+
+connection a
+statement ok
+ROLLBACK
+
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t
+----
+2
+
+connection b
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 22 WHERE id = 2
+
+# FOR UPDATE / FOR SHARE も 40001
+connection a
+statement error (40001)
+SELECT id FROM rr_rr_two_conn_t WHERE id = 2 FOR UPDATE
+
+connection a
+statement ok
+ROLLBACK
+
+# --- スナップショットのあとに入った行は更新の対象にならない ---
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t
+----
+2
+
+connection b
+statement ok
+INSERT INTO rr_rr_two_conn_t VALUES (9, 90)
+
+connection a
+query I
+UPDATE rr_rr_two_conn_t SET v = 0 WHERE id = 9 RETURNING id
+----
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t WHERE id = 9
+----
+0
+
+connection a
+statement ok
+COMMIT
+
+connection a
+query I
+SELECT v FROM rr_rr_two_conn_t WHERE id = 9
+----
+90
+
+# --- 触っていない行の更新は通る ---
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t
+----
+3
+
+connection b
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 91 WHERE id = 9
+
+connection a
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 1 WHERE id = 2
+
+connection a
+statement ok
+COMMIT
+
+# --- 読み取りだけなら 40001 にならない ---
+connection a
+statement ok
+BEGIN ISOLATION LEVEL REPEATABLE READ
+
+connection a
+query II
+SELECT id, v FROM rr_rr_two_conn_t WHERE id = 9
+----
+9 91
+
+connection b
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 92 WHERE id = 9
+
+connection a
+query II
+SELECT id, v FROM rr_rr_two_conn_t WHERE id = 9
+----
+9 91
+
+connection a
+statement ok
+COMMIT
+
+connection a
+query II
+SELECT id, v FROM rr_rr_two_conn_t WHERE id = 9
+----
+9 92
+
+# --- RC の接続は最新を見て、更新も通る ---
+connection a
+statement ok
+BEGIN
+
+connection a
+query I
+SELECT count(*) FROM rr_rr_two_conn_t
+----
+3
+
+connection b
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 93 WHERE id = 9
+
+connection a
+statement ok
+UPDATE rr_rr_two_conn_t SET v = v + 1 WHERE id = 9
+
+connection a
+statement ok
+COMMIT
+
+query I
+SELECT v FROM rr_rr_two_conn_t WHERE id = 9
+----
+94
+
+statement ok
+DROP TABLE rr_rr_two_conn_t

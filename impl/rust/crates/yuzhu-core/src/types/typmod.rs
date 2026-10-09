@@ -5,12 +5,35 @@ use super::datetime::dt_err;
 use super::{Datum, Oid, SqlType, VARHDRSZ, bpchar, oid, ops};
 use crate::error::{Error, Result, sqlstate};
 
-/// この型が typmod を持てるか（`CoerceTypmod` が要りうる型）。
+/// この型が typmod を持てるか（`CoerceTypmod` が要りうる型）。配列型は要素型に従う（`numeric(10,2)[]`）。
 pub fn takes_typmod(type_oid: Oid) -> bool {
+    if let Some(elem) = super::typeinfo::element_type(type_oid)
+        && super::typeinfo::is_array_type(type_oid)
+    {
+        return takes_typmod(elem);
+    }
     matches!(
         type_oid,
         oid::VARCHAR | oid::BPCHAR | oid::NUMERIC | oid::TIMESTAMP | oid::TIMESTAMPTZ
     )
+}
+
+/// `typmodout`: `numeric` → `(10,2)`、`bpchar` / `varchar` → `(3)`、`timestamp` / `timestamptz` → `(3)`。
+/// typmod が無効（`-1` など）なら空文字列（PG の `*typmodout` と同じ。実機: `numerictypmodout(655366)` = `(10,2)`、
+/// `numerictypmodout(-1)` = ``、`bpchartypmodout(7)` = `(3)`、`bpchartypmodout(4)` = ``）。
+/// 配列型は要素型に従う。`time` / `interval` の書式は TD が足す（それまでは空文字列）。
+pub fn typmod_out(type_oid: Oid, typmod: i32) -> String {
+    if let Some(elem) = super::typeinfo::element_type(type_oid)
+        && super::typeinfo::is_array_type(type_oid)
+    {
+        return typmod_out(elem, typmod);
+    }
+    match type_oid {
+        oid::NUMERIC => yuzhu_numeric::format_typmod(typmod),
+        oid::BPCHAR | oid::VARCHAR if typmod > VARHDRSZ => format!("({})", typmod - VARHDRSZ),
+        oid::TIMESTAMP | oid::TIMESTAMPTZ if typmod >= 0 => format!("({typmod})"),
+        _ => String::new(),
+    }
 }
 
 fn invalid_mod(msg: impl Into<String>) -> Error {
@@ -125,6 +148,21 @@ mod tests {
 
     fn code(e: &Error) -> &str {
         e.sqlstate.code()
+    }
+
+    #[test]
+    fn typmod_out_follows_postgres() {
+        assert_eq!(typmod_out(oid::NUMERIC, 655_366), "(10,2)");
+        assert_eq!(typmod_out(oid::NUMERIC, -1), "");
+        assert_eq!(typmod_out(oid::BPCHAR, 7), "(3)");
+        assert_eq!(typmod_out(oid::BPCHAR, 4), "");
+        assert_eq!(typmod_out(oid::VARCHAR, 14), "(10)");
+        assert_eq!(typmod_out(oid::TIMESTAMP, 3), "(3)");
+        assert_eq!(typmod_out(oid::TIMESTAMPTZ, -1), "");
+        assert_eq!(typmod_out(oid::INT4, 5), "");
+        // 配列型は要素型に従う
+        assert_eq!(typmod_out(1231, 655_366), "(10,2)");
+        assert!(takes_typmod(1231) && takes_typmod(1014) && !takes_typmod(1007));
     }
 
     #[test]

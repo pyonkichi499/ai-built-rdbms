@@ -226,6 +226,30 @@ impl BufferPool {
     }
 
     fn get_buffer(self: &Arc<Self>, tag: BufferTag, zero: bool) -> Result<PinnedBuffer> {
+        self.get_buffer_mode(tag, zero, false)
+    }
+
+    /// `ReadBuffer` for FSM pages (`m5/03` §6.3): pins the block, or `Ok(None)` if the
+    /// block does not exist. A page that fails the header or checksum verification is
+    /// served as an all-zero page (WARNING logged; not dirtied, so the bad bytes stay on
+    /// disk until the next record overwrites them). I/O errors are returned as they are.
+    pub fn read_buffer_zero_on_error(
+        self: &Arc<Self>,
+        tag: BufferTag,
+    ) -> Result<Option<PinnedBuffer>> {
+        debug_assert_eq!(tag.fork, ForkNumber::Fsm);
+        if tag.block >= self.smgr.nblocks(tag.rel, tag.fork)? {
+            return Ok(None);
+        }
+        self.get_buffer_mode(tag, false, true).map(Some)
+    }
+
+    fn get_buffer_mode(
+        self: &Arc<Self>,
+        tag: BufferTag,
+        zero: bool,
+        zero_on_error: bool,
+    ) -> Result<PinnedBuffer> {
         loop {
             if let Some(fid) = self.lookup_and_pin(tag)? {
                 if self.wait_valid(fid, tag)? {
@@ -241,7 +265,7 @@ impl BufferPool {
                 self.unpin(fid);
                 continue;
             }
-            return match self.load_frame(fid, tag, zero) {
+            return match self.load_frame(fid, tag, zero, zero_on_error) {
                 Ok(()) => {
                     if !zero {
                         self.stats.reads.fetch_add(1, Ordering::Relaxed);
@@ -278,7 +302,13 @@ impl BufferPool {
 
     /// Reads (or zeroes) and verifies the page of a registered frame, then
     /// marks it valid and wakes the waiters.
-    fn load_frame(&self, fid: FrameId, tag: BufferTag, zero: bool) -> Result<()> {
+    fn load_frame(
+        &self,
+        fid: FrameId,
+        tag: BufferTag,
+        zero: bool,
+        zero_on_error: bool,
+    ) -> Result<()> {
         let frame = self.frame(fid);
         {
             let mut latch = frame.content.write().map_err(|_| self.poisoned_latch())?;
@@ -286,12 +316,22 @@ impl BufferPool {
                 latch.0.fill(0);
             } else {
                 self.smgr.read_block(tag, &mut latch.0)?;
-                latch.verify(tag.block).map_err(|pe| {
-                    pe.to_error(
-                        tag.block,
-                        &relpath(tag.rel, tag.fork, 0).display().to_string(),
-                    )
-                })?;
+                if let Err(pe) = latch.verify(tag.block) {
+                    let path = relpath(tag.rel, tag.fork, 0).display().to_string();
+                    if !zero_on_error {
+                        return Err(pe.to_error(tag.block, &path));
+                    }
+                    // Debug knob: believe a page whose only fault is the checksum.
+                    let trusted = self.knobs.fsm_trust_corrupt
+                        && matches!(pe, super::page::PageError::ChecksumMismatch { .. });
+                    if !trusted {
+                        eprintln!(
+                            "WARNING:  invalid page in block {} of relation {path}; treating as empty",
+                            tag.block
+                        );
+                        latch.0.fill(0);
+                    }
+                }
             }
         }
         let mut h = self.header(fid)?;
@@ -388,7 +428,7 @@ impl BufferPool {
                 tag.block
             )));
         }
-        self.load_frame(fid, tag, true)
+        self.load_frame(fid, tag, true, false)
     }
 
     pub fn nblocks(&self, rel: RelFileLocator, fork: ForkNumber) -> Result<BlockNumber> {
@@ -462,6 +502,12 @@ impl BufferPool {
         nblocks: BlockNumber,
     ) -> Result<()> {
         self.drop_buffers_where(|t| t.rel == rel && t.fork == fork && t.block >= nblocks)
+    }
+
+    /// DROP DATABASE: discards every buffer of the database's relations without writing
+    /// (`m5/09` §4.6). A pinned buffer is an internal error.
+    pub fn drop_database_buffers(&self, db_oid: crate::types::Oid) -> Result<()> {
+        self.drop_buffers_where(|t| t.rel.db_oid == db_oid)
     }
 
     fn drop_buffers_where(&self, matches: impl Fn(&BufferTag) -> bool) -> Result<()> {

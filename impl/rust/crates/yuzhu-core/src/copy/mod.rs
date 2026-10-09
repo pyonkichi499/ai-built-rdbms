@@ -165,11 +165,11 @@ fn resolve_copy_table(catalog: &dyn CatalogReader, name: &ObjectName) -> Result<
     })?;
     match table.kind {
         RelKind::Table => {}
-        RelKind::Sequence | RelKind::Index => {
-            let what = if table.kind == RelKind::Sequence {
-                "sequence"
-            } else {
-                "index"
+        RelKind::Sequence | RelKind::Index | RelKind::Virtual => {
+            let what = match table.kind {
+                RelKind::Sequence => "sequence",
+                RelKind::Virtual => "view",
+                _ => "index",
             };
             return Err(Error::new(
                 sqlstate::WRONG_OBJECT_TYPE,

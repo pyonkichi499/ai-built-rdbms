@@ -1,16 +1,20 @@
-//! Executor node: UPDATE (`m4/05` §7.6). 入力の行は
-//! 「対象表のユーザー列（`n_user_cols` 個）++ ctid ++ 新しい値（`assigned.len()` 個）」。
+//! Executor node: UPDATE (`m4/05` §7.6, `m5/02` §5.6). 入力の行は
+//! 「対象表のユーザー列（`n_user_cols` 個）++ ctid ++ 新しい値（`assigned.len()` 個）++ extra 列」。
 //!
 //! 代入式は planner の Project が旧い行に対して評価済み（`SET a = b, b = a` は入れ替えになる）。ここは位置だけを
 //! 見る: 旧行の先頭 `n_user_cols` 列を複製し、`assigned` の位置の値で置き換える → NOT NULL → CHECK
 //! （ヒープに触る前）→ `update_with_indexes`。`returning` が無ければ行を返さず、件数は `rows_affected`。
+//!
+//! 並行更新に当たったとき（RC）は EvalPlanQual の簡易版: 最新版をロックし、対象表の部分を最新版に差し替えた行で
+//! `recheck.qual` と代入式（`recheck.new_values`）を評価し直して、やり直す。RR は 40001。
 
 use crate::error::{Error, Result};
 use crate::executor::dml::{RowChecker, already_modified, tid_at, update_with_indexes};
-use crate::executor::eval::eval;
+use crate::executor::eval::{eval, eval_pred};
+use crate::executor::nodes::lock_rows::{replace_target, serialize_failure};
 use crate::executor::{BoxedExecutor, ExecCtx, Executor};
-use crate::planner::physical::{PhysCheck, PhysExpr};
-use crate::storage::{RelHandle, TmResult};
+use crate::planner::physical::{PhysCheck, PhysExpr, RecheckSpec};
+use crate::storage::{RelHandle, RowWait, TmResult};
 use crate::types::Row;
 
 pub struct UpdateExec {
@@ -22,6 +26,7 @@ pub struct UpdateExec {
     assigned: Vec<(usize, usize)>,
     checker: RowChecker,
     returning: Option<Vec<PhysExpr>>,
+    recheck: Option<RecheckSpec>,
     count: u64,
     done: bool,
 }
@@ -46,6 +51,7 @@ impl UpdateExec {
         checks: Vec<PhysCheck>,
         not_null: Vec<bool>,
         returning: Option<Vec<PhysExpr>>,
+        recheck: Option<RecheckSpec>,
     ) -> Self {
         let checker = RowChecker::new(rel.oid, table_name.clone(), not_null, checks);
         UpdateExec {
@@ -56,6 +62,7 @@ impl UpdateExec {
             assigned,
             checker,
             returning,
+            recheck,
             count: 0,
             done: false,
         }
@@ -64,9 +71,9 @@ impl UpdateExec {
     /// 更新後の行。幅が合わない入力は `XX000`。
     fn new_row(&self, input: &Row) -> Result<Row> {
         let want = self.n_user_cols + 1 + self.assigned.len();
-        if input.len() != want {
+        if input.len() < want {
             return Err(Error::internal(format!(
-                "expected {want} input columns (user columns, ctid and new values), got {}",
+                "expected at least {want} input columns (user columns, ctid and new values), got {}",
                 input.len()
             )));
         }
@@ -82,26 +89,123 @@ impl UpdateExec {
         Ok(new)
     }
 
+    /// 最新版 `latest`（対象表のユーザー列）に差し替えた入力 `r2` から、更新後の行を作り直す。
+    /// `recheck` があれば代入式を `r2` で評価し直す。無ければ代入は定数だけなので、入力の値をそのまま使う。
+    fn renew_row(
+        &self,
+        input: &Row,
+        r2: &Row,
+        latest: &[crate::types::Datum],
+        ctx: &mut ExecCtx<'_>,
+    ) -> Result<Row> {
+        let mut new: Row = latest.to_vec();
+        for (i, (col, pos)) in self.assigned.iter().enumerate() {
+            let v = match self.recheck.as_ref().and_then(|s| s.new_values.get(i)) {
+                Some(e) => eval(e, r2, ctx)?,
+                None => input
+                    .get(*pos)
+                    .ok_or_else(|| {
+                        Error::internal(format!("new value position {pos} out of range"))
+                    })?
+                    .clone(),
+            };
+            *new.get_mut(*col).ok_or_else(|| {
+                Error::internal(format!("assignment to column {col} out of range"))
+            })? = v;
+        }
+        Ok(new)
+    }
+
     /// 1 行を更新する。RETURNING があり、更新した行ならその行を返す。
     fn update_one(&mut self, input: &Row, ctx: &mut ExecCtx<'_>) -> Result<Option<Row>> {
-        let new = self.new_row(input)?;
-        let tid = tid_at(input, self.n_user_cols)?;
+        let mut new = self.new_row(input)?;
+        let mut cur_tid = tid_at(input, self.n_user_cols)?;
+        let mut old: Row = input[..self.n_user_cols].to_vec();
         self.checker.check(ctx, &new)?;
         let w = ctx.write_ctx()?;
-        let out = update_with_indexes(ctx, &self.rel, &w, tid, &new)?;
-        match out.result {
-            TmResult::Ok => self.count += 1,
-            TmResult::SelfModified { cmax } => {
-                if cmax != w.cid {
-                    return Err(already_modified("updated"));
+        let snap = ctx.snapshot;
+        let rr = ctx.xact_snapshot.is_some();
+        loop {
+            ctx.check_interrupts()?;
+            let out = update_with_indexes(ctx, &self.rel, &w, snap, cur_tid, &old, &new, None)?;
+            match out.result {
+                TmResult::Ok => {
+                    self.count += 1;
+                    break;
                 }
-                return Ok(None);
-            }
-            other => {
-                return Err(Error::internal(format!(
-                    "unexpected result of update on table \"{}\": {other:?}",
-                    self.table_name
-                )));
+                TmResult::SelfModified { cmax } => {
+                    if cmax != w.cid {
+                        return Err(already_modified("updated"));
+                    }
+                    return Ok(None);
+                }
+                TmResult::Deleted { .. } => {
+                    if rr {
+                        return Err(serialize_failure("delete"));
+                    }
+                    return Ok(None);
+                }
+                TmResult::Updated { .. } => {
+                    if rr {
+                        return Err(serialize_failure("update"));
+                    }
+                    let wait = ctx.wait.ok_or_else(|| {
+                        Error::internal("EvalPlanQual needs a wait context, but none is wired")
+                    })?;
+                    let lk = ctx.storage.lock_tuple(
+                        &self.rel,
+                        &w,
+                        snap,
+                        cur_tid,
+                        out.lockmode,
+                        RowWait::Block,
+                        true,
+                        &wait,
+                    )?;
+                    match lk.result {
+                        TmResult::Ok => {
+                            let latest = lk.latest.ok_or_else(|| {
+                                Error::internal("lock_tuple followed updates but returned no tuple")
+                            })?;
+                            // 対象表の部分だけ最新版に差し替える。他の列（結合相手）は元のまま。
+                            let mut r2 = input.clone();
+                            let tid_col = self.n_user_cols;
+                            let latest_row = latest.row.clone();
+                            cur_tid = latest.tid;
+                            replace_target(&mut r2, 0..self.n_user_cols, tid_col, latest);
+                            if let Some(q) = self.recheck.as_ref().and_then(|s| s.qual.as_ref())
+                                && eval_pred(q, &r2, ctx)? != Some(true)
+                            {
+                                return Ok(None);
+                            }
+                            new = self.renew_row(input, &r2, &latest_row, ctx)?;
+                            self.checker.check(ctx, &new)?;
+                            old = latest_row;
+                        }
+                        TmResult::Deleted { .. } => return Ok(None),
+                        TmResult::SelfModified { cmax } => {
+                            if cmax != w.cid {
+                                return Err(already_modified("updated"));
+                            }
+                            return Ok(None);
+                        }
+                        other => {
+                            return Err(Error::internal(format!(
+                                "unexpected result of locking the latest version in table \"{}\": {other:?}",
+                                self.table_name
+                            )));
+                        }
+                    }
+                }
+                TmResult::Invisible => {
+                    return Err(Error::internal("attempted to update invisible tuple"));
+                }
+                other @ (TmResult::BeingModified { .. } | TmResult::WouldBlock) => {
+                    return Err(Error::internal(format!(
+                        "unexpected result of update on table \"{}\": {other:?}",
+                        self.table_name
+                    )));
+                }
             }
         }
         let Some(returning) = &self.returning else {
@@ -207,6 +311,7 @@ mod tests {
             assigned,
             checks,
             vec![true, false, false],
+            None,
             None,
         )
     }

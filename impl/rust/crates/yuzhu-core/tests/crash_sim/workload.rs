@@ -349,6 +349,7 @@ impl Run {
                 database: "postgres".into(),
                 application_name: None,
                 options: Vec::new(),
+                client_addr: None,
             };
             let made = catch_unwind(AssertUnwindSafe(|| Session::new(cluster, params)));
             match made {

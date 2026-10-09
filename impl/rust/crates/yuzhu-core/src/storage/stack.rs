@@ -13,16 +13,40 @@ use super::vfs::Vfs;
 use super::{IndexStore, SequenceStore};
 use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result};
+use crate::txn::ProcArray;
 use crate::txn::Xid;
 use crate::txn::clog::Clog;
+use crate::txn::lock::LockManager;
 use crate::wal::Wal;
 
 /// Settings of a [`StorageStack`].
-#[derive(Clone, Copy, Debug)]
+///
+/// M5（01 §5.12、00 §4.5。R-18）: `HeapStore` が要る `LockManager` と、`Clog::open` に渡す `oldest_xid` は
+/// ここで渡す（`StorageStack::new` の署名は変えない）。`multixact: Arc<MultiXactTable>` は RW-2 が
+/// `MultiXactTable` を作る時に足す（型がまだ無い）。
+#[derive(Clone, Debug)]
 pub struct StackConfig {
     pub rel_seg_blocks: u32,
     pub nframes: usize,
     pub knobs: DebugKnobs,
+    /// ロックマネージャ（`Cluster` が 1 つ作って共有する）。
+    pub locks: Arc<LockManager>,
+    /// 制御ファイルの `oldest_xid`（`Clog::open` の掃除の下限。0 のときは `Xid(3)` とみなす）。
+    pub oldest_xid: Xid,
+}
+
+impl StackConfig {
+    /// 既定値の設定（新しい `LockManager`、`oldest_xid` = `Xid::FIRST_NORMAL`）。
+    /// `Cluster::prepare` は `locks` と `oldest_xid` を実際の値で置き換える。
+    pub fn new(rel_seg_blocks: u32, nframes: usize, knobs: DebugKnobs) -> StackConfig {
+        StackConfig {
+            rel_seg_blocks,
+            nframes,
+            knobs,
+            locks: LockManager::with_knobs(knobs),
+            oldest_xid: Xid::FIRST_NORMAL,
+        }
+    }
 }
 
 /// The pool's view of the [`Wal`]: flushes through it and reports the durable end
@@ -50,6 +74,8 @@ pub struct StorageStack {
     pub smgr: Arc<StorageManager>,
     pub pool: Arc<BufferPool>,
     pub clog: Arc<Clog>,
+    /// XID の採番・実行中一覧・スナップショットの登録簿（`TxnManager` が使う。01 §4.4）。
+    pub procs: Arc<ProcArray>,
     pub heap: Arc<HeapStore>,
     /// B+Tree（M4）。B1・B2 が実体を作るまでは `not_supported` を返すスタブ。
     pub index: Arc<dyn IndexStore>,
@@ -83,7 +109,8 @@ impl StorageStack {
             Arc::new(WalFlusher(Arc::clone(&wal))),
             cfg.knobs,
         );
-        let clog = Arc::new(Clog::open(Arc::clone(&vfs), next_xid)?);
+        let clog = Arc::new(Clog::open(Arc::clone(&vfs), next_xid, cfg.oldest_xid)?);
+        let procs = ProcArray::new(next_xid);
         let heap = Arc::new(HeapStore::new(
             Arc::clone(&pool),
             Arc::clone(&clog),
@@ -100,6 +127,7 @@ impl StorageStack {
             smgr,
             pool,
             clog,
+            procs,
             heap,
             index,
             seq,

@@ -122,19 +122,25 @@ fn is_simple<C, Q>(e: &Expr<C, Q>, parent: Parent) -> bool {
         | ExprKind::Coalesce(_)
         | ExprKind::NullIf { .. }
         | ExprKind::MinMax { .. }
-        | ExprKind::Case { .. } => true,
+        | ExprKind::Case { .. }
+        | ExprKind::ExternParam(_)
+        | ExprKind::ArrayCtor { .. }
+        | ExprKind::ArraySubscript { .. } => true,
         ExprKind::Cast { expr, method, .. } => match method {
             CastMethod::Function(_) | CastMethod::Env(_) => true,
             CastMethod::Binary | CastMethod::InOut => is_simple(expr, Parent::Cast),
         },
-        ExprKind::CoerceTypmod { expr, .. } => is_simple(expr, Parent::Cast),
+        ExprKind::CoerceTypmod { expr, .. } | ExprKind::ArrayCoerce { expr, .. } => {
+            is_simple(expr, Parent::Cast)
+        }
         ExprKind::Operator { op, args } => op_is_simple(simple_op_char(op, args.len()), parent),
         ExprKind::Like { .. } => op_is_simple(None, parent),
         ExprKind::IsNull(_)
         | ExprKind::IsNotNull(_)
         | ExprKind::BoolTest { .. }
         | ExprKind::DistinctFrom { .. }
-        | ExprKind::SubLink { .. } => group_is_simple(parent),
+        | ExprKind::SubLink { .. }
+        | ExprKind::ScalarArrayOp { .. } => group_is_simple(parent),
         ExprKind::And(_) => bool_is_simple(BoolKind::And, parent),
         ExprKind::Or(_) => bool_is_simple(BoolKind::Or, parent),
         ExprKind::Not(_) => bool_is_simple(BoolKind::Not, parent),
@@ -383,6 +389,40 @@ impl<'a, 'c, C: Clone, Q: Clone> Deparser<'a, 'c, C, Q> {
                 let s = format!("({hashed}{}).col{}", label.name, i + 1);
                 self.push(&s);
             }
+            ExprKind::ExternParam(i) => {
+                let s = format!("${}", u32::from(*i) + 1);
+                self.push(&s);
+            }
+            ExprKind::ArrayCtor { elems, .. } => {
+                self.push("ARRAY[");
+                self.write_list(elems)?;
+                self.push("]");
+            }
+            ExprKind::ArraySubscript { array, indexes } => {
+                self.push("(");
+                self.write(array, Parent::None)?;
+                self.push(")");
+                for idx in indexes {
+                    self.push("[");
+                    self.write(idx, Parent::None)?;
+                    self.push("]");
+                }
+            }
+            ExprKind::ArrayCoerce { expr, .. } => self.own_paren_cast(expr, e.ty)?,
+            ExprKind::ScalarArrayOp {
+                op,
+                use_or,
+                left,
+                array,
+            } => self.own_paren(|d| {
+                d.write(left, Parent::Other)?;
+                d.push(" ");
+                d.push(op.name);
+                d.push(if *use_or { " ANY (" } else { " ALL (" });
+                d.write(array, Parent::None)?;
+                d.push(")");
+                Ok(())
+            })?,
         }
         Ok(())
     }
@@ -728,6 +768,10 @@ impl<'a, 'c, C: Clone, Q: Clone> Deparser<'a, 'c, C, Q> {
                 } else {
                     format!("EXISTS({hashed}{})", label.name)
                 };
+                self.push(&s);
+            }
+            SubLinkKind::Array => {
+                let s = format!("ARRAY({hashed}{})", label.name);
                 self.push(&s);
             }
             SubLinkKind::Any | SubLinkKind::All => {

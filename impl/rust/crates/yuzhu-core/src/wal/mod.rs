@@ -71,6 +71,7 @@ impl std::fmt::Display for Lsn {
 // ----- rmgr とブロック参照のフラグ -------------------------------------------------
 
 /// リソースマネージャ ID（§3.5）。4 = Btree、5 = Seq は M4（`m4/00-contracts.md` §13.4）。
+/// 6 = Heap2、7 = Dbase は M5（`m5/00-contracts.md` §3.3。ディスク形式。凍結）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum RmgrId {
@@ -80,6 +81,8 @@ pub enum RmgrId {
     Heap = 3,
     Btree = 4,
     Seq = 5,
+    Heap2 = 6,
+    Dbase = 7,
 }
 
 impl RmgrId {
@@ -92,6 +95,8 @@ impl RmgrId {
             3 => Some(RmgrId::Heap),
             4 => Some(RmgrId::Btree),
             5 => Some(RmgrId::Seq),
+            6 => Some(RmgrId::Heap2),
+            7 => Some(RmgrId::Dbase),
             _ => None,
         }
     }
@@ -208,10 +213,14 @@ mod tests {
             RmgrId::Heap,
             RmgrId::Btree,
             RmgrId::Seq,
+            RmgrId::Heap2,
+            RmgrId::Dbase,
         ] {
             assert_eq!(RmgrId::from_u8(r as u8), Some(r));
         }
-        assert_eq!(RmgrId::from_u8(6), None);
+        // ディスク形式（凍結）。00 §3.3: HEAP2 = 6、DBASE = 7。
+        assert_eq!((RmgrId::Heap2 as u8, RmgrId::Dbase as u8), (6, 7));
+        assert_eq!(RmgrId::from_u8(8), None);
         assert_eq!(RmgrId::from_u8(255), None);
     }
 

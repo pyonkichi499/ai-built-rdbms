@@ -197,16 +197,19 @@ impl ConstFolder<'_, '_> {
             | K::SessionValue(_)
             | K::Aggregate(_)
             | K::SubLink { .. }
-            | K::SubLinkOutput(_) => Ok(()),
-            K::Operator { args, .. } | K::Function { args, .. } | K::MinMax { args, .. } => {
-                each(args)
-            }
+            | K::SubLinkOutput(_)
+            | K::ExternParam(_) => Ok(()),
+            K::Operator { args, .. }
+            | K::Function { args, .. }
+            | K::MinMax { args, .. }
+            | K::ArrayCtor { elems: args, .. } => each(args),
             // PostgreSQL は決める最初の項で簡約を止め、残りは評価せずに捨てる。
             K::And(args) => self.lazy_args(args, |d| matches!(d, Datum::Bool(false))),
             K::Or(args) => self.lazy_args(args, |d| matches!(d, Datum::Bool(true))),
             K::Coalesce(args) => self.lazy_args(args, |d| !d.is_null()),
             K::Cast { expr, .. }
             | K::CoerceTypmod { expr, .. }
+            | K::ArrayCoerce { expr, .. }
             | K::Not(expr)
             | K::IsNull(expr)
             | K::IsNotNull(expr)
@@ -244,6 +247,16 @@ impl ConstFolder<'_, '_> {
                 self.expr(expr)?;
                 each(list)
             }
+
+            K::ArraySubscript { array, indexes } => {
+                self.expr(array)?;
+                each(indexes)
+            }
+
+            K::ScalarArrayOp { left, array, .. } => {
+                self.expr(left)?;
+                self.expr(array).map(drop)
+            }
         }
     }
 }
@@ -274,7 +287,9 @@ fn is_foldable(e: &BoundExpr) -> bool {
         | K::SessionValue(_)
         | K::Aggregate(_)
         | K::SubLink { .. }
-        | K::SubLinkOutput(_) => false,
+        | K::SubLinkOutput(_)
+        // `$n` は実行時に決まるので畳まない（04 C9）。
+        | K::ExternParam(_) => false,
         K::Operator { args, .. } | K::MinMax { args, .. } => all(args),
         K::Function { func, args } => matches!(func.kind, FnKind::Pure(_)) && all(args),
         K::Coalesce(args) => short_circuit_foldable(args, |d| !d.is_null()),
@@ -300,5 +315,11 @@ fn is_foldable(e: &BoundExpr) -> bool {
             ..
         } => is_foldable(expr) && is_foldable(pattern) && escape.as_deref().is_none_or(is_foldable),
         K::InList { expr, list, .. } => is_foldable(expr) && all(list),
+        K::ArrayCtor { elems, .. } => all(elems),
+        K::ArraySubscript { array, indexes } => is_foldable(array) && all(indexes),
+        K::ArrayCoerce {
+            expr, elem_method, ..
+        } => !matches!(elem_method, CastMethod::Env(_)) && is_foldable(expr),
+        K::ScalarArrayOp { left, array, .. } => is_foldable(left) && is_foldable(array),
     }
 }

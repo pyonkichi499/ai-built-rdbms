@@ -1,0 +1,121 @@
+# PREPARE / EXECUTE のエラー（m5 04 §7.1）。名前は extended_prepare_errors_ を接頭辞にする
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+PREPARE extended_prepare_errors_q1(int) AS SELECT $1
+
+# 重複（42P05）
+statement error (42P05)
+PREPARE extended_prepare_errors_q1 AS SELECT 2
+
+statement error (42P05)
+PREPARE extended_prepare_errors_q1(int) AS SELECT $1
+
+# 重複に失敗しても元の文は残る
+query I
+EXECUTE extended_prepare_errors_q1(9)
+----
+9
+
+# 存在しない文（26000）
+statement error (26000)
+EXECUTE extended_prepare_errors_nope
+
+statement error (26000)
+EXECUTE extended_prepare_errors_nope(1)
+
+statement error (26000)
+DEALLOCATE extended_prepare_errors_nope
+
+# 引数の個数違い（42601）
+statement error (42601)
+EXECUTE extended_prepare_errors_q1
+
+statement error (42601)
+EXECUTE extended_prepare_errors_q1(1, 2)
+
+# 型の違い（22P02）
+statement error (22P02)
+EXECUTE extended_prepare_errors_q1('x')
+
+# 型を変換できない（42804）
+statement error (42804)
+EXECUTE extended_prepare_errors_q1(true)
+
+# $n の型が決まらない（42P18）
+statement error (42P18)
+PREPARE extended_prepare_errors_q2 AS SELECT $1 IS NULL
+
+# 宣言より大きい番号の $2 は宣言なしの扱いで、型が決まれば通る（PostgreSQL 17 の実測）
+statement ok
+PREPARE extended_prepare_errors_q3(int) AS SELECT $2
+
+query T
+EXECUTE extended_prepare_errors_q3(1, 'x')
+----
+x
+
+statement error (42601)
+EXECUTE extended_prepare_errors_q3(1)
+
+# 宣言より大きい番号の $2 の型が決まらない（42P18）
+statement error (42P18)
+PREPARE extended_prepare_errors_q3b(int) AS SELECT $2 IS NULL
+
+# 宣言の方が多い分は使われなくてもよい（PostgreSQL は通す）
+statement ok
+PREPARE extended_prepare_errors_q4(int, int) AS SELECT $2
+
+query I
+EXECUTE extended_prepare_errors_q4(1, 2)
+----
+2
+
+# 失敗した PREPARE は文を残さない
+statement error (26000)
+EXECUTE extended_prepare_errors_q2
+
+statement error (26000)
+EXECUTE extended_prepare_errors_q3b
+
+# 構文エラー（42601）
+statement error (42601)
+PREPARE extended_prepare_errors_q5 AS BEGIN
+
+statement error (42601)
+PREPARE extended_prepare_errors_q5 AS CREATE TABLE extended_prepare_errors_x (a int)
+
+statement error (42601)
+PREPARE extended_prepare_errors_q5 AS
+
+statement error (42601)
+PREPARE extended_prepare_errors_q5 AS SELECT FROM FROM
+
+# 未知の型（42704）
+statement error (42704)
+PREPARE extended_prepare_errors_q6(nosuchtype) AS SELECT $1
+
+# 存在しない表は PREPARE の時点で失敗（42P01）
+statement error (42P01)
+PREPARE extended_prepare_errors_q7 AS SELECT * FROM extended_prepare_errors_nosuch
+
+# 存在しない列（42703）
+statement error (42703)
+PREPARE extended_prepare_errors_q7 AS SELECT nosuchcol
+
+# 実行時のエラー（22012）の後も文は使える
+statement ok
+PREPARE extended_prepare_errors_q8(int) AS SELECT 1 / $1
+
+statement error (22012)
+EXECUTE extended_prepare_errors_q8(0)
+
+query I
+EXECUTE extended_prepare_errors_q8(1)
+----
+1
+
+statement ok
+DEALLOCATE ALL

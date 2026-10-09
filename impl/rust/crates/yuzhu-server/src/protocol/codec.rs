@@ -7,7 +7,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 
 use super::messages::{
-    BackendMessage, CANCEL_REQUEST_CODE, ErrorFields, ExtendedKind, FieldDescription,
+    BackendMessage, CANCEL_REQUEST_CODE, DescribeTarget, ErrorFields, FieldDescription,
     FrontendMessage, GSSENC_REQUEST_CODE, MAX_STARTUP_PACKET_LEN, SSL_REQUEST_CODE, StartupPacket,
 };
 
@@ -52,6 +52,14 @@ pub enum ProtocolError {
     /// A Query string is not valid UTF-8. The whole message has been
     /// consumed, so the connection can continue after reporting an error.
     InvalidUtf8,
+    /// The body of a message is malformed. This is an ERROR, not FATAL; for
+    /// the Extended Query messages the server skips input until Sync.
+    /// `sqlstate` is `22021` for invalid UTF-8 and `08P01` otherwise.
+    BadBody {
+        tag: u8,
+        sqlstate: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for ProtocolError {
@@ -63,6 +71,7 @@ impl fmt::Display for ProtocolError {
             }
             Self::Malformed(m) => f.write_str(m),
             Self::InvalidUtf8 => f.write_str("invalid byte sequence for encoding \"UTF8\""),
+            Self::BadBody { message, .. } => f.write_str(message),
         }
     }
 }
@@ -212,13 +221,18 @@ fn take_cstr<'a>(buf: &mut &'a [u8]) -> Option<&'a [u8]> {
     Some(s)
 }
 
-/// Reads one regular message (type byte + length + body). Returns
-/// `Ok(None)` on clean EOF at a message boundary. Bodies of messages yuzhu
-/// does not interpret are read and discarded.
-pub fn read_message<R: Read>(
-    r: &mut R,
-    max_len: usize,
-) -> Result<Option<FrontendMessage>, ProtocolError> {
+/// One message as read from the wire: the type byte and the body (the
+/// length has been validated). Decoding is separate so that messages
+/// skipped after an error (`SkipTillSync`) are never interpreted.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RawMessage {
+    pub tag: u8,
+    pub body: Vec<u8>,
+}
+
+/// Reads one message's type byte and body. Returns `Ok(None)` on clean EOF
+/// at a message boundary.
+pub fn read_raw<R: Read>(r: &mut R, max_len: usize) -> Result<Option<RawMessage>, ProtocolError> {
     let mut header = [0u8; 5];
     if !read_header(r, &mut header)? {
         return Ok(None);
@@ -227,7 +241,170 @@ pub fn read_message<R: Read>(
     let declared = i32::from_be_bytes([header[1], header[2], header[3], header[4]]);
     let blen = body_len(declared, 4, max_len)?;
     let body = read_body(r, blen)?;
-    Ok(Some(match tag {
+    Ok(Some(RawMessage { tag, body }))
+}
+
+/// Reads one regular message (type byte + length + body). Returns
+/// `Ok(None)` on clean EOF at a message boundary.
+pub fn read_message<R: Read>(
+    r: &mut R,
+    max_len: usize,
+) -> Result<Option<FrontendMessage>, ProtocolError> {
+    read_raw(r, max_len)?.map(decode).transpose()
+}
+
+/// Whether `tag` is a message of the Extended Query flow whose errors skip
+/// input until Sync (`P B D E C`).
+pub fn is_ext_tag(tag: u8) -> bool {
+    matches!(tag, b'P' | b'B' | b'D' | b'E' | b'C')
+}
+
+fn bad_body(tag: u8, message: &str) -> ProtocolError {
+    ProtocolError::BadBody {
+        tag,
+        sqlstate: "08P01",
+        message: message.to_owned(),
+    }
+}
+
+/// A cursor over a message body (PostgreSQL's `pq_getmsg*`).
+struct BodyReader<'a> {
+    tag: u8,
+    buf: &'a [u8],
+}
+
+impl<'a> BodyReader<'a> {
+    fn new(tag: u8, buf: &'a [u8]) -> Self {
+        Self { tag, buf }
+    }
+
+    fn short(&self) -> ProtocolError {
+        bad_body(self.tag, "insufficient data left in message")
+    }
+
+    fn bytes(&mut self, n: usize) -> Result<&'a [u8], ProtocolError> {
+        if n > self.buf.len() {
+            return Err(self.short());
+        }
+        let (head, tail) = self.buf.split_at(n);
+        self.buf = tail;
+        Ok(head)
+    }
+
+    fn u8(&mut self) -> Result<u8, ProtocolError> {
+        Ok(self.bytes(1)?[0])
+    }
+
+    fn i16(&mut self) -> Result<i16, ProtocolError> {
+        let b = self.bytes(2)?;
+        Ok(i16::from_be_bytes([b[0], b[1]]))
+    }
+
+    fn u16(&mut self) -> Result<u16, ProtocolError> {
+        let b = self.bytes(2)?;
+        Ok(u16::from_be_bytes([b[0], b[1]]))
+    }
+
+    fn i32(&mut self) -> Result<i32, ProtocolError> {
+        let b = self.bytes(4)?;
+        Ok(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn u32(&mut self) -> Result<u32, ProtocolError> {
+        let b = self.bytes(4)?;
+        Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// A NUL-terminated string in the client encoding.
+    fn cstr(&mut self) -> Result<String, ProtocolError> {
+        let Some(s) = take_cstr(&mut self.buf) else {
+            return Err(bad_body(self.tag, "invalid string in message"));
+        };
+        if client_latin1() {
+            return Ok(s.iter().map(|&b| char::from(b)).collect());
+        }
+        match std::str::from_utf8(s) {
+            Ok(v) => Ok(v.to_owned()),
+            Err(e) => {
+                let bad = s.get(e.valid_up_to()).copied().unwrap_or(0);
+                Err(ProtocolError::BadBody {
+                    tag: self.tag,
+                    sqlstate: "22021",
+                    message: format!("invalid byte sequence for encoding \"UTF8\": 0x{bad:02x}"),
+                })
+            }
+        }
+    }
+
+    /// The body must be used up.
+    fn end(&self) -> Result<(), ProtocolError> {
+        if self.buf.is_empty() {
+            Ok(())
+        } else {
+            Err(bad_body(self.tag, "invalid message format"))
+        }
+    }
+
+    /// A count of `i16`s that PostgreSQL treats as unsigned for allocation;
+    /// a negative count is a malformed message.
+    fn count(&mut self) -> Result<usize, ProtocolError> {
+        usize::try_from(self.i16()?).map_err(|_| bad_body(self.tag, "invalid message format"))
+    }
+
+    fn describe_target(&mut self, what: &str) -> Result<DescribeTarget, ProtocolError> {
+        match self.u8()? {
+            b'S' => Ok(DescribeTarget::Statement),
+            b'P' => Ok(DescribeTarget::Portal),
+            other => Err(bad_body(
+                self.tag,
+                &format!("invalid {what} message subtype {other}"),
+            )),
+        }
+    }
+}
+
+fn decode_bind(r: &mut BodyReader<'_>) -> Result<FrontendMessage, ProtocolError> {
+    let portal = r.cstr()?;
+    let stmt = r.cstr()?;
+    let nf = r.count()?;
+    let mut param_formats = Vec::with_capacity(nf.min(r.buf.len() / 2));
+    for _ in 0..nf {
+        param_formats.push(r.i16()?);
+    }
+    let np = r.count()?;
+    let mut params = Vec::with_capacity(np.min(r.buf.len() / 4));
+    for _ in 0..np {
+        let len = r.i32()?;
+        params.push(match len {
+            -1 => None,
+            // Any other negative length is reported like a short read.
+            n => Some(
+                r.bytes(usize::try_from(n).map_err(|_| r.short())?)?
+                    .to_vec(),
+            ),
+        });
+    }
+    let nr = r.count()?;
+    let mut result_formats = Vec::with_capacity(nr.min(r.buf.len() / 2));
+    for _ in 0..nr {
+        result_formats.push(r.i16()?);
+    }
+    r.end()?;
+    Ok(FrontendMessage::Bind {
+        portal,
+        stmt,
+        param_formats,
+        params,
+        result_formats,
+    })
+}
+
+/// Decodes the body of a message. A bad Extended Query body is a
+/// [`ProtocolError::BadBody`] (an ERROR, not FATAL).
+pub fn decode(raw: RawMessage) -> Result<FrontendMessage, ProtocolError> {
+    let RawMessage { tag, body } = raw;
+    let mut r = BodyReader::new(tag, &body);
+    Ok(match tag {
         b'Q' => {
             let Some((&0, s)) = body.split_last() else {
                 return Err(ProtocolError::Malformed("invalid string in message".into()));
@@ -243,14 +420,47 @@ pub fn read_message<R: Read>(
         }
         b'X' => FrontendMessage::Terminate,
         b'S' => FrontendMessage::Sync,
+        b'H' => FrontendMessage::Flush,
+        b'P' => {
+            let name = r.cstr()?;
+            let sql = r.cstr()?;
+            let n = usize::from(r.u16()?);
+            let mut param_types = Vec::with_capacity(n.min(r.buf.len() / 4));
+            for _ in 0..n {
+                param_types.push(r.u32()?);
+            }
+            r.end()?;
+            FrontendMessage::Parse {
+                name,
+                sql,
+                param_types,
+            }
+        }
+        b'B' => decode_bind(&mut r)?,
+        b'D' => {
+            let target = r.describe_target("DESCRIBE")?;
+            let name = r.cstr()?;
+            r.end()?;
+            FrontendMessage::Describe { target, name }
+        }
+        b'C' => {
+            let target = r.describe_target("CLOSE")?;
+            let name = r.cstr()?;
+            r.end()?;
+            FrontendMessage::Close { target, name }
+        }
+        b'E' => {
+            let portal = r.cstr()?;
+            let max_rows = r.i32()?;
+            r.end()?;
+            FrontendMessage::Execute { portal, max_rows }
+        }
+        b'F' => FrontendMessage::FunctionCall,
         b'd' => FrontendMessage::CopyData(body),
         b'c' => FrontendMessage::CopyDone,
         b'f' => FrontendMessage::CopyFail(copy_fail_message(&body)),
-        _ => match ExtendedKind::from_tag(tag) {
-            Some(kind) => FrontendMessage::Extended(kind),
-            None => FrontendMessage::Unknown(tag),
-        },
-    }))
+        _ => FrontendMessage::Unknown(tag),
+    })
 }
 
 /// The NUL-terminated message of a CopyFail; empty if it is malformed
@@ -348,6 +558,32 @@ fn put_row_description(buf: &mut Vec<u8>, fields: &[FieldDescription<'_>]) -> io
     Ok(())
 }
 
+fn put_data_row_raw(buf: &mut Vec<u8>, values: &[Option<Vec<u8>>]) -> io::Result<()> {
+    put_i16(buf, i16::try_from(values.len()).map_err(|_| too_long())?);
+    for v in values {
+        match v {
+            None => put_i32(buf, -1),
+            Some(b) => {
+                put_i32(buf, i32::try_from(b.len()).map_err(|_| too_long())?);
+                buf.extend_from_slice(b);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn put_copy_response(buf: &mut Vec<u8>, format: u8, column_formats: &[i16]) -> io::Result<()> {
+    buf.push(format);
+    put_i16(
+        buf,
+        i16::try_from(column_formats.len()).map_err(|_| too_long())?,
+    );
+    for f in column_formats {
+        put_i16(buf, *f);
+    }
+    Ok(())
+}
+
 fn put_data_row(buf: &mut Vec<u8>, values: &[Option<String>]) -> io::Result<()> {
     put_i16(buf, i16::try_from(values.len()).map_err(|_| too_long())?);
     for v in values {
@@ -374,10 +610,19 @@ pub fn encode(msg: &BackendMessage<'_>) -> io::Result<Vec<u8>> {
         BackendMessage::BackendKeyData { .. } => b'K',
         BackendMessage::ReadyForQuery(_) => b'Z',
         BackendMessage::RowDescription(_) => b'T',
-        BackendMessage::DataRow(_) => b'D',
+        BackendMessage::DataRow(_) | BackendMessage::DataRowRaw(_) => b'D',
         BackendMessage::CommandComplete(_) => b'C',
         BackendMessage::EmptyQueryResponse => b'I',
         BackendMessage::CopyInResponse { .. } => b'G',
+        BackendMessage::ParseComplete => b'1',
+        BackendMessage::BindComplete => b'2',
+        BackendMessage::CloseComplete => b'3',
+        BackendMessage::NoData => b'n',
+        BackendMessage::PortalSuspended => b's',
+        BackendMessage::ParameterDescription(_) => b't',
+        BackendMessage::CopyOutResponse { .. } => b'H',
+        BackendMessage::CopyData(_) => b'd',
+        BackendMessage::CopyDone => b'c',
         BackendMessage::ErrorResponse(_) => b'E',
         BackendMessage::NoticeResponse(_) => b'N',
         BackendMessage::NegotiateProtocolVersion { .. } => b'v',
@@ -398,20 +643,29 @@ pub fn encode(msg: &BackendMessage<'_>) -> io::Result<Vec<u8>> {
         BackendMessage::RowDescription(fields) => put_row_description(&mut buf, fields)?,
         BackendMessage::DataRow(values) => put_data_row(&mut buf, values)?,
         BackendMessage::CommandComplete(tag) => put_cstr(&mut buf, tag),
-        BackendMessage::EmptyQueryResponse => {}
         BackendMessage::CopyInResponse {
             format,
             column_formats,
-        } => {
-            buf.push(*format);
-            put_i16(
-                &mut buf,
-                i16::try_from(column_formats.len()).map_err(|_| too_long())?,
-            );
-            for f in *column_formats {
-                put_i16(&mut buf, *f);
+        }
+        | BackendMessage::CopyOutResponse {
+            format,
+            column_formats,
+        } => put_copy_response(&mut buf, *format, column_formats)?,
+        BackendMessage::EmptyQueryResponse
+        | BackendMessage::ParseComplete
+        | BackendMessage::BindComplete
+        | BackendMessage::CloseComplete
+        | BackendMessage::NoData
+        | BackendMessage::PortalSuspended
+        | BackendMessage::CopyDone => {}
+        BackendMessage::ParameterDescription(oids) => {
+            put_i16(&mut buf, i16::try_from(oids.len()).map_err(|_| too_long())?);
+            for oid in *oids {
+                put_u32(&mut buf, *oid);
             }
         }
+        BackendMessage::DataRowRaw(values) => put_data_row_raw(&mut buf, values)?,
+        BackendMessage::CopyData(chunk) => buf.extend_from_slice(chunk),
         BackendMessage::ErrorResponse(f) | BackendMessage::NoticeResponse(f) => {
             put_error_fields(&mut buf, f);
         }
@@ -695,30 +949,211 @@ mod tests {
         );
     }
 
+    fn cstr(s: &str) -> Vec<u8> {
+        let mut v = s.as_bytes().to_vec();
+        v.push(0);
+        v
+    }
+
     #[test]
-    fn extended_messages_are_discarded() {
-        let cases = [
-            (b'P', ExtendedKind::Parse),
-            (b'B', ExtendedKind::Bind),
-            (b'D', ExtendedKind::Describe),
-            (b'E', ExtendedKind::Execute),
-            (b'C', ExtendedKind::Close),
-            (b'H', ExtendedKind::Flush),
-            (b'F', ExtendedKind::FunctionCall),
-        ];
-        for (tag, kind) in cases {
-            let mut bytes = msg_bytes(tag, b"some\0body\0\x00\x01");
-            bytes.extend(msg_bytes(b'S', b""));
-            let mut cur = Cursor::new(bytes);
-            assert_eq!(
-                read_message(&mut cur, DEFAULT_MAX_MESSAGE_LEN).unwrap(),
-                Some(FrontendMessage::Extended(kind))
-            );
-            assert_eq!(
-                read_message(&mut cur, DEFAULT_MAX_MESSAGE_LEN).unwrap(),
-                Some(FrontendMessage::Sync)
-            );
+    fn parse_message() {
+        let mut body = cstr("s1");
+        body.extend(cstr("SELECT $1"));
+        body.extend([0, 2, 0, 0, 0, 23, 0, 0, 0, 0]);
+        assert_eq!(
+            read_msg(&msg_bytes(b'P', &body)).unwrap(),
+            Some(FrontendMessage::Parse {
+                name: "s1".into(),
+                sql: "SELECT $1".into(),
+                param_types: vec![23, 0],
+            })
+        );
+    }
+
+    #[test]
+    fn bind_message() {
+        let mut body = cstr("p");
+        body.extend(cstr("s"));
+        body.extend([0, 1, 0, 1]); // one parameter format: binary
+        body.extend([0, 2]); // two values
+        body.extend([0, 0, 0, 2, b'h', b'i']);
+        body.extend([0xff, 0xff, 0xff, 0xff]); // NULL
+        body.extend([0, 1, 0, 0]); // one result format: text
+        assert_eq!(
+            read_msg(&msg_bytes(b'B', &body)).unwrap(),
+            Some(FrontendMessage::Bind {
+                portal: "p".into(),
+                stmt: "s".into(),
+                param_formats: vec![1],
+                params: vec![Some(b"hi".to_vec()), None],
+                result_formats: vec![0],
+            })
+        );
+    }
+
+    fn bad_body_of(tag: u8, body: &[u8]) -> (&'static str, String) {
+        match read_msg(&msg_bytes(tag, body)) {
+            Err(ProtocolError::BadBody {
+                tag: t,
+                sqlstate,
+                message,
+            }) => {
+                assert_eq!(t, tag);
+                (sqlstate, message)
+            }
+            other => panic!("expected BadBody, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bind_body_errors() {
+        let head = |extra: &[u8]| {
+            let mut b = cstr("");
+            b.extend(cstr(""));
+            b.extend(extra);
+            b
+        };
+        // A value longer than the rest of the message.
+        let body = head(&[0, 0, 0, 1, 0, 0, 0, 9, b'x']);
+        assert_eq!(
+            bad_body_of(b'B', &body),
+            ("08P01", "insufficient data left in message".into())
+        );
+        // A negative length other than -1.
+        let body = head(&[0, 0, 0, 1, 0xff, 0xff, 0xff, 0xfe, 0, 0]);
+        assert_eq!(
+            bad_body_of(b'B', &body),
+            ("08P01", "insufficient data left in message".into())
+        );
+        // Trailing bytes.
+        let body = head(&[0, 0, 0, 0, 0, 0, 7]);
+        assert_eq!(
+            bad_body_of(b'B', &body),
+            ("08P01", "invalid message format".into())
+        );
+        // Truncated before the result formats.
+        let body = head(&[0, 0, 0, 0]);
+        assert_eq!(
+            bad_body_of(b'B', &body),
+            ("08P01", "insufficient data left in message".into())
+        );
+        // Missing NUL terminator.
+        assert_eq!(
+            bad_body_of(b'B', b"abc"),
+            ("08P01", "invalid string in message".into())
+        );
+    }
+
+    #[test]
+    fn describe_close_execute() {
+        let mut body = vec![b'S'];
+        body.extend(cstr("s1"));
+        assert_eq!(
+            read_msg(&msg_bytes(b'D', &body)).unwrap(),
+            Some(FrontendMessage::Describe {
+                target: DescribeTarget::Statement,
+                name: "s1".into()
+            })
+        );
+        body[0] = b'P';
+        assert_eq!(
+            read_msg(&msg_bytes(b'C', &body)).unwrap(),
+            Some(FrontendMessage::Close {
+                target: DescribeTarget::Portal,
+                name: "s1".into()
+            })
+        );
+        body[0] = b'X';
+        assert_eq!(
+            bad_body_of(b'D', &body),
+            ("08P01", "invalid DESCRIBE message subtype 88".into())
+        );
+        assert_eq!(
+            bad_body_of(b'C', &body),
+            ("08P01", "invalid CLOSE message subtype 88".into())
+        );
+        let mut body = cstr("p");
+        body.extend([0, 0, 0, 5]);
+        assert_eq!(
+            read_msg(&msg_bytes(b'E', &body)).unwrap(),
+            Some(FrontendMessage::Execute {
+                portal: "p".into(),
+                max_rows: 5
+            })
+        );
+        body.push(0);
+        assert_eq!(
+            bad_body_of(b'E', &body),
+            ("08P01", "invalid message format".into())
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_in_extended_message_is_22021() {
+        let mut body = b"\xff\0".to_vec();
+        body.extend(cstr("SELECT 1"));
+        body.extend([0, 0]);
+        let (state, msg) = bad_body_of(b'P', &body);
+        assert_eq!(state, "22021");
+        assert_eq!(msg, "invalid byte sequence for encoding \"UTF8\": 0xff");
+    }
+
+    #[test]
+    fn flush_sync_function_call_ignore_the_body() {
+        assert_eq!(
+            read_msg(&msg_bytes(b'H', b"")).unwrap(),
+            Some(FrontendMessage::Flush)
+        );
+        assert_eq!(
+            read_msg(&msg_bytes(b'F', b"junk")).unwrap(),
+            Some(FrontendMessage::FunctionCall)
+        );
+    }
+
+    #[test]
+    fn read_raw_does_not_decode() {
+        let mut bytes = msg_bytes(b'B', b"\xff\xff");
+        bytes.extend(msg_bytes(b'S', b""));
+        let mut cur = Cursor::new(bytes);
+        let raw = read_raw(&mut cur, DEFAULT_MAX_MESSAGE_LEN)
+            .unwrap()
+            .unwrap();
+        assert_eq!((raw.tag, raw.body.as_slice()), (b'B', &b"\xff\xff"[..]));
+        assert_eq!(
+            read_message(&mut cur, DEFAULT_MAX_MESSAGE_LEN).unwrap(),
+            Some(FrontendMessage::Sync)
+        );
+    }
+
+    #[test]
+    fn encode_extended_backend_messages() {
+        assert_eq!(enc(&BackendMessage::ParseComplete), [b'1', 0, 0, 0, 4]);
+        assert_eq!(enc(&BackendMessage::BindComplete), [b'2', 0, 0, 0, 4]);
+        assert_eq!(enc(&BackendMessage::CloseComplete), [b'3', 0, 0, 0, 4]);
+        assert_eq!(enc(&BackendMessage::NoData), [b'n', 0, 0, 0, 4]);
+        assert_eq!(enc(&BackendMessage::PortalSuspended), [b's', 0, 0, 0, 4]);
+        assert_eq!(enc(&BackendMessage::CopyDone), [b'c', 0, 0, 0, 4]);
+        assert_eq!(
+            enc(&BackendMessage::ParameterDescription(&[23, 25])),
+            [b't', 0, 0, 0, 14, 0, 2, 0, 0, 0, 23, 0, 0, 0, 25]
+        );
+        assert_eq!(
+            enc(&BackendMessage::DataRowRaw(&[Some(vec![0, 0, 0, 1]), None])),
+            [
+                b'D', 0, 0, 0, 18, 0, 2, 0, 0, 0, 4, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff
+            ]
+        );
+        assert_eq!(
+            enc(&BackendMessage::CopyOutResponse {
+                format: 0,
+                column_formats: &[0, 1]
+            }),
+            [b'H', 0, 0, 0, 11, 0, 0, 2, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            enc(&BackendMessage::CopyData(b"a\n")),
+            [b'd', 0, 0, 0, 6, b'a', b'\n']
+        );
     }
 
     #[test]

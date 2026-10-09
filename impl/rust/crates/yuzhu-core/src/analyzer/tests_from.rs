@@ -1155,7 +1155,10 @@ fn with_returning<T>(
     sql: &str,
     f: impl FnOnce(&super::Analyzer<'_>, crate::sql::ast::Statement) -> crate::error::Result<T>,
 ) -> crate::error::Result<T> {
-    let a = super::Analyzer { catalog: c };
+    let a = super::Analyzer {
+        catalog: c,
+        params: None,
+    };
     f(&a, parse_stmt(sql))
 }
 

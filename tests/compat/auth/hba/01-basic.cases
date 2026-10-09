@@ -1,0 +1,12 @@
+# user db addr password expect
+alice  app       127.0.0.1  alice-pw   ok/scram
+alice  app       127.0.0.1  wrong      28P01
+bob    app       127.0.0.1  bob-pw     28000
+bob    postgres  127.0.0.1  bob-pw     28000
+alice  other     127.0.0.1  alice-pw   ok/cleartext
+alice  other     127.0.0.1  wrong      28P01
+dave   other     127.0.0.1  anything   ok/trust
+alice  postgres  127.0.0.1  anything   ok/trust
+dave   postgres  127.0.0.1  -          ok/trust
+alice  app       127.0.0.2  alice-pw   28000
+alice  postgres  127.0.0.2  alice-pw   28000

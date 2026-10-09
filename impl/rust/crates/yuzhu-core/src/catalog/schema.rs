@@ -39,6 +39,10 @@ pub mod oids {
     pub const PG_AMOP: Oid = 2602;
     pub const PG_AMPROC: Oid = 2603;
     pub const PG_DESCRIPTION: Oid = 2609;
+    /// yuzhu 独自のカタログ（00 §3.2。9800〜9899）。`yz_relxid` はデータベースごと、マップしない。
+    pub const YZ_RELXID: Oid = 9801;
+    /// `yz_datxid` は共有（`global/9802`）、マップしない。
+    pub const YZ_DATXID: Oid = 9802;
 
     /// `pg_catalog`.
     pub const NAMESPACE_PG_CATALOG: Oid = 11;
@@ -518,7 +522,21 @@ static PG_TABLESPACE_COLUMNS: &[CatalogColumn] = &[
     col("spcoptions", 1009, false),
 ];
 
-/// The 22 catalogs (M2 の 13 個 + M4 の 9 個。`m2.md` §6.8.1、`m4/07-catalog-ddl.md` §3.1)。
+/// `yz_relxid`（03 §3.4）: ヒープのテーブル 1 つにつき 1 行。`relfrozenxid8` が `relid` の凍結境界（`Xid.0 as i64`）。
+#[rustfmt::skip]
+static YZ_RELXID_COLUMNS: &[CatalogColumn] = &[
+    col("relid", 26, true),
+    col("relfrozenxid8", 20, true),
+];
+
+/// `yz_datxid`（03 §3.4）: データベース 1 つにつき 1 行。`datfrozenxid8` がそのデータベースの凍結境界。
+#[rustfmt::skip]
+static YZ_DATXID_COLUMNS: &[CatalogColumn] = &[
+    col("datid", 26, true),
+    col("datfrozenxid8", 20, true),
+];
+
+/// The 24 catalogs (M2 の 13 個 + M4 の 9 個 + M5 の `yz_relxid`・`yz_datxid`。`m2.md` §6.8.1、`m4/07-catalog-ddl.md` §3.1)。
 /// shared ones last.
 #[rustfmt::skip]
 pub static CATALOGS: &[CatalogDef] = &[
@@ -541,9 +559,11 @@ pub static CATALOGS: &[CatalogDef] = &[
     CatalogDef { oid: oids::PG_AMOP, name: "pg_amop", shared: false, mapped: false, rowtype_oid: 0, columns: PG_AMOP_COLUMNS },
     CatalogDef { oid: oids::PG_AMPROC, name: "pg_amproc", shared: false, mapped: false, rowtype_oid: 0, columns: PG_AMPROC_COLUMNS },
     CatalogDef { oid: oids::PG_DESCRIPTION, name: "pg_description", shared: false, mapped: false, rowtype_oid: 0, columns: PG_DESCRIPTION_COLUMNS },
+    CatalogDef { oid: oids::YZ_RELXID, name: "yz_relxid", shared: false, mapped: false, rowtype_oid: 0, columns: YZ_RELXID_COLUMNS },
     CatalogDef { oid: oids::PG_DATABASE, name: "pg_database", shared: true, mapped: true, rowtype_oid: 1248, columns: PG_DATABASE_COLUMNS },
     CatalogDef { oid: oids::PG_AUTHID, name: "pg_authid", shared: true, mapped: true, rowtype_oid: 2842, columns: PG_AUTHID_COLUMNS },
     CatalogDef { oid: oids::PG_TABLESPACE, name: "pg_tablespace", shared: true, mapped: true, rowtype_oid: 0, columns: PG_TABLESPACE_COLUMNS },
+    CatalogDef { oid: oids::YZ_DATXID, name: "yz_datxid", shared: true, mapped: false, rowtype_oid: 0, columns: YZ_DATXID_COLUMNS },
 ];
 
 /// The catalog with this OID.
@@ -595,6 +615,9 @@ pub fn catalog_table_def(oid: Oid, db_oid: Oid) -> Option<Arc<TableDef>> {
         indexes: Vec::new(),
         sequence: None,
         identity_seqs: Vec::new(),
+        key_columns: Vec::new(),
+        foreign_keys: Vec::new(),
+        referenced_by: Vec::new(),
     }))
 }
 
@@ -608,7 +631,7 @@ mod tests {
 
     #[test]
     fn column_counts_match_postgresql_17() {
-        assert_eq!(CATALOGS.len(), 22);
+        assert_eq!(CATALOGS.len(), 24);
         assert_eq!(natts(oids::PG_CLASS), 33);
         assert_eq!(natts(oids::PG_ATTRIBUTE), 26);
         assert_eq!(natts(oids::PG_TYPE), 32);
@@ -685,7 +708,10 @@ mod tests {
             .filter(|c| c.shared)
             .map(|c| c.name)
             .collect();
-        assert_eq!(shared, ["pg_database", "pg_authid", "pg_tablespace"]);
+        assert_eq!(
+            shared,
+            ["pg_database", "pg_authid", "pg_tablespace", "yz_datxid"]
+        );
         let mapped: Vec<_> = CATALOGS
             .iter()
             .filter(|c| c.mapped)
@@ -735,6 +761,39 @@ mod tests {
         assert_eq!(a.locator.spc_oid, 1664);
         assert_eq!(a.locator.db_oid, 0);
         assert!(catalog_table_def(42, 5).is_none());
+    }
+
+    #[test]
+    fn yz_catalogs_are_frozen_by_the_contract() {
+        // 99-questions §4 の ★（Q6）: OID と列。変えるなら `CATALOG_VERSION_NO` を上げる。
+        assert_eq!((oids::YZ_RELXID, oids::YZ_DATXID), (9801, 9802));
+        let r = catalog_def(oids::YZ_RELXID).unwrap();
+        assert_eq!(r.name, "yz_relxid");
+        assert!(!r.shared && !r.mapped);
+        assert_eq!(r.relfilenode(), 9801);
+        let cols: Vec<_> = r
+            .columns
+            .iter()
+            .map(|c| (c.name, c.type_oid, c.not_null))
+            .collect();
+        assert_eq!(cols, [("relid", 26, true), ("relfrozenxid8", 20, true)]);
+        let d = catalog_def(oids::YZ_DATXID).unwrap();
+        assert_eq!(d.name, "yz_datxid");
+        assert!(d.shared && !d.mapped);
+        assert_eq!(d.relfilenode(), 9802);
+        assert_eq!(d.reltablespace(), 1664);
+        let cols: Vec<_> = d
+            .columns
+            .iter()
+            .map(|c| (c.name, c.type_oid, c.not_null))
+            .collect();
+        assert_eq!(cols, [("datid", 26, true), ("datfrozenxid8", 20, true)]);
+        let t = catalog_table_def(oids::YZ_DATXID, 5).unwrap();
+        assert_eq!((t.locator.spc_oid, t.locator.db_oid), (1664, 0));
+        assert_eq!(t.locator.rel_number, RelFileNumber(9802));
+        let t = catalog_table_def(oids::YZ_RELXID, 5).unwrap();
+        assert_eq!((t.locator.spc_oid, t.locator.db_oid), (1663, 5));
+        assert_eq!(t.locator.rel_number, RelFileNumber(9801));
     }
 
     #[test]

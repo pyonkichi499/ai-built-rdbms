@@ -18,13 +18,19 @@ impl<C, Q> Expr<C, Q> {
     pub fn children(&self) -> Vec<&Self> {
         use ExprKind as K;
         match &self.kind {
-            K::Literal(_) | K::Column(_) | K::SessionValue(_) | K::SubLinkOutput(_) => vec![],
-            K::Operator { args, .. } | K::Function { args, .. } | K::MinMax { args, .. } => {
-                args.iter().collect()
-            }
+            K::Literal(_)
+            | K::Column(_)
+            | K::SessionValue(_)
+            | K::SubLinkOutput(_)
+            | K::ExternParam(_) => vec![],
+            K::Operator { args, .. }
+            | K::Function { args, .. }
+            | K::MinMax { args, .. }
+            | K::ArrayCtor { elems: args, .. } => args.iter().collect(),
             K::And(v) | K::Or(v) | K::Coalesce(v) => v.iter().collect(),
             K::Cast { expr, .. }
             | K::CoerceTypmod { expr, .. }
+            | K::ArrayCoerce { expr, .. }
             | K::BoolTest { expr, .. }
             | K::Not(expr)
             | K::IsNull(expr)
@@ -63,6 +69,13 @@ impl<C, Q> Expr<C, Q> {
                 out
             }
             K::SubLink { test, .. } => test.iter().map(|e| &**e).collect(),
+            K::ArraySubscript { array, indexes } => {
+                let mut out = vec![&**array];
+                out.extend(indexes.iter());
+                out
+            }
+
+            K::ScalarArrayOp { left, array, .. } => vec![&**left, &**array],
         }
     }
 
@@ -132,6 +145,7 @@ impl<C, Q> Expr<C, Q> {
             K::Literal(d) => K::Literal(d.clone()),
             K::SessionValue(k) => K::SessionValue(*k),
             K::SubLinkOutput(i) => K::SubLinkOutput(*i),
+            K::ExternParam(i) => K::ExternParam(*i),
             K::Column(_) => return Err(unconverted("Column")),
             K::Aggregate(_) => return Err(unconverted("Aggregate")),
             K::SubLink { .. } => return Err(unconverted("SubLink")),
@@ -226,6 +240,36 @@ impl<C, Q> Expr<C, Q> {
                 list: map_all(list, f)?,
                 eq_op,
                 negated: *negated,
+            },
+            K::ArrayCtor { elem_type, elems } => K::ArrayCtor {
+                elem_type: *elem_type,
+                elems: map_all(elems, f)?,
+            },
+            K::ArraySubscript { array, indexes } => K::ArraySubscript {
+                array: map_box(array, f)?,
+                indexes: map_all(indexes, f)?,
+            },
+            K::ArrayCoerce {
+                expr,
+                elem_method,
+                elem_ty,
+                explicit,
+            } => K::ArrayCoerce {
+                expr: map_box(expr, f)?,
+                elem_method: *elem_method,
+                elem_ty: *elem_ty,
+                explicit: *explicit,
+            },
+            K::ScalarArrayOp {
+                op,
+                use_or,
+                left,
+                array,
+            } => K::ScalarArrayOp {
+                op,
+                use_or: *use_or,
+                left: map_box(left, f)?,
+                array: map_box(array, f)?,
             },
         };
         Ok(Expr {
@@ -493,6 +537,7 @@ impl<C: PartialEq, Q> Expr<C, Q> {
                             && x.expr.same_as(&y.expr)
                     })
             }
+            (K::ExternParam(a), K::ExternParam(b)) => a == b,
             // SubLink は常に不一致（保守的）。種類が違う組も不一致。
             _ => false,
         }

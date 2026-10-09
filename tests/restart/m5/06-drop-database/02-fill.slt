@@ -1,0 +1,7 @@
+# フェーズ 2（crm5_06_d に接続）: 表とデータを入れる。
+
+statement ok
+CREATE TABLE crm5_06_t (id int PRIMARY KEY, v text)
+
+statement count 2
+INSERT INTO crm5_06_t VALUES (1, 'a'), (2, 'b')

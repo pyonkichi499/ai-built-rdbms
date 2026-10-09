@@ -95,10 +95,10 @@ pgbench / psql / COPY のクライアント互換。設計は `spec/design/m4/`�
 未解決事項・制限（事実のみ。QUESTIONS.md の「M4 の完了時に追加した確認事項」も参照）:
 
 - 同じキーの UPDATE を繰り返すとユニーク検査と等値スキャンが 2 乗で遅くなる（インデックスの項目を削除しない。設計 06 の D6-7 / M4-Q62）。簡易削除（+2〜3 日）を M4 に入れるかの判断が残っている。
-- `shared_buffers` の下限は 512kB（64 フレーム）。64 フレームでの CREATE INDEX と大きなキーの INSERT は実サーバでは未確認。
+- `shared_buffers` の下限は 512kB（64 フレーム）。64 フレームでの CREATE INDEX と大きなキーの INSERT は、再起動テスト `tests/restart/m4/idx-min-buffers`（`--restart` と `--crash`）で実サーバを確認済み。
 - `check_structure`（B+Tree の検査器）は書き手が止まっているときだけ使える。
 - 差分ファジングの除外: RETURNING、DO、CTAS、REPEATABLE READ / SERIALIZABLE、SAVEPOINT などは未実装（0A000）。`tests/slt/m4/KNOWN-DIFFS.md` に既知の差分一覧がある。
-- 深い入れ子（500 腕の UNION、1000 項の OR など）の自動回帰テストはなく、手動で確認しただけ。パーサの深さ上限は 5000（超えると 54001）。
+- 深い入れ子（500 腕の UNION、1000 項の OR など）は `tests/slt/m4/limits/deep_nesting.slt` で自動回帰テストにした（PostgreSQL と同じ結果）。パーサの深さ上限は 5000（超えると 54001）。
 - 実物の psql 17 での `\d tbl`（テーブルの詳細）は M4 では動かない（M4-Q119）。
 - 承認が要る ★12 件（ディスク形式）は QUESTIONS.md のとおり仮決めのまま。
 - 共有の PostgreSQL（55432）は他の作業で込み合うと checkpointer 待ちで止まることがあった（完了判定は専用のインスタンスで実行した）。
@@ -119,3 +119,10 @@ pgbench / psql / COPY のクライアント互換。設計は `spec/design/m4/`�
 - Rust 1.96.0。ホストでは Docker、claude-sandbox のコンテナ内では `sandbox/pg.sh` で PostgreSQL 17 を使う。
 - sqllogictest ランナーは `cargo install sqllogictest-bin --locked --version 0.29.1`（`--locked` は必須）。
 - 日誌（`journal/`、`WORKLOG.md`）の時刻は JST（UTC+9）。`tools/journal-all.sh` が更新する。
+
+## M5 の途中経過（2026-10-09 JST 時点・作業中）
+
+- M4 完了後、M5 の並列実装（認証・ロール・CREATE DATABASE・外部キー・VACUUM・行ロック・Extended Query・配列）がコミット前の状態で積まれていた。
+- 2026-10-09: `cargo build --workspace --all-targets` と `cargo clippy -D warnings`、`cargo fmt --check` は通る状態にした（配列式のアナライザ `analyzer/array_expr.rs`、`Session::open_select` / `run_select` を追加）。
+- `cargo test --workspace` は未達（約 48 件失敗: 型カタログ行・FK の DDL・パーサ・日時演算子 `timestamp - unknown` ほか）。M1〜M4 の slt / 回帰は未再確認。
+- 既知の残り: `(ARRAY[1,2])[1]` のパース（括弧つき添字）、`$n` パラメータ・バイナリ形式（XQ-3/4）、`int2vector`→`int2[]` キャスト。

@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use super::fk::ForeignKeyDef;
 use super::schema::{self, oids};
 use super::{CatalogReader, ConstraintDef, IndexDef, RelKind, TableDef};
 use crate::deparse::ident::{quote_identifier, quote_qualified};
@@ -40,6 +41,14 @@ impl std::fmt::Debug for StatementCatalog<'_> {
             .field("search_path", &self.search_path)
             .finish_non_exhaustive()
     }
+}
+
+/// `pg_catalog` にある仮想リレーション（`catalog::virtual_rel`）の名前引き。
+fn virtual_by_name(name: &str) -> Option<(Oid, RelKind)> {
+    super::virtual_rel::registry()
+        .iter()
+        .find(|r| r.name() == name)
+        .map(|r| (r.oid(), RelKind::Virtual))
 }
 
 impl StatementCatalog<'_> {
@@ -79,7 +88,10 @@ impl StatementCatalog<'_> {
         name: &str,
     ) -> Result<Option<(Oid, RelKind)>> {
         match schema_name {
-            Some("pg_catalog") => Ok(self.nailed_by_name(name).map(|d| (d.oid, RelKind::Table))),
+            Some("pg_catalog") => Ok(self
+                .nailed_by_name(name)
+                .map(|d| (d.oid, RelKind::Table))
+                .or_else(|| virtual_by_name(name))),
             Some(schema_name) => match self.namespace_by_name(schema_name)? {
                 Some(nsp) => self.relation_in_namespace(nsp, name),
                 None => Ok(None),
@@ -87,6 +99,10 @@ impl StatementCatalog<'_> {
             None => {
                 if let Some(def) = self.nailed_by_name(name) {
                     return Ok(Some((def.oid, RelKind::Table)));
+                }
+                // 仮想リレーション（`pg_locks` など）も `pg_catalog` にある。
+                if let Some(found) = virtual_by_name(name) {
+                    return Ok(Some(found));
                 }
                 for entry in self.search_path {
                     if entry == "pg_catalog" {
@@ -135,7 +151,7 @@ impl StatementCatalog<'_> {
 impl CatalogReader for StatementCatalog<'_> {
     fn table(&self, schema_name: Option<&str>, name: &str) -> Result<Option<Arc<TableDef>>> {
         match self.resolve_relation(schema_name, name)? {
-            Some((oid, RelKind::Table | RelKind::Sequence)) => self.load(oid),
+            Some((oid, RelKind::Table | RelKind::Sequence | RelKind::Virtual)) => self.load(oid),
             // 索引の名前は SELECT できるリレーションではない（D07-18）。
             Some((_, RelKind::Index)) | None => Ok(None),
         }
@@ -228,6 +244,22 @@ impl CatalogReader for StatementCatalog<'_> {
     fn constraint_by_oid(&self, oid: Oid) -> Result<Option<ConstraintDef>> {
         self.db.catalog.constraint_by_oid(self.snapshot, oid)
     }
+
+    fn foreign_keys_of(&self, table: Oid) -> Result<Vec<Arc<ForeignKeyDef>>> {
+        self.db.catalog.foreign_keys_of(self.snapshot, table)
+    }
+
+    fn foreign_keys_referencing(&self, table: Oid) -> Result<Vec<Arc<ForeignKeyDef>>> {
+        self.db
+            .catalog
+            .foreign_keys_referencing(self.snapshot, table)
+    }
+
+    fn constraint_name_exists(&self, namespace: Oid, name: &str) -> Result<bool> {
+        self.db
+            .catalog
+            .constraint_name_exists(self.snapshot, namespace, name)
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +305,7 @@ mod tests {
             };
             let params = InitParams {
                 superuser: "postgres".into(),
+                superuser_secret: None,
             };
             let shared = Arc::new(SharedCatalogStore::new(Arc::clone(&storage)));
             shared.bootstrap(&w, &params).unwrap();
@@ -583,6 +616,7 @@ mod tests_m4 {
         let storage: Arc<dyn TableStore> = fake.clone();
         let params = InitParams {
             superuser: "postgres".into(),
+            superuser_secret: None,
         };
         let shared = Arc::new(SharedCatalogStore::new(Arc::clone(&storage)));
         shared.bootstrap(&wctx(), &params).unwrap();

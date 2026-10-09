@@ -1,0 +1,54 @@
+# フェーズ 1: 多数の行を DELETE / UPDATE して VACUUM し、kill -9 される。
+# a は CHECKPOINT の前に VACUUM（ディスクに載っている状態から復旧）、
+# b は CHECKPOINT の後に VACUUM（WAL の REDO で復旧）。
+
+statement ok
+DROP TABLE IF EXISTS crm5_02_a
+
+statement ok
+DROP TABLE IF EXISTS crm5_02_b
+
+statement ok
+CREATE TABLE crm5_02_a (id int PRIMARY KEY, v text)
+
+statement ok
+CREATE TABLE crm5_02_b (id int PRIMARY KEY, v text)
+
+statement count 2000
+INSERT INTO crm5_02_a SELECT g, 'x' FROM generate_series(1, 2000) g
+
+statement count 2000
+INSERT INTO crm5_02_b SELECT g, 'x' FROM generate_series(1, 2000) g
+
+# a: 偶数を消し、3 の倍数（奇数のうち 333 行）を更新してから VACUUM
+statement count 1000
+DELETE FROM crm5_02_a WHERE id % 2 = 0
+
+statement count 333
+UPDATE crm5_02_a SET v = 'u' WHERE id % 3 = 0
+
+statement ok
+VACUUM crm5_02_a
+
+statement ok
+CHECKPOINT
+
+# b: CHECKPOINT の後に同じ操作と VACUUM
+statement count 1000
+DELETE FROM crm5_02_b WHERE id % 2 = 0
+
+statement count 333
+UPDATE crm5_02_b SET v = 'u' WHERE id % 3 = 0
+
+statement ok
+VACUUM crm5_02_b
+
+query III
+SELECT count(*), sum(id), count(*) FILTER (WHERE v = 'u') FROM crm5_02_a
+----
+1000 1000000 333
+
+query III
+SELECT count(*), sum(id), count(*) FILTER (WHERE v = 'u') FROM crm5_02_b
+----
+1000 1000000 333

@@ -53,6 +53,12 @@ pub struct Cli {
     /// Log level: trace, debug, info, warn, error (default info).
     #[arg(long, value_name = "LEVEL")]
     pub log_level: Option<String>,
+    /// Path of `yuzhu_hba.conf` (default `<data directory>/yuzhu_hba.conf`).
+    #[arg(long, value_name = "PATH")]
+    pub hba_file: Option<PathBuf>,
+    /// Seconds allowed for startup and authentication (default 60).
+    #[arg(long, value_name = "SECONDS")]
+    pub authentication_timeout: Option<u64>,
 }
 
 /// A size given either as a number or as a string such as `"128MB"`.
@@ -75,6 +81,8 @@ pub struct FileConfig {
     pub checkpoint_timeout: Option<u64>,
     pub max_wal_size: Option<SizeValue>,
     pub log_level: Option<String>,
+    pub hba_file: Option<PathBuf>,
+    pub authentication_timeout: Option<u64>,
 }
 
 /// Effective server configuration.
@@ -91,6 +99,9 @@ pub struct Config {
     /// Bytes of WAL that trigger a checkpoint.
     pub max_wal_size: u64,
     pub log_level: tracing::Level,
+    /// Empty means `<data_directory>/yuzhu_hba.conf`.
+    pub hba_file: PathBuf,
+    pub authentication_timeout: Duration,
 }
 
 impl Default for Config {
@@ -104,6 +115,8 @@ impl Default for Config {
             checkpoint_timeout: Duration::from_secs(300),
             max_wal_size: DEFAULT_MAX_WAL_SIZE,
             log_level: tracing::Level::INFO,
+            hba_file: PathBuf::new(),
+            authentication_timeout: crate::DEFAULT_AUTHENTICATION_TIMEOUT,
         }
     }
 }
@@ -279,10 +292,24 @@ impl Config {
                 .map_or(d.checkpoint_timeout, Duration::from_secs),
             max_wal_size,
             log_level,
+            hba_file: cli
+                .hba_file
+                .clone()
+                .or_else(|| file.hba_file.clone())
+                .unwrap_or_default(),
+            authentication_timeout: cli
+                .authentication_timeout
+                .or(file.authentication_timeout)
+                .map_or(d.authentication_timeout, Duration::from_secs),
         };
         if config.max_connections == 0 {
             return Err(ConfigError::Invalid(
                 "max_connections must be at least 1".into(),
+            ));
+        }
+        if config.authentication_timeout.is_zero() {
+            return Err(ConfigError::Invalid(
+                "authentication_timeout must be at least 1 second".into(),
             ));
         }
         if config.checkpoint_timeout.is_zero() {
@@ -302,6 +329,17 @@ impl Config {
             None => FileConfig::default(),
         };
         Self::merge(&file, cli, std::env::var("YUZHU_DATA").ok().as_deref())
+    }
+}
+
+impl Config {
+    /// The path of `yuzhu_hba.conf`: `hba_file` or `<data_directory>/yuzhu_hba.conf`.
+    pub fn hba_path(&self) -> PathBuf {
+        if self.hba_file.as_os_str().is_empty() {
+            self.data_directory.join("yuzhu_hba.conf")
+        } else {
+            self.hba_file.clone()
+        }
     }
 }
 

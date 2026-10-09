@@ -104,3 +104,48 @@ id| v
 (2 rows)
 
 step r_c: COMMIT;
+
+starting permutation: a_b a_lockre r_sel a_c r_sel
+step a_b: BEGIN;
+step a_lockre: LOCK TABLE rnb_t IN ROW EXCLUSIVE MODE;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+step a_c: COMMIT;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+
+starting permutation: a_b a_lockae r_sel a_c
+step a_b: BEGIN;
+step a_lockae: LOCK TABLE rnb_t IN ACCESS EXCLUSIVE MODE;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id; <waiting ...>
+step a_c: COMMIT;
+step r_sel: <... completed>
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+
+
+starting permutation: a_b a_lockae r_sel a_r
+step a_b: BEGIN;
+step a_lockae: LOCK TABLE rnb_t IN ACCESS EXCLUSIVE MODE;
+step r_sel: SELECT id, v FROM rnb_t ORDER BY id; <waiting ...>
+step a_r: ROLLBACK;
+step r_sel: <... completed>
+id| v
+--+--
+ 1|10
+ 2|20
+(2 rows)
+

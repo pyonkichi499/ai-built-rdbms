@@ -8,8 +8,10 @@ pub mod eval;
 pub mod instrument;
 pub mod mem;
 pub mod nodes;
+pub mod ri;
 pub mod seq;
 pub mod subplan;
+pub mod virtual_scan;
 
 pub use build::{build, build_query};
 pub use eval::eval;
@@ -27,6 +29,7 @@ use crate::storage::{
     BuildStats, BuildUnique, IndexHandle, IndexScan, IndexStore, ResolvedScanKeys, ScanDirection,
     TableStore, UniqueCheck, WriteCtx,
 };
+use crate::txn::lock::WaitCtx;
 use crate::txn::{Snapshot, Transaction};
 use crate::types::{Datum, Row, Tid, TypeEnv};
 
@@ -48,6 +51,27 @@ pub trait RuntimeInfo: std::fmt::Debug {
     fn backend_pid(&self) -> i32;
     /// `TxnManager::is_blocked_by` に委ねる。
     fn is_blocked_by(&self, pid: i32, among: &[i32]) -> bool;
+    /// `pg_blocking_pids(pid)`: `pid` を止めているバックエンドの pid（`pid` → `BackendId` →
+    /// `LockManager::blocking_backends` → pid。M5 01 §4.9）。
+    fn blocking_pids(&self, _pid: i32) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `pg_locks` の元になるロック表のスナップショット（`LockManager::lock_status`。M5 01 §6.5）。
+    fn lock_status(&self) -> Vec<crate::txn::lock::LockStatusRow> {
+        Vec::new()
+    }
+    /// `pg_roles` の元になる `pg_authid` の全行（最新のカタログ用スナップショット。M5 08 §5.10）。
+    fn authid_rows(&self) -> Result<Vec<crate::catalog::roles::AuthidRow>> {
+        Ok(Vec::new())
+    }
+    /// 他のトランザクション `xid` の終了を待つ（一意検査の `InsertOutcome::WaitFor` の待ち。M5 02 §5.9）。
+    /// 実装は `LockManager::wait_for_xact(backend, xid, still_running, wait_ctl)` に委ねる。
+    /// 呼ぶときはページのラッチもピンも持っていない。session が実装するまでの既定は内部エラー。
+    fn wait_for_xact(&self, _xid: crate::txn::Xid) -> Result<()> {
+        Err(Error::internal(
+            "waiting for another transaction is not wired into this runtime",
+        ))
+    }
     /// `InterruptFlag::check` に委ねる（`pg_sleep` が 10ms ごとに呼ぶ）。
     fn check_interrupts(&self) -> Result<()>;
     /// 現在のトランザクションに割り当て済みの XID（未割り当てなら `None`）。
@@ -162,6 +186,21 @@ pub struct ExecCtx<'a> {
     pub type_env: &'a TypeEnv<'a>,
     /// EXPLAIN ANALYZE の計測（`None` なら計測しない。`m4/10` §3.10、11 §7.1 の C-2）。
     pub instr: Option<Rc<instrument::Instrumentation>>,
+    /// 行ロック・更新の待ち（誰が待つか + 中断条件。`m5/02` §4.4）。`None` の間は待たない（`BeingModified` を返す）。
+    /// session が配線するまでの既定。`LockRows` は `None` だと内部エラー。
+    pub wait: Option<WaitCtx<'a>>,
+    /// Repeatable Read のときだけ `Some`（`snapshot` と同じもの。40001 の判定に使う。`m5/02` §5.6）。
+    pub xact_snapshot: Option<&'a Snapshot>,
+}
+
+/// `ExecCtx` が所有する実行時の状態の束。中断中のポータルが持ち越すために
+/// `ExecCtx::take_state` / `ExecCtx::restore_state` で出し入れする（M5 04 C6）。
+#[derive(Debug, Default)]
+pub struct ExecState {
+    pub params: Vec<Datum>,
+    pub mem: MemBudget,
+    pub subplans: SubPlanStates,
+    pub ctes: CteStates,
 }
 
 /// `ExecCtx::new` に渡す、文ごとに session が作る借用の束（`m4/02` §3.7.2）。
@@ -235,7 +274,7 @@ impl IndexStore for NoIndexStore {
         _key: &[Datum],
         _tid: Tid,
         _check: UniqueCheck<'_>,
-    ) -> Result<()> {
+    ) -> Result<crate::storage::InsertOutcome> {
         Err(no_indexes())
     }
 
@@ -304,6 +343,8 @@ impl<'a> ExecCtx<'a> {
             ctes: CteStates::new(query),
             type_env: env.type_env,
             instr: env.instr.cloned(),
+            wait: None,
+            xact_snapshot: None,
         }
     }
 
@@ -321,6 +362,24 @@ impl<'a> ExecCtx<'a> {
             .ok_or_else(|| Error::internal(format!("parameter {} out of range", id.0)))?;
         *slot = v;
         Ok(())
+    }
+
+    /// 状態を取り出し、`ExecCtx` には空の状態を残す。
+    pub fn take_state(&mut self) -> ExecState {
+        ExecState {
+            params: std::mem::take(&mut self.params),
+            mem: std::mem::take(&mut self.mem),
+            subplans: std::mem::take(&mut self.subplans),
+            ctes: std::mem::take(&mut self.ctes),
+        }
+    }
+
+    /// `take_state` で取り出した状態を戻す。
+    pub fn restore_state(&mut self, state: ExecState) {
+        self.params = state.params;
+        self.mem = state.mem;
+        self.subplans = state.subplans;
+        self.ctes = state.ctes;
     }
 }
 
@@ -435,6 +494,30 @@ mod tests {
             ctx.indexes.nblocks(&h).unwrap_err().sqlstate,
             sqlstate::FEATURE_NOT_SUPPORTED
         );
+    }
+
+    #[test]
+    fn exec_state_is_taken_and_restored() {
+        use crate::expr::ParamId;
+        let cat = FakeCatalog::new("postgres");
+        let store = FakeStore::default();
+        let mut txn = Transaction::new();
+        let (info, snap, flag) = (session(), snapshot(), InterruptFlag::default());
+        let mut query = PhysicalQuery::empty();
+        query.n_params = 1;
+        let type_env = TypeEnv::default();
+        let env =
+            ExecEnv::without_indexes(&cat, &store, &snap, &info, &NullRuntime, &flag, &type_env);
+        let mut ctx = ExecCtx::new(env, &mut txn, &query);
+        ctx.set_param(ParamId(0), Datum::Int4(5)).unwrap();
+        let state = ctx.take_state();
+        assert_eq!(state.params, vec![Datum::Int4(5)]);
+        assert!(ctx.params.is_empty());
+        ctx.restore_state(state);
+        assert_eq!(ctx.param(ParamId(0)).unwrap(), &Datum::Int4(5));
+        let d = ExecState::default();
+        assert!(d.params.is_empty() && d.subplans.is_empty() && d.ctes.is_empty());
+        assert_eq!(d.mem.limit(), mem::DEFAULT_QUERY_MEM_LIMIT);
     }
 
     #[test]

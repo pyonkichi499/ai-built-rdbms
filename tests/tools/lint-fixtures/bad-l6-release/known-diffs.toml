@@ -1,0 +1,18 @@
+[[kd]]
+id = "KD-1"
+kind = "diff"
+title = "差の例"
+chapter = "02-row-lock-rr"
+since = "M5"
+affects = ["slt/m5/ok/*", "slt/m5/nothing/*", "isolation/ported/tuplelock-conflict"]
+questions = ["M5-Q4"]
+
+[[kd]]
+id = "KD-3"
+kind = "unsupported"
+title = "SERIALIZABLE は 0A000"
+chapter = "02-row-lock-rr"
+since = "M5"
+pattern = 'ISOLATION\s+LEVEL\s+SERIALIZABLE'
+questions = ["M5-Q9"]
+

@@ -15,11 +15,12 @@ use super::explain_tree::{
 };
 use super::index_select::{IndexPick, OrderKey, QualKind, ScanRequest, choose_scan};
 use super::logical::{
-    ColumnArena, JoinKind, LAggCall, LExpr, LogicalPlan, LogicalQuery, LogicalSubquery,
+    ColumnArena, JoinKind, LAggCall, LExpr, LRecheck, LRowMark, LogicalPlan, LogicalQuery,
+    LogicalSubquery,
 };
 use super::physical::{
     IndexScanKey, IndexScanKeys, PhysAgg, PhysCheck, PhysExpr, PhysicalPlan, PhysicalQuery,
-    RangeBound, SortKey, SubPlanDef, SubPlanStrategy,
+    RangeBound, RecheckSpec, RowMark, SortKey, SubPlanDef, SubPlanStrategy,
 };
 use super::size::{ROWS_PER_BLOCK_EST, SizeCtx};
 use super::util::{
@@ -167,6 +168,36 @@ struct Physicalizer<'a> {
     /// 今の節点の式の中で出会った `SubPlan`。
     pending: Vec<SubPlanId>,
     depth: usize,
+}
+
+/// `LRowMark` を `LockRows` の入力の行の位置に直す。ユーザー列は連続していなければならない。
+fn lock_row_mark(m: &LRowMark, layout: &[ColId]) -> Result<RowMark> {
+    let pos = |c: &ColId| {
+        layout
+            .iter()
+            .position(|x| x == c)
+            .ok_or_else(|| Error::internal("a locked column is not in the LockRows input"))
+    };
+    let tid_col = pos(&m.tid)?;
+    let start = match m.cols.first() {
+        Some(c) => pos(c)?,
+        None => tid_col,
+    };
+    for (i, c) in m.cols.iter().enumerate() {
+        if pos(c)? != start + i {
+            return Err(Error::internal(
+                "the locked table's columns are not contiguous in the LockRows input",
+            ));
+        }
+    }
+    Ok(RowMark {
+        rel: m.rel.clone(),
+        tid_col,
+        cols: start..start + m.cols.len(),
+        mode: m.mode,
+        wait: m.wait,
+        table_name: m.table_name.clone(),
+    })
 }
 
 /// 物理化したノードと、その出力列。
@@ -574,6 +605,35 @@ impl<'a> Physicalizer<'a> {
                     layout: child.layout,
                 })
             }
+            L::LockRows {
+                input,
+                marks,
+                recheck,
+            } => {
+                let child = self.phys(input, params)?;
+                let marks = marks
+                    .iter()
+                    .map(|m| lock_row_mark(m, &child.layout))
+                    .collect::<Result<Vec<_>>>()?;
+                // 再評価の式の SubPlan は EXPLAIN に出さない（PostgreSQL の計画には無い）。
+                let saved = std::mem::take(&mut self.pending);
+                let recheck = recheck
+                    .as_ref()
+                    .map(|e| self.lower(e, &child.layout, params))
+                    .transpose();
+                self.pending = saved;
+                let recheck = recheck?;
+                let layout = child.layout.clone();
+                self.simple_note("LockRows".into(), Vec::new(), &layout)?;
+                Ok(Phys {
+                    plan: PhysicalPlan::LockRows {
+                        input: Box::new(child.plan),
+                        marks,
+                        recheck,
+                    },
+                    layout: child.layout,
+                })
+            }
             L::Join {
                 kind,
                 left,
@@ -641,12 +701,17 @@ impl<'a> Physicalizer<'a> {
                 checks,
                 not_null,
                 returning,
+                recheck,
             } => {
                 let child = self.phys(input, params)?;
                 let mut want = old_cols.clone();
                 want.push(*ctid);
                 want.extend(new_values.iter().map(|(_, c)| *c));
+                if let Some(r) = recheck {
+                    want.extend(r.extra_cols.iter().copied());
+                }
                 let child = self.ensure_layout(child, &want)?;
+                let recheck = self.lower_recheck(recheck.as_ref(), &child.layout, params)?;
                 let n = old_cols.len();
                 // RETURNING のない UPDATE の入力は、新しい値と `ctid` だけを出す（PostgreSQL の `Output: (b + 1), ctid`）。
                 let shown = returning.is_none().then(|| {
@@ -674,6 +739,7 @@ impl<'a> Physicalizer<'a> {
                         not_null: not_null.clone(),
                         table_name: table.name.clone(),
                         returning: returning.clone(),
+                        recheck,
                     },
                     layout: Vec::new(),
                 })
@@ -685,11 +751,16 @@ impl<'a> Physicalizer<'a> {
                 old_cols,
                 ctid,
                 returning,
+                recheck,
             } => {
                 let child = self.phys(input, params)?;
                 let mut want = old_cols.clone();
                 want.push(*ctid);
+                if let Some(r) = recheck {
+                    want.extend(r.extra_cols.iter().copied());
+                }
                 let child = self.ensure_layout(child, &want)?;
+                let recheck = self.lower_recheck(recheck.as_ref(), &child.layout, params)?;
                 // RETURNING のない DELETE の入力は `ctid` だけを出す（PostgreSQL の `Output: ctid`）。
                 let only_ctid = returning.is_none().then(|| vec![*ctid]);
                 self.dml_note(
@@ -704,11 +775,41 @@ impl<'a> Physicalizer<'a> {
                         input: Box::new(child.plan),
                         n_user_cols: old_cols.len(),
                         returning: returning.clone(),
+                        recheck,
                     },
                     layout: Vec::new(),
                 })
             }
         }
+    }
+
+    /// `Update` / `Delete` の再評価の式を入力の行の位置に降ろす。SubPlan は EXPLAIN に出さない。
+    fn lower_recheck(
+        &mut self,
+        recheck: Option<&LRecheck>,
+        layout: &[ColId],
+        params: &ParamMap,
+    ) -> Result<Option<RecheckSpec>> {
+        let Some(r) = recheck else {
+            return Ok(None);
+        };
+        let saved = std::mem::take(&mut self.pending);
+        let spec = (|| {
+            Ok(RecheckSpec {
+                qual: r
+                    .qual
+                    .as_ref()
+                    .map(|e| self.lower(e, layout, params))
+                    .transpose()?,
+                new_values: r
+                    .new_values
+                    .iter()
+                    .map(|e| self.lower(e, layout, params))
+                    .collect::<Result<_>>()?,
+            })
+        })();
+        self.pending = saved;
+        spec.map(Some)
     }
 
     fn dml_note(
@@ -981,15 +1082,22 @@ impl<'a> Physicalizer<'a> {
                     ..NodeNote::default()
                 })
             })?;
-            return Ok(Phys {
-                plan: PhysicalPlan::SeqScan {
+            let plan = if table.kind == crate::catalog::RelKind::Virtual {
+                PhysicalPlan::VirtualScan {
+                    rel_oid: rel.oid,
+                    columns: types,
+                    system_columns: sys,
+                    filter,
+                }
+            } else {
+                PhysicalPlan::SeqScan {
                     rel: rel.clone(),
                     columns: types,
                     system_columns: sys,
                     filter,
-                },
-                layout,
-            });
+                }
+            };
+            return Ok(Phys { plan, layout });
         };
         // インデックス走査: 値の式は layout = [] で降ろす。
         let mut keys = IndexScanKeys::default();

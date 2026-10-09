@@ -1,0 +1,107 @@
+# RETURNING の式・列名・システム列・副問い合わせ・エラー
+
+statement ok
+DROP TABLE IF EXISTS returning_expressions_t
+
+statement ok
+DROP TABLE IF EXISTS returning_expressions_u
+
+statement ok
+CREATE TABLE returning_expressions_t (id int PRIMARY KEY, a int, b text)
+
+statement ok
+CREATE TABLE returning_expressions_u (id int, w text)
+
+statement ok
+INSERT INTO returning_expressions_u VALUES (1, 'w1'), (2, 'w2')
+
+# 列名（?column? と AS）
+query TT
+INSERT INTO returning_expressions_t VALUES (1, 1, 'x') RETURNING id + a AS s, upper(b)
+----
+2 X
+
+# システム列
+query T
+INSERT INTO returning_expressions_t VALUES (2, 2, 'y') RETURNING ctid IS NOT NULL
+----
+t
+
+query T
+UPDATE returning_expressions_t SET a = 1 WHERE id = 2 RETURNING xmin::text <> '0'
+----
+t
+
+query T
+DELETE FROM returning_expressions_t WHERE id = 2 RETURNING tableoid = 'returning_expressions_t'::regclass
+----
+t
+
+# 副問い合わせ（その文のスナップショットで評価される）
+query IIT
+INSERT INTO returning_expressions_t VALUES (3, 3, 'z') RETURNING id, (SELECT count(*) FROM returning_expressions_t), b
+----
+3 1 z
+
+query IT
+INSERT INTO returning_expressions_t (id) VALUES (10) RETURNING id, (SELECT max(w) FROM returning_expressions_u)
+----
+10 w2
+
+query I
+UPDATE returning_expressions_t SET a = 1 WHERE id = 10 RETURNING id IN (SELECT id FROM returning_expressions_u)
+----
+f
+
+# CASE と関数
+query T
+UPDATE returning_expressions_t SET a = 5 WHERE id = 3 RETURNING CASE WHEN a > 3 THEN 'big' ELSE 'small' END
+----
+big
+
+# 集約・ウィンドウは不可
+statement error (42803)
+INSERT INTO returning_expressions_t (id) VALUES (20) RETURNING count(*)
+
+statement error (?s)aggregate functions are not allowed in RETURNING
+INSERT INTO returning_expressions_t (id) VALUES (20) RETURNING count(*)
+
+statement error (42803)
+UPDATE returning_expressions_t SET a = 1 RETURNING sum(a)
+
+statement error (42P20)
+DELETE FROM returning_expressions_t WHERE id = 20 RETURNING sum(a) OVER ()
+
+statement error (?s)window functions are not allowed in RETURNING
+DELETE FROM returning_expressions_t WHERE id = 20 RETURNING sum(a) OVER ()
+
+# 存在しない列・表
+statement error (42703)
+INSERT INTO returning_expressions_t (id) VALUES (20) RETURNING nosuch
+
+statement error (42P01)
+INSERT INTO returning_expressions_t (id) VALUES (20) RETURNING t.a
+
+statement error (?s)missing FROM-clause entry for table "t"
+INSERT INTO returning_expressions_t (id) VALUES (20) RETURNING t.a
+
+# xmax / cmax は結果が曖昧なので使わない。RETURNING の失敗で行は残らない
+query I
+SELECT count(*) FROM returning_expressions_t WHERE id = 20
+----
+0
+
+# RETURNING の評価でエラーなら文全体が失敗し行は入らない
+statement error (22012)
+INSERT INTO returning_expressions_t (id, a) VALUES (21, 0) RETURNING 1 / a
+
+query I
+SELECT count(*) FROM returning_expressions_t WHERE id = 21
+----
+0
+
+statement ok
+DROP TABLE returning_expressions_t
+
+statement ok
+DROP TABLE returning_expressions_u

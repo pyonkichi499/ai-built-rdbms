@@ -1,0 +1,935 @@
+# extract・date_part・date_trunc・age・make_*・to_timestamp・isfinite・generate_series
+# 接頭辞: types_datetime_funcs_
+
+statement ok
+DROP TABLE IF EXISTS types_datetime_funcs_t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+# extract: date / timestamp
+
+query T
+SELECT (extract(year from date '2024-03-04'))::text
+----
+2024
+
+query T
+SELECT (extract(month from date '2024-03-04'))::text
+----
+3
+
+query T
+SELECT (extract(day from date '2024-03-04'))::text
+----
+4
+
+query T
+SELECT (extract(quarter from date '2024-03-04'))::text
+----
+1
+
+query T
+SELECT (extract(week from date '2024-01-01'))::text
+----
+1
+
+query T
+SELECT (extract(week from date '2021-01-03'))::text
+----
+53
+
+query T
+SELECT (extract(week from date '2020-12-31'))::text
+----
+53
+
+query T
+SELECT (extract(isoyear from date '2021-01-03'))::text
+----
+2020
+
+query T
+SELECT (extract(isoyear from date '2024-12-30'))::text
+----
+2025
+
+query T
+SELECT (extract(dow from date '2024-03-03'))::text
+----
+0
+
+query T
+SELECT (extract(isodow from date '2024-03-03'))::text
+----
+7
+
+query T
+SELECT (extract(doy from date '2024-12-31'))::text
+----
+366
+
+query T
+SELECT (extract(doy from date '2023-12-31'))::text
+----
+365
+
+query T
+SELECT (extract(decade from date '2024-03-04'))::text
+----
+202
+
+query T
+SELECT (extract(century from date '2024-03-04'))::text
+----
+21
+
+query T
+SELECT (extract(century from date '2000-12-31'))::text
+----
+20
+
+query T
+SELECT (extract(century from date '2001-01-01'))::text
+----
+21
+
+query T
+SELECT (extract(millennium from date '2024-03-04'))::text
+----
+3
+
+query T
+SELECT (extract(millennium from date '2000-12-31'))::text
+----
+2
+
+query T
+SELECT (extract(julian from date '2024-03-04'))::text
+----
+2460374
+
+query T
+SELECT (extract(epoch from date '2024-03-04'))::text
+----
+1709510400
+
+query T
+SELECT (extract(epoch from date '1969-12-31'))::text
+----
+-86400
+
+query T
+SELECT (extract(year from date '0044-03-15 BC'))::text
+----
+-44
+
+query T
+SELECT (extract(century from date '0044-03-15 BC'))::text
+----
+-1
+
+statement error (22023)
+SELECT extract(era from date '0044-03-15 BC')
+
+statement error (22023)
+SELECT extract(era from date '2024-03-04')
+
+query T
+SELECT (extract(hour from timestamp '2024-03-04 05:06:07.891234'))::text
+----
+5
+
+query T
+SELECT (extract(minute from timestamp '2024-03-04 05:06:07.891234'))::text
+----
+6
+
+query T
+SELECT (extract(second from timestamp '2024-03-04 05:06:07.891234'))::text
+----
+7.891234
+
+query T
+SELECT (extract(milliseconds from timestamp '2024-03-04 05:06:07.891234'))::text
+----
+7891.234
+
+query T
+SELECT (extract(microseconds from timestamp '2024-03-04 05:06:07.891234'))::text
+----
+7891234
+
+query T
+SELECT (extract(epoch from timestamp '2024-03-04 05:06:07.5'))::text
+----
+1709528767.500000
+
+query T
+SELECT (extract(epoch from timestamptz '2024-03-04 05:06:07.5+00'))::text
+----
+1709528767.500000
+
+query T
+SELECT (extract(epoch from timestamptz '2000-01-01 00:00:00+00'))::text
+----
+946684800.000000
+
+query T
+SELECT (extract(julian from timestamp '2024-03-04 12:00:00'))::text
+----
+2460374.50000000000000000000
+
+query T
+SELECT (pg_typeof(extract(year from date '2024-03-04')))::text
+----
+numeric
+
+query T
+SELECT (pg_typeof(extract(epoch from timestamp '2024-03-04')))::text
+----
+numeric
+
+query T
+SELECT (extract(year from timestamp 'infinity'))::text
+----
+Infinity
+
+query T
+SELECT (extract(epoch from timestamp 'infinity'))::text
+----
+Infinity
+
+query T
+SELECT (extract(epoch from timestamp '-infinity'))::text
+----
+-Infinity
+
+query T
+SELECT (extract(hour from timestamp 'infinity'))::text
+----
+NULL
+
+query T
+SELECT (extract(year from date 'infinity'))::text
+----
+Infinity
+
+query T
+SELECT (date_part('year', timestamp '2024-03-04 05:06:07'))::text
+----
+2024
+
+query T
+SELECT (date_part('dow', date '2024-03-03'))::text
+----
+0
+
+query T
+SELECT (date_part('epoch', timestamptz '1970-01-02 00:00:00+00'))::text
+----
+86400
+
+query T
+SELECT (date_part('second', timestamp '2024-03-04 05:06:07.5'))::text
+----
+7.5
+
+query T
+SELECT (pg_typeof(date_part('year', date '2024-03-04')))::text
+----
+double precision
+
+query T
+SELECT (date_part('hour', timestamptz '2024-03-04 05:06:07+00'))::text
+----
+5
+
+# date_trunc: timestamp
+
+query T
+SELECT (date_trunc('microseconds', timestamp '2024-03-04 05:06:07.891234'))::text
+----
+2024-03-04 05:06:07.891234
+
+query T
+SELECT (date_trunc('milliseconds', timestamp '2024-03-04 05:06:07.891234'))::text
+----
+2024-03-04 05:06:07.891
+
+query T
+SELECT (date_trunc('second', timestamp '2024-03-04 05:06:07.891234'))::text
+----
+2024-03-04 05:06:07
+
+query T
+SELECT (date_trunc('minute', timestamp '2024-03-04 05:06:07.891234'))::text
+----
+2024-03-04 05:06:00
+
+query T
+SELECT (date_trunc('hour', timestamp '2024-03-04 05:06:07.891234'))::text
+----
+2024-03-04 05:00:00
+
+query T
+SELECT (date_trunc('day', timestamp '2024-03-04 05:06:07.891234'))::text
+----
+2024-03-04 00:00:00
+
+query T
+SELECT (date_trunc('week', timestamp '2024-03-06 05:06:07'))::text
+----
+2024-03-04 00:00:00
+
+query T
+SELECT (date_trunc('week', timestamp '2024-03-03 05:06:07'))::text
+----
+2024-02-26 00:00:00
+
+query T
+SELECT (date_trunc('week', timestamp '2024-03-04 00:00:00'))::text
+----
+2024-03-04 00:00:00
+
+query T
+SELECT (date_trunc('week', timestamp '2021-01-03 05:06:07'))::text
+----
+2020-12-28 00:00:00
+
+query T
+SELECT (date_trunc('month', timestamp '2024-03-04 05:06:07'))::text
+----
+2024-03-01 00:00:00
+
+query T
+SELECT (date_trunc('quarter', timestamp '2024-05-04 05:06:07'))::text
+----
+2024-04-01 00:00:00
+
+query T
+SELECT (date_trunc('quarter', timestamp '2024-12-31 23:59:59'))::text
+----
+2024-10-01 00:00:00
+
+query T
+SELECT (date_trunc('year', timestamp '2024-03-04 05:06:07'))::text
+----
+2024-01-01 00:00:00
+
+query T
+SELECT (date_trunc('decade', timestamp '2024-03-04 05:06:07'))::text
+----
+2020-01-01 00:00:00
+
+query T
+SELECT (date_trunc('decade', timestamp '2020-01-01 00:00:00'))::text
+----
+2020-01-01 00:00:00
+
+query T
+SELECT (date_trunc('century', timestamp '2024-03-04 05:06:07'))::text
+----
+2001-01-01 00:00:00
+
+query T
+SELECT (date_trunc('century', timestamp '2000-12-31 05:06:07'))::text
+----
+1901-01-01 00:00:00
+
+query T
+SELECT (date_trunc('millennium', timestamp '2024-03-04 05:06:07'))::text
+----
+2001-01-01 00:00:00
+
+query T
+SELECT (date_trunc('millennium', timestamp '2001-01-01 00:00:00'))::text
+----
+2001-01-01 00:00:00
+
+query T
+SELECT (date_trunc('DAY', timestamp '2024-03-04 05:06:07'))::text
+----
+2024-03-04 00:00:00
+
+query T
+SELECT (date_trunc('day', timestamp 'infinity'))::text
+----
+infinity
+
+query T
+SELECT (date_trunc('day', timestamp '-infinity'))::text
+----
+-infinity
+
+query T
+SELECT (pg_typeof(date_trunc('day', timestamp '2024-03-04')))::text
+----
+timestamp without time zone
+
+# date_trunc: date は timestamptz に昇格する
+
+query T
+SELECT (date_trunc('month', date '2024-03-04'))::text
+----
+2024-03-01 00:00:00+00
+
+query T
+SELECT (pg_typeof(date_trunc('month', date '2024-03-04')))::text
+----
+timestamp with time zone
+
+# date_trunc: timestamptz
+
+query T
+SELECT (date_trunc('hour', timestamptz '2024-03-04 05:06:07+00'))::text
+----
+2024-03-04 05:00:00+00
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-03-04 05:06:07+00'))::text
+----
+2024-03-04 00:00:00+00
+
+query T
+SELECT (date_trunc('month', timestamptz '2024-03-04 05:06:07+00'))::text
+----
+2024-03-01 00:00:00+00
+
+query T
+SELECT (pg_typeof(date_trunc('day', timestamptz '2024-03-04 05:06:07+00')))::text
+----
+timestamp with time zone
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-03-04 20:00:00+00'))::text
+----
+2024-03-05 00:00:00+09
+
+query T
+SELECT (date_trunc('month', timestamptz '2024-02-29 16:00:00+00'))::text
+----
+2024-03-01 00:00:00+09
+
+query T
+SELECT (date_trunc('year', timestamptz '2023-12-31 16:00:00+00'))::text
+----
+2024-01-01 00:00:00+09
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-03-04 20:00:00+00', 'UTC'))::text
+----
+2024-03-04 09:00:00+09
+
+query T
+SELECT (date_trunc('day', timestamptz '2024-03-04 20:00:00+00', 'America/New_York'))::text
+----
+2024-03-04 14:00:00+09
+
+query T
+SELECT (extract(hour from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+5
+
+query T
+SELECT (extract(day from timestamptz '2024-03-04 20:00:00+00'))::text
+----
+5
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# date_trunc: interval
+
+query T
+SELECT (date_trunc('hour', interval '2 days 03:04:05'))::text
+----
+2 days 03:00:00
+
+query T
+SELECT (date_trunc('day', interval '2 days 03:04:05'))::text
+----
+2 days
+
+query T
+SELECT (date_trunc('month', interval '14 months 3 days'))::text
+----
+1 year 2 mons
+
+query T
+SELECT (date_trunc('year', interval '14 months 3 days'))::text
+----
+1 year
+
+# age
+
+query T
+SELECT (age(timestamp '2024-03-15 12:00', timestamp '2023-01-10 06:30'))::text
+----
+1 year 2 mons 5 days 05:30:00
+
+query T
+SELECT (age(timestamp '2024-03-15', timestamp '2024-03-15'))::text
+----
+00:00:00
+
+query T
+SELECT (age(timestamp '2023-01-10', timestamp '2024-03-15'))::text
+----
+-1 years -2 mons -5 days
+
+query T
+SELECT (age(timestamp '2024-03-31', timestamp '2024-02-29'))::text
+----
+1 mon 2 days
+
+query T
+SELECT (age(timestamp '2024-03-01', timestamp '2024-01-31'))::text
+----
+1 mon 1 day
+
+query T
+SELECT (age(timestamp '2024-02-29', timestamp '2023-02-28'))::text
+----
+1 year 1 day
+
+query T
+SELECT (age(timestamp '2025-02-28', timestamp '2024-02-29'))::text
+----
+11 mons 28 days
+
+query T
+SELECT (age(timestamp '2001-04-10', timestamp '1957-06-13'))::text
+----
+43 years 9 mons 27 days
+
+query T
+SELECT (age(timestamp '2024-03-15 01:00', timestamp '2024-03-14 23:00'))::text
+----
+02:00:00
+
+query T
+SELECT (age(timestamp '2024-03-15 00:00:01.5', timestamp '2024-03-15'))::text
+----
+00:00:01.5
+
+query T
+SELECT (age(timestamptz '2024-03-15 12:00+00', timestamptz '2023-01-10 06:30+00'))::text
+----
+1 year 2 mons 5 days 05:30:00
+
+query T
+SELECT (age(date '2024-03-15', date '2023-01-10'))::text
+----
+1 year 2 mons 5 days
+
+query T
+SELECT (age(date '2024-03-15', timestamp '2023-01-10 06:30'))::text
+----
+1 year 2 mons 4 days 17:30:00
+
+query T
+SELECT (pg_typeof(age(date '2024-03-15', date '2023-01-10')))::text
+----
+interval
+
+# make_date / make_timestamp / make_timestamptz
+
+query T
+SELECT (make_date(2024, 3, 4))::text
+----
+2024-03-04
+
+query T
+SELECT (make_date(2024, 2, 29))::text
+----
+2024-02-29
+
+query T
+SELECT (make_date(1, 1, 1))::text
+----
+0001-01-01
+
+query T
+SELECT (make_date(-44, 3, 15))::text
+----
+0044-03-15 BC
+
+query T
+SELECT (make_timestamp(2024, 3, 4, 5, 6, 7.5))::text
+----
+2024-03-04 05:06:07.5
+
+query T
+SELECT (make_timestamp(2024, 3, 4, 5, 6, 0))::text
+----
+2024-03-04 05:06:00
+
+query T
+SELECT (make_timestamp(2024, 12, 31, 23, 59, 59.999999))::text
+----
+2024-12-31 23:59:59.999999
+
+query T
+SELECT (make_timestamptz(2024, 3, 4, 5, 6, 7.5))::text
+----
+2024-03-04 05:06:07.5+00
+
+query T
+SELECT (make_timestamptz(2024, 3, 4, 5, 6, 7.5, 'Asia/Tokyo'))::text
+----
+2024-03-03 20:06:07.5+00
+
+query T
+SELECT (make_timestamptz(2024, 3, 4, 5, 6, 7.5, 'America/New_York'))::text
+----
+2024-03-04 10:06:07.5+00
+
+query T
+SELECT (make_timestamptz(2024, 7, 4, 5, 6, 7.5, 'America/New_York'))::text
+----
+2024-07-04 09:06:07.5+00
+
+query T
+SELECT (make_timestamptz(2024, 3, 4, 5, 6, 7.5, '+09'))::text
+----
+2024-03-03 20:06:07.5+00
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (make_timestamptz(2024, 3, 4, 5, 6, 7.5))::text
+----
+2024-03-04 05:06:07.5+09
+
+query T
+SELECT (make_timestamptz(2024, 3, 4, 5, 6, 7.5, 'UTC'))::text
+----
+2024-03-04 14:06:07.5+09
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# to_timestamp(float8)
+
+query T
+SELECT (to_timestamp(0))::text
+----
+1970-01-01 00:00:00+00
+
+query T
+SELECT (to_timestamp(1709528767))::text
+----
+2024-03-04 05:06:07+00
+
+query T
+SELECT (to_timestamp(1709528767.5))::text
+----
+2024-03-04 05:06:07.5+00
+
+query T
+SELECT (to_timestamp(-1))::text
+----
+1969-12-31 23:59:59+00
+
+query T
+SELECT (to_timestamp(946684800.123456))::text
+----
+2000-01-01 00:00:00.123456+00
+
+query T
+SELECT (to_timestamp(1e10))::text
+----
+2286-11-20 17:46:40+00
+
+query T
+SELECT (pg_typeof(to_timestamp(0)))::text
+----
+timestamp with time zone
+
+query T
+SELECT (to_timestamp('infinity'::float8))::text
+----
+infinity
+
+query T
+SELECT (to_timestamp('-infinity'::float8))::text
+----
+-infinity
+
+statement ok
+SET TIME ZONE 'Asia/Tokyo'
+
+query T
+SELECT (to_timestamp(0))::text
+----
+1970-01-01 09:00:00+09
+
+statement ok
+SET TIME ZONE 'UTC'
+
+# isfinite
+
+query T
+SELECT (isfinite(date '2024-03-04'))::text
+----
+true
+
+query T
+SELECT (isfinite(date 'infinity'))::text
+----
+false
+
+query T
+SELECT (isfinite(date '-infinity'))::text
+----
+false
+
+query T
+SELECT (isfinite(timestamp '2024-03-04'))::text
+----
+true
+
+query T
+SELECT (isfinite(timestamp 'infinity'))::text
+----
+false
+
+query T
+SELECT (isfinite(timestamptz '-infinity'))::text
+----
+false
+
+query T
+SELECT (isfinite(timestamptz '2024-03-04 00:00+00'))::text
+----
+true
+
+# 無限値の比較と演算
+
+query T
+SELECT (timestamp 'infinity' > timestamp '9999-12-31')::text
+----
+true
+
+query T
+SELECT (timestamp '-infinity' < timestamp '0001-01-01')::text
+----
+true
+
+query T
+SELECT (date 'infinity' > date '5874897-12-31')::text
+----
+true
+
+query T
+SELECT (timestamp 'infinity' + interval '1 day')::text
+----
+infinity
+
+query T
+SELECT (timestamp 'infinity' = timestamp 'infinity')::text
+----
+true
+
+query T
+SELECT (date 'infinity' + 1)::text
+----
+infinity
+
+query T
+SELECT (date '2024-03-04' + interval 'infinity')::text
+----
+infinity
+
+statement error (22008)
+SELECT timestamp 'infinity' - timestamp 'infinity'
+
+# 日付の算術
+
+query T
+SELECT (date '2024-03-04' + 1)::text
+----
+2024-03-05
+
+query T
+SELECT (date '2024-03-04' - 1)::text
+----
+2024-03-03
+
+query T
+SELECT (date '2024-03-04' + 365)::text
+----
+2025-03-04
+
+query T
+SELECT (date '2024-03-04' - date '2023-03-04')::text
+----
+366
+
+query T
+SELECT (date '2024-03-01' - 1)::text
+----
+2024-02-29
+
+query T
+SELECT (date '2023-03-01' - 1)::text
+----
+2023-02-28
+
+query T
+SELECT (pg_typeof(date '2024-03-04' - date '2023-03-04'))::text
+----
+integer
+
+query T
+SELECT (pg_typeof(date '2024-03-04' + 1))::text
+----
+date
+
+# generate_series（timestamp）
+
+query T
+SELECT generate_series(timestamp '2024-01-31', timestamp '2024-05-31', interval '1 month')::text
+----
+2024-01-31 00:00:00
+2024-02-29 00:00:00
+2024-03-29 00:00:00
+2024-04-29 00:00:00
+2024-05-29 00:00:00
+
+query T
+SELECT generate_series(timestamp '2024-03-04 00:00', timestamp '2024-03-04 02:00', interval '45 minutes')::text
+----
+2024-03-04 00:00:00
+2024-03-04 00:45:00
+2024-03-04 01:30:00
+
+query T
+SELECT generate_series(timestamp '2024-03-04', timestamp '2024-03-01', interval '-1 day')::text
+----
+2024-03-04 00:00:00
+2024-03-03 00:00:00
+2024-03-02 00:00:00
+2024-03-01 00:00:00
+
+statement count 0
+SELECT generate_series(timestamp '2024-03-04', timestamp '2024-03-01', interval '1 day')::text
+
+query T
+SELECT generate_series(timestamp '2024-03-04', timestamp '2024-03-04', interval '1 day')::text
+----
+2024-03-04 00:00:00
+
+query T
+SELECT generate_series(timestamptz '2024-03-04 00:00+00', timestamptz '2024-03-05 00:00+00', interval '12 hours')::text
+----
+2024-03-04 00:00:00+00
+2024-03-04 12:00:00+00
+2024-03-05 00:00:00+00
+
+query T
+SELECT generate_series(date '2024-03-01', date '2024-03-03', interval '1 day')::text
+----
+2024-03-01 00:00:00+00
+2024-03-02 00:00:00+00
+2024-03-03 00:00:00+00
+
+query I
+SELECT count(*) FROM generate_series(timestamp '2024-01-01', timestamp '2024-12-31', interval '1 day')
+----
+366
+
+query T
+SELECT pg_typeof(generate_series(date '2024-03-01', date '2024-03-03', interval '1 day'))::text
+----
+timestamp with time zone
+timestamp with time zone
+timestamp with time zone
+
+statement error (22023)
+SELECT generate_series(timestamp '2024-03-04', timestamp '2024-03-05', interval '0')::text
+
+statement error (22023)
+SELECT generate_series(timestamp '2024-03-04', timestamp '2024-03-05', interval '1 day -24 hours')::text
+
+# generate_series(date, date)は整数ではなく date 版がない: timestamp へ昇格
+
+query T
+SELECT (d)::date::text FROM generate_series(date '2024-02-27', date '2024-03-02', interval '1 day') AS g(d)
+----
+2024-02-27
+2024-02-28
+2024-02-29
+2024-03-01
+2024-03-02
+
+# 表と組み合わせ
+
+statement ok
+CREATE TABLE types_datetime_funcs_t (id int, ts timestamp, tz timestamptz, d date)
+
+statement ok
+INSERT INTO types_datetime_funcs_t VALUES (1, '2024-03-04 05:06:07', '2024-03-04 05:06:07+00', '2024-03-04'), (2, '2023-12-31 23:00:00', '2023-12-31 23:00:00+00', '2023-12-31'), (3, 'infinity', 'infinity', 'infinity'), (4, NULL, NULL, NULL)
+
+query IT
+SELECT id, date_trunc('month', ts)::text FROM types_datetime_funcs_t ORDER BY id
+----
+1	2024-03-01 00:00:00
+2	2023-12-01 00:00:00
+3	infinity
+4	NULL
+
+query IT
+SELECT id, extract(year from d)::text FROM types_datetime_funcs_t ORDER BY id
+----
+1	2024
+2	2023
+3	Infinity
+4	NULL
+
+query IT
+SELECT id, (ts - timestamp '2023-01-01')::text FROM types_datetime_funcs_t WHERE isfinite(ts) ORDER BY id
+----
+1	428 days 05:06:07
+2	364 days 23:00:00
+
+query IT
+SELECT id, (d + 30)::text FROM types_datetime_funcs_t WHERE isfinite(d) ORDER BY id
+----
+1	2024-04-03
+2	2024-01-30
+
+query T
+SELECT date_trunc('year', ts)::text || ' ' || count(*) FROM types_datetime_funcs_t WHERE isfinite(ts) GROUP BY date_trunc('year', ts) ORDER BY 1
+----
+2023-01-01 00:00:00 1
+2024-01-01 00:00:00 1
+
+query IT
+SELECT id, extract(epoch from tz)::text FROM types_datetime_funcs_t WHERE isfinite(tz) ORDER BY id
+----
+1	1709528767.000000
+2	1704063600.000000
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_datetime_funcs_t

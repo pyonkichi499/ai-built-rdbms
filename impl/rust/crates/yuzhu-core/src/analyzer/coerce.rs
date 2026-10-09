@@ -8,9 +8,11 @@
 
 use super::Analyzer;
 use super::bound::{BoundExpr, BoundExprKind};
+use super::params;
 use crate::catalog::names::CatalogNames;
 use crate::catalog::{CastContext, CastMethod, builtin};
 use crate::error::{Error, Result, Span, sqlstate};
+use crate::types::typeinfo::{self, ArrayKind};
 use crate::types::{Datum, Oid, SqlType, io, oid, sys, type_display_name, typmod::takes_typmod};
 
 /// PostgreSQL's `CoercionContext`. The order matters: a cast may be used
@@ -43,6 +45,20 @@ pub(super) enum Pathway {
     Cast(CastMethod),
     /// Output function of the source + input function of the target.
     CoerceViaIo,
+    /// 配列から配列へ（要素ごとに変換。`m5/05` §5.4.4）。値は要素の変換方法。
+    ArrayCoerce(CastMethod),
+}
+
+/// 通常の（`Datum::Array` の）配列型の要素型。`int2vector` / `oidvector` は `None`。
+pub(super) fn regular_array_elem(t: Oid) -> Option<Oid> {
+    (typeinfo::array_kind(t) == Some(ArrayKind::Regular))
+        .then(|| typeinfo::element_type(t))
+        .flatten()
+}
+
+/// 配列型を型として扱えるか（要素が配列の要素にできる型）。
+fn is_supported_array(t: Oid) -> bool {
+    regular_array_elem(t).is_some_and(typeinfo::is_array_element_type)
 }
 
 /// Format a type for messages (`format_type_be`).
@@ -74,6 +90,15 @@ impl Analyzer<'_> {
     ) -> Pathway {
         if source == target {
             return Pathway::Relabel;
+        }
+        // 配列 → 配列: 要素の経路があれば ArrayCoerce（PostgreSQL の COERCION_PATH_ARRAYCOERCE）。
+        if let (Some(te), Some(se)) = (regular_array_elem(target), regular_array_elem(source)) {
+            return match self.find_coercion_pathway(te, se, ctx) {
+                Pathway::None => Pathway::None,
+                Pathway::Relabel => Pathway::ArrayCoerce(CastMethod::Binary),
+                Pathway::CoerceViaIo => Pathway::ArrayCoerce(CastMethod::InOut),
+                Pathway::Cast(m) | Pathway::ArrayCoerce(m) => Pathway::ArrayCoerce(m),
+            };
         }
         if let Some(c) = self.catalog.find_cast(source, target) {
             if !ctx.allows(c.context) {
@@ -129,6 +154,12 @@ impl Analyzer<'_> {
         let Some(e) = self.coerce_type(expr, target.oid, ctx)? else {
             return Ok(None);
         };
+        if let Some(te) = regular_array_elem(target.oid)
+            && target.typmod >= 0
+            && takes_typmod(te)
+        {
+            return Ok(Some(array_typmod(e, te, target, ctx)));
+        }
         Ok(Some(coerce_typmod(
             e,
             target,
@@ -160,10 +191,14 @@ impl Analyzer<'_> {
         if src == target {
             return Ok(Some(expr));
         }
-        if !builtin::is_supported_type(target) {
+        if !builtin::is_supported_type(target) && !is_supported_array(target) {
             return Err(type_not_supported(target).with_span(expr.span));
         }
         if src == oid::UNKNOWN {
+            if params::extern_param_index(&expr).is_some() {
+                // H2: unknown の `$n` は型を確定するだけ（キャストを挟まない。typmod は適用しない）。
+                return self.coerce_extern_param(expr, target).map(Some);
+            }
             if let BoundExprKind::Literal(d) = &expr.kind {
                 if matches!(d, Datum::Text(_)) && !io::input_is_eager(target) {
                     // date / timestamp / timestamptz depend on DateStyle, TimeZone and `now`:
@@ -203,6 +238,8 @@ impl Analyzer<'_> {
             Pathway::Relabel => Some(make_cast(expr, CastMethod::Binary, target, implicit)),
             Pathway::Cast(m) => Some(make_cast(expr, m, target, implicit)),
             Pathway::CoerceViaIo => Some(make_cast(expr, CastMethod::InOut, target, implicit)),
+            Pathway::ArrayCoerce(m) => regular_array_elem(target)
+                .map(|te| make_array_coerce(expr, m, SqlType::of(te), target, implicit)),
         })
     }
 
@@ -439,7 +476,7 @@ pub(super) fn coerce_typmod(expr: BoundExpr, target: SqlType, explicit: bool) ->
 /// Resolves a still-unknown expression (a string literal or NULL) to text,
 /// as PostgreSQL does for output columns (`resolveTargetListUnknowns`).
 pub(super) fn resolve_unknown(mut expr: BoundExpr) -> BoundExpr {
-    if expr.ty.oid != oid::UNKNOWN {
+    if expr.ty.oid != oid::UNKNOWN || matches!(expr.kind, BoundExprKind::ExternParam(_)) {
         return expr;
     }
     if matches!(expr.kind, BoundExprKind::Literal(_)) {
@@ -448,4 +485,54 @@ pub(super) fn resolve_unknown(mut expr: BoundExpr) -> BoundExpr {
     } else {
         make_cast(expr, CastMethod::InOut, oid::TEXT, true)
     }
+}
+
+fn make_array_coerce(
+    expr: BoundExpr,
+    method: CastMethod,
+    elem_ty: SqlType,
+    target: Oid,
+    implicit: bool,
+) -> BoundExpr {
+    let span = expr.span;
+    BoundExpr::new(
+        BoundExprKind::ArrayCoerce {
+            expr: Box::new(expr),
+            elem_method: method,
+            elem_ty,
+            explicit: !implicit,
+        },
+        SqlType::of(target),
+        span,
+    )
+}
+
+/// 配列の typmod（`varchar(3)[]` など）を要素ごとに適用する。すでに `ArrayCoerce` なら要素の typmod を
+/// 差し替え、そうでなければ要素の変換なし（`Binary`）の `ArrayCoerce` で包む。
+fn array_typmod(expr: BoundExpr, elem: Oid, target: SqlType, ctx: CoercionContext) -> BoundExpr {
+    if expr.ty.typmod == target.typmod {
+        return expr;
+    }
+    let elem_ty = SqlType::new(elem, target.typmod);
+    let (span, ty) = (expr.span, expr.ty);
+    let kind = match expr.kind {
+        BoundExprKind::ArrayCoerce {
+            expr: inner,
+            elem_method,
+            explicit,
+            ..
+        } => BoundExprKind::ArrayCoerce {
+            expr: inner,
+            elem_method,
+            elem_ty,
+            explicit,
+        },
+        kind => BoundExprKind::ArrayCoerce {
+            expr: Box::new(BoundExpr::new(kind, ty, span)),
+            elem_method: CastMethod::Binary,
+            elem_ty,
+            explicit: ctx == CoercionContext::Explicit,
+        },
+    };
+    BoundExpr::new(kind, target, span)
 }

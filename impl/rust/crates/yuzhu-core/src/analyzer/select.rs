@@ -106,6 +106,10 @@ impl Analyzer<'_> {
     /// unknown 型の出力列を text にする（`INSERT ... SELECT` は false で、対象列が決める）。
     pub(super) fn analyze_query(&self, q: &Query, env: &QueryEnv<'_>) -> Result<BoundQuery> {
         crate::sql::stack::check_stack_depth()?;
+        // 最上位の FOR 句は `analyze_top_query` が外してある。残っているのは入れ子の中の FOR（RW-D9）。
+        if let Some(lc) = q.locking.first() {
+            return Err(super::locking::nested_locking_error(lc));
+        }
         // 括弧つきの問い合わせ: 外枠と内側のどちらかが空なら、1 つにまとめて解析する。
         if let QueryBody::Nested(inner) = &q.body {
             return self.analyze_nested(q, inner, env);
@@ -135,6 +139,10 @@ impl Analyzer<'_> {
     }
 
     fn analyze_nested(&self, q: &Query, inner: &Query, env: &QueryEnv<'_>) -> Result<BoundQuery> {
+        // FOR 句は `analyze_top_query` が先に外す。ここに残っているものは入れ子の中の FOR（0A000）。
+        if let Some(lc) = inner.locking.first() {
+            return Err(super::locking::nested_locking_error(lc));
+        }
         let outer_empty = q.order_by.is_empty() && q.limit.is_none() && q.offset.is_none();
         let inner_empty =
             inner.order_by.is_empty() && inner.limit.is_none() && inner.offset.is_none();
@@ -154,6 +162,7 @@ impl Analyzer<'_> {
                 order_by: q.order_by.clone(),
                 limit: q.limit.clone(),
                 offset: q.offset.clone(),
+                locking: Vec::new(),
                 span: q.span,
             };
             self.analyze_query(&merged, env)
@@ -224,6 +233,13 @@ impl Analyzer<'_> {
         let limit = self.transform_limit(q.limit.as_ref(), &cx(ParseExprKind::Limit))?;
         let offset = self.transform_limit(q.offset.as_ref(), &cx(ParseExprKind::Offset))?;
 
+        // 最後に、まだ unknown の `$n` の出力列を text にする（`resolveTargetListUnknowns`。H3）。
+        if env.resolve_unknowns {
+            for i in 0..tl.exprs.len() {
+                self.resolve_target_param(&mut tl, i)?;
+            }
+        }
+
         // 9. 集約の有無（D3-4）と、グループ化の検査
         let has_agg = !group_by.is_empty()
             || having.is_some()
@@ -242,6 +258,7 @@ impl Analyzer<'_> {
             targets: tl.exprs,
             n_visible: tl.n_visible,
             distinct,
+            locking: vec![],
         };
         if has_agg {
             Self::check_grouping(&mut sel)?;
@@ -254,6 +271,15 @@ impl Analyzer<'_> {
             offset,
             columns,
         })
+    }
+
+    /// 出力列 `i` が unknown の `$n` なら text にする（H3。ソート・グループ化の対象になるとき、
+    /// および SELECT 句の最後の解決）。
+    fn resolve_target_param(&self, tl: &mut TargetList, i: usize) -> Result<()> {
+        if super::params::extern_param_index(&tl.exprs[i]).is_some() {
+            tl.exprs[i] = self.resolve_unknown(tl.exprs[i].clone())?;
+        }
+        Ok(())
     }
 
     /// SELECT 句（`*` の展開、別名、出力名、出力列の由来）。
@@ -446,6 +472,7 @@ impl Analyzer<'_> {
                 targets: tl.exprs,
                 n_visible: tl.n_visible,
                 distinct: BoundDistinct::None,
+                locking: vec![],
             }))
         };
         let bq = BoundQuery {
@@ -477,6 +504,7 @@ impl Analyzer<'_> {
                     "ORDER BY resolved to a grouping expression",
                 ));
             };
+            self.resolve_target_param(tl, target)?;
             let descending = item.direction == Some(SortDirection::Desc);
             let nulls_first = match item.nulls {
                 Some(NullsOrder::First) => true,
@@ -575,7 +603,7 @@ impl Analyzer<'_> {
             }
             return Ok(Resolved::Target(usize::try_from(pos - 1).unwrap_or(0)));
         }
-        let b = resolve_unknown(self.transform_expr(e, cx)?);
+        let b = self.resolve_unknown(self.transform_expr(e, cx)?)?;
         if let Some(i) = tl.exprs.iter().position(|t| t.same_as(&b)) {
             return Ok(Resolved::Target(i));
         }
@@ -629,6 +657,7 @@ impl Analyzer<'_> {
         for item in items {
             match self.find_target_entry(item, ClauseKind::GroupBy, tl, cx)? {
                 Resolved::Target(pos) => {
+                    self.resolve_target_param(tl, pos)?;
                     let target = &tl.exprs[pos];
                     if let Some(agg) = find_aggregate(target) {
                         return Err(Error::new(
@@ -659,7 +688,10 @@ impl Analyzer<'_> {
         let mut refs = Vec::with_capacity(exprs.len());
         for e in exprs {
             match self.find_target_entry(e, ClauseKind::DistinctOn, tl, cx)? {
-                Resolved::Target(t) => refs.push(t),
+                Resolved::Target(t) => {
+                    self.resolve_target_param(tl, t)?;
+                    refs.push(t);
+                }
                 Resolved::Group(_) => {
                     return Err(Error::internal(
                         "DISTINCT ON resolved to a grouping expression",

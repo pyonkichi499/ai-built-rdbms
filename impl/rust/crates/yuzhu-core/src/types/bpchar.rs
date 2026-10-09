@@ -194,6 +194,88 @@ pub fn bpcharicregexne(args: &[Datum]) -> Result<Datum> {
     regex_impl(args, true).map(|b| Datum::Bool(!b))
 }
 
+/// `bpcharcmp(bpchar, bpchar)`（OID 1078）: 末尾の空白を無視した比較を -1 / 0 / 1 にする。
+pub fn bpcharcmp(args: &[Datum]) -> Result<Datum> {
+    let (Some(a @ Datum::BpChar(_)), Some(b @ Datum::BpChar(_))) = (args.first(), args.get(1))
+    else {
+        return Err(bad_arg("bpcharcmp"));
+    };
+    Ok(Datum::Int4(match super::cmp_datum(a, b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }))
+}
+
+/// `bpcharsend`: パディング後の文字列の UTF-8 バイト列（`textsend` と同じ）。
+pub fn bpchar_send(s: &str) -> Vec<u8> {
+    s.as_bytes().to_vec()
+}
+
+/// `bpcharrecv`: UTF-8 として検証し（NUL は不可）、`typmod` の長さ強制を代入の規則で行う。
+pub fn bpchar_recv(buf: &[u8], typmod: i32) -> Result<Datum> {
+    let bad = |bytes: &[u8]| {
+        let hex: Vec<String> = bytes.iter().map(|b| format!("0x{b:02x}")).collect();
+        Error::new(
+            sqlstate::CHARACTER_NOT_IN_REPERTOIRE,
+            format!(
+                "invalid byte sequence for encoding \"UTF8\": {}",
+                hex.join(" ")
+            ),
+        )
+    };
+    let s = match std::str::from_utf8(buf) {
+        Ok(s) if !s.contains('\0') => s,
+        Ok(_) => return Err(bad(&[0])),
+        Err(e) => {
+            let at = e.valid_up_to();
+            let end = (at + e.error_len().unwrap_or(1)).min(buf.len());
+            return Err(bad(&buf[at..end]));
+        }
+    };
+    bpchar_coerce(s.to_owned(), typmod, false).map(Datum::BpChar)
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn bp(s: &str) -> Datum {
+        Datum::BpChar(s.to_owned())
+    }
+
+    #[test]
+    fn cmp_ignores_trailing_spaces() {
+        assert_eq!(bpcharcmp(&[bp("a  "), bp("a")]).unwrap(), Datum::Int4(0));
+        assert_eq!(bpcharcmp(&[bp("a"), bp("b")]).unwrap(), Datum::Int4(-1));
+        assert_eq!(bpcharcmp(&[bp("b"), bp("a   ")]).unwrap(), Datum::Int4(1));
+        assert!(bpcharcmp(&[Datum::Text("a".into()), bp("a")]).is_err());
+    }
+
+    #[test]
+    fn binary_bridge() {
+        assert_eq!(bpchar_send("ab  "), b"ab  ");
+        assert_eq!(bpchar_recv(b"ab", -1).unwrap(), bp("ab"));
+        // char(4): パディングされる
+        assert_eq!(bpchar_recv(b"ab", 4 + 4).unwrap(), bp("ab  "));
+        // 空白だけの超過は切る。それ以外は 22001
+        assert_eq!(bpchar_recv(b"ab   ", 2 + 4).unwrap(), bp("ab"));
+        assert_eq!(
+            bpchar_recv(b"abc", 2 + 4).unwrap_err().sqlstate.code(),
+            "22001"
+        );
+        assert_eq!(
+            bpchar_recv(&[0xff], -1).unwrap_err().sqlstate.code(),
+            "22021"
+        );
+        assert_eq!(
+            bpchar_recv(b"a\0b", -1).unwrap_err().sqlstate.code(),
+            "22021"
+        );
+        assert_eq!(bpchar_recv("あ".as_bytes(), 1 + 4).unwrap(), bp("あ"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

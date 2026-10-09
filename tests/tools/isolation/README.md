@@ -4,7 +4,7 @@ PostgreSQL の [isolationtester](https://github.com/postgres/postgres/tree/REL_1
 `.spec` 形式を読み、複数の接続で permutation を実行する独立したテストランナーです。
 `spec/research/m3-tx-semantics.md` §12 の「(b) ブロックする交互実行」の層を担います。
 
-- **Simple Query プロトコルだけ**を使います（本家は Extended Query も使うため、M5 より前の yuzhu には向けられない）。
+- ステップの送信は Simple Query（既定）と Extended Query（`--protocol extended`）を選べます。制御接続の待ち判定（`pg`）は Extended Query（Parse 1 回、判定ごとに Bind / Execute / Sync。TS-D2）です。
 - 出力は isolationtester と同じ形式です。PostgreSQL 本体の `expected/*.out` とそのまま diff できます。
 - `impl/rust` のワークスペースには入れない独立した Cargo プロジェクトです（言語非依存のテスト道具として `tests/` に置く）。
 
@@ -15,7 +15,11 @@ tests/
 │   └── expected/*.out      期待出力（本物の PostgreSQL 17 で生成）
 └── tools/isolation/        このランナー
     ├── src/spec.rs         spec のパーサ（specscanner.l / specparse.y と同じ文法）
-    ├── src/conn.rs         Simple Query だけを話す同期クライアント（libpq の PQsendQuery / PQisBusy / PQgetResult 相当）
+    ├── src/conn.rs         同期クライアント（Simple / Extended。libpq の PQsendQuery / PQisBusy / PQgetResult 相当）
+    ├── src/split.rs        extended 用のステートメント分割（split_statements）
+    ├── src/ledger.rs       known-diffs.toml の affects と skip.txt の読み込み
+    ├── src/junit.rs        --format junit の出力
+    ├── src/fake_server.rs  単体テスト用の疑似サーバ（cfg(test)）
     ├── src/runner.rs       permutation の実行と出力（isolationtester.c を写したもの）
     ├── src/main.rs         CLI・期待ファイルとの比較
     └── validate-pg-suite.sh  PostgreSQL 本体の isolation テストでランナー自身を検証する
@@ -36,9 +40,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 tests/pg.sh start
 ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 55432 tests/isolation/specs
 
-# yuzhu に対して（pg_isolation_test_session_is_blocked() が未実装の間は timeout 判定を使う）
+# yuzhu に対して（pg 判定が既定。--protocol extended で Extended Query 経路も流す）
 ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port 5432 \
-    --blocking-detection timeout tests/isolation/specs
+    tests/isolation/specs
 ```
 
 各 spec ごとに `ok` / `FAILED` を表示し、失敗したものは期待ファイルとの unified diff を出します。
@@ -53,6 +57,11 @@ ${CARGO_TARGET_DIR:-tests/tools/isolation/target}/release/yuzhu-isolation --port
 | `--password` | 環境変数 `PGPASSWORD` | 平文・MD5・SCRAM-SHA-256 認証で使う（TLS は未対応） |
 | `--set NAME=VALUE` | なし | 起動パケットで送る実行時パラメータ（複数可）。例: `--set 'datestyle=Postgres, MDY'` |
 | `--blocking-detection pg\|timeout` | `pg` | ロック待ちの判定方法（下記） |
+| `--protocol simple\|extended` | `simple` | ステップの送り方。extended は SQL を文に分け（`split.rs`）、各文を無名の Parse / Bind / Describe / Execute で送って最後に 1 回 Sync する。閉じていない引用符・コメントのあるステップは警告（標準エラー）を出して Simple で送る |
+| `--timeout-scale F` | `1.0`（環境変数 `YUZHU_TIMEOUT_SCALE`） | `--max-step-wait` と `--block-timeout-ms` に掛ける倍率（遅い CI 用） |
+| `--skip-list FILE` | なし | `<name> <KD-n> <理由>` の行を読み、該当 spec を `SKIP <name>: KD-n <理由>` と出して飛ばす（失敗に数えない） |
+| `--known-diffs FILE` / `--no-kd-check` | spec から親をたどって `known-diffs.toml` または `tests/known-diffs.toml` | `--variant` の spec に variant ファイルがあるとき、台帳の `affects`（`isolation/<rest>/<name>`。`specs` の段は除く。`*` の glob 可）に載っていなければ失敗にする。`--no-kd-check` で外す |
+| `--format text\|junit` / `--format-file FILE` | `text` / `isolation-junit.xml` | junit のとき JUnit XML を書く（設計書の `--format junit FILE` は、位置引数と区別できないので 2 つのオプションに分けた） |
 | `--block-timeout-ms` | `300` | timeout 判定で「待ち」とみなすまでの時間 |
 | `--max-step-wait` | `30`（秒） | 1 ステップの最大待ち時間。超えたら CancelRequest を送り、2 倍で打ち切る（本家の `max_step_wait` は 360 秒） |
 | `--expected-dir` | spec のディレクトリの隣の `expected/` | 期待ファイルの場所 |
@@ -70,8 +79,8 @@ isolationtester はステップを送った後、10ms ごとに「応答が来�
 
 - **`pg`（既定）**: 本家と同じく、制御用の接続で
   `SELECT pg_catalog.pg_isolation_test_session_is_blocked(<pid>, '{<全セッションの pid>}')` を問い合わせます。
-  pid は BackendKeyData から取ります（Simple Query なので pid は SQL に直接埋め込む）。
-  yuzhu ではこの関数が実装されるまで使えません（`m3-tx-semantics.md` §5.5）。
+  文は接続直後に 1 回だけ Parse し（`$1` が pid）、判定のたびに Bind / Execute / Sync を送ります（`--protocol` に関わらず Extended）。
+  yuzhu では `LockManager::is_blocked_by` に委ねる実装が前提です（M5 の 00 章 §4.2）。
 - **`timeout`**: `--block-timeout-ms` の間に完了しなければ待ちとみなします。どのサーバでも動きますが、
   - 単に遅いステップ（`pg_sleep` など）も待ちと判定されることがある
   - 待ち中のステップを確かめるたびに最大 `--block-timeout-ms` かかる（待ちの多いテストは遅くなる）
@@ -105,9 +114,9 @@ permutation <step> ...      # 省略するとすべての順序を実行
 
 | 項目 | isolationtester | このランナー |
 |---|---|---|
-| プロトコル | Simple Query + Extended Query（`PQexecParams`、`PQprepare`） | Simple Query のみ |
+| プロトコル | Simple Query + Extended Query（`PQexecParams`、`PQprepare`） | ステップは Simple（既定）または `--protocol extended`、制御接続は Extended |
 | application_name | 接続後に `set_config()` で `<PGAPPNAME>/<セッション名>` | 起動パケットで `isolation/<テスト名>/<セッション名>`（pg_isolation_regress 経由で動かしたときと同じ値） |
-| ロック待ち判定 | `pg_isolation_test_session_is_blocked()` | 同左、または timeout |
+| ロック待ち判定 | `pg_isolation_test_session_is_blocked()` | 同左（既定）、または timeout |
 | `max_step_wait` | 360 秒（`PG_TEST_TIMEOUT_DEFAULT` の 2 倍） | `--max-step-wait`（既定 30 秒） |
 | 実行時パラメータ | pg_isolation_regress が環境変数（`PGDATESTYLE` など）で設定 | 何も設定しない。必要なら `--set` |
 | 未対応 | — | COPY、TLS、GSSAPI |
@@ -120,6 +129,16 @@ permutation <step> ...      # 省略するとすべての順序を実行
 直ったサーバ側の挙動の差で、ランナーの出力形式の問題ではありません。
 `--blocking-detection timeout` でも、試した 16 テスト（`eval-plan-qual`、`deadlock-hard`、
 `insert-conflict-specconflict` など）がすべて一致しました。
+
+M5 の拡張（制御接続の Extended 化、`--protocol`、`split.rs` など）のあとも、`validate-pg-suite.sh`（simple）は同じ 120 / 123 でした
+（同じ 3 つだけが不一致）。`--protocol extended` は 118 / 123 で、上の 3 つに加えて次の 2 つが違います。
+
+- `partition-drop-index-locking`: `pg_stat_activity.query` を出力する spec。extended は文に分けて送るので、末尾の `;` が
+  query に残らない（ランナーの出力形式の問題ではなく、分割の性質）。
+- `detach-partition-concurrently-3`: `DETACH PARTITION ... FINALIZE` のステップが extended では待ちになる
+  （Parse / Bind の段階でロックを取る差とみられる。原因は未調査）。
+
+`validate-pg-suite.sh` は `--protocol simple|extended` を渡せる。
 
 ```sh
 docker exec <コンテナ> createdb -U postgres isolation_regression

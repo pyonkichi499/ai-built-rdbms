@@ -1,0 +1,68 @@
+# CREATE DATABASE / DROP DATABASE のエラー（42P04、55006、25001 ほか）。DB 名は database_create_drop_errors_ で始める
+
+statement ok
+DROP DATABASE IF EXISTS database_create_drop_errors_a
+
+statement ok
+CREATE DATABASE database_create_drop_errors_a
+
+# 重複
+statement error (42P04)
+CREATE DATABASE database_create_drop_errors_a
+
+# 存在しないテンプレート
+statement error (3D000)
+CREATE DATABASE database_create_drop_errors_b TEMPLATE database_create_drop_errors_nonexistent
+
+# 失敗した CREATE は何も残さない
+query I
+SELECT count(*) FROM pg_database WHERE datname = 'database_create_drop_errors_b'
+----
+0
+
+# トランザクションブロック内
+statement ok
+BEGIN
+
+statement error (25001)
+CREATE DATABASE database_create_drop_errors_b
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+DROP DATABASE database_create_drop_errors_a
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_database WHERE datname LIKE 'database\_create\_drop\_errors\_%'
+----
+1
+
+# 存在しない DB の DROP
+statement error (3D000)
+DROP DATABASE database_create_drop_errors_nonexistent
+
+statement ok
+DROP DATABASE IF EXISTS database_create_drop_errors_nonexistent
+
+# 現在の DB は DROP できない
+statement error (55006)
+DROP DATABASE postgres
+
+# テンプレートの DROP
+statement error (42809)
+DROP DATABASE template1
+
+statement ok
+DROP DATABASE database_create_drop_errors_a
+
+query I
+SELECT count(*) FROM pg_database WHERE datname LIKE 'database\_create\_drop\_errors\_%'
+----
+0

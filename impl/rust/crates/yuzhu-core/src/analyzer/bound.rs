@@ -7,6 +7,11 @@
 
 use std::sync::Arc;
 
+use super::ddl_ext::database::{BoundAlterDatabase, BoundCreateDatabase, BoundDropDatabase};
+use super::ddl_ext::foreign_key::{BoundAddForeignKey, BoundDropConstraint};
+use super::ddl_ext::lock_table::BoundLockTable;
+use super::ddl_ext::role::{BoundAlterRole, BoundCreateRole, BoundDropRole};
+use super::ddl_ext::vacuum::BoundAnalyze;
 use crate::catalog::depend::DropBehavior;
 use crate::catalog::{CheckDef, ColumnDef, IndexDef, TableDef};
 use crate::error::{Error, Result, Span};
@@ -128,6 +133,19 @@ pub struct BoundSelect {
     pub targets: Vec<BoundExpr>,
     pub n_visible: usize,
     pub distinct: BoundDistinct,
+    /// `FOR UPDATE` など（最上位の SELECT だけ。M5 RW-3a）。同じ RTE を複数の句が指すものは解析の最後に
+    /// RTE ごとに 1 本（最強の強度・強い wait）にまとめてある。各 RTE は 1 つの句にだけ現れ、
+    /// 句は先頭の RTE の昇順に並ぶ。ロック対象が 0 個なら空。
+    pub locking: Vec<BoundLockingClause>,
+}
+
+/// 解決済みの `FOR` 句（`02-row-lock-rr.md` §4.4）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundLockingClause {
+    pub strength: crate::txn::LockTupleMode,
+    pub wait: crate::storage::RowWait,
+    /// ロック対象の `RteKind::Table`（`RteId` の昇順・重複なし）。
+    pub rtes: Vec<RteId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +335,18 @@ pub enum BoundDdl {
     Truncate(BoundTruncate),
     /// VACUUM と ANALYZE（何もしない）。
     Vacuum(BoundVacuum),
+    // ----- M5（F0b-2 が口を作った。中身は持ち主の章が足す）-----
+    /// ANALYZE（VACUUM を伴わないもの。VC）。
+    Analyze(BoundAnalyze),
+    LockTable(BoundLockTable),
+    CreateRole(BoundCreateRole),
+    AlterRole(BoundAlterRole),
+    DropRole(BoundDropRole),
+    CreateDatabase(BoundCreateDatabase),
+    DropDatabase(BoundDropDatabase),
+    AlterDatabase(BoundAlterDatabase),
+    AlterTableAddForeignKey(BoundAddForeignKey),
+    AlterTableDropConstraint(BoundDropConstraint),
 }
 
 /// `m4/07-catalog-ddl.md`・`m4/08-sequence-serial.md`。M2 のフィールドに追加。
@@ -1371,6 +1401,7 @@ mod tests {
             targets,
             n_visible: n,
             distinct: BoundDistinct::None,
+            locking: vec![],
         }
     }
 

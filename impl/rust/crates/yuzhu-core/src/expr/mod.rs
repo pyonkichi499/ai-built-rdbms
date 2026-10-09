@@ -14,7 +14,7 @@ use crate::catalog::{
 };
 use crate::error::Span;
 pub use crate::sql::ast::SessionValueKind;
-use crate::types::{Datum, SqlType};
+use crate::types::{Datum, Oid, SqlType};
 
 pub use walk::lower_single_rel;
 
@@ -251,6 +251,35 @@ pub enum ExprKind<C, Q> {
     },
     /// `SubLink.test` の中でだけ使う: 副問い合わせの現在の行の i 番目の出力列。
     SubLinkOutput(u16),
+    // ---- M5（F0b-2 が足した。評価と変換の本体は XQ・TY）----
+    /// Extended Query の `$n`（`n - 1`）。型は `Expr.ty`。値は `ExecCtx.bind_params[i]`。
+    /// `PhysCol::Param`（相関サブクエリ用）とは別物（D45）。
+    ExternParam(u16),
+    /// `ARRAY[e1, e2, ...]`。`elems` は `elem_type` にそろえ済み。空は `ARRAY[]::T[]`。
+    /// `Expr.ty` = 配列型。M5 は 1 次元だけ。
+    ArrayCtor {
+        elem_type: Oid,
+        elems: Vec<Expr<C, Q>>,
+    },
+    /// `a[i]`。`indexes` は int4 にそろえ済み。M5 は `len == 1` だけ。`Expr.ty` = 要素型。
+    ArraySubscript {
+        array: Box<Expr<C, Q>>,
+        indexes: Vec<Expr<C, Q>>,
+    },
+    /// `arr::T[]` と代入の暗黙変換。要素ごとに `elem_method` を適用してから `elem_ty` の typmod を適用する。
+    ArrayCoerce {
+        expr: Box<Expr<C, Q>>,
+        elem_method: CastMethod,
+        elem_ty: SqlType,
+        explicit: bool,
+    },
+    /// `left op ANY (array)`（`use_or`）/ `left op ALL (array)`。
+    ScalarArrayOp {
+        op: &'static BuiltinOperator,
+        use_or: bool,
+        left: Box<Expr<C, Q>>,
+        array: Box<Expr<C, Q>>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -264,6 +293,8 @@ pub enum SubLinkKind {
     Any,
     /// 「すべての行について test が true」の三値論理 AND。`x <> ALL (SELECT ...)` など。
     All,
+    /// `ARRAY(SELECT ...)`（M5。1 列。0 行は空の配列。`test` は持たない）。
+    Array,
 }
 
 /// 集約の呼び出し。

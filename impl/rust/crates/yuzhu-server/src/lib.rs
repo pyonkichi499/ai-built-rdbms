@@ -5,8 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod auth;
 pub mod config;
 mod connection;
+pub mod hba;
 pub mod protocol;
 pub mod shutdown;
 

@@ -1,0 +1,381 @@
+# 既知の差の台帳（唯一の記録。spec/design/m5/10-tests-plan.md §6.6、§10.3）
+#
+# 共有テスト（tests/slt、tests/isolation/specs）には、ここに載っている差・未対応に依存するケースを入れない。
+# 入れるなら `onlyif yuzhu` を付けた別のレコードにし、直前に `# KD-<n>` のコメントを書く。
+# tests/tools/lint-tests.sh が台帳とテストを突き合わせる（L1〜L10）。
+#
+# 書式（lint-tests.sh の簡易パーサが読めるものに限る。1 行 1 キー。配列は 1 行か複数行）:
+#   id        "KD-<n>"
+#   kind      "diff"（実装した機能の挙動の差）| "unsupported"（0A000 などを返す未対応）| "both"（両方を含む）
+#   title     短い要約
+#   chapter   持ち主の章
+#   since     "M5"
+#   until     解消の予定（なければ省略）
+#   affects   影響するテストのパス（tests/ からの相対。glob 可。L3・L6・L10 が使う）
+#   pattern   unsupported / both の KD だけ。共有テストに onlyif yuzhu なしで現れたら失敗する正規表現
+#             （grep -P。大文字小文字を区別しない。L8）。検出できないものは省略する
+#   questions この KD に紐づく確認事項の ID（99-questions.md にある M5-Q<n> / M5-<略号>-Q<n>）
+#   note      補足（テストの書き方の注意、パス以外の影響先）
+#
+# affects が実在しない間（M5 の実装中）は L6 が警告にとどめ、`--release` で失敗にする。
+
+[[kd]]
+id = "KD-1"
+kind = "diff"
+title = "MultiXact は簡易版（メモリ上、Q-014）。更新者とロック保持者は常に衝突する"
+chapter = "02-row-lock-rr"
+since = "M5"
+until = "M6"
+affects = [
+  "isolation/ported/tuplelock-conflict",
+  "isolation/ported/tuplelock-update",
+  "isolation/ported/lock-committed-keyupdate",
+  "isolation/ported/lock-update-traversal",
+  "isolation/ported/fk-contention",
+  "isolation/ported/fk-deadlock",
+  "isolation/ported/fk-deadlock2",
+  "isolation/ported/multixact-*",
+]
+questions = ["M5-Q4"]
+note = "差が出る衝突は、実際の非キー列の UPDATE（更新者）と FOR KEY SHARE の 2 セルだけ。FK の子の INSERT 中に親の非キー列の UPDATE が待たされ、デッドロックも増えうる。共有 slt の fk/ と S3 は親の非キー列の UPDATE を入れない。解消は永続 MultiXact（案 C）"
+
+[[kd]]
+id = "KD-2"
+kind = "diff"
+title = "pg_trigger に FK の内部トリガーの行がない（FK は実行器に組み込み）"
+chapter = "07-foreign-key"
+since = "M5"
+until = "M6"
+affects = [
+  "isolation/ported/eval-plan-qual-trigger",
+  "slt/m5/fk/catalog_pg_constraint",
+]
+note = "SELECT ... FROM pg_trigger WHERE tgisinternal の結果が違う。ALTER TABLE ... DISABLE TRIGGER は未対応。共有 slt は pg_trigger を見ない。解消はトリガー実装（M6 以降）"
+
+[[kd]]
+id = "KD-3"
+kind = "unsupported"
+title = "SERIALIZABLE は 0A000（SSI なし）"
+chapter = "02-row-lock-rr"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/rr/serializable_unsupported"]
+pattern = 'ISOLATION\s+LEVEL\s+SERIALIZABLE|default_transaction_isolation\s*(=|TO)\s*.?serializable|transaction_isolation\s*(=|TO)\s*.?serializable'
+questions = ["M5-Q9"]
+note = "ported/skip.txt の SSI の spec も対象。PostgreSQL は SSI で受け付ける。解消は SSI（M6 以降）"
+
+[[kd]]
+id = "KD-4"
+kind = "unsupported"
+title = "SAVEPOINT はブロック内で 0A000、RELEASE / ROLLBACK TO は 3B001（M3 のまま）"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+affects = [
+  "isolation/ported/delete-abort-savept*",
+  "slt/m3/txn/savepoint_unsupported",
+]
+pattern = '^\s*(SAVEPOINT\s|RELEASE\s|ROLLBACK\s+(TRANSACTION\s+|WORK\s+)?TO\s)'
+questions = ["M5-Q1"]
+note = "入れ子のトランザクション（psycopg 3 の入れ子の transaction()、SQLAlchemy の begin_nested、Rails の入れ子）が使えない。ドライバの C4 の一部。M6 の先頭候補"
+
+[[kd]]
+id = "KD-5"
+kind = "diff"
+title = "soft deadlock の並べ替えをしない（待ち行列で解消されるデッドロックを 40P01 にする）"
+chapter = "01-lock-txn"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/deadlock-soft", "isolation/ported/deadlock-soft-2"]
+questions = ["M5-LK-Q1"]
+
+[[kd]]
+id = "KD-6"
+kind = "diff"
+title = "EPQ は簡易版（計画木の部分再実行をせず、最新版で WHERE と SET を再評価する）"
+chapter = "02-row-lock-rr"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/eval-plan-qual", "isolation/specs/epq-single"]
+questions = ["M5-RW-Q6"]
+note = "結合・相関サブクエリ・CTE・複数の FOR ... OF を含む場合に結果が違いうる。共有は単一テーブルの epq-single だけ"
+
+[[kd]]
+id = "KD-7"
+kind = "diff"
+title = "同名の CREATE TABLE の同時実行で yuzhu は 42P07、PostgreSQL は 23505"
+chapter = "01-lock-txn"
+since = "M5"
+until = "M6"
+questions = ["M5-LK-Q5"]
+note = "M3-Q20 の 5 つの差のうち、これだけが残る。共有テストには入れない"
+
+[[kd]]
+id = "KD-8"
+kind = "both"
+title = "VACUUM: VERBOSE の文面、VM・HOT なし、VACUUM FULL は 0A000、VACUUM ANALYZE は reltuples / relpages だけ"
+chapter = "03-vacuum"
+since = "M5"
+until = "M6"
+affects = [
+  "isolation/ported/index-only-scan",
+  "isolation/ported/vacuum-reltuples",
+  "isolation/ported/freeze-the-dead",
+  "isolation/ported/vacuum-conflict",
+]
+pattern = 'VACUUM\s*(\([^)]*\bFULL\b[^)]*\)|FULL\b)'
+note = "VERBOSE は INFO で出すが統計の行の文面と数値が違う。共有 spec / slt は VACUUM の NOTICE の内容を比べない。FREEZE・INDEX_CLEANUP・SKIP_LOCKED などは受け付ける。autovacuum は既定で無効"
+
+[[kd]]
+id = "KD-9"
+kind = "diff"
+title = "pg_locks は locktype が relation / tuple / transactionid / database / object だけ（行の差。列は PG17 と同じ 16 列）"
+chapter = "01-lock-txn"
+since = "M5"
+until = "M6"
+questions = ["M5-LK-Q6"]
+note = "virtualxid の行、インデックスのロックの行がない。select * from pg_locks の文自身の AccessShare の行が違う。共有 slt は relation = '<名前>'::regclass と locktype で絞る"
+
+[[kd]]
+id = "KD-10"
+kind = "diff"
+title = "deadlock_timeout を誰でも SET できる（PostgreSQL は superuser のみ）"
+chapter = "01-lock-txn"
+since = "M5"
+until = "M6"
+note = "GRANT / REVOKE がないため。ロール属性の slt には入れない。解消は GRANT（M6）"
+
+[[kd]]
+id = "KD-11"
+kind = "diff"
+title = "max_locks_per_transaction は SHOW だけ（64 固定）で、53200 が起きない"
+chapter = "01-lock-txn"
+since = "M5"
+until = "M6"
+questions = ["M5-LK-Q13"]
+note = "SET は PG17 と同じ 55P02"
+
+[[kd]]
+id = "KD-12"
+kind = "unsupported"
+title = "認証: MD5・Unix ソケット・TLS・チャネルバインディング・GSS / peer / ident / LDAP なし"
+chapter = "08-auth-roles"
+since = "M5"
+until = "M6"
+affects = ["compat/auth/*"]
+pattern = 'ALTER\s+(ROLE|USER)\b[^;]*PASSWORD\s+.md5'
+questions = ["M5-AU-Q5"]
+note = "hba の md5 は scram-sha-256 として扱う。ALTER ROLE ... PASSWORD 'md5...' は 0A000。compat/auth の A3（md5 の行を比べない）、A9。解消は TLS（M6）"
+
+[[kd]]
+id = "KD-13"
+kind = "both"
+title = "CREATE / DROP DATABASE: STRATEGY = WAL_LOG は FILE_COPY で実行、ENCODING / LOCALE は UTF8 / C のみ、DROP DATABASE ... WITH (FORCE) は 0A000"
+chapter = "09-database-ddl"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/database/*"]
+pattern = 'DROP\s+DATABASE\b[^;]*\(\s*FORCE\b|DROP\s+DATABASE\b[^;]*\bFORCE\s*;?\s*$'
+questions = ["M5-DB-Q7", "M5-Q10"]
+note = "孤児の base/<oid>/ は消さず WARNING。slt/m5/database はオプションを使わない。W11。解消は pg_terminate_backend と FORCE（M6）"
+
+[[kd]]
+id = "KD-14"
+kind = "unsupported"
+title = "配列: ユーザーテーブルの配列列は 0A000。unnest / array_agg / スライス / 代入 / 多次元 / 順序比較 / ハッシュは M6"
+chapter = "05-types-core"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/types/array_*"]
+pattern = '\b(unnest|array_agg)\s*\(|^\s*CREATE\s+(TEMP\w*\s+|UNLOGGED\s+)?TABLE\b.*\w\[\d*\]'
+questions = ["M5-Q8", "M5-TY-Q4"]
+note = "= ANY、<> ALL、ARRAY[...]、ARRAY(SELECT ...)、a[i]、::T[]、array_length、cardinality、array_to_string は対応。ドライバの C2 は配列の往復を結果・パラメータだけで行い、列には使わない。SELECT srf(args) だけの最小形は FROM 句の形に書き換えて対応する（TY-D17）"
+
+[[kd]]
+id = "KD-15"
+kind = "unsupported"
+title = "numeric の sqrt / exp / ln / log / power は 0A000（numeric の引数）"
+chapter = "05-types-core"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/types/numeric_gap"]
+pattern = '\b(sqrt|exp|ln|log|power|pow)\s*\(\s*-?\d+\.\d*\s*[,)]|\b(sqrt|exp|ln|log|power|pow)\s*\([^()]*::\s*numeric'
+questions = ["M5-Q19"]
+note = "numeric の引数（sqrt(2.0)）は 0A000 numeric sqrt is not supported yet。整数・float8 の引数は float8 版で動く。pattern は numeric リテラルと ::numeric を引数にした呼び出しだけを検出する（列の型は見ない）"
+
+[[kd]]
+id = "KD-16"
+kind = "unsupported"
+title = "FOREIGN KEY の DEFERRABLE / INITIALLY DEFERRED と SET CONSTRAINTS は 0A000"
+chapter = "07-foreign-key"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/fk/*"]
+pattern = '(?<!NOT\s)DEFERRABLE\b|INITIALLY\s+DEFERRED\b|^\s*SET\s+CONSTRAINTS\b'
+questions = ["M5-FK-Q1"]
+note = "検査は文の終わり。NOT DEFERRABLE と INITIALLY IMMEDIATE は受け付ける"
+
+[[kd]]
+id = "KD-17"
+kind = "unsupported"
+title = "timetz は 0A000"
+chapter = "06-types-datetime"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/types/interval_*"]
+pattern = '\btimetz\b|\btime(\s*\(\d+\))?\s+with\s+time\s+zone\b'
+questions = ["M5-Q95"]
+note = "interval のフィールド指定と interval(p) は PostgreSQL と同じ符号化で対応する（TD-D3）"
+
+[[kd]]
+id = "KD-18"
+kind = "unsupported"
+title = "pg_stat_*、pg_prepared_statements、pg_cursors、pg_stat_activity、pg_terminate_backend、pg_cancel_backend がない"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/timeouts"]
+pattern = '\b(pg_stat_\w+|pg_prepared_statements|pg_cursors|pg_terminate_backend|pg_cancel_backend)\b'
+note = "42P01 / 42883。キャンセルは CancelRequest で行い、分離性ランナーの -- @cancel を使う"
+
+[[kd]]
+id = "KD-19"
+kind = "unsupported"
+title = "勧告ロック（pg_advisory_lock など）がない"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+pattern = '\bpg_(try_)?advisory_\w+'
+questions = ["M5-TS-Q8"]
+note = "42883。Rails / Prisma / Flyway の migrate が動かない可能性（U-21）。ドライバ CI は migrate を対象にしない"
+
+[[kd]]
+id = "KD-20"
+kind = "diff"
+title = "汎用プランを作らない（Bind ごとに計画をやり直す。plan_cache_mode は保存のみ）"
+chapter = "04-extended-query"
+since = "M5"
+until = "M6"
+questions = ["M5-Q17"]
+note = "EXPLAIN EXECUTE の出力が PostgreSQL と違いうる"
+
+[[kd]]
+id = "KD-21"
+kind = "unsupported"
+title = "COPY のバイナリ形式は M6。COPY ... TO STDOUT と CSV は XQ-6 が入るまで 0A000"
+chapter = "04-extended-query"
+since = "M5"
+until = "M6"
+pattern = '\bCOPY\b[^;]*\bTO\s+STDOUT\b|\bCOPY\b[^;]*\bFORMAT\s+(binary|csv)\b|\bCOPY\b[^;]*\bBINARY\b|\bCOPY\b[^;]*\bCSV\b'
+questions = ["M5-Q2"]
+note = "ドライバの C7 の copy_in / copy_out は XQ-6 が入るまで失敗を期待する。XQ-6 が入れば解消（その場合は pattern を外す）"
+
+[[kd]]
+id = "KD-22"
+kind = "unsupported"
+title = "DECLARE CURSOR / FETCH / MOVE / CLOSE がない"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+pattern = '^\s*DECLARE\s+\S+\s+(\w+\s+)*CURSOR\b|^\s*FETCH\s+(NEXT|PRIOR|FIRST|LAST|ALL|FORWARD|BACKWARD|ABSOLUTE|RELATIVE|\d+|FROM|IN)\b|^\s*MOVE\s+(NEXT|PRIOR|FIRST|LAST|ALL|FORWARD|BACKWARD|ABSOLUTE|RELATIVE|\d+|FROM|IN)\b'
+note = "psycopg 3 の名前つきカーソル、pgJDBC の Extended を使わない setFetchSize 以外のカーソルが使えない。ドライバの C6 の psycopg 側は失敗を期待する"
+
+[[kd]]
+id = "KD-23"
+kind = "diff"
+title = "ロール: GRANT / REVOKE・権限の検査がない。DROP ROLE の依存検査は全データベースの所有物を走査する"
+chapter = "08-auth-roles"
+since = "M5"
+until = "M6"
+affects = ["slt/m5/auth/*"]
+questions = ["M5-AU-Q6"]
+note = "slt/m5/auth は属性と DDL だけ。差は DETAIL の並びと DROP OWNED・REASSIGN OWNED がないこと"
+
+[[kd]]
+id = "KD-24"
+kind = "unsupported"
+title = "LISTEN / NOTIFY、PREPARE TRANSACTION（2PC）"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/async-notify", "isolation/ported/prepared-transactions*"]
+pattern = '^\s*(LISTEN|NOTIFY|UNLISTEN)\s|\bPREPARE\s+TRANSACTION\b|^\s*(COMMIT|ROLLBACK)\s+PREPARED\b'
+
+[[kd]]
+id = "KD-25"
+kind = "unsupported"
+title = "INSERT ... ON CONFLICT、MERGE"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/insert-conflict-*", "isolation/ported/merge-*"]
+pattern = '\bON\s+CONFLICT\b|^\s*MERGE\s+INTO\b'
+
+[[kd]]
+id = "KD-26"
+kind = "unsupported"
+title = "ALTER TABLE の大半（FK の ADD / DROP CONSTRAINT と、M4 の ADD PRIMARY KEY / UNIQUE を除く）"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/alter-table-*"]
+pattern = '^\s*ALTER\s+TABLE\b.*\b(ADD\s+COLUMN|DROP\s+COLUMN|ALTER\s+COLUMN|RENAME\b|OWNER\s+TO|SET\s+SCHEMA|(ENABLE|DISABLE)\s+(TRIGGER|ROW|RULE)|ATTACH\s+PARTITION|DETACH\s+PARTITION)'
+
+[[kd]]
+id = "KD-27"
+kind = "unsupported"
+title = "CREATE VIEW / CREATE SCHEMA / information_schema"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+pattern = '^\s*CREATE\s+(OR\s+REPLACE\s+)?(TEMP\w*\s+|RECURSIVE\s+|MATERIALIZED\s+)*VIEW\b|^\s*CREATE\s+SCHEMA\b|\binformation_schema\.'
+note = "pgJDBC の DatabaseMetaData、Prisma の introspection などが失敗する。ドライバの C1〜C10 に含めず、失敗を期待するシナリオだけ"
+
+[[kd]]
+id = "KD-28"
+kind = "unsupported"
+title = "パーティションと継承"
+chapter = "00-contracts"
+since = "M5"
+until = "M6"
+affects = ["isolation/ported/partition-*", "isolation/ported/fk-partitioned-*", "isolation/ported/deadlock-parallel"]
+pattern = '\bPARTITION\s+BY\b|\bPARTITION\s+OF\b|\bINHERITS\s*\('
+note = "pgbench のパーティション確認の問い合わせは失敗しても続行する（pg-compat §3.2.2）"
+
+[[kd]]
+id = "KD-29"
+kind = "diff"
+title = "XID を文の開始時に割り当てる（書く文と FOR 句つき SELECT）"
+chapter = "01-lock-txn"
+since = "M5"
+until = "M6"
+questions = ["M5-LK-Q4"]
+note = "何も書かない UPDATE ... WHERE false が XID を持ち、horizon を止め、pg_locks に transactionid の行が出る。共有テストは pg_locks の transactionid の行数を比べない"
+
+[[kd]]
+id = "KD-30"
+kind = "diff"
+title = "pg_database.datfrozenxid の値（PG は全 DB が同じ値。yuzhu は min(テンプレートの行の値, oldest_xmin()) の下位 32 ビット）"
+chapter = "09-database-ddl"
+since = "M5"
+questions = ["M5-Q20"]
+note = "値そのものを比べる共有テストを入れない"
+
+[[kd]]
+id = "KD-31"
+kind = "diff"
+title = "SCRAM の秘密情報の iterations が 1 未満のロールは認証が 28P01"
+chapter = "08-auth-roles"
+since = "M5"
+questions = ["M5-AU-Q18"]
+note = "PG は PBKDF2 をそのまま計算する。共有テストに入れない"
+
+[[kd]]
+id = "KD-32"
+kind = "diff"
+title = "FOR UPDATE を仮想リレーション（pg_roles）に付けると PG はエラー、yuzhu は黙って無視"
+chapter = "02-row-lock-rr"
+since = "M5"
+until = "M6"
+questions = ["M5-RW-Q10"]
+note = "numeric の引数の sqrt などの 0A000 は KD-15。共有テストに入れない"

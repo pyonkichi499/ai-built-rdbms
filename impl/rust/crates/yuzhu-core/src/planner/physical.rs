@@ -14,12 +14,36 @@ use crate::analyzer::bound::SetOpKind;
 use crate::catalog::{AggKind, BuiltinFunction, SystemColumn};
 use crate::error::{Error, Result};
 use crate::expr::{Expr, ExprKind, ParamId, PhysCol, SubLinkKind, SubPlanId};
-use crate::storage::{IndexHandle, RelHandle};
-use crate::types::SqlType;
+use crate::storage::{IndexHandle, RelHandle, RowWait};
+use crate::txn::LockTupleMode;
+use crate::types::{Oid, SqlType};
 
 pub use crate::storage::ScanDirection;
 
 pub type PhysExpr = Expr<PhysCol, SubPlanId>;
+
+/// `LockRows` がロックする表 1 つ（`m5/02` §4.4）。位置は `LockRows` の入力の行の列位置。
+#[derive(Debug, Clone)]
+pub struct RowMark {
+    pub rel: RelHandle,
+    /// `ctid`（`Datum::Tid`）の位置。
+    pub tid_col: usize,
+    /// 対象表のユーザー列（`attnum` 順に連続した範囲）。
+    pub cols: std::ops::Range<usize>,
+    pub mode: LockTupleMode,
+    pub wait: RowWait,
+    /// 55P03（NOWAIT）のメッセージ用。
+    pub table_name: String,
+}
+
+/// `Update` / `Delete` の EvalPlanQual（簡易版）で、最新版に差し替えたあと評価し直す式。
+/// 式は入力の行の位置（`PhysCol::Local`）で参照する。
+#[derive(Debug, Clone)]
+pub struct RecheckSpec {
+    pub qual: Option<PhysExpr>,
+    /// `Update` のみ。代入式（`assigned` と同じ順）。
+    pub new_values: Vec<PhysExpr>,
+}
 
 /// CHECK 制約（型は bool、NULL は通す）。
 #[derive(Debug, Clone)]
@@ -94,6 +118,14 @@ pub enum PhysicalPlan {
         system_columns: Vec<SystemColumn>,
         filter: Option<PhysExpr>,
     },
+    /// 仮想リレーション（`pg_locks` など）の走査。出力の形は `SeqScan` と同じ（`system_columns` は
+    /// 常に NULL）。`catalog::virtual_rel` の提供関数が行を作り、`filter` を行ごとに評価する。
+    VirtualScan {
+        rel_oid: Oid,
+        columns: Vec<SqlType>,
+        system_columns: Vec<SystemColumn>,
+        filter: Option<PhysExpr>,
+    },
     FunctionScan {
         func: &'static BuiltinFunction,
         args: Vec<PhysExpr>,
@@ -126,6 +158,13 @@ pub enum PhysicalPlan {
     },
     Materialize {
         input: Box<PhysicalPlan>,
+    },
+    /// 出力は入力と同じ。`marks` の行ロックを取り、最新版に差し替えて `recheck` を評価し直す
+    /// （通らない行は捨てる。ロックは残る）。
+    LockRows {
+        input: Box<PhysicalPlan>,
+        marks: Vec<RowMark>,
+        recheck: Option<PhysExpr>,
     },
     /// 出力は `outer ++ inner`（Semi / Anti は outer だけ）。`outer` は論理プランの left で固定。
     NestedLoopJoin {
@@ -199,7 +238,7 @@ pub enum PhysicalPlan {
         table_name: String,
         returning: Option<Vec<PhysExpr>>,
     },
-    /// 入力の形: 対象表のユーザー列(n) ++ ctid ++ 新しい値(`assigned.len()`)。
+    /// 入力の形: 対象表のユーザー列(n) ++ ctid ++ 新しい値(`assigned.len()`) ++ extra 列。
     Update {
         rel: RelHandle,
         input: Box<PhysicalPlan>,
@@ -210,13 +249,15 @@ pub enum PhysicalPlan {
         not_null: Vec<bool>,
         table_name: String,
         returning: Option<Vec<PhysExpr>>,
+        recheck: Option<RecheckSpec>,
     },
-    /// 入力の形: 対象表のユーザー列 ++ ctid。
+    /// 入力の形: 対象表のユーザー列 ++ ctid ++ extra 列。
     Delete {
         rel: RelHandle,
         input: Box<PhysicalPlan>,
         n_user_cols: usize,
         returning: Option<Vec<PhysExpr>>,
+        recheck: Option<RecheckSpec>,
     },
 }
 
@@ -380,6 +421,7 @@ impl PhysicalPlan {
             P::Result { .. }
             | P::Values { .. }
             | P::SeqScan { .. }
+            | P::VirtualScan { .. }
             | P::IndexScan { .. }
             | P::FunctionScan { .. }
             | P::CteScan { .. } => vec![],
@@ -390,6 +432,7 @@ impl PhysicalPlan {
             | P::Distinct { input }
             | P::Limit { input, .. }
             | P::Materialize { input }
+            | P::LockRows { input, .. }
             | P::Aggregate { input, .. }
             | P::HashAggregate { input, .. }
             | P::GroupAggregate { input, .. }
@@ -436,6 +479,11 @@ impl PhysicalPlan {
                 system_columns,
                 ..
             }
+            | P::VirtualScan {
+                columns,
+                system_columns,
+                ..
+            }
             | P::IndexScan {
                 columns,
                 system_columns,
@@ -447,6 +495,7 @@ impl PhysicalPlan {
             | P::Unique { input, .. }
             | P::Distinct { input }
             | P::Limit { input, .. }
+            | P::LockRows { input, .. }
             | P::Materialize { input } => input.width(ctes),
             P::NestedLoopJoin {
                 kind,
@@ -504,6 +553,12 @@ impl PhysicalPlan {
                 system_columns,
                 filter,
                 ..
+            }
+            | P::VirtualScan {
+                columns,
+                system_columns,
+                filter,
+                ..
             } => opt(filter, columns.len() + system_columns.len(), &mut out),
             P::IndexScan {
                 keys,
@@ -534,6 +589,9 @@ impl PhysicalPlan {
             P::Limit { limit, offset, .. } => {
                 opt(limit, 0, &mut out);
                 opt(offset, 0, &mut out);
+            }
+            P::LockRows { input, recheck, .. } => {
+                opt(recheck, input.width(ctes), &mut out);
             }
             P::NestedLoopJoin {
                 join_filter,
@@ -587,19 +645,33 @@ impl PhysicalPlan {
                 out.extend(returning.iter().flatten().map(|e| (e, w)));
             }
             P::Update {
+                input,
                 checks,
                 returning,
                 n_user_cols,
+                recheck,
                 ..
             } => {
                 out.extend(checks.iter().map(|c| (&c.expr, *n_user_cols)));
                 out.extend(returning.iter().flatten().map(|e| (e, *n_user_cols)));
+                if let Some(r) = recheck {
+                    let w = input.width(ctes);
+                    opt(&r.qual, w, &mut out);
+                    out.extend(r.new_values.iter().map(|e| (e, w)));
+                }
             }
             P::Delete {
+                input,
                 returning,
                 n_user_cols,
+                recheck,
                 ..
-            } => out.extend(returning.iter().flatten().map(|e| (e, *n_user_cols))),
+            } => {
+                out.extend(returning.iter().flatten().map(|e| (e, *n_user_cols)));
+                if let Some(r) = recheck {
+                    opt(&r.qual, input.width(ctes), &mut out);
+                }
+            }
             P::Unique { .. }
             | P::Distinct { .. }
             | P::Materialize { .. }
@@ -935,12 +1007,24 @@ impl Vstate<'_> {
                 input,
                 n_user_cols,
                 assigned,
+                recheck,
                 ..
             } => {
-                if input.width(ctes) != n_user_cols + 1 + assigned.len() {
+                let base = n_user_cols + 1 + assigned.len();
+                let w = input.width(ctes);
+                if (recheck.is_none() && w != base) || w < base {
                     return Err(bad(
                         "P6",
-                        "Update input width differs from n_user_cols + 1 + assigned",
+                        "Update input width differs from n_user_cols + 1 + assigned (+ extra columns)",
+                    ));
+                }
+                if recheck
+                    .as_ref()
+                    .is_some_and(|r| r.new_values.len() != assigned.len())
+                {
+                    return Err(bad(
+                        "P6",
+                        "Update recheck has a different number of values than assigned",
                     ));
                 }
                 if assigned
@@ -955,15 +1039,41 @@ impl Vstate<'_> {
                 }
             }
             P::Delete {
-                input, n_user_cols, ..
+                input,
+                n_user_cols,
+                recheck,
+                ..
             } => {
-                if input.width(ctes) != n_user_cols + 1 {
-                    return Err(bad("P6", "Delete input width differs from n_user_cols + 1"));
+                let w = input.width(ctes);
+                if (recheck.is_none() && w != n_user_cols + 1) || w < n_user_cols + 1 {
+                    return Err(bad(
+                        "P6",
+                        "Delete input width differs from n_user_cols + 1 (+ extra columns)",
+                    ));
+                }
+            }
+            P::LockRows { input, marks, .. } => {
+                let w = input.width(ctes);
+                if marks.iter().any(|m| m.tid_col >= w || m.cols.end > w) {
+                    return Err(bad("P6", "LockRows mark refers outside the input"));
                 }
             }
             P::SeqScan { rel, columns, .. } => {
                 if columns.len() != rel.desc.attrs.len() {
                     return Err(bad("P6", "SeqScan columns differ from the table's columns"));
+                }
+            }
+            P::VirtualScan {
+                rel_oid, columns, ..
+            } => {
+                let Some(v) = crate::catalog::virtual_rel::find(*rel_oid) else {
+                    return Err(bad("P6", "VirtualScan over an unknown virtual relation"));
+                };
+                if columns.len() != v.columns().len() {
+                    return Err(bad(
+                        "P6",
+                        "VirtualScan columns differ from the relation's columns",
+                    ));
                 }
             }
             P::IndexScan {
@@ -1210,7 +1320,8 @@ mod tests {
                 rel: RelHandle::from_table(&table(1)),
                 input: b(scan(2)),
                 n_user_cols: 1,
-                returning: None
+                returning: None,
+                recheck: None
             }
             .width(&[]),
             0
@@ -1220,7 +1331,8 @@ mod tests {
                 rel: RelHandle::from_table(&table(1)),
                 input: b(scan(2)),
                 n_user_cols: 1,
-                returning: Some(vec![local(0), local(0)])
+                returning: Some(vec![local(0), local(0)]),
+                recheck: None
             }
             .width(&[]),
             2
@@ -1269,6 +1381,7 @@ mod tests {
             not_null: vec![false; 2],
             table_name: "t".into(),
             returning: Some(vec![local(0)]),
+            recheck: None,
         };
         let widths: Vec<usize> = upd.exprs_with_width(&[]).iter().map(|(_, w)| *w).collect();
         assert_eq!(widths, [2, 2]);
@@ -1566,6 +1679,7 @@ mod tests {
             not_null: vec![false],
             table_name: "t".into(),
             returning: None,
+            recheck: None,
         };
         assert!(msg(query_with(bad_update).validate()).contains("[P6]"));
         let good_update = PhysicalPlan::Update {
@@ -1577,6 +1691,7 @@ mod tests {
             not_null: vec![false],
             table_name: "t".into(),
             returning: None,
+            recheck: None,
         };
         query_with(good_update).validate().unwrap();
         // P7: FULL の入れ子ループ / 空の Values。
@@ -1590,6 +1705,7 @@ mod tests {
             input: Box::new(scan(2)),
             n_user_cols: 1,
             returning: Some(vec![local(0)]),
+            recheck: None,
         };
         let q = query_with(PhysicalPlan::Limit {
             input: Box::new(del),

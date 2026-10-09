@@ -438,6 +438,7 @@ pub(crate) fn dump_tables(cluster: &Arc<Cluster>) -> V<Tables> {
             database: "postgres".into(),
             application_name: None,
             options: Vec::new(),
+            client_addr: None,
         },
     )
     .map_err(|e| {
@@ -569,6 +570,7 @@ fn check_catalog_files(cluster: &Arc<Cluster>, vfs: &SimVfs) -> V<()> {
             database: "postgres".into(),
             application_name: None,
             options: Vec::new(),
+            client_addr: None,
         },
     )
     .map_err(|e| violation("I8", format!("cannot connect: {}", e.message)))?;
@@ -693,7 +695,7 @@ pub(crate) fn catalog_relations(cluster: &Arc<Cluster>) -> V<BTreeMap<String, Dd
                     },
                 );
             }
-            RelKind::Index => {}
+            RelKind::Index | RelKind::Virtual => {}
         }
     }
     Ok(out)
@@ -702,7 +704,7 @@ pub(crate) fn catalog_relations(cluster: &Arc<Cluster>) -> V<BTreeMap<String, Dd
 /// 07 §8.3 の `check_catalog`（条件 1〜9 と、10 の「ファイルが存在する」。孤児は見ない）。
 pub(crate) fn check_catalog_problems(cluster: &Arc<Cluster>) -> V<()> {
     let (db, _) = cluster
-        .connect("postgres", "postgres")
+        .connect_simple("postgres", "postgres")
         .map_err(|e| violation("I16", format!("cannot connect: {}", e.message)))?;
     let snap = cluster.txn_manager().snapshot(None, 0);
     let problems = check_catalog(cluster, &db, &snap)
@@ -729,6 +731,7 @@ pub(crate) fn check_no_orphans(cluster: &Arc<Cluster>) -> V<()> {
             database: "postgres".into(),
             application_name: None,
             options: Vec::new(),
+            client_addr: None,
         },
     )
     .map_err(|e| violation("I16", format!("cannot connect: {}", e.message)))?;
@@ -743,7 +746,7 @@ pub(crate) fn check_no_orphans(cluster: &Arc<Cluster>) -> V<()> {
             .map_err(|e| violation("I16", format!("checkpoint failed: {}", e.message)))?;
     }
     let (db, _) = cluster
-        .connect("postgres", "postgres")
+        .connect_simple("postgres", "postgres")
         .map_err(|e| violation("I16", format!("cannot connect: {}", e.message)))?;
     let snap = cluster.txn_manager().snapshot(None, 0);
     let problems = check_orphan_files(cluster, &db, &snap)
@@ -808,6 +811,7 @@ pub(crate) fn check_sequences_observe(
             database: "postgres".into(),
             application_name: None,
             options: Vec::new(),
+            client_addr: None,
         },
     )
     .map_err(|e| bad(format!("cannot connect: {}", e.message)))?;

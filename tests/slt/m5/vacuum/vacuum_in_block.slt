@@ -1,0 +1,126 @@
+# VACUUM はトランザクションブロックの中と複数文の Query の中で 25001。ANALYZE（VACUUM なし）はブロックの中で動く（VC-D15）
+
+statement ok
+DROP TABLE IF EXISTS vacuum_in_block_t
+
+statement ok
+DROP TABLE IF EXISTS vacuum_in_block_u
+
+statement ok
+CREATE TABLE vacuum_in_block_t (a int)
+
+statement ok
+CREATE TABLE vacuum_in_block_u (a int)
+
+statement ok
+INSERT INTO vacuum_in_block_t VALUES (1), (2), (3)
+
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM vacuum_in_block_t
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (?s)VACUUM cannot run inside a transaction block
+VACUUM vacuum_in_block_t
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM ANALYZE vacuum_in_block_t
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM (VERBOSE) vacuum_in_block_t
+
+statement ok
+ROLLBACK
+
+# ブロックの中で失敗した後は、ROLLBACK までコマンドが拒否される
+statement ok
+BEGIN
+
+statement error (25001)
+VACUUM vacuum_in_block_t
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+# 複数文の Query は暗黙のトランザクションブロック
+statement error (25001)
+select 1; vacuum vacuum_in_block_t
+
+statement error (25001)
+vacuum vacuum_in_block_t; vacuum vacuum_in_block_u
+
+statement error (25001)
+vacuum vacuum_in_block_t; select 1
+
+# 失敗した複数文の Query は何も残さない
+query I
+SELECT count(*) FROM vacuum_in_block_t
+----
+3
+
+# ANALYZE はブロックの中で成功する
+statement ok
+BEGIN
+
+statement ok
+ANALYZE vacuum_in_block_t
+
+statement ok
+ANALYZE
+
+statement ok
+COMMIT
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO vacuum_in_block_t VALUES (4)
+
+statement ok
+ANALYZE vacuum_in_block_t
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM vacuum_in_block_t
+----
+3
+
+statement ok
+DROP TABLE vacuum_in_block_t
+
+statement ok
+DROP TABLE vacuum_in_block_u

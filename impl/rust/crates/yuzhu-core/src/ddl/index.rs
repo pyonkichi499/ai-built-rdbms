@@ -635,7 +635,15 @@ mod tests {
         fn insert(&self, _: &RelHandle, _: &WriteCtx, _: &[Datum]) -> Result<Tid> {
             unused()
         }
-        fn delete(&self, _: &RelHandle, _: &WriteCtx, _: &Snapshot, _: Tid) -> Result<TmResult> {
+        fn delete(
+            &self,
+            _: &RelHandle,
+            _: &WriteCtx,
+            _: &Snapshot,
+            _: Tid,
+            _: Option<&crate::txn::lock::WaitCtx<'_>>,
+            _: Option<&Snapshot>,
+        ) -> Result<TmResult> {
             unused()
         }
         fn update(
@@ -645,6 +653,8 @@ mod tests {
             _: &Snapshot,
             _: Tid,
             _: &[Datum],
+            _: Option<&crate::txn::lock::WaitCtx<'_>>,
+            _: Option<&Snapshot>,
         ) -> Result<UpdateOutcome> {
             unused()
         }

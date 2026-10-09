@@ -1015,6 +1015,11 @@ impl Settings {
         }
     }
 
+    /// `is_superuser` を接続したロールの属性に合わせる（`Session::new` が呼ぶ。M5 08 §6.7）。
+    pub fn set_is_superuser(&mut self, superuser: bool) {
+        self.set_server_value("is_superuser", if superuser { "on" } else { "off" });
+    }
+
     /// The effective value of a parameter (`SHOW`). Returns the canonical
     /// name and the value.
     pub fn show(&self, name: &str) -> Result<(String, String)> {
@@ -1233,6 +1238,29 @@ impl Settings {
     /// `lock_timeout`; `None` waits forever (value 0).
     pub fn lock_timeout(&self) -> Option<std::time::Duration> {
         self.duration_setting("lock_timeout")
+    }
+
+    /// `deadlock_timeout`（既定 1 秒。最小 1ms）。
+    pub fn deadlock_timeout(&self) -> std::time::Duration {
+        let ms = parse_millis("deadlock_timeout", self.get("deadlock_timeout")).unwrap_or(1000);
+        std::time::Duration::from_millis(u64::try_from(ms).unwrap_or(1000).max(1))
+    }
+
+    /// `password_encryption` と `scram_iterations`（`DdlCtx.password`。08 C4）。
+    pub fn password_policy(&self) -> crate::ddl::role::PasswordPolicy {
+        use crate::ddl::role::{PasswordEncryption, PasswordPolicy};
+        let defaults = PasswordPolicy::default();
+        PasswordPolicy {
+            encryption: if self.get("password_encryption") == "md5" {
+                PasswordEncryption::Md5
+            } else {
+                PasswordEncryption::ScramSha256
+            },
+            scram_iterations: self
+                .get("scram_iterations")
+                .parse()
+                .unwrap_or(defaults.scram_iterations),
+        }
     }
 
     /// `statement_timeout`; `None` means no limit (value 0).
@@ -2304,6 +2332,8 @@ impl Settings {
             extra_float_digits: self.extra_float_digits(),
             datetime: Some(ds.env(zones, now)),
             names,
+            bytea_output: crate::types::ByteaOutput::parse(self.get("bytea_output"))
+                .unwrap_or_default(),
         }
     }
 }
@@ -3256,5 +3286,19 @@ mod inert_guc_tests {
         assert_eq!(e.sqlstate, sqlstate::INVALID_PARAMETER_VALUE);
         st.reset_all();
         assert_eq!(st.planner_settings().query_mem_limit, 256 * 1024 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod tests_is_superuser {
+    use super::*;
+
+    #[test]
+    fn is_superuser_follows_the_connected_role() {
+        let mut s = Settings::new("postgres", &[]);
+        s.set_is_superuser(false);
+        assert_eq!(s.show("is_superuser").unwrap().1, "off");
+        s.set_is_superuser(true);
+        assert_eq!(s.show("is_superuser").unwrap().1, "on");
     }
 }

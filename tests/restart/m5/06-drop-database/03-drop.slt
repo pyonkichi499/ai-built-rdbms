@@ -1,0 +1,14 @@
+# フェーズ 3（postgres に接続）: DROP DATABASE をコミットして、kill -9 される。
+
+query I
+SELECT count(*) FROM pg_database WHERE datname = 'crm5_06_d'
+----
+1
+
+statement ok
+DROP DATABASE crm5_06_d
+
+query I
+SELECT count(*) FROM pg_database WHERE datname = 'crm5_06_d'
+----
+0

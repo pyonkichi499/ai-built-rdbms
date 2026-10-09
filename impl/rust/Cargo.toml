@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/yuzhu-core", "crates/yuzhu-server", "crates/yuzhu-numeric", "crates/yuzhu-datetime"]
+members = ["crates/yuzhu-core", "crates/yuzhu-server", "crates/yuzhu-numeric", "crates/yuzhu-datetime", "crates/yuzhu-auth"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,14 @@ publish = false
 
 [workspace.dependencies]
 yuzhu-core = { path = "crates/yuzhu-core" }
+yuzhu-auth = { path = "crates/yuzhu-auth" }
+sha2 = "0.11"
+hmac = "0.13"
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
+base64 = "0.22"
+getrandom = { version = "0.4", features = ["std"] }
+subtle = "2.6"
+stringprep = "0.1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"

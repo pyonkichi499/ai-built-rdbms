@@ -1,0 +1,97 @@
+# pg_locks: 自分の relation で絞り、モードと granted を比べる（KD-9）。
+# 接頭辞: lock_pg_locks_basic_
+
+statement ok
+DROP TABLE IF EXISTS lock_pg_locks_basic_t
+
+statement ok
+CREATE TABLE lock_pg_locks_basic_t (id int, v text)
+
+statement ok
+INSERT INTO lock_pg_locks_basic_t VALUES (1, 'a'), (2, 'b')
+
+# ロックなし
+query I
+SELECT count(*) FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass
+----
+0
+
+statement ok
+BEGIN
+
+statement ok
+SELECT * FROM lock_pg_locks_basic_t
+
+query TTT
+SELECT locktype, mode, granted FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass AND pid = pg_backend_pid() ORDER BY mode
+----
+relation AccessShareLock t
+
+statement ok
+UPDATE lock_pg_locks_basic_t SET v = 'x' WHERE id = 1
+
+query TTT
+SELECT locktype, mode, granted FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass AND pid = pg_backend_pid() ORDER BY mode
+----
+relation AccessShareLock t
+relation RowExclusiveLock t
+
+statement ok
+LOCK TABLE lock_pg_locks_basic_t IN SHARE MODE
+
+query TTT
+SELECT locktype, mode, granted FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass AND pid = pg_backend_pid() ORDER BY mode
+----
+relation AccessShareLock t
+relation RowExclusiveLock t
+relation ShareLock t
+
+# 自分の pid
+query B
+SELECT bool_and(pid = pg_backend_pid()) FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass
+----
+t
+
+# 別接続からも見える（pid が違う）
+connection other
+query I
+SELECT count(*) FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass AND pid <> pg_backend_pid() AND granted
+----
+3
+
+connection other
+query B
+SELECT count(*) FILTER (WHERE NOT granted) = 0 FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass
+----
+t
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass
+----
+0
+
+# ROLLBACK でも解放される
+statement ok
+BEGIN
+
+statement ok
+LOCK TABLE lock_pg_locks_basic_t IN ACCESS EXCLUSIVE MODE
+
+query T
+SELECT mode FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass AND pid = pg_backend_pid()
+----
+AccessExclusiveLock
+
+statement ok
+ROLLBACK
+
+query I
+SELECT count(*) FROM pg_locks WHERE relation = 'lock_pg_locks_basic_t'::regclass
+----
+0
+
+statement ok
+DROP TABLE lock_pg_locks_basic_t

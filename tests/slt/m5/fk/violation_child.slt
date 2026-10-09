@@ -1,0 +1,83 @@
+# FOREIGN KEY: 子側（INSERT / UPDATE）の違反。メッセージと DETAIL
+# 接頭辞: fk_violation_child_
+
+statement ok
+DROP TABLE IF EXISTS fk_violation_child_c
+
+statement ok
+DROP TABLE IF EXISTS fk_violation_child_t
+
+statement ok
+DROP TABLE IF EXISTS fk_violation_child_p
+
+statement ok
+CREATE TABLE fk_violation_child_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_violation_child_t (id text PRIMARY KEY)
+
+statement ok
+INSERT INTO fk_violation_child_p VALUES (1), (2)
+
+statement ok
+INSERT INTO fk_violation_child_t VALUES ('a'), ('it''s "q"')
+
+statement ok
+CREATE TABLE fk_violation_child_c (n int PRIMARY KEY, pid int REFERENCES fk_violation_child_p, tid text REFERENCES fk_violation_child_t)
+
+statement ok
+INSERT INTO fk_violation_child_c VALUES (1, 1, 'a')
+
+# INSERT
+statement error (?s)insert or update on table "fk_violation_child_c" violates foreign key constraint "fk_violation_child_c_pid_fkey".*Key \(pid\)=\(3\) is not present in table "fk_violation_child_p"\.
+INSERT INTO fk_violation_child_c VALUES (2, 3, 'a')
+
+statement error (23503)
+INSERT INTO fk_violation_child_c VALUES (2, 3, 'a')
+
+# UPDATE
+statement error (?s)violates foreign key constraint "fk_violation_child_c_pid_fkey".*Key \(pid\)=\(9\) is not present in table "fk_violation_child_p"\.
+UPDATE fk_violation_child_c SET pid = 9 WHERE n = 1
+
+# 特殊文字を含む値
+statement error (?s)violates foreign key constraint "fk_violation_child_c_tid_fkey".*Key \(tid\)=\(it's "q"x\) is not present in table "fk_violation_child_t"\.
+INSERT INTO fk_violation_child_c VALUES (2, 1, 'it''s "q"x')
+
+statement ok
+INSERT INTO fk_violation_child_c VALUES (2, 2, 'it''s "q"')
+
+# NULL は検査されない（INSERT / UPDATE）
+statement ok
+INSERT INTO fk_violation_child_c VALUES (3, NULL, NULL)
+
+statement ok
+UPDATE fk_violation_child_c SET pid = NULL WHERE n = 1
+
+statement ok
+UPDATE fk_violation_child_c SET pid = 1 WHERE n = 1
+
+# 複数行 INSERT は 1 行でも違反なら全体が失敗
+statement error (23503)
+INSERT INTO fk_violation_child_c VALUES (4, 1, 'a'), (5, 77, 'a')
+
+query I
+SELECT count(*) FROM fk_violation_child_c
+----
+3
+
+# 子のキー以外の列の更新は検査の対象外でも通る
+statement ok
+UPDATE fk_violation_child_c SET n = n + 10 WHERE n = 1
+
+# 型の合わない値は 22P02（FK の検査より前）
+statement error (22P02)
+INSERT INTO fk_violation_child_c VALUES (20, 'x', 'a')
+
+statement ok
+DROP TABLE fk_violation_child_c
+
+statement ok
+DROP TABLE fk_violation_child_t
+
+statement ok
+DROP TABLE fk_violation_child_p

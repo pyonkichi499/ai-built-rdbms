@@ -113,3 +113,84 @@ id|  v
  3| 30
 (3 rows)
 
+
+starting permutation: a_b a_inc b_b b_upd2other a_c b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_upd2other: UPDATE www_t SET v = v + 5 WHERE id = 2;
+step a_c: COMMIT;
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 2|25
+ 3|30
+(3 rows)
+
+
+starting permutation: a_b a_inc b_b b_del2 a_c b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_del2: DELETE FROM www_t WHERE id = 2;
+step a_c: COMMIT;
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 3|30
+(2 rows)
+
+
+starting permutation: a_b a_inc b_b b_ins a_c b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_ins: INSERT INTO www_t VALUES (5, 50);
+step a_c: COMMIT;
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|11
+ 2|20
+ 3|30
+ 5|50
+(4 rows)
+
+
+starting permutation: a_b a_ins b_b b_upd2other a_c b_c c_sel
+step a_b: BEGIN;
+step a_ins: INSERT INTO www_t VALUES (4, 40);
+step b_b: BEGIN;
+step b_upd2other: UPDATE www_t SET v = v + 5 WHERE id = 2;
+step a_c: COMMIT;
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|25
+ 3|30
+ 4|40
+(4 rows)
+
+
+starting permutation: a_b a_inc b_b b_upd2other a_r b_c c_sel
+step a_b: BEGIN;
+step a_inc: UPDATE www_t SET v = v + 1 WHERE id = 1;
+step b_b: BEGIN;
+step b_upd2other: UPDATE www_t SET v = v + 5 WHERE id = 2;
+step a_r: ROLLBACK;
+step b_c: COMMIT;
+step c_sel: SELECT id, v FROM www_t ORDER BY id;
+id| v
+--+--
+ 1|10
+ 2|25
+ 3|30
+(3 rows)
+

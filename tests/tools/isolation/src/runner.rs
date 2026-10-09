@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::conn::{Conn, ConnParams, QueryResult};
 use crate::spec::{BlockerSpec, TestSpec};
+use crate::split::split_statements_checked;
 
 /// ステップがロック待ちになったかの判定方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -21,10 +22,23 @@ pub(crate) enum BlockingDetection {
     Pg,
 }
 
+/// ステップの SQL の送り方（制御接続の問い合わせは常に Extended）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Protocol {
+    /// ステップ全体を 1 つの Simple Query で送る（isolationtester と同じ）。
+    Simple,
+    /// 文に分け、各文を無名の Parse / Bind / Describe / Execute で送って最後に 1 回 Sync する。
+    Extended,
+}
+
+/// 制御接続で `Parse` する文の名前。
+const BLOCKED_STMT: &str = "isolation_is_blocked";
+
 /// 実行時の設定。
 #[derive(Debug, Clone)]
 pub(crate) struct Options {
     pub(crate) conn: ConnParams,
+    pub(crate) protocol: Protocol,
     pub(crate) detection: BlockingDetection,
     pub(crate) block_timeout: Duration,
     /// isolationtester の `max_step_wait`。これを過ぎたら CancelRequest、2 倍で打ち切る。
@@ -148,6 +162,17 @@ fn run_spec_inner(
         psteps: Vec::new(),
         all_pids: pids.join(","),
     };
+    if opts.detection == BlockingDetection::Pg {
+        // isolationtester と同じく、待ち判定の文を 1 回だけ Parse する（PQprepare）。
+        let sql = format!(
+            "SELECT pg_catalog.pg_isolation_test_session_is_blocked($1, '{{{}}}')",
+            r.all_pids
+        );
+        if let Err(e) = r.conns[0].conn.prepare(BLOCKED_STMT, &sql) {
+            let _ = writeln!(r.out, "prepare of lock wait query failed: {e}");
+            return Err(Fatal);
+        }
+    }
     // 制御用接続の NOTICE は捨てる（blackholeNoticeProcessor）。
     r.conns[0].conn.take_notices();
     if spec.permutations.is_empty() {
@@ -412,7 +437,7 @@ impl Runner<'_> {
                 self.run_cancel_step(i, target, &mut waiting)?;
                 continue;
             }
-            if let Err(e) = self.conns[ci].conn.send_query(&sql) {
+            if let Err(e) = self.send_step(ci, &sql) {
                 let _ = writeln!(
                     self.out,
                     "failed to send query for step {}: {e}",
@@ -458,6 +483,20 @@ impl Runner<'_> {
             let _ = write!(self.out, "teardown failed: {msg}");
         }
         Ok(())
+    }
+
+    /// ステップの SQL を送る。Extended のときは文に分ける。閉じていない引用符・コメントが
+    /// あるときは（サーバに構文エラーにさせるため）Simple で送って警告を標準エラーに出す。
+    fn send_step(&mut self, ci: usize, sql: &str) -> std::io::Result<()> {
+        if self.opts.protocol == Protocol::Extended {
+            if let Some(stmts) = split_statements_checked(sql) {
+                return self.conns[ci].conn.send_extended(&stmts);
+            }
+            eprintln!(
+                "yuzhu-isolation: warning: unterminated quote or comment in step SQL; sending it with Simple Query: {sql}"
+            );
+        }
+        self.conns[ci].conn.send_query(sql)
     }
 
     /// `-- @cancel <セッション名>` ステップの実行。対象のステップが完了するまで待って結果も出す
@@ -524,11 +563,8 @@ impl Runner<'_> {
 
     /// 制御用接続でロック待ちかを問い合わせる。
     fn is_blocked_pg(&mut self, ci: usize) -> Result<bool, Fatal> {
-        let sql = format!(
-            "SELECT pg_catalog.pg_isolation_test_session_is_blocked({}, '{{{}}}')",
-            self.conns[ci].conn.pid, self.all_pids
-        );
-        let res = self.conns[0].conn.exec(&sql);
+        let pid = self.conns[ci].conn.pid.to_string();
+        let res = self.conns[0].conn.exec_prepared(BLOCKED_STMT, &[&pid]);
         self.conns[0].conn.take_notices();
         match res {
             QueryResult::Tuples { rows, .. } if rows.len() == 1 && !rows[0].is_empty() => {

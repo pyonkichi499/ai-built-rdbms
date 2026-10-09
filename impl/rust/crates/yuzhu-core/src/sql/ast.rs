@@ -85,6 +85,30 @@ pub enum Statement {
     DropSequence(DropSequence),
     /// `COPY ...` (M4).
     Copy(Copy),
+    /// `ANALYZE`（VACUUM を伴わないもの）(M5 VC)。
+    Analyze(AnalyzeStmt),
+    /// `LOCK TABLE ...` (M5 LK)。
+    LockTable(LockTableStmt),
+    /// `PREPARE ...` (M5 XQ)。
+    Prepare(PrepareStmt),
+    /// `EXECUTE name (...)` (M5 XQ)。
+    ExecutePrepared(ExecuteStmt),
+    /// `DEALLOCATE ...` (M5 XQ)。
+    Deallocate(DeallocateStmt),
+    /// `DISCARD ...` (M5 XQ)。
+    Discard(DiscardStmt),
+    /// `CREATE ROLE/USER/GROUP ...` (M5 AU)。
+    CreateRole(CreateRoleStmt),
+    /// `ALTER ROLE/USER ...` (M5 AU)。
+    AlterRole(AlterRoleStmt),
+    /// `DROP ROLE/USER/GROUP ...` (M5 AU)。
+    DropRole(DropRoleStmt),
+    /// `CREATE DATABASE ...` (M5 DB)。
+    CreateDatabase(CreateDatabaseStmt),
+    /// `DROP DATABASE ...` (M5 DB)。
+    DropDatabase(DropDatabaseStmt),
+    /// `ALTER DATABASE ...` (M5 DB)。
+    AlterDatabase(AlterDatabaseStmt),
 }
 
 impl Statement {
@@ -111,6 +135,18 @@ impl Statement {
             Statement::AlterSequence(s) => s.span,
             Statement::DropSequence(s) => s.span,
             Statement::Copy(s) => s.span,
+            Statement::Analyze(s) => s.span,
+            Statement::LockTable(s) => s.span,
+            Statement::Prepare(s) => s.span,
+            Statement::ExecutePrepared(s) => s.span,
+            Statement::Deallocate(s) => s.span,
+            Statement::Discard(s) => s.span,
+            Statement::CreateRole(s) => s.span,
+            Statement::AlterRole(s) => s.span,
+            Statement::DropRole(s) => s.span,
+            Statement::CreateDatabase(s) => s.span,
+            Statement::DropDatabase(s) => s.span,
+            Statement::AlterDatabase(s) => s.span,
         }
     }
 }
@@ -221,11 +257,10 @@ pub enum ColumnConstraintKind {
         when: GeneratedWhen,
         options: Vec<SeqOption>,
     },
-    /// `REFERENCES table [(column)]`. Not supported in M1 (0A000).
-    References {
-        table: ObjectName,
-        columns: Vec<Ident>,
-    },
+    /// `REFERENCES table [(column)] ...` (M5 07 §4.1). The parser
+    /// (`parse_table_element`) fills `spec.columns` with the defining column,
+    /// and `spec.name` is the `CONSTRAINT n` of this constraint.
+    References(ForeignKeySpec),
 }
 
 /// `[CONSTRAINT name] kind` at table level.
@@ -246,12 +281,50 @@ pub enum TableConstraintKind {
     PrimaryKey(KeyConstraint),
     /// `UNIQUE [NULLS [NOT] DISTINCT] (cols) [INCLUDE ...] [WITH ...]` (M4).
     Unique(KeyConstraint),
-    /// Not supported in M1 (0A000).
-    ForeignKey {
-        columns: Vec<Ident>,
-        ref_table: ObjectName,
-        ref_columns: Vec<Ident>,
-    },
+    /// `FOREIGN KEY (cols) REFERENCES t [(cols)] ...` (M5 07 §4.1).
+    ForeignKey(ForeignKeySpec),
+}
+
+/// The syntax of a `REFERENCES` clause / `FOREIGN KEY` constraint (M5 07 §4.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeignKeySpec {
+    /// `CONSTRAINT n`.
+    pub name: Option<Ident>,
+    /// Referencing (child) columns. For a column constraint, the one column.
+    pub columns: Vec<Ident>,
+    /// Referenced (parent) table.
+    pub ref_table: ObjectName,
+    /// Empty = the parent's PRIMARY KEY.
+    pub ref_columns: Vec<Ident>,
+    pub match_type: FkMatchSpec,
+    pub on_update: FkActionSpec,
+    pub on_delete: FkActionSpec,
+    /// `Some` when `[NOT] DEFERRABLE` was written (`Some(true)` is `0A000` in the analyzer).
+    pub deferrable: Option<bool>,
+    /// `Some(true)` for `INITIALLY DEFERRED`, `Some(false)` for `INITIALLY IMMEDIATE`.
+    pub initially_deferred: Option<bool>,
+    /// `NOT VALID` (`0A000` in the analyzer).
+    pub not_valid: bool,
+    pub span: Span,
+}
+
+/// `MATCH SIMPLE | FULL | PARTIAL`. The parser rejects `PARTIAL` with `0A000`;
+/// the variant exists for the contract's sake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FkMatchSpec {
+    Simple,
+    Full,
+    Partial,
+}
+
+/// `ON DELETE` / `ON UPDATE` action. `SetNull` / `SetDefault` carry the optional column list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FkActionSpec {
+    NoAction,
+    Restrict,
+    Cascade,
+    SetNull(Vec<Ident>),
+    SetDefault(Vec<Ident>),
 }
 
 /// A type name as written.
@@ -373,6 +446,45 @@ pub struct Query {
     /// `LIMIT n` / `FETCH FIRST n ROWS ONLY`. `LIMIT ALL` gives `None`.
     pub limit: Option<Expr>,
     pub offset: Option<Expr>,
+    /// `FOR UPDATE` and friends (M5 RW-3a). LIMIT / OFFSET and FOR may come in either order.
+    pub locking: Vec<LockingClause>,
+    pub span: Span,
+}
+
+/// Row lock strength of a `FOR` clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockStrength {
+    Update,
+    NoKeyUpdate,
+    Share,
+    KeyShare,
+}
+
+impl LockStrength {
+    /// The words after `FOR`, as PostgreSQL prints them in messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LockStrength::Update => "UPDATE",
+            LockStrength::NoKeyUpdate => "NO KEY UPDATE",
+            LockStrength::Share => "SHARE",
+            LockStrength::KeyShare => "KEY SHARE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockWaitPolicy {
+    Block,
+    NoWait,
+    SkipLocked,
+}
+
+/// `FOR strength [OF table, ...] [NOWAIT | SKIP LOCKED]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockingClause {
+    pub strength: LockStrength,
+    pub of: Vec<ObjectName>,
+    pub wait: LockWaitPolicy,
     pub span: Span,
 }
 
@@ -1229,6 +1341,33 @@ pub enum Expr {
     Default {
         span: Span,
     },
+    /// `ARRAY[e1, ...]`（M5 TY-5）。入れ子の `ARRAY[[1,2],[3,4]]` は内側の `[..]` も `ArrayConstructor`。
+    ArrayConstructor {
+        elems: Vec<Expr>,
+        span: Span,
+    },
+    /// `ARRAY(SELECT ...)`（M5 TY-5）。
+    ArraySubquery {
+        query: Box<Query>,
+        span: Span,
+    },
+    /// `expr[i]` / `expr[l:u]`（M5 TY-5）。`slice` が真ならスライス（解析が 0A000）。`a[1][2]` は入れ子。
+    Subscript {
+        expr: Box<Expr>,
+        lower: Option<Box<Expr>>,
+        upper: Option<Box<Expr>>,
+        slice: bool,
+        span: Span,
+    },
+    /// `x op ANY|SOME|ALL (array_expr)`（M5 TY-5。副問い合わせの形は `QuantifiedSubquery`）。
+    QuantifiedArray {
+        expr: Box<Expr>,
+        op: String,
+        op_schema: Option<Ident>,
+        quantifier: Quantifier,
+        array: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -1261,7 +1400,214 @@ impl Expr {
             | Expr::MinMax { span, .. }
             | Expr::NullIf { span, .. }
             | Expr::SessionValue { span, .. }
+            | Expr::ArrayConstructor { span, .. }
+            | Expr::ArraySubquery { span, .. }
+            | Expr::Subscript { span, .. }
+            | Expr::QuantifiedArray { span, .. }
             | Expr::Default { span } => *span,
         }
     }
+}
+
+// ----- M5 の文（F0b-2 が名前と span だけの構造体で口を作る。フィールドは持ち主の章が足す）-----------
+
+macro_rules! m5_stmt_stubs {
+    ($($(#[$doc:meta])* $name:ident),+ $(,)?) => {
+        $(
+            $(#[$doc])*
+            #[derive(Debug, Clone, PartialEq)]
+            pub struct $name {
+                pub span: Span,
+            }
+        )+
+    };
+}
+
+/// `LOCK TABLE` の対象 1 つ（`ONLY` / `*` は受け付けるだけ。継承がないので意味を持たない）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockTableName {
+    pub name: ObjectName,
+    pub only: bool,
+}
+
+/// `LOCK TABLE` の `IN <mode> MODE`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableLockMode {
+    AccessShare,
+    RowShare,
+    RowExclusive,
+    ShareUpdateExclusive,
+    Share,
+    ShareRowExclusive,
+    Exclusive,
+    AccessExclusive,
+}
+
+/// `LOCK [TABLE] [ONLY] name [*] [, ...] [IN mode MODE] [NOWAIT]`（LK-4b）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockTableStmt {
+    pub tables: Vec<LockTableName>,
+    pub mode: TableLockMode,
+    pub nowait: bool,
+    pub span: Span,
+}
+
+m5_stmt_stubs! {
+    /// `ANALYZE ...`（VC）。
+    AnalyzeStmt,
+    /// `PREPARE ...`（XQ）。
+    PrepareStmt,
+    /// `EXECUTE ...`（XQ）。
+    ExecuteStmt,
+    /// `DEALLOCATE ...`（XQ）。
+    DeallocateStmt,
+    /// `DISCARD ...`（XQ）。
+    DiscardStmt,
+}
+
+/// `CREATE / ALTER DATABASE` のオプションの値（`m5/09` §4.4）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum DatabaseOptionValue {
+    /// `DEFAULT`。
+    Default,
+    /// 引用符なしの識別子（小文字化済み）。
+    Ident(String),
+    /// `'...'` または `"..."`（そのまま）。
+    Str(String),
+    /// `TRUE` / `FALSE`。
+    Bool(bool),
+    /// 符号つきの整数。
+    Int(i64),
+    /// 小数・指数形式（`CONNECTION LIMIT` では 42601）。
+    Float(String),
+}
+
+/// `name [=] value`。`name` は小文字化済み（`CONNECTION LIMIT` は `connection_limit`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseOption {
+    pub name: String,
+    pub value: DatabaseOptionValue,
+    /// エラーの位置（オプションの先頭）。
+    pub span: Span,
+}
+
+/// `CREATE DATABASE name [WITH] option*`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateDatabaseStmt {
+    pub name: String,
+    pub options: Vec<DatabaseOption>,
+    pub span: Span,
+}
+
+/// `DROP DATABASE [IF EXISTS] name [[WITH] (FORCE)]`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropDatabaseStmt {
+    pub name: String,
+    pub if_exists: bool,
+    pub force: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlterDatabaseAction {
+    Options(Vec<DatabaseOption>),
+    /// `RENAME TO` / `OWNER TO` / `SET` / `RESET` / `REFRESH COLLATION VERSION` / `SET TABLESPACE`（0A000）。
+    Unsupported(&'static str),
+}
+
+/// `ALTER DATABASE name ...`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterDatabaseStmt {
+    pub name: String,
+    pub action: AlterDatabaseAction,
+    pub span: Span,
+}
+
+/// 文字列リテラルのパスワード（`m5/08` §4.5）。`Debug` で値を出さない。
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// `ROLE` / `USER` / `GROUP`（コマンドタグには影響しない。どれも `CREATE ROLE`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleKeyword {
+    Role,
+    User,
+    Group,
+}
+
+/// `CREATE / ALTER ROLE` のオプション（`m5/08` §4.5）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleOption {
+    Superuser(bool),
+    CreateDb(bool),
+    CreateRole(bool),
+    Inherit(bool),
+    Login(bool),
+    Replication(bool),
+    BypassRls(bool),
+    ConnectionLimit(i32),
+    /// `Some(p)` = `PASSWORD 'p'`（`ENCRYPTED` はあってもなくても同じ）、`None` = `PASSWORD NULL`。
+    Password(Option<Secret>),
+    /// `VALID UNTIL 'timestamp'`。実行時に timestamptz として解釈する。
+    ValidUntil(String),
+    /// `SYSID n`（無視）。
+    Sysid(i64),
+    /// `IN ROLE` / `IN GROUP`（analyzer が 0A000）。
+    InRole(Vec<String>),
+    /// `ROLE` / `USER`（analyzer が 0A000）。
+    Role(Vec<String>),
+    /// `ADMIN`（analyzer が 0A000）。
+    Admin(Vec<String>),
+    /// `UNENCRYPTED PASSWORD 'p'`（analyzer が 0A000）。
+    UnencryptedPassword,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleOptionItem {
+    pub option: RoleOption,
+    /// エラーの位置（オプションの先頭）。
+    pub span: Span,
+}
+
+/// `CREATE (ROLE | USER | GROUP) name [WITH] option*`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateRoleStmt {
+    pub keyword: RoleKeyword,
+    pub name: String,
+    pub name_span: Span,
+    pub options: Vec<RoleOptionItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlterRoleAction {
+    Options(Vec<RoleOptionItem>),
+    Rename(String),
+    /// `SET` / `RESET` / `IN DATABASE` / `ALL` / `ADD USER` / `DROP USER`（analyzer が 0A000）。
+    Unsupported(&'static str),
+}
+
+/// `ALTER (ROLE | USER | GROUP) rolespec ...`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterRoleStmt {
+    pub keyword: RoleKeyword,
+    pub target: RoleSpec,
+    pub target_span: Span,
+    pub action: AlterRoleAction,
+    pub span: Span,
+}
+
+/// `DROP (ROLE | USER | GROUP) [IF EXISTS] name [, ...]`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropRoleStmt {
+    pub keyword: RoleKeyword,
+    pub names: Vec<(RoleSpec, Span)>,
+    pub if_exists: bool,
+    pub span: Span,
 }

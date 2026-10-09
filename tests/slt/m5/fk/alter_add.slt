@@ -1,0 +1,104 @@
+# FOREIGN KEY: ALTER TABLE ADD / DROP CONSTRAINT
+# 接頭辞: fk_alter_add_
+
+statement ok
+DROP TABLE IF EXISTS fk_alter_add_c
+
+statement ok
+DROP TABLE IF EXISTS fk_alter_add_p
+
+statement ok
+CREATE TABLE fk_alter_add_p (id int PRIMARY KEY)
+
+statement ok
+CREATE TABLE fk_alter_add_c (id int PRIMARY KEY, pid int)
+
+statement ok
+INSERT INTO fk_alter_add_p VALUES (1), (2)
+
+# 既存の行が違反 -> 失敗し、制約は残らない
+statement ok
+INSERT INTO fk_alter_add_c VALUES (1, 1), (2, 99), (3, NULL)
+
+statement error (?s)insert or update on table "fk_alter_add_c" violates foreign key constraint "fk_alter_add_c_pid_fkey".*Key \(pid\)=\(99\) is not present in table "fk_alter_add_p"\.
+ALTER TABLE fk_alter_add_c ADD FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id)
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conrelid = 'fk_alter_add_c'::regclass AND contype = 'f'
+----
+0
+
+# 違反を直すと通る。自動命名は <表>_<列>_fkey
+statement ok
+UPDATE fk_alter_add_c SET pid = 2 WHERE id = 2
+
+statement ok
+ALTER TABLE fk_alter_add_c ADD FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_alter_add_c'::regclass AND contype = 'f'
+----
+fk_alter_add_c_pid_fkey
+
+# 追加後は検査される
+statement error (?s)violates foreign key constraint "fk_alter_add_c_pid_fkey"
+INSERT INTO fk_alter_add_c VALUES (4, 3)
+
+# 同じ制約をもう一度追加 -> 自動命名は fkey1
+statement ok
+ALTER TABLE fk_alter_add_c ADD FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_alter_add_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_alter_add_c_pid_fkey
+fk_alter_add_c_pid_fkey1
+
+# 名前付きの重複 -> 42710
+statement error (?s)constraint "fk_alter_add_dup" for relation "fk_alter_add_c" already exists
+ALTER TABLE fk_alter_add_c ADD CONSTRAINT fk_alter_add_dup FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id), ADD CONSTRAINT fk_alter_add_dup FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id)
+
+statement ok
+ALTER TABLE fk_alter_add_c ADD CONSTRAINT fk_alter_add_named FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id)
+
+statement error (42710)
+ALTER TABLE fk_alter_add_c ADD CONSTRAINT fk_alter_add_named FOREIGN KEY (pid) REFERENCES fk_alter_add_p (id)
+
+# DROP CONSTRAINT
+statement ok
+ALTER TABLE fk_alter_add_c DROP CONSTRAINT fk_alter_add_named
+
+statement ok
+ALTER TABLE fk_alter_add_c DROP CONSTRAINT fk_alter_add_c_pid_fkey1
+
+statement ok
+ALTER TABLE fk_alter_add_c DROP CONSTRAINT IF EXISTS fk_alter_add_named
+
+statement error (?s)constraint "fk_alter_add_nothing" of relation "fk_alter_add_c" does not exist
+ALTER TABLE fk_alter_add_c DROP CONSTRAINT fk_alter_add_nothing
+
+statement ok
+ALTER TABLE fk_alter_add_c DROP CONSTRAINT fk_alter_add_c_pid_fkey
+
+# 外すと検査されない
+statement ok
+INSERT INTO fk_alter_add_c VALUES (5, 77)
+
+query I
+SELECT count(*) FROM pg_constraint WHERE conrelid = 'fk_alter_add_c'::regclass AND contype = 'f'
+----
+0
+
+# 親が存在しない
+statement error (42P01)
+ALTER TABLE fk_alter_add_c ADD FOREIGN KEY (pid) REFERENCES fk_alter_add_nonexistent (id)
+
+# 子の列が存在しない
+statement error (42703)
+ALTER TABLE fk_alter_add_c ADD FOREIGN KEY (nope) REFERENCES fk_alter_add_p (id)
+
+statement ok
+DROP TABLE fk_alter_add_c
+
+statement ok
+DROP TABLE fk_alter_add_p

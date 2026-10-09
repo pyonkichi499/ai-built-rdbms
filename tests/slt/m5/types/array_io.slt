@@ -1,0 +1,1008 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# 配列の入出力（要素型ごと・引用符・NULL・下限・不正入力）
+
+# 接頭辞: array_io_（テーブルは作らない。KD-14）
+
+# 基本
+
+query T
+SELECT ('{1,2,3}'::int[])::text
+----
+{1,2,3}
+
+query T
+SELECT ('{}'::int[])::text
+----
+{}
+
+query T
+SELECT ('{ }'::int[])::text
+----
+{}
+
+query T
+SELECT (' { 1 , 2 , 3 } '::int[])::text
+----
+{1,2,3}
+
+query T
+SELECT ('{1,NULL,3}'::int[])::text
+----
+{1,NULL,3}
+
+query T
+SELECT ('{NULL}'::int[])::text
+----
+{NULL}
+
+query T
+SELECT ('{null}'::int[])::text
+----
+{NULL}
+
+query T
+SELECT ('{NuLl,1}'::int[])::text
+----
+{NULL,1}
+
+query T
+SELECT ('{NULL,NULL}'::int[])::text
+----
+{NULL,NULL}
+
+query T
+SELECT ('{"1","2"}'::int[])::text
+----
+{1,2}
+
+query T
+SELECT ('{ "1" , 2 }'::int[])::text
+----
+{1,2}
+
+query T
+SELECT ('{-1,+2}'::int[])::text
+----
+{-1,2}
+
+query T
+SELECT ('{1}'::int[])::text
+----
+{1}
+
+query T
+SELECT ('{0}'::int[])::text
+----
+{0}
+
+# 下限つき
+
+query T
+SELECT ('[0:2]={1,2,3}'::int[])::text
+----
+[0:2]={1,2,3}
+
+query T
+SELECT ('[1:3]={1,2,3}'::int[])::text
+----
+{1,2,3}
+
+query T
+SELECT ('[-1:1]={1,2,3}'::int[])::text
+----
+[-1:1]={1,2,3}
+
+query T
+SELECT ('[5:5]={9}'::int[])::text
+----
+[5:5]={9}
+
+statement error (2202E)
+SELECT ('[0:-1]={}'::int[])::text
+
+statement error (2202E)
+SELECT ('[1:0]={}'::int[])::text
+
+query T
+SELECT (array_lower('[0:2]={1,2,3}'::int[], 1))::text
+----
+0
+
+query T
+SELECT (array_upper('[0:2]={1,2,3}'::int[], 1))::text
+----
+2
+
+query T
+SELECT (array_length('[0:2]={1,2,3}'::int[], 1))::text
+----
+3
+
+query T
+SELECT (('[0:2]={1,2,3}'::int[])[0])::text
+----
+1
+
+query T
+SELECT (('[0:2]={1,2,3}'::int[])[2])::text
+----
+3
+
+query T
+SELECT (('[0:2]={1,2,3}'::int[])[3])::text
+----
+NULL
+
+statement error (22P02)
+SELECT ('[1:2]={1,2,3}'::int[])::text
+
+statement error (22P02)
+SELECT ('[1:4]={1,2,3}'::int[])::text
+
+statement error (22P02)
+SELECT ('[1:3={1,2,3}'::int[])::text
+
+statement error (22P02)
+SELECT ('[a:3]={1,2,3}'::int[])::text
+
+statement error (22P02)
+SELECT ('[1:3]'::int[])::text
+
+query T
+SELECT ('[1:3] ={1,2,3}'::int[])::text
+----
+{1,2,3}
+
+query T
+SELECT ('[1:3]= {1,2,3}'::int[])::text
+----
+{1,2,3}
+
+# 整数型
+
+query T
+SELECT ('{1,2}'::int2[])::text
+----
+{1,2}
+
+query T
+SELECT ('{32767,-32768}'::int2[])::text
+----
+{32767,-32768}
+
+statement error (22003)
+SELECT ('{32768}'::int2[])::text
+
+query T
+SELECT ('{1,2}'::int8[])::text
+----
+{1,2}
+
+query T
+SELECT ('{9223372036854775807,-9223372036854775808}'::int8[])::text
+----
+{9223372036854775807,-9223372036854775808}
+
+statement error (22003)
+SELECT ('{9223372036854775808}'::int8[])::text
+
+query T
+SELECT ('{2147483647,-2147483648}'::int4[])::text
+----
+{2147483647,-2147483648}
+
+statement error (22003)
+SELECT ('{2147483648}'::int4[])::text
+
+statement error (22P02)
+SELECT ('{1.5}'::int[])::text
+
+statement error (22P02)
+SELECT ('{abc}'::int[])::text
+
+statement error (22P02)
+SELECT ('{1,abc}'::int[])::text
+
+statement error (22P02)
+SELECT ('{1 2}'::int[])::text
+
+statement error (22P02)
+SELECT ('{""}'::int[])::text
+
+# float
+
+query T
+SELECT ('{1.5,2.5e3,-0.1}'::float8[])::text
+----
+{1.5,2500,-0.1}
+
+query T
+SELECT ('{NaN,Infinity,-Infinity}'::float8[])::text
+----
+{NaN,Infinity,-Infinity}
+
+query T
+SELECT ('{1.5,2.5}'::float4[])::text
+----
+{1.5,2.5}
+
+statement error (22003)
+SELECT ('{1e400}'::float8[])::text
+
+query T
+SELECT ('{0.1,1e-5,1e20}'::float8[])::text
+----
+{0.1,1e-05,1e+20}
+
+# numeric
+
+query T
+SELECT ('{1.5,2.50,-3}'::numeric[])::text
+----
+{1.5,2.50,-3}
+
+query T
+SELECT ('{NaN,Infinity}'::numeric[])::text
+----
+{NaN,Infinity}
+
+query T
+SELECT ('{1.234}'::numeric(3,1)[])::text
+----
+{1.2}
+
+statement error (22003)
+SELECT ('{99.99}'::numeric(3,1)[])::text
+
+query T
+SELECT ('{0.00}'::numeric[])::text
+----
+{0.00}
+
+# text / varchar / bpchar
+
+query T
+SELECT ('{a,b,c}'::text[])::text
+----
+{a,b,c}
+
+query T
+SELECT ('{"a b","c,d"}'::text[])::text
+----
+{"a b","c,d"}
+
+query T
+SELECT ('{"a","b"}'::text[])::text
+----
+{a,b}
+
+query T
+SELECT ('{ a , b }'::text[])::text
+----
+{a,b}
+
+query T
+SELECT ('{a b}'::text[])::text
+----
+{"a b"}
+
+query T
+SELECT ('{a   b}'::text[])::text
+----
+{"a   b"}
+
+query T
+SELECT ('{"a\"b"}'::text[])::text
+----
+{"a\"b"}
+
+query T
+SELECT ('{"a\\b"}'::text[])::text
+----
+{"a\\b"}
+
+query T
+SELECT ('{a\"b}'::text[])::text
+----
+{"a\"b"}
+
+query T
+SELECT ('{a\\b}'::text[])::text
+----
+{"a\\b"}
+
+query T
+SELECT ('{"{"}'::text[])::text
+----
+{"{"}
+
+query T
+SELECT ('{"}"}'::text[])::text
+----
+{"}"}
+
+query T
+SELECT ('{"a,b"}'::text[])::text
+----
+{"a,b"}
+
+query T
+SELECT ('{a\,b}'::text[])::text
+----
+{"a,b"}
+
+query T
+SELECT ('{""}'::text[])::text
+----
+{""}
+
+query T
+SELECT ('{"","a"}'::text[])::text
+----
+{"",a}
+
+query T
+SELECT ('{"NULL"}'::text[])::text
+----
+{"NULL"}
+
+query T
+SELECT ('{"null"}'::text[])::text
+----
+{"null"}
+
+query T
+SELECT ('{NULL}'::text[])::text
+----
+{NULL}
+
+query T
+SELECT ('{"N"}'::text[])::text
+----
+{N}
+
+query T
+SELECT ('{Nul}'::text[])::text
+----
+{Nul}
+
+query T
+SELECT ('{NULLx}'::text[])::text
+----
+{NULLx}
+
+query T
+SELECT ('{日本語,é}'::text[])::text
+----
+{日本語,é}
+
+query T
+SELECT ('{"日 本"}'::text[])::text
+----
+{"日 本"}
+
+query T
+SELECT ('{ "a" }'::text[])::text
+----
+{a}
+
+statement error (22P02)
+SELECT ('{"a" "b"}'::text[])::text
+
+statement error (22P02)
+SELECT ('{a"b}'::text[])::text
+
+statement error (22P02)
+SELECT ('{"a}'::text[])::text
+
+statement error (22P02)
+SELECT ('{abc'::text[])::text
+
+statement error (22P02)
+SELECT ('abc}'::text[])::text
+
+statement error (22P02)
+SELECT ('{a,}'::text[])::text
+
+statement error (22P02)
+SELECT ('{,a}'::text[])::text
+
+statement error (22P02)
+SELECT ('{a,,b}'::text[])::text
+
+statement error (22P02)
+SELECT ('{a}}'::text[])::text
+
+statement error (22P02)
+SELECT ('{a} x'::text[])::text
+
+statement error (22P02)
+SELECT ('{a}x'::text[])::text
+
+query T
+SELECT ('{a,b}'::varchar[])::text
+----
+{a,b}
+
+query T
+SELECT ('{abcdef}'::varchar(3)[])::text
+----
+{abc}
+
+query T
+SELECT ('{ab}'::varchar(3)[])::text
+----
+{ab}
+
+query T
+SELECT ('{ab ,c}'::char(4)[])::text
+----
+{"ab  ","c   "}
+
+query T
+SELECT (('{ab ,c}'::char(4)[])::text)::text
+----
+{"ab  ","c   "}
+
+query T
+SELECT (('{"ab ",c}'::char(4)[])::text)::text
+----
+{"ab  ","c   "}
+
+query T
+SELECT ('{ab}'::char(4)[])::text
+----
+{"ab  "}
+
+query T
+SELECT ('{abcdef}'::char(3)[])::text
+----
+{abc}
+
+query T
+SELECT (array_to_string('{ab,c}'::char(4)[], '|'))::text
+----
+ab  |c   
+
+query T
+SELECT (array_to_string('{ab,c}'::bpchar[], '|'))::text
+----
+ab|c
+
+query T
+SELECT ('{ab,c}'::bpchar[])::text
+----
+{ab,c}
+
+query T
+SELECT ('{" a","b "}'::text[])::text
+----
+{" a","b "}
+
+query T
+SELECT (array_to_string('{" a","b "}'::text[], '|'))::text
+----
+ a|b 
+
+# bool
+
+query T
+SELECT ('{t,f,true,false,yes,no,on,off,1,0}'::bool[])::text
+----
+{t,f,t,f,t,f,t,f,t,f}
+
+query T
+SELECT ('{NULL,t}'::bool[])::text
+----
+{NULL,t}
+
+statement error (22P02)
+SELECT ('{maybe}'::bool[])::text
+
+# date / timestamp / timestamptz / time / interval
+
+query T
+SELECT ('{2024-01-02,2024-12-31}'::date[])::text
+----
+{2024-01-02,2024-12-31}
+
+query T
+SELECT ('{"2024-01-02 03:04:05"}'::timestamp[])::text
+----
+{"2024-01-02 03:04:05"}
+
+query T
+SELECT ('{"2024-01-02 03:04:05+00"}'::timestamptz[])::text
+----
+{"2024-01-02 03:04:05+00"}
+
+query T
+SELECT ('{"2024-01-02 03:04:05+09"}'::timestamptz[])::text
+----
+{"2024-01-01 18:04:05+00"}
+
+query T
+SELECT ('{"1 day","2 hours"}'::interval[])::text
+----
+{"1 day",02:00:00}
+
+query T
+SELECT ('{"03:04:05"}'::time[])::text
+----
+{03:04:05}
+
+statement error (22008)
+SELECT ('{2024-13-01}'::date[])::text
+
+query T
+SELECT ('{infinity,-infinity}'::date[])::text
+----
+{infinity,-infinity}
+
+# uuid / bytea / name / oid / "char"
+
+query T
+SELECT ('{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'::uuid[])::text
+----
+{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}
+
+query T
+SELECT ('{"\\x01ff","\\x"}'::bytea[])::text
+----
+{"\\x01ff","\\x"}
+
+query T
+SELECT ('{"\\\\x01ff"}'::bytea[])::text
+----
+{"\\x5c7830316666"}
+
+query T
+SELECT ('{abc,def}'::name[])::text
+----
+{abc,def}
+
+query T
+SELECT ('{1,2,4294967295}'::oid[])::text
+----
+{1,2,4294967295}
+
+statement error (22003)
+SELECT ('{4294967296}'::oid[])::text
+
+query T
+SELECT ('{-1}'::oid[])::text
+----
+{4294967295}
+
+query T
+SELECT ('{a,b}'::"char"[])::text
+----
+{a,b}
+
+query T
+SELECT ('{ab}'::"char"[])::text
+----
+{a}
+
+query T
+SELECT ('{""}'::"char"[])::text
+----
+{""}
+
+query T
+SELECT ('{" "}'::"char"[])::text
+----
+{" "}
+
+query T
+SELECT ('{é}'::"char"[])::text
+----
+{"\\303"}
+
+# 出力の引用符
+
+query T
+SELECT (ARRAY['a b', 'c'])::text
+----
+{"a b",c}
+
+query T
+SELECT (ARRAY['', 'a'])::text
+----
+{"",a}
+
+query T
+SELECT (ARRAY['NULL', 'null', 'Null'])::text
+----
+{"NULL","null","Null"}
+
+query T
+SELECT (ARRAY['a,b', 'c{d', 'e}f', 'g"h', 'i\j'])::text
+----
+{"a,b","c{d","e}f","g\"h","i\\j"}
+
+query T
+SELECT (ARRAY[' a', 'a ', ' '])::text
+----
+{" a","a "," "}
+
+query T
+SELECT (ARRAY['a'::text, NULL])::text
+----
+{a,NULL}
+
+query T
+SELECT (ARRAY[NULL::text])::text
+----
+{NULL}
+
+query T
+SELECT (replace(replace(ARRAY[E'a\tb', E'a\nb']::text, E'\n', '<LF>'), E'\t', '<TAB>'))::text
+----
+{"a<TAB>b","a<LF>b"}
+
+query T
+SELECT (replace(ARRAY[E'a\nb']::text::text, E'\n', '<LF>'))::text
+----
+{"a<LF>b"}
+
+query T
+SELECT (ARRAY['{}', '{a}'])::text
+----
+{"{}","{a}"}
+
+query T
+SELECT (ARRAY['"'])::text
+----
+{"\""}
+
+query T
+SELECT (ARRAY['\'])::text
+----
+{"\\"}
+
+query T
+SELECT (ARRAY['é', '日本語'])::text
+----
+{é,日本語}
+
+query T
+SELECT (ARRAY['a'::varchar, 'b c'::varchar])::text
+----
+{a,"b c"}
+
+query T
+SELECT (ARRAY['a b'::bpchar])::text
+----
+{"a b"}
+
+query T
+SELECT (ARRAY[1.5, 2])::text
+----
+{1.5,2}
+
+query T
+SELECT (ARRAY[1, NULL, 3])::text
+----
+{1,NULL,3}
+
+query T
+SELECT (ARRAY[true, NULL, false])::text
+----
+{t,NULL,f}
+
+query T
+SELECT (ARRAY['2024-01-02'::date, NULL])::text
+----
+{2024-01-02,NULL}
+
+query T
+SELECT (ARRAY['2024-01-02 03:04:05'::timestamp])::text
+----
+{"2024-01-02 03:04:05"}
+
+query T
+SELECT (ARRAY['1 day'::interval])::text
+----
+{"1 day"}
+
+query T
+SELECT (ARRAY['a'::name, 'b c'::name])::text
+----
+{a,"b c"}
+
+query T
+SELECT (ARRAY[1::oid])::text
+----
+{1}
+
+query T
+SELECT (ARRAY[1.0::float8, 'NaN'::float8, 'Infinity'::float8])::text
+----
+{1,NaN,Infinity}
+
+# 往復
+
+query T
+SELECT (('{"a b","c,d","","NULL",x}'::text[])::text)::text
+----
+{"a b","c,d","","NULL",x}
+
+query T
+SELECT ((('{"a b","c,d","","NULL",x}'::text[])::text)::text[] = '{"a b","c,d","","NULL",x}'::text[])::text
+----
+true
+
+query T
+SELECT ((ARRAY['a\"b', 'c\\d', NULL, 'NULL', '', ' ', '{', '}', ',']::text)::text[] = ARRAY['a\"b', 'c\\d', NULL, 'NULL', '', ' ', '{', '}', ','])::text
+----
+true
+
+# 型
+
+query T
+SELECT (pg_typeof('{1,2}'::int[]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof('{1,2}'::int2[]))::text
+----
+smallint[]
+
+query T
+SELECT (pg_typeof('{1,2}'::int8[]))::text
+----
+bigint[]
+
+query T
+SELECT (pg_typeof('{a}'::text[]))::text
+----
+text[]
+
+query T
+SELECT (pg_typeof('{a}'::varchar[]))::text
+----
+character varying[]
+
+query T
+SELECT (pg_typeof('{a}'::varchar(3)[]))::text
+----
+character varying[]
+
+query T
+SELECT (pg_typeof('{a}'::char(3)[]))::text
+----
+character[]
+
+query T
+SELECT (pg_typeof('{1}'::numeric[]))::text
+----
+numeric[]
+
+query T
+SELECT (pg_typeof('{1}'::numeric(5,2)[]))::text
+----
+numeric[]
+
+query T
+SELECT (pg_typeof('{1}'::float8[]))::text
+----
+double precision[]
+
+query T
+SELECT (pg_typeof('{1}'::float4[]))::text
+----
+real[]
+
+query T
+SELECT (pg_typeof('{1}'::bool[]))::text
+----
+boolean[]
+
+query T
+SELECT (pg_typeof('{a}'::name[]))::text
+----
+name[]
+
+query T
+SELECT (pg_typeof('{1}'::oid[]))::text
+----
+oid[]
+
+query T
+SELECT (pg_typeof('{a}'::"char"[]))::text
+----
+"char"[]
+
+query T
+SELECT (pg_typeof('{a}'::bytea[]))::text
+----
+bytea[]
+
+statement error (22P02)
+SELECT (pg_typeof('{a}'::uuid[]))::text
+
+query T
+SELECT (pg_typeof('{2024-01-01}'::date[]))::text
+----
+date[]
+
+query T
+SELECT (pg_typeof('{1}'::integer[]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof('{1}'::bigint[]))::text
+----
+bigint[]
+
+query T
+SELECT (pg_typeof('{1}'::smallint[]))::text
+----
+smallint[]
+
+query T
+SELECT (pg_typeof('{1}'::double precision[]))::text
+----
+double precision[]
+
+query T
+SELECT (pg_typeof('{1}'::real[]))::text
+----
+real[]
+
+query T
+SELECT (pg_typeof('{1}'::character varying[]))::text
+----
+character varying[]
+
+query T
+SELECT (pg_typeof('{1}'::_int4))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof('{1}'::int ARRAY))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof('{1}'::int ARRAY[3]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof('{1}'::int[3]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof('{1}'::int[][]))::text
+----
+integer[]
+
+query T
+SELECT (pg_typeof(CAST('{1}' AS int[])))::text
+----
+integer[]
+
+query T
+SELECT ('{1,2}'::_int4)::text
+----
+{1,2}
+
+query T
+SELECT ('{1,2}'::int4[]::text)::text
+----
+{1,2}
+
+query T
+SELECT ('{1,2}'::int[]::int8[])::text
+----
+{1,2}
+
+query T
+SELECT ('{1,2}'::int[]::text[])::text
+----
+{1,2}
+
+query T
+SELECT ('{1,2}'::int[]::numeric[])::text
+----
+{1,2}
+
+query T
+SELECT ('{1,2}'::int[]::float8[])::text
+----
+{1,2}
+
+query T
+SELECT ('{1.5,2}'::numeric[]::int[])::text
+----
+{2,2}
+
+statement error (22P02)
+SELECT ('{a,b}'::text[]::int[])::text
+
+statement error (22P02)
+SELECT ('{1,b}'::text[]::int[])::text
+
+query T
+SELECT ('{1,2}'::text[]::int[])::text
+----
+{1,2}
+
+query T
+SELECT ('{1,2}'::int[]::bool[])::text
+----
+{t,t}
+
+statement error (42846)
+SELECT ('{1,2}'::int[]::bytea[])::text
+
+query T
+SELECT ('{1,NULL}'::int[]::text[])::text
+----
+{1,NULL}
+
+query T
+SELECT ('{}'::text[]::int[])::text
+----
+{}
+
+query T
+SELECT ('{1,2}'::int[]::varchar(1)[])::text
+----
+{1,2}
+
+query T
+SELECT ('{12,3}'::int[]::varchar(1)[])::text
+----
+{1,3}
+
+query T
+SELECT ('{12,3}'::int[]::char(1)[])::text
+----
+{1,3}
+
+statement error (42846)
+SELECT ('{1}'::int[]::int)::text
+
+query T
+SELECT ('{1}'::int[]::text)::text
+----
+{1}
+
+query T
+SELECT ('{1}'::text::int[])::text
+----
+{1}
+
+statement error (22P02)
+SELECT ('1'::int[])::text
+
+statement error (22P02)
+SELECT (''::int[])::text
+
+statement error (22P02)
+SELECT ('{1}{2}'::int[])::text
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

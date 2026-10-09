@@ -58,7 +58,10 @@ impl DeleteExec {
         }
         let tid = tid_at(input, self.n_user_cols)?;
         let w = ctx.write_ctx()?;
-        match ctx.storage.delete(&self.rel, &w, ctx.snapshot, tid)? {
+        match ctx
+            .storage
+            .delete(&self.rel, &w, ctx.snapshot, tid, None, None)?
+        {
             TmResult::Ok => self.count += 1,
             TmResult::SelfModified { cmax } => {
                 if cmax != w.cid {

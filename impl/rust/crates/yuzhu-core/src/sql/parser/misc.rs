@@ -354,7 +354,7 @@ impl Parser<'_> {
             return Ok(SetValue::Default);
         }
         if self.is_kw("interval") {
-            return Err(self.not_supported("SET TIME ZONE INTERVAL"));
+            return self.parse_zone_interval();
         }
         if let Some(n) = self.parse_numeric_only() {
             return Ok(SetValue::Values(vec![n]));

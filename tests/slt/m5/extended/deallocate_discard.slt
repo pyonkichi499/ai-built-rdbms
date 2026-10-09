@@ -1,0 +1,157 @@
+# DEALLOCATE / DISCARD（m5 04 §7.1）。名前は extended_deallocate_discard_ を接頭辞にする
+
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DISCARD ALL
+
+statement ok
+PREPARE extended_deallocate_discard_q1 AS SELECT 1
+
+statement ok
+PREPARE extended_deallocate_discard_q2 AS SELECT 2
+
+query I
+EXECUTE extended_deallocate_discard_q1
+----
+1
+
+statement ok
+DEALLOCATE extended_deallocate_discard_q1
+
+statement error (26000)
+EXECUTE extended_deallocate_discard_q1
+
+statement error (26000)
+DEALLOCATE extended_deallocate_discard_q1
+
+# PREPARE キーワード付き
+statement ok
+DEALLOCATE PREPARE extended_deallocate_discard_q2
+
+statement error (26000)
+EXECUTE extended_deallocate_discard_q2
+
+# 解放した名前は再利用できる
+statement ok
+PREPARE extended_deallocate_discard_q1 AS SELECT 11
+
+query I
+EXECUTE extended_deallocate_discard_q1
+----
+11
+
+# DEALLOCATE ALL
+statement ok
+PREPARE extended_deallocate_discard_q2 AS SELECT 22
+
+statement ok
+DEALLOCATE ALL
+
+statement error (26000)
+EXECUTE extended_deallocate_discard_q1
+
+statement error (26000)
+EXECUTE extended_deallocate_discard_q2
+
+# 何もなくても成功する
+statement ok
+DEALLOCATE ALL
+
+statement ok
+DEALLOCATE PREPARE ALL
+
+# DISCARD ALL は準備済み文を捨てる
+statement ok
+PREPARE extended_deallocate_discard_q3 AS SELECT 3
+
+query I
+EXECUTE extended_deallocate_discard_q3
+----
+3
+
+statement ok
+DISCARD ALL
+
+statement error (26000)
+EXECUTE extended_deallocate_discard_q3
+
+# DISCARD ALL は SET を戻す
+statement ok
+SET application_name = 'extended_dd'
+
+query T
+SHOW application_name
+----
+extended_dd
+
+statement ok
+DISCARD ALL
+
+query T
+SHOW application_name
+----
+(empty)
+
+# DISCARD PLANS / SEQUENCES / TEMP は準備済み文を捨てない
+statement ok
+PREPARE extended_deallocate_discard_q4 AS SELECT 4
+
+statement ok
+DISCARD PLANS
+
+query I
+EXECUTE extended_deallocate_discard_q4
+----
+4
+
+statement ok
+DISCARD SEQUENCES
+
+statement ok
+DISCARD TEMP
+
+statement ok
+DISCARD TEMPORARY
+
+query I
+EXECUTE extended_deallocate_discard_q4
+----
+4
+
+# ブロックの中の DISCARD ALL は 25001 で、ブロックは失敗状態になる
+statement ok
+BEGIN
+
+statement error (25001)
+DISCARD ALL
+
+statement error (25P02)
+SELECT 1
+
+statement ok
+ROLLBACK
+
+# ブロックの中の DISCARD PLANS は成功する
+statement ok
+BEGIN
+
+statement ok
+DISCARD PLANS
+
+statement ok
+COMMIT
+
+# 失敗したブロックのロールバックでも準備済み文は残る
+query I
+EXECUTE extended_deallocate_discard_q4
+----
+4
+
+# DISCARD の構文エラー
+statement error (42601)
+DISCARD NOTHING
+
+statement ok
+DEALLOCATE ALL

@@ -9,12 +9,19 @@
 //! Some syntax that has no room in the AST (row constructors, array
 //! subscripts, window functions, ...) is rejected here with `0A000`.
 
+mod array;
 mod copy;
+mod database;
+mod datetime;
 mod ddl;
 mod ddl_index;
 mod dml;
 mod expr;
+mod fk;
+mod lock;
 mod misc;
+mod prepare;
+mod role;
 mod select;
 mod seq;
 #[cfg(test)]
@@ -23,6 +30,7 @@ mod tests;
 mod tests_query;
 #[cfg(test)]
 mod tests_stmt;
+mod vacuum;
 
 use super::ast::{Checkpoint, Expr, Ident, ObjectName, Statement};
 use super::lexer::tokenize;
@@ -411,6 +419,7 @@ impl<'a> Parser<'a> {
                 "alter" => self.parse_alter(),
                 "truncate" => self.parse_truncate(),
                 "vacuum" | "analyze" | "analyse" => self.parse_vacuum(),
+                "lock" => self.parse_lock().map(Statement::LockTable),
                 "copy" => self.parse_copy(),
                 "begin" | "start" | "commit" | "end" | "rollback" | "abort" | "savepoint"
                 | "release" => self.parse_transaction().map(Statement::Transaction),
@@ -423,9 +432,9 @@ impl<'a> Parser<'a> {
                     Ok(Statement::Checkpoint(Checkpoint { span }))
                 }
                 "prepare" | "grant" | "revoke" | "execute" | "deallocate" | "discard"
-                | "listen" | "notify" | "unlisten" | "lock" | "declare" | "fetch" | "move"
-                | "close" | "comment" | "merge" | "call" | "do" | "reindex" | "cluster"
-                | "security" | "refresh" | "import" | "load" | "reassign" => {
+                | "listen" | "notify" | "unlisten" | "declare" | "fetch" | "move" | "close"
+                | "comment" | "merge" | "call" | "do" | "reindex" | "cluster" | "security"
+                | "refresh" | "import" | "load" | "reassign" => {
                     Err(self.not_supported(&value.to_ascii_uppercase()))
                 }
                 _ => Err(self.unexpected()),

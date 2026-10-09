@@ -6,8 +6,10 @@
 
 use yuzhu_datetime::{Date, DateTimeEnv, DateTimeError, Timestamp, TimestampTz};
 
-use super::{Datum, TypeEnv, ops};
-use crate::error::{Error, Result, SqlState};
+use super::binary::RecvBuf;
+use super::{Datum, Oid, SqlType, TypeEnv, oid, ops};
+use crate::error::{Error, Result, Severity, SqlState, sqlstate};
+use crate::session::Notice;
 
 /// `DateTimeError` → `Error`（SQLSTATE・DETAIL・HINT をそのまま写す）。
 pub(crate) fn dt_err(e: DateTimeError) -> Error {
@@ -99,8 +101,110 @@ pub fn output_any(d: &Datum, env: &TypeEnv<'_>) -> Option<Result<String>> {
         Datum::Date(_) => date_out(d, env),
         Datum::Timestamp(_) => timestamp_out(d, env),
         Datum::TimestampTz(_) => timestamptz_out(d, env),
+        Datum::Time(t) => Ok(yuzhu_datetime::Time(*t).format()),
+        Datum::Interval(_) => super::interval::interval_out(d, env),
         _ => return None,
     })
+}
+
+/// 日時 5 型（`date`・`time`・`timestamp`・`timestamptz`・`interval`）の `*_in`。
+/// `ty.typmod` は入力の解釈中に適用される。日時の型でなければ `Error::internal`。
+pub fn input_text(s: &str, ty: SqlType, env: &TypeEnv<'_>) -> Result<Datum> {
+    match ty.oid {
+        oid::DATE => date_in(s, env),
+        oid::TIME => yuzhu_datetime::Time::parse(s, ty.typmod, dt_env(env)?)
+            .map(|t| Datum::Time(t.0))
+            .map_err(dt_err),
+        oid::TIMESTAMP => timestamp_in(s, ty.typmod, env),
+        oid::TIMESTAMPTZ => timestamptz_in(s, ty.typmod, env),
+        oid::INTERVAL => super::interval::interval_in(s, ty.typmod, env),
+        other => Err(Error::internal(format!(
+            "type with OID {other} is not a date/time type"
+        ))),
+    }
+}
+
+/// 日時 5 型の `*_out`（`DateStyle`・`TimeZone`・`IntervalStyle` に従う）。
+pub fn output_text(d: &Datum, _ty: SqlType, env: &TypeEnv<'_>) -> Result<String> {
+    output_any(d, env).unwrap_or_else(|| Err(bad_arg("date/time output")))
+}
+
+// ---------------------------------------------------------------------------
+// 型修飾子（`pg_type.typmodin` / `typmodout` の実体。TD-D15: すべての入口が `apply_typmod` を通る）
+// ---------------------------------------------------------------------------
+
+/// 型修飾子の適用。`date` は typmod なし（そのまま）。`timestamp`・`timestamptz`・`time`・`interval`
+/// は丸める（`interval` はフィールドの切り捨ても行う）。無限と NULL、`typmod < 0` はそのまま。
+pub fn apply_typmod(d: Datum, ty: SqlType) -> Result<Datum> {
+    if ty.typmod < 0 {
+        return Ok(d);
+    }
+    match (ty.oid, d) {
+        (oid::TIMESTAMP, Datum::Timestamp(t)) => t
+            .with_typmod(ty.typmod)
+            .map(Datum::Timestamp)
+            .map_err(dt_err),
+        (oid::TIMESTAMPTZ, Datum::TimestampTz(t)) => t
+            .with_typmod(ty.typmod)
+            .map(Datum::TimestampTz)
+            .map_err(dt_err),
+        (oid::TIME, Datum::Time(t)) => yuzhu_datetime::Time(t)
+            .with_typmod(ty.typmod)
+            .map(|t| Datum::Time(t.0))
+            .map_err(dt_err),
+        (oid::INTERVAL, Datum::Interval(v)) => v
+            .with_typmod(ty.typmod)
+            .map(Datum::Interval)
+            .map_err(dt_err),
+        (_, other) => Ok(other),
+    }
+}
+
+/// 型名の修飾子から typmod を作る（`time(p)`・`timestamp(p)`・`timestamptz(p)`・`interval ...`）。
+/// `p > 6` の WARNING（22023）は `notices` に積んで 6 にする。
+pub fn typmod_in(type_oid: Oid, mods: &[i64], notices: &mut Vec<Notice>) -> Result<i32> {
+    let (typmod, warning) = match type_oid {
+        oid::TIME | oid::TIMESTAMP | oid::TIMESTAMPTZ => {
+            let name = match type_oid {
+                oid::TIME => "time",
+                oid::TIMESTAMP => "timestamp",
+                _ => "timestamptz",
+            };
+            let [p] = *mods else {
+                return Err(Error::new(
+                    sqlstate::INVALID_PARAMETER_VALUE,
+                    format!("invalid {} type modifier", name.to_ascii_uppercase()),
+                ));
+            };
+            yuzhu_datetime::precision_typmod_in(name, p).map_err(dt_err)?
+        }
+        oid::INTERVAL => yuzhu_datetime::interval_typmod_in(mods).map_err(dt_err)?,
+        other => {
+            return Err(Error::internal(format!(
+                "type with OID {other} is not a date/time type that takes a type modifier"
+            )));
+        }
+    };
+    if let Some(w) = warning {
+        notices.push(Notice::new(
+            Severity::Warning,
+            SqlState(w.sqlstate),
+            w.message,
+        ));
+    }
+    Ok(typmod)
+}
+
+/// `typmodout`: `format_type` が型名に続ける文字列（`"(3)"`、`" year to month"`、`""`）。
+/// 日時の型でなければ空文字列。
+pub fn typmod_out(type_oid: Oid, typmod: i32) -> String {
+    match type_oid {
+        oid::TIME | oid::TIMESTAMP | oid::TIMESTAMPTZ => {
+            yuzhu_datetime::precision_typmod_out(typmod)
+        }
+        oid::INTERVAL => yuzhu_datetime::interval_typmod_out(typmod),
+        _ => String::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +244,221 @@ pub fn encode_timestamptz(t: TimestampTz) -> [u8; 8] {
 /// `timestamptz` を復元する。長さが 8 でなければ `XX001`。
 pub fn decode_timestamptz(b: &[u8]) -> Result<TimestampTz> {
     Ok(TimestampTz(i64::from_le_bytes(fixed(b, "timestamptz")?)))
+}
+
+// ---------------------------------------------------------------------------
+// バイナリ形式（`m5/06` §6.7）。ネットワークバイトオーダー、integer_datetimes = on
+// ---------------------------------------------------------------------------
+
+/// `date_in` が受け付ける日数の範囲（4714-11-24 BC 〜 5874897-12-31。2000-01-01 からの日数）。
+const DATE_MIN_DAYS: i32 = -2_451_545;
+const DATE_MAX_DAYS: i32 = 2_147_483_493 - 2_451_545;
+/// `IS_VALID_TIMESTAMP`（4714-11-24 BC 〜 294276-12-31）。`yuzhu-datetime` の `calendar.rs` と同じ値。
+const TS_MIN_MICROS: i64 = -211_813_488_000_000_000;
+const TS_END_MICROS: i64 = 9_223_371_331_200_000_000;
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+fn out_of_range(what: &str) -> Error {
+    Error::new(
+        sqlstate::DATETIME_FIELD_OVERFLOW,
+        format!("{what} out of range"),
+    )
+}
+
+/// 日時 5 型の `*_send`。型と Datum が合わなければ内部エラー。
+pub fn binary_send(d: &Datum, ty: SqlType) -> Result<Vec<u8>> {
+    Ok(match (ty.oid, d) {
+        (oid::DATE, Datum::Date(v)) => v.0.to_be_bytes().to_vec(),
+        (oid::TIME, Datum::Time(v)) => v.to_be_bytes().to_vec(),
+        (oid::TIMESTAMP, Datum::Timestamp(v)) => v.0.to_be_bytes().to_vec(),
+        (oid::TIMESTAMPTZ, Datum::TimestampTz(v)) => v.0.to_be_bytes().to_vec(),
+        (oid::INTERVAL, Datum::Interval(iv)) => {
+            let mut out = Vec::with_capacity(16);
+            out.extend_from_slice(&iv.micros.to_be_bytes());
+            out.extend_from_slice(&iv.days.to_be_bytes());
+            out.extend_from_slice(&iv.months.to_be_bytes());
+            out
+        }
+        _ => {
+            return Err(Error::internal(format!(
+                "binary_send: datum {d:?} does not match type oid {}",
+                ty.oid
+            )));
+        }
+    })
+}
+
+/// 日時 5 型の `*_recv`（範囲検査つき。typmod は適用しない）。
+pub fn binary_recv(buf: &mut RecvBuf<'_>, ty: SqlType) -> Result<Datum> {
+    Ok(match ty.oid {
+        oid::DATE => {
+            let v = buf.i32()?;
+            if v != i32::MAX && v != i32::MIN && !(DATE_MIN_DAYS..=DATE_MAX_DAYS).contains(&v) {
+                return Err(out_of_range("date"));
+            }
+            Datum::Date(Date(v))
+        }
+        oid::TIME => {
+            let v = buf.i64()?;
+            if !(0..=MICROS_PER_DAY).contains(&v) {
+                return Err(out_of_range("time"));
+            }
+            Datum::Time(v)
+        }
+        oid::TIMESTAMP | oid::TIMESTAMPTZ => {
+            let v = buf.i64()?;
+            if v != i64::MAX && v != i64::MIN && !(TS_MIN_MICROS..TS_END_MICROS).contains(&v) {
+                return Err(out_of_range("timestamp"));
+            }
+            if ty.oid == oid::TIMESTAMP {
+                Datum::Timestamp(Timestamp(v))
+            } else {
+                Datum::TimestampTz(TimestampTz(v))
+            }
+        }
+        oid::INTERVAL => {
+            let micros = buf.i64()?;
+            let days = buf.i32()?;
+            let months = buf.i32()?;
+            Datum::Interval(yuzhu_datetime::Interval {
+                months,
+                days,
+                micros,
+            })
+        }
+        _ => {
+            return Err(Error::internal(format!(
+                "binary_recv: not a date/time type: oid {}",
+                ty.oid
+            )));
+        }
+    })
+}
+
+#[cfg(test)]
+mod binary_tests {
+    use super::*;
+    use yuzhu_datetime::Interval;
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    fn send(d: Datum, o: u32) -> String {
+        hex(&binary_send(&d, SqlType::of(o)).unwrap())
+    }
+    fn recv(h: &str, o: u32) -> Result<Datum> {
+        let b = unhex(h);
+        binary_recv(&mut RecvBuf::new(&b), SqlType::of(o))
+    }
+
+    #[test]
+    fn send_fixed_values() {
+        assert_eq!(send(Datum::Date(Date(8767)), oid::DATE), "0000223f");
+        assert_eq!(send(Datum::Date(Date(-10957)), oid::DATE), "ffffd533");
+        assert_eq!(send(Datum::Date(Date(-2451507)), oid::DATE), "ffda97cd");
+        assert_eq!(send(Datum::Date(Date(i32::MAX)), oid::DATE), "7fffffff");
+        assert_eq!(send(Datum::Date(Date(i32::MIN)), oid::DATE), "80000000");
+        assert_eq!(
+            send(Datum::Time(14_706_789_000), oid::TIME),
+            "000000036c97ca88"
+        );
+        assert_eq!(
+            send(Datum::Time(86_400_000_000), oid::TIME),
+            "000000141dd76000"
+        );
+        assert_eq!(
+            send(Datum::Timestamp(Timestamp(0)), oid::TIMESTAMP),
+            "0000000000000000"
+        );
+        assert_eq!(
+            send(
+                Datum::Timestamp(Timestamp(-946_684_800_000_000)),
+                oid::TIMESTAMP
+            ),
+            "fffca2fec4c82000"
+        );
+        assert_eq!(
+            send(
+                Datum::TimestampTz(TimestampTz(0x0002b0ec85204f35)),
+                oid::TIMESTAMPTZ
+            ),
+            "0002b0ec85204f35"
+        );
+        assert_eq!(
+            send(Datum::Timestamp(Timestamp(i64::MAX)), oid::TIMESTAMP),
+            "7fffffffffffffff"
+        );
+        let iv = Interval {
+            months: 14,
+            days: 3,
+            micros: 14_706_789_000,
+        };
+        assert_eq!(
+            send(Datum::Interval(iv), oid::INTERVAL),
+            "000000036c97ca8800000003".to_owned() + "0000000e"
+        );
+        let iv = Interval {
+            months: 0,
+            days: -1,
+            micros: -3_600_000_000,
+        };
+        assert_eq!(
+            send(Datum::Interval(iv), oid::INTERVAL),
+            "ffffffff296c5c00ffffffff00000000"
+        );
+    }
+
+    #[test]
+    fn roundtrip() {
+        for (h, o) in [
+            ("0000223f", oid::DATE),
+            ("7fffffff", oid::DATE),
+            ("ffda97a7", oid::DATE),
+            ("000000141dd76000", oid::TIME),
+            ("0002b0ec85204f35", oid::TIMESTAMP),
+            ("8000000000000000", oid::TIMESTAMPTZ),
+            ("7fffffffffffffff7fffffff7fffffff", oid::INTERVAL),
+            ("ffffffff296c5c00ffffffff00000000", oid::INTERVAL),
+        ] {
+            let d = recv(h, o).unwrap();
+            assert_eq!(send(d, o), h);
+        }
+    }
+
+    #[test]
+    fn recv_range_errors() {
+        for (h, o, msg) in [
+            ("7ffffff0", oid::DATE, "date out of range"),
+            ("ffda97a6", oid::DATE, "date out of range"),
+            ("7fffffffffffffff", oid::TIME, "time out of range"),
+            ("ffffffffffffffff", oid::TIME, "time out of range"),
+            ("000000141dd76001", oid::TIME, "time out of range"),
+            ("7ffffffffffffff0", oid::TIMESTAMP, "timestamp out of range"),
+            (
+                "8000000000000001",
+                oid::TIMESTAMPTZ,
+                "timestamp out of range",
+            ),
+        ] {
+            let e = recv(h, o).unwrap_err();
+            assert_eq!(e.sqlstate.0, "22008", "{h}");
+            assert_eq!(e.message, msg);
+        }
+        assert!(recv("ffda97a7", oid::DATE).is_ok());
+        assert!(recv("7fffff7fffffffff", oid::TIMESTAMP).is_err());
+    }
+
+    #[test]
+    fn short_input_is_error() {
+        assert!(recv("0000", oid::DATE).is_err());
+        assert!(recv("00000000000000", oid::INTERVAL).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -226,52 +545,6 @@ pub fn cast_timestamptz_to_date(args: &[Datum], env: &TypeEnv<'_>) -> Result<Dat
 }
 
 // ---------------------------------------------------------------------------
-// 実行時の関数（`FnKind::Runtime`）
-// ---------------------------------------------------------------------------
-
-// TODO(T2): `RuntimeInfo` に `transaction_timestamp` などが入るまでコンパイルしない（issues 参照）。
-#[cfg(any())]
-mod runtime_fns {
-    use super::*;
-    use crate::executor::RuntimeInfo;
-
-    /// `now()` / `transaction_timestamp()`: トランザクション開始時刻。
-    pub fn now(_args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        Ok(Datum::TimestampTz(TimestampTz(rt.transaction_timestamp())))
-    }
-
-    /// `statement_timestamp()`。
-    pub fn statement_timestamp(_args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        Ok(Datum::TimestampTz(TimestampTz(rt.statement_timestamp())))
-    }
-
-    /// `clock_timestamp()`: 呼んだ時点。
-    pub fn clock_timestamp(_args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        Ok(Datum::TimestampTz(TimestampTz(rt.clock_timestamp())))
-    }
-
-    /// `date(timestamptz)`（1178）。
-    pub fn rt_timestamptz_to_date(args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        timestamptz_to_date(first(args)?, &rt.datetime_env())
-    }
-
-    /// `timestamp(timestamptz)`（2027）。
-    pub fn rt_timestamptz_to_timestamp(args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        timestamptz_to_timestamp(first(args)?, &rt.datetime_env())
-    }
-
-    /// `timestamptz(date)`（1174）。
-    pub fn rt_date_to_timestamptz(args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        date_to_timestamptz(first(args)?, &rt.datetime_env())
-    }
-
-    /// `timestamptz(timestamp)`（2028）。
-    pub fn rt_timestamp_to_timestamptz(args: &[Datum], rt: &dyn RuntimeInfo) -> Result<Datum> {
-        timestamp_to_timestamptz(first(args)?, &rt.datetime_env())
-    }
-}
-
-// ---------------------------------------------------------------------------
 // SQL 値関数（`CURRENT_DATE` など。§6.4）。`session_value` が現在時刻とセッションの設定を渡す。
 // ---------------------------------------------------------------------------
 
@@ -349,6 +622,403 @@ pub fn date_mi(args: &[Datum]) -> Result<Datum> {
 
 /// 比較演算子の本体は `ops::cmp_*`（`cmp_datum` が日時の変種を整数で比べる）。
 pub use ops::{cmp_eq, cmp_ge, cmp_gt, cmp_le, cmp_lt, cmp_ne};
+
+/// 日時の関数の本体（TD-3。`m5/06` §6.5.3）: `extract` / `date_part` / `date_trunc`、`age`、`make_*`、
+/// `to_timestamp(float8)`、`date_bin`、`date_add` / `date_subtract`、`isfinite`、`generate_series(timestamp)`。
+/// `catalog/builtin/datetime.rs` の `TD3_FUNCTIONS` が参照する。引数の NULL は strict なので来ない。
+pub mod fns {
+    use yuzhu_datetime::{
+        Date, DateTimeEnv, Interval, NumericValue, Time, TimeZone, Timestamp, TimestampTz,
+    };
+
+    use super::{Datum, TypeEnv, bad_arg, dt_env, dt_err};
+    use crate::error::{Error, Result, sqlstate};
+
+    fn arg(args: &[Datum], i: usize) -> Result<&Datum> {
+        args.get(i).ok_or_else(|| bad_arg("date/time function"))
+    }
+
+    fn text(args: &[Datum], i: usize) -> Result<&str> {
+        match arg(args, i)? {
+            Datum::Text(s) => Ok(s),
+            _ => Err(bad_arg("date/time function (text)")),
+        }
+    }
+
+    fn int(args: &[Datum], i: usize) -> Result<i32> {
+        arg(args, i)?
+            .as_i64()
+            .and_then(|v| i32::try_from(v).ok())
+            .ok_or_else(|| bad_arg("date/time function (integer)"))
+    }
+
+    fn float(args: &[Datum], i: usize) -> Result<f64> {
+        arg(args, i)?
+            .as_f64()
+            .ok_or_else(|| bad_arg("date/time function (float8)"))
+    }
+
+    fn interval(args: &[Datum], i: usize) -> Result<Interval> {
+        match arg(args, i)? {
+            Datum::Interval(v) => Ok(*v),
+            _ => Err(bad_arg("date/time function (interval)")),
+        }
+    }
+
+    fn date(args: &[Datum], i: usize) -> Result<Date> {
+        match arg(args, i)? {
+            Datum::Date(v) => Ok(*v),
+            _ => Err(bad_arg("date/time function (date)")),
+        }
+    }
+
+    fn timestamp(args: &[Datum], i: usize) -> Result<Timestamp> {
+        match arg(args, i)? {
+            Datum::Timestamp(v) => Ok(*v),
+            _ => Err(bad_arg("date/time function (timestamp)")),
+        }
+    }
+
+    fn timestamptz(args: &[Datum], i: usize) -> Result<TimestampTz> {
+        match arg(args, i)? {
+            Datum::TimestampTz(v) => Ok(*v),
+            _ => Err(bad_arg("date/time function (timestamptz)")),
+        }
+    }
+
+    fn zone<'e, 'a>(env: &'e TypeEnv<'a>) -> Result<(&'a TimeZone, &'e DateTimeEnv<'a>)> {
+        let dt = dt_env(env)?;
+        Ok((dt.time_zone, dt))
+    }
+
+    fn as_float(r: yuzhu_datetime::Result<Option<f64>>) -> Result<Datum> {
+        Ok(r.map_err(dt_err)?.map_or(Datum::Null, Datum::Float8))
+    }
+
+    /// `extract` の結果（`NumericValue`）を `numeric` にする。`Infinity` / `-Infinity` は特殊値。
+    fn as_numeric(r: yuzhu_datetime::Result<Option<NumericValue>>) -> Result<Datum> {
+        match r.map_err(dt_err)? {
+            None => Ok(Datum::Null),
+            Some(nv) => yuzhu_numeric::Numeric::parse(&nv.to_string())
+                .map(Datum::Numeric)
+                .map_err(Error::from),
+        }
+    }
+
+    // ----- date_part (float8) / extract (numeric) --------------------------------
+
+    pub fn date_part_interval(args: &[Datum]) -> Result<Datum> {
+        as_float(yuzhu_datetime::date_part_interval(
+            text(args, 0)?,
+            &interval(args, 1)?,
+        ))
+    }
+    pub fn date_part_date(args: &[Datum]) -> Result<Datum> {
+        as_float(yuzhu_datetime::date_part_date(
+            text(args, 0)?,
+            date(args, 1)?,
+        ))
+    }
+    pub fn date_part_timestamp(args: &[Datum]) -> Result<Datum> {
+        as_float(yuzhu_datetime::date_part_timestamp(
+            text(args, 0)?,
+            timestamp(args, 1)?,
+        ))
+    }
+    pub fn date_part_timestamptz(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (tz, _) = zone(env)?;
+        as_float(yuzhu_datetime::date_part_timestamptz(
+            text(args, 0)?,
+            timestamptz(args, 1)?,
+            tz,
+        ))
+    }
+    pub fn extract_interval(args: &[Datum]) -> Result<Datum> {
+        as_numeric(yuzhu_datetime::extract_interval(
+            text(args, 0)?,
+            &interval(args, 1)?,
+        ))
+    }
+    pub fn extract_date(args: &[Datum]) -> Result<Datum> {
+        as_numeric(yuzhu_datetime::extract_date(text(args, 0)?, date(args, 1)?))
+    }
+    pub fn extract_timestamp(args: &[Datum]) -> Result<Datum> {
+        as_numeric(yuzhu_datetime::extract_timestamp(
+            text(args, 0)?,
+            timestamp(args, 1)?,
+        ))
+    }
+    pub fn extract_timestamptz(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (tz, _) = zone(env)?;
+        as_numeric(yuzhu_datetime::extract_timestamptz(
+            text(args, 0)?,
+            timestamptz(args, 1)?,
+            tz,
+        ))
+    }
+
+    // ----- date_trunc ------------------------------------------------------------
+
+    pub fn date_trunc_timestamp(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::date_trunc_timestamp(text(args, 0)?, timestamp(args, 1)?)
+            .map(Datum::Timestamp)
+            .map_err(dt_err)
+    }
+    pub fn date_trunc_timestamptz(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (tz, _) = zone(env)?;
+        yuzhu_datetime::date_trunc_timestamptz(text(args, 0)?, timestamptz(args, 1)?, tz)
+            .map(Datum::TimestampTz)
+            .map_err(dt_err)
+    }
+    /// `date_trunc(text, timestamptz, text)`: 3 つ目のゾーンで切り捨てる。
+    pub fn date_trunc_timestamptz_zone(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (_, dt) = zone(env)?;
+        let tz = yuzhu_datetime::zone_by_name(text(args, 2)?, dt).map_err(dt_err)?;
+        yuzhu_datetime::date_trunc_timestamptz(text(args, 0)?, timestamptz(args, 1)?, &tz)
+            .map(Datum::TimestampTz)
+            .map_err(dt_err)
+    }
+    pub fn date_trunc_interval(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::date_trunc_interval(text(args, 0)?, &interval(args, 1)?)
+            .map(Datum::Interval)
+            .map_err(dt_err)
+    }
+
+    // ----- date_bin / date_add / date_subtract -----------------------------------
+
+    pub fn date_bin_timestamp(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::date_bin_timestamp(
+            &interval(args, 0)?,
+            timestamp(args, 1)?,
+            timestamp(args, 2)?,
+        )
+        .map(Datum::Timestamp)
+        .map_err(dt_err)
+    }
+    pub fn date_bin_timestamptz(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::date_bin_timestamptz(
+            &interval(args, 0)?,
+            timestamptz(args, 1)?,
+            timestamptz(args, 2)?,
+        )
+        .map(Datum::TimestampTz)
+        .map_err(dt_err)
+    }
+
+    fn add_in(args: &[Datum], env: &TypeEnv<'_>, sign: i32, zoned: bool) -> Result<Datum> {
+        let (session_tz, dt) = zone(env)?;
+        let named;
+        let tz = if zoned {
+            named = yuzhu_datetime::zone_by_name(text(args, 2)?, dt).map_err(dt_err)?;
+            &named
+        } else {
+            session_tz
+        };
+        let (ts, span) = (timestamptz(args, 0)?, interval(args, 1)?);
+        let r = if sign >= 0 {
+            ts.add_interval(&span, tz)
+        } else {
+            ts.sub_interval(&span, tz)
+        };
+        r.map(Datum::TimestampTz).map_err(dt_err)
+    }
+    pub fn date_add(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        add_in(args, env, 1, false)
+    }
+    pub fn date_add_zone(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        add_in(args, env, 1, true)
+    }
+    pub fn date_subtract(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        add_in(args, env, -1, false)
+    }
+    pub fn date_subtract_zone(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        add_in(args, env, -1, true)
+    }
+
+    // ----- age -------------------------------------------------------------------
+
+    pub fn age_timestamp(args: &[Datum]) -> Result<Datum> {
+        timestamp(args, 0)?
+            .age(timestamp(args, 1)?)
+            .map(Datum::Interval)
+            .map_err(dt_err)
+    }
+    pub fn age_timestamptz(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (tz, _) = zone(env)?;
+        timestamptz(args, 0)?
+            .age(timestamptz(args, 1)?, tz)
+            .map(Datum::Interval)
+            .map_err(dt_err)
+    }
+    /// `age(timestamp)` = `age(current_date::timestamp, $1)`。今日はトランザクション開始時刻の現地日付。
+    pub fn age_timestamp_1(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (tz, dt) = zone(env)?;
+        let today = dt
+            .now
+            .to_date(tz)
+            .and_then(Date::to_timestamp)
+            .map_err(dt_err)?;
+        today
+            .age(timestamp(args, 0)?)
+            .map(Datum::Interval)
+            .map_err(dt_err)
+    }
+    /// `age(timestamptz)` = `age(current_date::timestamptz, $1)`。
+    pub fn age_timestamptz_1(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        let (tz, dt) = zone(env)?;
+        let today = dt
+            .now
+            .to_date(tz)
+            .and_then(|d| d.to_timestamptz(tz))
+            .map_err(dt_err)?;
+        today
+            .age(timestamptz(args, 0)?, tz)
+            .map(Datum::Interval)
+            .map_err(dt_err)
+    }
+
+    // ----- make_* / to_timestamp(float8) -----------------------------------------
+
+    pub fn make_date(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::make_date(int(args, 0)?, int(args, 1)?, int(args, 2)?)
+            .map(Datum::Date)
+            .map_err(dt_err)
+    }
+    pub fn make_time(args: &[Datum]) -> Result<Datum> {
+        Time::make(int(args, 0)?, int(args, 1)?, float(args, 2)?)
+            .map(|t| Datum::Time(t.0))
+            .map_err(dt_err)
+    }
+    pub fn make_timestamp(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::make_timestamp(
+            int(args, 0)?,
+            int(args, 1)?,
+            int(args, 2)?,
+            int(args, 3)?,
+            int(args, 4)?,
+            float(args, 5)?,
+        )
+        .map(Datum::Timestamp)
+        .map_err(dt_err)
+    }
+    fn make_timestamptz_in(args: &[Datum], env: &TypeEnv<'_>, zoned: bool) -> Result<Datum> {
+        let (_, dt) = zone(env)?;
+        let zone_name = if zoned { Some(text(args, 6)?) } else { None };
+        yuzhu_datetime::make_timestamptz(
+            int(args, 0)?,
+            int(args, 1)?,
+            int(args, 2)?,
+            int(args, 3)?,
+            int(args, 4)?,
+            float(args, 5)?,
+            zone_name,
+            dt,
+        )
+        .map(Datum::TimestampTz)
+        .map_err(dt_err)
+    }
+    pub fn make_timestamptz(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        make_timestamptz_in(args, env, false)
+    }
+    pub fn make_timestamptz_zone(args: &[Datum], env: &TypeEnv<'_>) -> Result<Datum> {
+        make_timestamptz_in(args, env, true)
+    }
+    /// `make_interval(years, months, weeks, days, hours, mins, secs)`。位置引数 7 個（名前つき引数の
+    /// 既定値の補完はアナライザの仕事）。
+    pub fn make_interval(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::make_interval(
+            int(args, 0)?,
+            int(args, 1)?,
+            int(args, 2)?,
+            int(args, 3)?,
+            int(args, 4)?,
+            int(args, 5)?,
+            float(args, 6)?,
+        )
+        .map(Datum::Interval)
+        .map_err(dt_err)
+    }
+    pub fn to_timestamp_float(args: &[Datum]) -> Result<Datum> {
+        yuzhu_datetime::to_timestamp_float(float(args, 0)?)
+            .map(Datum::TimestampTz)
+            .map_err(dt_err)
+    }
+
+    // ----- isfinite --------------------------------------------------------------
+
+    pub fn isfinite_date(args: &[Datum]) -> Result<Datum> {
+        Ok(Datum::Bool(date(args, 0)?.is_finite()))
+    }
+    pub fn isfinite_timestamp(args: &[Datum]) -> Result<Datum> {
+        Ok(Datum::Bool(timestamp(args, 0)?.is_finite()))
+    }
+    pub fn isfinite_timestamptz(args: &[Datum]) -> Result<Datum> {
+        Ok(Datum::Bool(timestamptz(args, 0)?.is_finite()))
+    }
+
+    // ----- generate_series(timestamp, timestamp, interval) -----------------------
+
+    struct TimestampSeries {
+        cur: i64,
+        stop: i64,
+        step: Interval,
+        forward: bool,
+        done: bool,
+    }
+
+    impl crate::catalog::SetIter for TimestampSeries {
+        fn next(&mut self) -> Result<Option<Datum>> {
+            if self.done {
+                return Ok(None);
+            }
+            let go = if self.forward {
+                self.cur <= self.stop
+            } else {
+                self.cur >= self.stop
+            };
+            if !go {
+                self.done = true;
+                return Ok(None);
+            }
+            let out = self.cur;
+            // PostgreSQL は返す前に次の値を作る（範囲外はこの行の代わりにエラー）。
+            match Timestamp(self.cur).add_interval(&self.step) {
+                Ok(n) => self.cur = n.0,
+                Err(e) => {
+                    self.done = true;
+                    return Err(dt_err(e));
+                }
+            }
+            Ok(Some(Datum::Timestamp(Timestamp(out))))
+        }
+    }
+
+    /// `generate_series(timestamp, timestamp, interval)`（938）。`cur = cur + step` を繰り返す。
+    pub fn generate_series_timestamp(args: &[Datum]) -> Result<Box<dyn crate::catalog::SetIter>> {
+        let (start, end, step) = (timestamp(args, 0)?, timestamp(args, 1)?, interval(args, 2)?);
+        if !step.is_finite() {
+            return Err(Error::new(
+                sqlstate::INVALID_PARAMETER_VALUE,
+                "step size cannot be infinite",
+            ));
+        }
+        if step == Interval::ZERO {
+            return Err(Error::new(
+                sqlstate::INVALID_PARAMETER_VALUE,
+                "step size cannot equal zero",
+            ));
+        }
+        let forward = step > Interval::ZERO;
+        Ok(Box::new(TimestampSeries {
+            cur: start.0,
+            stop: end.0,
+            step,
+            forward,
+            // 開始が無限なら 0 行
+            done: !start.is_finite(),
+        }))
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,81 +1,60 @@
-//! `TxnManager` (XID assignment, running list, snapshots, single-writer
-//! lock with a FIFO queue, commit gate, storage barrier, commit / abort
-//! WAL), `Transaction` and `WriterGuard` (`m2.md` §4.5, §6.7; `m3.md` §4.6,
-//! §5.3, §6.6).
+//! `TxnManager` (XID assignment, snapshots, commit / abort WAL, commit gate,
+//! storage barrier), `XidGuard` and `Transaction` (`m2.md` §4.5, §6.7;
+//! `m3.md` §4.6, §5.3, §6.6; `m5/01-lock-txn.md` §4.4, §5.6 to §5.8).
 //!
-//! Lock order (§5.9): writer ownership -> `checkpoint lock` -> storage
-//! barrier -> commit gate (shared) -> `proc` (leaf) -> control file / `Clog`
-//! internals. The `writer` mutex is only used for the queue and for changing
-//! the owner, and is released before `proc` is taken.
+//! M5: the single writer lock is gone (D5). A transaction takes an XID on its
+//! first write ([`TxnManager::assign_xid`]); the XID, the running list and the
+//! snapshot registry live in [`ProcArray`].
+//!
+//! Lock order (`00` §5.3): heavy locks (`LockManager`, waited for with no
+//! other lock held) -> `checkpoint_lock` -> storage barrier -> commit gate
+//! (shared) -> `ProcArray` mutex (leaf) -> control file / `Clog` internals /
+//! `LockManager` internal mutex (the registration of the XID lock, D37).
+//!
+//! Commit order (D38): WAL insert and flush -> clog and running list
+//! ([`ProcArray::finish`]) -> (caller) catalog cache invalidation -> file
+//! removal -> release of the transaction-scope locks. `commit` / `abort` do
+//! only the first two; releasing the locks is the caller's last step.
 
-use std::collections::{BTreeSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::clog::{Clog, XidStatus};
+use super::lock::{LockManager, LockScope};
+use super::multixact::MultiXactTable;
+use super::proc_array::ProcArray;
+use super::snapshot::RegisteredSnapshot;
 use super::xact_wal::{XACT_ABORT, XACT_COMMIT, XactRecord};
-use super::{CommandId, FIRST_COMMAND_ID, Snapshot, Xid};
+use super::{CommandId, FIRST_COMMAND_ID, IsolationLevel, Snapshot, Xid};
+use crate::backend::BackendId;
 use crate::control::ControlFileHandle;
 use crate::debug_knobs::DebugKnobs;
 use crate::error::{Error, Result, Severity, sqlstate};
-use crate::interrupt::InterruptFlag;
 use crate::storage::WriteCtx;
-use crate::storage::XID_PREFETCH;
+use crate::storage::buffer::track;
 use crate::storage::smgr::RelFileLocator;
-use crate::util::sync::{lock, lock_ignore_poison, read, wait_timeout, write};
+use crate::util::sync::{lock_ignore_poison, read, write};
 use crate::wal::{Lsn, Wal};
-
-/// How often a waiter for the writer lock checks for interrupts (§6.6.3).
-const WAIT_POLL: Duration = Duration::from_millis(50);
-
-#[derive(Debug)]
-struct ProcState {
-    next_xid: Xid,
-    /// XIDs below this are covered by the value recorded in the control file.
-    xid_limit: Xid,
-    /// Raw list of running XIDs.
-    running: BTreeSet<Xid>,
-}
-
-/// Owner of the writer lock and the waiters in arrival order (§6.6.3).
-#[derive(Debug, Default)]
-struct WriterState {
-    owner: Option<u64>,
-    queue: VecDeque<u64>,
-}
-
-/// What a wait for the writer lock honors besides the lock itself.
-#[derive(Debug, Clone, Copy)]
-pub struct WaitCtl<'a> {
-    /// `None` and a zero duration wait forever.
-    pub lock_timeout: Option<Duration>,
-    pub interrupts: &'a InterruptFlag,
-}
 
 #[derive(Debug)]
 pub struct TxnManager {
-    /// Leaf lock (apart from `Clog` internals and the control file mutex).
-    proc: Mutex<ProcState>,
-    writer: Mutex<WriterState>,
-    writer_released: Condvar,
+    procs: Arc<ProcArray>,
+    /// Only the checkpoint's buffer flush (shared) and the removal of
+    /// dropped / rolled-back files (exclusive) take this (D10, LK-D23). A
+    /// statement takes nothing: the relation lock protects the files.
     barrier: RwLock<()>,
     /// Files of dropped / rolled-back relations that could not be removed yet
     /// because a statement was running (see `try_exclusive_barrier`).
-    deferred_unlinks: Mutex<Vec<RelFileLocator>>,
+    deferred_unlinks: std::sync::Mutex<Vec<RelFileLocator>>,
     /// Shared by commit / abort from the WAL insert to the removal from the
     /// running list; exclusive while a checkpoint fixes its REDO point.
     commit_gate: RwLock<()>,
     clog: Arc<Clog>,
     control: Arc<ControlFileHandle>,
     wal: Arc<Wal>,
+    locks: Arc<LockManager>,
+    multixact: Arc<MultiXactTable>,
     knobs: DebugKnobs,
-}
-
-/// `proc` for the infallible accessors: a poisoned lock means another
-/// thread panicked while updating the XID state, so we must not go on.
-fn proc_or_panic(m: &Mutex<ProcState>) -> MutexGuard<'_, ProcState> {
-    m.lock()
-        .expect("transaction manager state is poisoned (another thread panicked)")
 }
 
 fn panic_err(e: Error) -> Error {
@@ -90,187 +69,105 @@ fn now_us() -> i64 {
 }
 
 impl TxnManager {
-    /// `next_xid` comes from recovery (or the control file after a clean
-    /// stop). Pre-allocation continues from the value recorded in the control
-    /// file; the XIDs pre-allocated before the last stop are discarded
-    /// (§6.7.3).
+    /// `procs` carries `next_xid` (from recovery, or the control file after a
+    /// clean stop) and the pre-allocation state (M3 §6.7.3); the XIDs
+    /// pre-allocated before the last stop are discarded.
     pub fn new(
+        procs: Arc<ProcArray>,
         clog: Arc<Clog>,
         control: Arc<ControlFileHandle>,
         wal: Arc<Wal>,
-        next_xid: Xid,
+        locks: Arc<LockManager>,
+        multixact: Arc<MultiXactTable>,
         knobs: DebugKnobs,
     ) -> Arc<Self> {
-        let next = Xid(next_xid.0.max(Xid::FIRST_NORMAL.0));
-        let limit = Xid(control.get().next_xid.max(Xid::FIRST_NORMAL.0));
+        if knobs.vacuum_ignore_registered_snapshots {
+            procs.set_ignore_registered_snapshots(true);
+        }
         Arc::new(TxnManager {
-            proc: Mutex::new(ProcState {
-                next_xid: next,
-                xid_limit: limit,
-                running: BTreeSet::new(),
-            }),
-            writer: Mutex::new(WriterState::default()),
-            writer_released: Condvar::new(),
+            procs,
             barrier: RwLock::new(()),
-            deferred_unlinks: Mutex::new(Vec::new()),
+            deferred_unlinks: std::sync::Mutex::new(Vec::new()),
             commit_gate: RwLock::new(()),
             clog,
             control,
             wal,
+            locks,
+            multixact,
             knobs,
         })
     }
 
-    /// Takes the writer lock (FIFO), assigns an XID and adds it to the
-    /// running list (§6.7.1, §6.6.3). While waiting, every 50ms (and at the
-    /// lock timeout) it checks `wait.interrupts`; a timeout is `55P03
-    /// canceling statement due to lock timeout`.
-    pub fn begin_write(
-        self: &Arc<Self>,
-        session_id: u64,
-        wait: &WaitCtl<'_>,
-    ) -> Result<(Xid, WriterGuard)> {
-        self.acquire_writer(session_id, wait)?;
-        match self.assign_xid() {
-            Ok(xid) => Ok((
+    /// Assigns an XID on the first write of a transaction (`Transaction.xid`
+    /// is `None`). There is no writer lock. Inside `P` the XID is taken,
+    /// put on the running list and `TransactionId(xid)` is registered
+    /// exclusively for `backend` (D37), so a waiter never sees a running XID
+    /// without its lock. `backend` must be registered with the
+    /// `LockManager`.
+    ///
+    /// A failed pre-allocation is `Severity::Panic`; no XID is consumed.
+    pub fn assign_xid(self: &Arc<Self>, backend: BackendId) -> Result<(Xid, XidGuard)> {
+        let xid = self
+            .procs
+            .assign(backend, &self.locks, &self.clog, &self.control)?;
+        Ok((
+            xid,
+            XidGuard {
+                mgr: Arc::clone(self),
+                backend,
                 xid,
-                WriterGuard {
-                    mgr: Arc::clone(self),
-                    session_id,
-                    xid,
-                },
-            )),
-            Err(e) => {
-                self.release_writer(session_id);
-                Err(e)
-            }
-        }
+            },
+        ))
     }
 
-    fn acquire_writer(&self, session_id: u64, wait: &WaitCtl<'_>) -> Result<()> {
-        let started = Instant::now();
-        let limit = wait.lock_timeout.filter(|d| !d.is_zero());
-        let mut st = lock(&self.writer)?;
-        if st.owner == Some(session_id) || st.queue.contains(&session_id) {
-            return Err(Error::internal(
-                "session already holds or awaits the writer lock (begin_write called twice)",
-            ));
-        }
-        st.queue.push_back(session_id);
-        loop {
-            if st.owner.is_none() && st.queue.front() == Some(&session_id) {
-                st.queue.pop_front();
-                st.owner = Some(session_id);
-                return Ok(());
-            }
-            let mut slice = WAIT_POLL;
-            let failure = if let Err(e) = wait.interrupts.check() {
-                Some(e)
-            } else if let Some(t) = limit {
-                let left = t.saturating_sub(started.elapsed());
-                if left.is_zero() {
-                    Some(lock_timeout())
-                } else {
-                    slice = slice.min(left);
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(e) = failure {
-                st.queue.retain(|s| *s != session_id);
-                // The next waiter may now be at the front of an idle lock.
-                self.writer_released.notify_all();
-                return Err(e);
-            }
-            st = wait_timeout(&self.writer_released, st, slice)?.0;
-        }
+    /// A snapshot registered in the `ProcArray`; the registration ends when
+    /// the result is dropped (LK-D8).
+    pub fn take_snapshot(
+        self: &Arc<Self>,
+        own: Option<Xid>,
+        curcid: CommandId,
+    ) -> RegisteredSnapshot {
+        self.procs.take_snapshot(own, curcid)
     }
 
-    /// Clears the owner (if it is `session_id`) and wakes the waiters. Safe
-    /// in `Drop`.
-    fn release_writer(&self, session_id: u64) {
-        let mut st = lock_ignore_poison(&self.writer);
-        if st.owner == Some(session_id) {
-            st.owner = None;
-            self.writer_released.notify_all();
-        }
+    /// An unregistered snapshot, for unit tests and diagnostics only (LK-D9).
+    pub fn snapshot(&self, own: Option<Xid>, curcid: CommandId) -> Snapshot {
+        self.procs.snapshot(own, curcid)
     }
 
-    /// The session that owns the writer lock, if any.
-    pub fn writer_owner(&self) -> Option<u64> {
-        lock_ignore_poison(&self.writer).owner
-    }
-
-    /// Whether `session_id` is waiting for the writer lock and its owner is
-    /// one of `among` (`pg_isolation_test_session_is_blocked`).
-    pub fn is_blocked_by(&self, session_id: u64, among: &[u64]) -> bool {
-        let st = lock_ignore_poison(&self.writer);
-        st.queue.contains(&session_id) && st.owner.is_some_and(|o| among.contains(&o))
-    }
-
-    /// Allocates the next XID, pre-allocating through the control file when
-    /// the limit is reached (§6.7.3).
-    fn assign_xid(&self) -> Result<Xid> {
-        let mut p = lock(&self.proc)?;
-        if p.next_xid >= p.xid_limit {
-            let new_limit = p.next_xid.0 + XID_PREFETCH;
-            // proc -> control file is an allowed nesting (§5.9). A failure
-            // is a Panic and leaves `xid_limit` unchanged.
-            self.control
-                .update(|c| c.next_xid = c.next_xid.max(new_limit))?;
-            p.xid_limit = Xid(new_limit);
-        }
-        let xid = p.next_xid;
-        self.clog.ensure_page_for(xid);
-        p.next_xid = Xid(xid.0 + 1);
-        p.running.insert(xid);
-        Ok(xid)
-    }
-
-    pub fn snapshot(&self, own_xid: Option<Xid>, curcid: CommandId) -> Snapshot {
-        let p = proc_or_panic(&self.proc);
-        let xmin = p
-            .running
-            .first()
-            .copied()
-            .map_or(p.next_xid, |f| f.min(p.next_xid));
-        Snapshot {
-            xmin,
-            xmax: p.next_xid,
-            xip: p
-                .running
-                .iter()
-                .copied()
-                .filter(|x| Some(*x) != own_xid)
-                .collect(),
-            curcid,
-            own_xid,
-        }
+    /// `min(running XIDs, registered snapshots' xmin, next_xid)` (D11).
+    pub fn oldest_xmin(&self) -> Xid {
+        self.procs.oldest_xmin()
     }
 
     /// Whether `xid` is in the raw running list (`TransactionIdIsInProgress`).
     pub fn is_in_progress(&self, xid: Xid) -> bool {
-        proc_or_panic(&self.proc).running.contains(&xid)
+        self.procs.is_in_progress(xid)
     }
 
-    /// Commit steps 1 of §5.3: COMMIT record (`dropped` = `pending_unlinks`),
+    /// Number of registered snapshots (tests and diagnostics; `04` C12).
+    pub fn registered_snapshot_count(&self) -> usize {
+        self.procs.registered_snapshot_count()
+    }
+
+    /// Commit step 1 (§5.8): COMMIT record (`dropped` = `pending_unlinks`),
     /// WAL flush (unless `skip_commit_flush`), then the clog and the running
-    /// list inside the `proc` mutex. Every failure is `Severity::Panic`; the
-    /// running list is not touched in that case.
+    /// list inside `P`, then `MultiXactTable::on_xact_end`. The locks are
+    /// **not** released (the caller does it last, D38). Every failure is
+    /// `Severity::Panic`; the running list is not touched in that case.
     pub fn commit(&self, xid: Xid, dropped: &[RelFileLocator]) -> Result<()> {
         self.finish(xid, XidStatus::Committed, dropped)
     }
 
-    /// Abort step 1 of §5.3: ABORT record (`created` = `pending_creates`).
-    /// The WAL is flushed only if `created` is not empty (the files are
-    /// removed afterwards, so the record must not be lost).
+    /// Abort step 1: ABORT record (`created` = `pending_creates`). The WAL is
+    /// flushed only if `created` is not empty (the files are removed
+    /// afterwards, so the record must not be lost).
     pub fn abort(&self, xid: Xid, created: &[RelFileLocator]) -> Result<()> {
         self.finish(xid, XidStatus::Aborted, created)
     }
 
     fn finish(&self, xid: Xid, status: XidStatus, rels: &[RelFileLocator]) -> Result<()> {
-        if !self.is_in_progress(xid) {
+        if !self.procs.is_in_progress(xid) {
             return Err(Error::internal(format!(
                 "transaction {} is not running, cannot mark it {status:?}",
                 xid.0
@@ -278,42 +175,59 @@ impl TxnManager {
             .with_severity(Severity::Panic));
         }
         let committing = status == XidStatus::Committed;
+        if self.knobs.release_locks_before_commit_record {
+            // Mutation (D38 broken on purpose): waiters wake up before the
+            // record and the clog say the transaction is over.
+            self.release_xact_locks_early(xid);
+        }
         let info = if committing { XACT_COMMIT } else { XACT_ABORT };
-        // Held until the end: the checkpoint's REDO point must not fall
-        // between the record and the clog update (D10).
-        let _gate = read(&self.commit_gate).map_err(panic_err)?;
-        let record = XactRecord {
-            time_us: now_us(),
-            rels: rels.to_vec(),
-        };
-        let ins = self
-            .wal
-            .insert(record.builder(info, xid))
-            .map_err(panic_err)?;
-        let flush = if committing {
-            !self.knobs.skip_commit_flush
-        } else {
-            !rels.is_empty()
-        };
-        if flush {
-            self.wal.flush(ins.end).map_err(panic_err)?;
+        {
+            // Held until the clog and the running list are updated: the
+            // checkpoint's REDO point must not fall between the record and
+            // the clog update (D10). No latch is held here (convention 1).
+            let _gate = ReadGate::acquire(&self.commit_gate)?;
+            let record = XactRecord {
+                time_us: now_us(),
+                rels: rels.to_vec(),
+            };
+            let ins = self
+                .wal
+                .insert(record.builder(info, xid))
+                .map_err(panic_err)?;
+            let flush = if committing {
+                !self.knobs.skip_commit_flush
+            } else {
+                !rels.is_empty()
+            };
+            if flush {
+                self.wal.flush(ins.end).map_err(panic_err)?;
+            }
+            self.procs.finish(xid, status, &self.clog)?;
         }
-        let mut p = lock(&self.proc)?;
-        if !p.running.contains(&xid) {
-            return Err(Error::internal(format!(
-                "transaction {} is not running, cannot mark it {status:?}",
-                xid.0
-            ))
-            .with_severity(Severity::Panic));
-        }
-        self.clog.set_status(xid, status).map_err(panic_err)?;
-        p.running.remove(&xid);
+        self.multixact.on_xact_end(xid);
         Ok(())
     }
 
-    /// XID を持たないトランザクションの COMMIT（`m4/08` §4.6）。`flush_upto` が `Lsn(0)` でなければ
-    /// `wal.flush(flush_upto)`。コミットゲートは取らない（clog を触らない）。失敗は `Severity::Panic`。
-    /// `DebugKnobs::skip_commit_flush` のときは何もしない（変異試験）。
+    /// Mutation only: releases the transaction-scope locks of the backend
+    /// that owns `xid` (found through its `TransactionId` lock).
+    fn release_xact_locks_early(&self, xid: Xid) {
+        let owner = self
+            .locks
+            .lock_status()
+            .into_iter()
+            .find(|r| r.granted && r.transactionid == Some(xid))
+            .map(|r| r.backend);
+        if let Some(b) = owner {
+            self.locks.release_all(b, LockScope::Transaction);
+        }
+    }
+
+    /// The end of a transaction without an XID (D48, M4 §14.1). When
+    /// `flush_upto` is not `Lsn(0)`, the WAL is flushed up to it (sequence
+    /// records the transaction depends on) before the caller releases its
+    /// locks. Neither the clog nor the running list is touched and the gate
+    /// is not taken. A failure is `Severity::Panic`.
+    /// `DebugKnobs::skip_commit_flush` turns the flush off (mutation test).
     pub fn finish_without_xid(&self, flush_upto: Lsn) -> Result<()> {
         if flush_upto == Lsn::INVALID || self.knobs.skip_commit_flush {
             return Ok(());
@@ -324,22 +238,24 @@ impl TxnManager {
     /// Held by the checkpoint only while it fixes its REDO point (D10). It
     /// waits for the commits and aborts in progress and blocks new ones.
     pub fn commit_gate_exclusive(&self) -> Result<GateWrite<'_>> {
-        Ok(GateWrite {
-            _guard: write(&self.commit_gate).map_err(panic_err)?,
-        })
+        let guard = write(&self.commit_gate).map_err(panic_err)?;
+        track::gate_acquired();
+        Ok(GateWrite { _guard: guard })
     }
 
-    /// Shared guard held while a statement runs. Never store it in a struct.
+    /// Shared guard for the checkpoint's buffer flush (LK-D23). Statements do
+    /// not take it. The checkpoint thread reports it with
+    /// `track::barrier_acquired` / `barrier_released`.
     pub fn statement_barrier(&self) -> Result<BarrierRead<'_>> {
         Ok(BarrierRead {
             _guard: read(&self.barrier)?,
         })
     }
 
-    /// Exclusive guard for DROP cleanup. The caller must not hold a shared
-    /// barrier. It polls with `try_write` instead of queueing: std's `RwLock`
-    /// prefers a queued writer, which would block every new statement
-    /// (even `SELECT 1`) behind a long-running one.
+    /// Exclusive guard for removing files (commit of DROP / TRUNCATE, abort of
+    /// CREATE). The caller must not hold a shared barrier. It polls with
+    /// `try_write` instead of queueing: std's `RwLock` prefers a queued
+    /// writer, which would block every new shared taker behind a long flush.
     pub fn exclusive_barrier(&self) -> Result<BarrierWrite<'_>> {
         let mut pause = Duration::from_micros(50);
         loop {
@@ -357,9 +273,9 @@ impl TxnManager {
         }
     }
 
-    /// Non-blocking variant of `exclusive_barrier`: `None` while any
-    /// statement runs. DROP cleanup must not wait for other sessions' (possibly
-    /// very long) statements, so the files are queued with `defer_unlinks`.
+    /// Non-blocking variant of `exclusive_barrier`: `None` while the shared
+    /// barrier is held. Files that cannot be removed now are queued with
+    /// `defer_unlinks`.
     pub fn try_exclusive_barrier(&self) -> Result<Option<BarrierWrite<'_>>> {
         match self.barrier.try_write() {
             Ok(g) => Ok(Some(BarrierWrite { _guard: g })),
@@ -385,6 +301,10 @@ impl TxnManager {
         !lock_ignore_poison(&self.deferred_unlinks).is_empty()
     }
 
+    pub fn procs(&self) -> &Arc<ProcArray> {
+        &self.procs
+    }
+
     pub fn clog(&self) -> &Arc<Clog> {
         &self.clog
     }
@@ -393,26 +313,46 @@ impl TxnManager {
         &self.wal
     }
 
+    pub fn locks(&self) -> &Arc<LockManager> {
+        &self.locks
+    }
+
+    pub fn multixact(&self) -> &Arc<MultiXactTable> {
+        &self.multixact
+    }
+
     pub fn next_xid(&self) -> Xid {
-        proc_or_panic(&self.proc).next_xid
+        self.procs.next_xid()
     }
 
-    /// `(next_xid, xid_limit)` read inside the `proc` mutex (checkpoint).
+    /// `(next_xid, xid_limit)` read inside `P` (checkpoint).
     pub fn xid_counters(&self) -> (Xid, Xid) {
-        let p = proc_or_panic(&self.proc);
-        (p.next_xid, p.xid_limit)
+        self.procs.xid_counters()
     }
 }
 
-fn lock_timeout() -> Error {
-    Error::new(
-        sqlstate::LOCK_NOT_AVAILABLE,
-        "canceling statement due to lock timeout",
-    )
+/// The shared commit gate; reports itself to `track` so that waiting for a
+/// heavy lock while holding it is detected (convention 1).
+struct ReadGate<'a> {
+    _guard: RwLockReadGuard<'a, ()>,
 }
 
-/// Thin wrapper of `RwLockReadGuard` (re-entry is detected in
-/// `storage/buffer/track.rs`).
+impl<'a> ReadGate<'a> {
+    fn acquire(gate: &'a RwLock<()>) -> Result<ReadGate<'a>> {
+        let guard = read(gate).map_err(panic_err)?;
+        track::gate_acquired();
+        Ok(ReadGate { _guard: guard })
+    }
+}
+
+impl Drop for ReadGate<'_> {
+    fn drop(&mut self) {
+        track::gate_released();
+    }
+}
+
+/// Thin wrapper of `RwLockReadGuard`. The thread that holds it reports it
+/// with `track::barrier_acquired` / `barrier_released` (re-entry detection).
 #[derive(Debug)]
 pub struct BarrierRead<'a> {
     _guard: RwLockReadGuard<'a, ()>,
@@ -429,51 +369,60 @@ pub struct GateWrite<'a> {
     _guard: RwLockWriteGuard<'a, ()>,
 }
 
-/// Token for owning the writer lock (not the lock guard itself). As a safety
-/// net on drop, an unfinished transaction is aborted in memory (clog
-/// ABORTED, removed from `running`; no I/O, no WAL) and the writer lock is
-/// released. This is the same as the implicit abort of a crash. Files in
-/// `pending_creates` cannot be removed on drop (no I/O in `Drop`): a WARNING
-/// is logged and they stay as orphans.
+impl Drop for GateWrite<'_> {
+    fn drop(&mut self) {
+        track::gate_released();
+    }
+}
+
+/// Token for the XID of a transaction (the successor of `WriterGuard`; not a
+/// lock). As a safety net on drop, a transaction that is still on the running
+/// list is aborted in memory: the clog gets ABORTED, the XID leaves the
+/// running list, and the transaction-scope locks (including the XID lock) are
+/// released. No I/O, no WAL: it is the same as the implicit abort of a
+/// crash. Files in `pending_creates` cannot be removed (no I/O in `Drop`):
+/// a WARNING is logged and they stay as orphans.
 ///
-/// "Unfinished" means the XID is still in the running list, so `commit` /
-/// `abort` need no handshake with the guard.
+/// "Unfinished" means the XID is still on the running list, so `commit` /
+/// `abort` need no handshake with the guard; after a normal end the drop does
+/// nothing (the session released the locks itself, D38).
 #[derive(Debug)]
-pub struct WriterGuard {
+pub struct XidGuard {
     mgr: Arc<TxnManager>,
-    session_id: u64,
+    backend: BackendId,
     xid: Xid,
 }
 
-impl WriterGuard {
+impl XidGuard {
     pub fn xid(&self) -> Xid {
         self.xid
     }
 
-    pub fn session_id(&self) -> u64 {
-        self.session_id
+    pub fn backend(&self) -> BackendId {
+        self.backend
     }
 }
 
-impl Drop for WriterGuard {
+impl Drop for XidGuard {
     fn drop(&mut self) {
-        let unfinished = {
-            let mut p = lock_ignore_poison(&self.mgr.proc);
-            if p.running.remove(&self.xid) {
-                // Memory only; ignore a failure (nothing more can be done).
-                let _ = self.mgr.clog.set_status(self.xid, XidStatus::Aborted);
-                true
-            } else {
-                false
-            }
-        };
-        if unfinished {
-            warn(&format!(
-                "transaction {} was dropped without commit or abort; aborted in memory (files created by it may remain as orphans)",
-                self.xid.0
-            ));
+        // Only the owner of the XID ends it, so checking and then finishing
+        // cannot race with a commit of the same XID.
+        if !self.mgr.procs.is_in_progress(self.xid) {
+            return;
         }
-        self.mgr.release_writer(self.session_id);
+        // Memory only; a failure (poisoned lock) leaves nothing more to do.
+        let _ = self
+            .mgr
+            .procs
+            .finish(self.xid, XidStatus::Aborted, &self.mgr.clog);
+        self.mgr.multixact.on_xact_end(self.xid);
+        self.mgr
+            .locks
+            .release_all(self.backend, LockScope::Transaction);
+        warn(&format!(
+            "transaction {} was dropped without commit or abort; aborted in memory (files created by it may remain as orphans)",
+            self.xid.0
+        ));
     }
 }
 
@@ -484,13 +433,13 @@ fn warn(msg: &str) {
 
 #[derive(Debug, Default)]
 pub struct Transaction {
-    /// Assigned when the writer lock is taken.
+    /// Assigned on the first write.
     pub xid: Option<Xid>,
     pub cid: CommandId,
     /// Whether the current statement wrote something.
     pub cid_used: bool,
-    /// Single-writer lock; the drop is a safety net.
-    pub writer: Option<WriterGuard>,
+    /// The token of `xid`; the drop is a safety net.
+    pub guard: Option<XidGuard>,
     /// Files to remove on abort.
     pub pending_creates: Vec<RelFileLocator>,
     /// Files to remove on commit.
@@ -503,6 +452,11 @@ pub struct Transaction {
     /// トランザクションの開始時刻（2000-01-01 からのマイクロ秒。PostgreSQL のエポック）。
     /// `Transaction::new()` は 0。session が開始時に設定する。
     pub started_at: i64,
+    /// The isolation level of this transaction.
+    pub isolation: IsolationLevel,
+    /// Repeatable Read: the snapshot of the first statement, kept (and
+    /// registered, so it holds the horizon) until the transaction ends.
+    pub xact_snapshot: Option<RegisteredSnapshot>,
 }
 
 impl Transaction {
@@ -513,6 +467,13 @@ impl Transaction {
         }
     }
 
+    /// Whether `x` is this transaction's XID. Visibility and locking code
+    /// uses this instead of comparing with `xid` (D2: subtransactions would
+    /// extend it).
+    pub fn owns_xid(&self, x: Xid) -> bool {
+        self.xid == Some(x)
+    }
+
     /// `wal_flush_upto` を大きい方に更新する。
     pub fn note_wal(&mut self, lsn: Lsn) {
         if lsn > self.wal_flush_upto {
@@ -521,11 +482,11 @@ impl Transaction {
     }
 
     /// The only entry point for writes. An internal error if no XID was
-    /// assigned (the writer lock was not taken). Sets `cid_used`.
+    /// assigned. Sets `cid_used`.
     pub fn write_ctx(&mut self) -> Result<WriteCtx> {
-        let xid = self.xid.ok_or_else(|| {
-            Error::internal("write without a transaction ID (writer lock not taken)")
-        })?;
+        let xid = self
+            .xid
+            .ok_or_else(|| Error::internal("write without a transaction ID (no XID assigned)"))?;
         self.cid_used = true;
         Ok(WriteCtx { xid, cid: self.cid })
     }
@@ -552,7 +513,7 @@ impl Transaction {
 #[allow(clippy::many_single_char_names)]
 mod tests {
     use super::*;
-    use crate::wal::{Lsn, MIN_WAL_SEGMENT_SIZE, WalConfig, WalReader};
+    use crate::wal::{MIN_WAL_SEGMENT_SIZE, WalConfig, WalReader};
 
     #[test]
     fn write_ctx_requires_an_xid() {
@@ -593,13 +554,18 @@ mod tests {
     // ---- TxnManager ----
 
     use crate::control::{ControlData, DbState};
+    use crate::storage::XID_PREFETCH;
     use crate::storage::vfs::{CrashMode, FaultEffect, FaultOp, FaultPlan, FaultRule, SimVfs, Vfs};
+    use crate::txn::lock::{LockMode, LockTag};
+    use std::collections::HashSet;
     use std::path::Path;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Instant;
 
     pub(crate) fn control_data(next_xid: u64) -> ControlData {
         ControlData {
-            format_version: 2,
+            format_version: crate::control::CONTROL_FORMAT_VERSION,
             catalog_version: 1,
             system_identifier: 1,
             state: DbState::InProduction,
@@ -617,6 +583,8 @@ mod tests {
             rel_seg_blocks: 131_072,
             data_layout_version: 1,
             builtin_hash: 0,
+            next_multi: 1,
+            mock_auth_nonce: [0; 32],
         }
     }
 
@@ -634,8 +602,9 @@ mod tests {
         vfs: Arc<dyn Vfs>,
         control: Arc<ControlFileHandle>,
         wal: Arc<Wal>,
+        locks: Arc<LockManager>,
         mgr: Arc<TxnManager>,
-        irq: InterruptFlag,
+        registered: Mutex<HashSet<u64>>,
     }
 
     impl Rig {
@@ -649,29 +618,53 @@ mod tests {
             sim.create_dir_all(Path::new("global")).unwrap();
             let vfs: Arc<dyn Vfs> = Arc::new(sim.clone());
             let control = Arc::new(ControlFileHandle::create(&vfs, &control_data(3)).unwrap());
-            let clog = Arc::new(Clog::open(Arc::clone(&vfs), Xid(3)).unwrap());
             let wal = Wal::initialize(Arc::clone(&vfs), wal_cfg(knobs)).unwrap();
             vfs.sync_dir(Path::new("")).unwrap();
-            let mgr = TxnManager::new(clog, Arc::clone(&control), Arc::clone(&wal), Xid(3), knobs);
+            let locks = LockManager::with_knobs(knobs);
+            let mgr = Rig::manager(&vfs, &control, &wal, &locks, Xid(3), knobs);
             Rig {
                 sim,
                 vfs,
                 control,
                 wal,
+                locks,
                 mgr,
-                irq: InterruptFlag::default(),
+                registered: Mutex::new(HashSet::new()),
             }
         }
 
-        fn wc(&self) -> WaitCtl<'_> {
-            WaitCtl {
-                lock_timeout: None,
-                interrupts: &self.irq,
-            }
+        fn manager(
+            vfs: &Arc<dyn Vfs>,
+            control: &Arc<ControlFileHandle>,
+            wal: &Arc<Wal>,
+            locks: &Arc<LockManager>,
+            next_xid: Xid,
+            knobs: DebugKnobs,
+        ) -> Arc<TxnManager> {
+            let clog = Arc::new(Clog::open(Arc::clone(vfs), next_xid, Xid(3)).unwrap());
+            TxnManager::new(
+                ProcArray::new(next_xid),
+                clog,
+                Arc::clone(control),
+                Arc::clone(wal),
+                Arc::clone(locks),
+                Arc::new(MultiXactTable::new(Arc::clone(control))),
+                knobs,
+            )
         }
 
-        fn begin(&self, session: u64) -> (Xid, WriterGuard) {
-            self.mgr.begin_write(session, &self.wc()).unwrap()
+        /// Registers the backend with the lock manager on first use.
+        fn backend(&self, session: u64) -> BackendId {
+            let id = BackendId(session);
+            if self.registered.lock().unwrap().insert(session) {
+                self.locks
+                    .register_backend(id, i32::try_from(session).unwrap());
+            }
+            id
+        }
+
+        fn begin(&self, session: u64) -> (Xid, XidGuard) {
+            self.mgr.assign_xid(self.backend(session)).unwrap()
         }
 
         /// The records readable from the start of the WAL on `vfs`.
@@ -699,6 +692,17 @@ mod tests {
             db_oid: 5,
             rel_number: RelFileNumber(n),
         }
+    }
+
+    #[test]
+    fn transaction_defaults_and_owns_xid() {
+        let mut t = Transaction::new();
+        assert_eq!(t.isolation, IsolationLevel::ReadCommitted);
+        assert!(t.xact_snapshot.is_none() && t.guard.is_none());
+        assert!(!t.owns_xid(Xid(7)));
+        t.xid = Some(Xid(7));
+        assert!(t.owns_xid(Xid(7)));
+        assert!(!t.owns_xid(Xid(8)));
     }
 
     #[test]
@@ -743,35 +747,18 @@ mod tests {
     }
 
     #[test]
-    fn restart_discards_prefetched_xids() {
-        let r = Rig::new();
-        let (x, g) = r.begin(1);
-        r.mgr.commit(x, &[]).unwrap();
-        drop(g);
-        let clog = Arc::new(Clog::open(Arc::clone(&r.vfs), Xid(r.control.get().next_xid)).unwrap());
-        let m2 = TxnManager::new(
-            clog,
-            Arc::clone(&r.control),
-            Arc::clone(&r.wal),
-            Xid(r.control.get().next_xid),
-            DebugKnobs::default(),
-        );
-        assert_eq!(m2.next_xid(), Xid(3 + XID_PREFETCH));
-    }
-
-    #[test]
     fn recovered_next_xid_beyond_the_control_file_extends_the_limit() {
         let r = Rig::new();
-        let clog = Arc::new(Clog::open(Arc::clone(&r.vfs), Xid(3)).unwrap());
         let ahead = Xid(r.control.get().next_xid + 10);
-        let m2 = TxnManager::new(
-            clog,
-            Arc::clone(&r.control),
-            Arc::clone(&r.wal),
+        let m2 = Rig::manager(
+            &r.vfs,
+            &r.control,
+            &r.wal,
+            &r.locks,
             ahead,
             DebugKnobs::default(),
         );
-        let (x, g) = m2.begin_write(1, &r.wc()).unwrap();
+        let (x, g) = m2.assign_xid(r.backend(1)).unwrap();
         assert_eq!(x, ahead);
         assert_eq!(m2.xid_counters().1, Xid(ahead.0 + XID_PREFETCH));
         assert_eq!(r.control.get().next_xid, ahead.0 + XID_PREFETCH);
@@ -801,244 +788,6 @@ mod tests {
         let after = m.snapshot(None, 0);
         assert_eq!((after.xmin, after.xmax), (Xid(4), Xid(4)));
         assert!(after.xip.is_empty());
-    }
-
-    #[test]
-    fn writer_lock_blocks_then_hands_over() {
-        let r = Rig::new();
-        let (x1, g1) = r.begin(1);
-        let m2 = Arc::clone(&r.mgr);
-        let got = Arc::new(AtomicBool::new(false));
-        let got2 = Arc::clone(&got);
-        let t = std::thread::spawn(move || {
-            let irq = InterruptFlag::default();
-            let (x, g) = m2
-                .begin_write(
-                    2,
-                    &WaitCtl {
-                        lock_timeout: None,
-                        interrupts: &irq,
-                    },
-                )
-                .unwrap();
-            got2.store(true, Ordering::SeqCst);
-            m2.commit(x, &[]).unwrap();
-            drop(g);
-            x
-        });
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!got.load(Ordering::SeqCst));
-        assert!(r.mgr.is_blocked_by(2, &[1]));
-        assert!(!r.mgr.is_blocked_by(2, &[3]));
-        assert!(!r.mgr.is_blocked_by(1, &[1]));
-        assert_eq!(r.mgr.writer_owner(), Some(1));
-        r.mgr.commit(x1, &[]).unwrap();
-        drop(g1);
-        let x2 = t.join().unwrap();
-        assert!(got.load(Ordering::SeqCst));
-        assert!(x2 > x1);
-        assert_eq!(r.mgr.writer_owner(), None);
-        assert!(!r.mgr.is_blocked_by(2, &[1]));
-    }
-
-    #[test]
-    fn waiters_get_the_lock_in_arrival_order() {
-        let r = Rig::new();
-        let (x0, g0) = r.begin(100);
-        let order = Arc::new(Mutex::new(Vec::new()));
-        let mut handles = Vec::new();
-        for sid in 1..=4u64 {
-            let m = Arc::clone(&r.mgr);
-            let order = Arc::clone(&order);
-            handles.push(std::thread::spawn(move || {
-                let irq = InterruptFlag::default();
-                let (x, g) = m
-                    .begin_write(
-                        sid,
-                        &WaitCtl {
-                            lock_timeout: None,
-                            interrupts: &irq,
-                        },
-                    )
-                    .unwrap();
-                order.lock().unwrap().push(sid);
-                m.commit(x, &[]).unwrap();
-                drop(g);
-            }));
-            // Make sure this waiter is queued before the next one starts.
-            while !r.mgr.is_blocked_by(sid, &[100]) {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
-        r.mgr.commit(x0, &[]).unwrap();
-        drop(g0);
-        for h in handles {
-            h.join().unwrap();
-        }
-        assert_eq!(*order.lock().unwrap(), vec![1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn writer_lock_timeout_is_55p03() {
-        let r = Rig::new();
-        let (x1, g1) = r.begin(1);
-        let start = Instant::now();
-        let wc = WaitCtl {
-            lock_timeout: Some(Duration::from_millis(50)),
-            interrupts: &r.irq,
-        };
-        let e = r.mgr.begin_write(2, &wc).unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::LOCK_NOT_AVAILABLE);
-        assert_eq!(e.message, "canceling statement due to lock timeout");
-        assert!(start.elapsed() >= Duration::from_millis(50));
-        // The loser consumed no XID, left the queue and did not disturb the owner.
-        assert_eq!(r.mgr.next_xid(), Xid(x1.0 + 1));
-        assert!(!r.mgr.is_blocked_by(2, &[1]));
-        r.mgr.commit(x1, &[]).unwrap();
-        drop(g1);
-        r.mgr.begin_write(2, &wc).unwrap();
-    }
-
-    #[test]
-    fn zero_lock_timeout_waits_forever() {
-        let r = Rig::new();
-        let (x1, g1) = r.begin(1);
-        let m2 = Arc::clone(&r.mgr);
-        let t = std::thread::spawn(move || {
-            let irq = InterruptFlag::default();
-            let wc = WaitCtl {
-                lock_timeout: Some(Duration::ZERO),
-                interrupts: &irq,
-            };
-            let (x, g) = m2.begin_write(2, &wc).unwrap();
-            m2.abort(x, &[]).unwrap();
-            drop(g);
-        });
-        std::thread::sleep(Duration::from_millis(150));
-        r.mgr.commit(x1, &[]).unwrap();
-        drop(g1);
-        t.join().unwrap();
-    }
-
-    #[test]
-    fn cancel_while_waiting_leaves_the_queue() {
-        let r = Rig::new();
-        let (x1, g1) = r.begin(1);
-        let m2 = Arc::clone(&r.mgr);
-        let irq2 = Arc::new(InterruptFlag::default());
-        let irq2c = Arc::clone(&irq2);
-        let t = std::thread::spawn(move || {
-            m2.begin_write(
-                2,
-                &WaitCtl {
-                    lock_timeout: None,
-                    interrupts: &irq2c,
-                },
-            )
-            .map(|_| ())
-        });
-        while !r.mgr.is_blocked_by(2, &[1]) {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        irq2.request_cancel();
-        let e = t.join().unwrap().unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::QUERY_CANCELED);
-        assert!(!r.mgr.is_blocked_by(2, &[1]));
-        // A later session still gets the lock.
-        r.mgr.commit(x1, &[]).unwrap();
-        drop(g1);
-        let (x, _g) = r.mgr.begin_write(3, &r.wc()).unwrap();
-        assert!(x > x1);
-    }
-
-    #[test]
-    fn cancelled_front_waiter_does_not_block_the_next_one() {
-        let r = Rig::new();
-        let (x1, g1) = r.begin(1);
-        let irq2 = Arc::new(InterruptFlag::default());
-        let m2 = Arc::clone(&r.mgr);
-        let irq2c = Arc::clone(&irq2);
-        let t2 = std::thread::spawn(move || {
-            m2.begin_write(
-                2,
-                &WaitCtl {
-                    lock_timeout: None,
-                    interrupts: &irq2c,
-                },
-            )
-            .map(|_| ())
-        });
-        while !r.mgr.is_blocked_by(2, &[1]) {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        let m3 = Arc::clone(&r.mgr);
-        let t3 = std::thread::spawn(move || {
-            let irq = InterruptFlag::default();
-            let (x, g) = m3
-                .begin_write(
-                    3,
-                    &WaitCtl {
-                        lock_timeout: None,
-                        interrupts: &irq,
-                    },
-                )
-                .unwrap();
-            m3.abort(x, &[]).unwrap();
-            drop(g);
-        });
-        while !r.mgr.is_blocked_by(3, &[1]) {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        // The owner finishes first; session 2 is cancelled in the same moment.
-        irq2.request_cancel();
-        r.mgr.commit(x1, &[]).unwrap();
-        drop(g1);
-        // Either 2 got the lock before noticing (then it ends with an XID it
-        // drops) or it was cancelled; 3 must get the lock in both cases.
-        let _ = t2.join().unwrap();
-        t3.join().unwrap();
-    }
-
-    #[test]
-    fn statement_deadline_and_terminate_end_the_wait() {
-        let r = Rig::new();
-        let (x1, g1) = r.begin(1);
-        let irq = InterruptFlag::default();
-        irq.set_statement_deadline(Some(Instant::now() + Duration::from_millis(30)));
-        let e = r
-            .mgr
-            .begin_write(
-                2,
-                &WaitCtl {
-                    lock_timeout: None,
-                    interrupts: &irq,
-                },
-            )
-            .unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::QUERY_CANCELED);
-        assert!(e.message.contains("statement timeout"));
-        irq.request_terminate();
-        let e = r
-            .mgr
-            .begin_write(
-                2,
-                &WaitCtl {
-                    lock_timeout: None,
-                    interrupts: &irq,
-                },
-            )
-            .unwrap_err();
-        assert_eq!(e.severity, Severity::Fatal);
-        r.mgr.commit(x1, &[]).unwrap();
-        drop(g1);
-    }
-
-    #[test]
-    fn double_begin_by_the_same_session_is_an_error() {
-        let r = Rig::new();
-        let (_x, _g) = r.begin(1);
-        let e = r.mgr.begin_write(1, &r.wc()).unwrap_err();
-        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
     }
 
     #[test]
@@ -1229,40 +978,6 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_commits_all_finish() {
-        let r = Rig::new();
-        let n = Arc::new(AtomicUsize::new(0));
-        let hs: Vec<_> = (0..4u64)
-            .map(|sid| {
-                let m = Arc::clone(&r.mgr);
-                let n = Arc::clone(&n);
-                std::thread::spawn(move || {
-                    let irq = InterruptFlag::default();
-                    for _ in 0..20 {
-                        let (x, g) = m
-                            .begin_write(
-                                sid,
-                                &WaitCtl {
-                                    lock_timeout: None,
-                                    interrupts: &irq,
-                                },
-                            )
-                            .unwrap();
-                        m.commit(x, &[]).unwrap();
-                        drop(g);
-                        n.fetch_add(1, Ordering::SeqCst);
-                    }
-                })
-            })
-            .collect();
-        for h in hs {
-            h.join().unwrap();
-        }
-        assert_eq!(n.load(Ordering::SeqCst), 80);
-        assert_eq!(Rig::records(&r.vfs).len(), 80);
-    }
-
-    #[test]
     fn barrier_shared_and_exclusive() {
         let r = Rig::new();
         let m = &r.mgr;
@@ -1323,9 +1038,120 @@ mod tests {
         assert!(done.load(Ordering::SeqCst));
     }
 
+    // ---- M5 (LK-3b): tests that replace the writer-lock tests ----
+
     #[test]
-    fn control_failure_during_prefetch_releases_the_writer() {
+    fn several_writers_hold_xids_at_the_same_time() {
         let r = Rig::new();
+        let (x1, g1) = r.begin(1);
+        let (x2, g2) = r.begin(2);
+        let (x3, g3) = r.begin(3);
+        assert_eq!((x1, x2, x3), (Xid(3), Xid(4), Xid(5)));
+        assert_eq!(r.mgr.procs().running_xids(), vec![x1, x2, x3]);
+        assert_eq!((g1.xid(), g1.backend()), (x1, BackendId(1)));
+        // Finishing in another order than assigning is fine.
+        r.mgr.commit(x2, &[]).unwrap();
+        r.mgr.abort(x3, &[]).unwrap();
+        assert!(r.mgr.is_in_progress(x1));
+        assert_eq!(r.mgr.oldest_xmin(), x1);
+        r.mgr.commit(x1, &[]).unwrap();
+        for g in [g1, g2, g3] {
+            drop(g);
+        }
+        assert_eq!(r.mgr.clog().status(x2).unwrap(), XidStatus::Committed);
+        assert_eq!(r.mgr.clog().status(x3).unwrap(), XidStatus::Aborted);
+        assert_eq!(r.mgr.oldest_xmin(), Xid(6));
+    }
+
+    #[test]
+    fn assign_registers_the_xid_lock_exclusively() {
+        let r = Rig::new();
+        let (x, g) = r.begin(1);
+        let tag = LockTag::TransactionId(x);
+        assert!(r.locks.holds(BackendId(1), tag, LockMode::Exclusive));
+        // Another backend cannot take it without waiting.
+        r.backend(2);
+        assert!(
+            !r.locks
+                .try_acquire(BackendId(2), tag, LockMode::Share, LockScope::Transaction)
+        );
+        r.mgr.commit(x, &[]).unwrap();
+        // D38: commit does not release the locks; the caller does, last.
+        assert!(r.locks.holds(BackendId(1), tag, LockMode::Exclusive));
+        r.locks.release_all(BackendId(1), LockScope::Transaction);
+        assert!(
+            r.locks
+                .try_acquire(BackendId(2), tag, LockMode::Share, LockScope::Transaction)
+        );
+        drop(g);
+        // A finished guard does not touch the locks again.
+        assert!(r.locks.holds(BackendId(2), tag, LockMode::Share));
+        r.locks.release_all(BackendId(2), LockScope::Transaction);
+    }
+
+    #[test]
+    fn assign_for_an_unregistered_backend_fails_without_consuming_an_xid() {
+        let r = Rig::new();
+        let e = r.mgr.assign_xid(BackendId(77)).unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
+        assert!(r.mgr.procs().running_xids().is_empty());
+        let (x, _g) = r.begin(1);
+        assert_eq!(x, Xid(3));
+    }
+
+    #[test]
+    fn dropping_an_unfinished_guard_releases_the_transaction_locks() {
+        let r = Rig::new();
+        let (x, g) = r.begin(1);
+        let before = r.wal.insert_lsn();
+        let tag = LockTag::TransactionId(x);
+        // A session-scope lock stays.
+        let other = LockTag::TransactionId(Xid(9999));
+        assert!(
+            r.locks
+                .try_acquire(BackendId(1), other, LockMode::Exclusive, LockScope::Session)
+        );
+        drop(g);
+        assert!(!r.mgr.is_in_progress(x));
+        assert_eq!(r.mgr.clog().status(x).unwrap(), XidStatus::Aborted);
+        assert_eq!(r.wal.insert_lsn(), before, "the safety net writes no WAL");
+        assert!(!r.locks.holds(BackendId(1), tag, LockMode::Exclusive));
+        assert!(r.locks.holds(BackendId(1), other, LockMode::Exclusive));
+        r.locks.release_all(BackendId(1), LockScope::Session);
+    }
+
+    #[test]
+    fn a_waiter_on_the_xid_lock_wakes_only_after_commit() {
+        // The order of D38 seen from another backend: while the XID is still
+        // running its lock is held; after `commit` the status is final.
+        let r = Rig::new();
+        let (x, g) = r.begin(1);
+        r.backend(2);
+        assert!(!r.mgr.locks().try_acquire(
+            BackendId(2),
+            LockTag::TransactionId(x),
+            LockMode::Share,
+            LockScope::Transaction
+        ));
+        assert!(r.mgr.is_in_progress(x));
+        r.mgr.commit(x, &[]).unwrap();
+        assert!(!r.mgr.is_in_progress(x));
+        assert_eq!(r.mgr.clog().status(x).unwrap(), XidStatus::Committed);
+        r.locks.release_all(BackendId(1), LockScope::Transaction);
+        assert!(r.mgr.locks().try_acquire(
+            BackendId(2),
+            LockTag::TransactionId(x),
+            LockMode::Share,
+            LockScope::Transaction
+        ));
+        r.locks.release_all(BackendId(2), LockScope::Transaction);
+        drop(g);
+    }
+
+    #[test]
+    fn control_failure_during_prefetch_consumes_no_xid_and_recovers() {
+        let r = Rig::new();
+        let b = r.backend(1);
         r.sim.set_faults(FaultPlan {
             rules: vec![FaultRule {
                 op: FaultOp::Write,
@@ -1335,16 +1161,277 @@ mod tests {
                 effect: FaultEffect::Error(std::io::ErrorKind::Other),
             }],
         });
-        let e = r.mgr.begin_write(1, &r.wc()).unwrap_err();
+        let e = r.mgr.assign_xid(b).unwrap_err();
         assert_eq!(e.severity, Severity::Panic);
         assert_eq!(r.mgr.xid_counters(), (Xid(3), Xid(3)));
-        assert_eq!(r.mgr.writer_owner(), None);
+        assert!(r.mgr.procs().running_xids().is_empty());
         r.sim.set_faults(FaultPlan::default());
-        let wc = WaitCtl {
-            lock_timeout: Some(Duration::from_millis(10)),
-            interrupts: &r.irq,
-        };
-        let (x, _g) = r.mgr.begin_write(2, &wc).unwrap();
+        let (x, _g) = r.mgr.assign_xid(b).unwrap();
         assert_eq!(x, Xid(3));
+    }
+
+    #[test]
+    fn take_snapshot_registers_and_holds_the_horizon() {
+        let r = Rig::new();
+        let (x, g) = r.begin(1);
+        let reg = r.mgr.take_snapshot(Some(x), 2);
+        assert_eq!(r.mgr.registered_snapshot_count(), 1);
+        assert_eq!((reg.xmin, reg.xmax, reg.own_xid), (x, Xid(4), Some(x)));
+        r.mgr.commit(x, &[]).unwrap();
+        drop(g);
+        // The registered snapshot (xmin = x) keeps the horizon back.
+        assert_eq!(r.mgr.oldest_xmin(), x);
+        drop(reg);
+        assert_eq!(r.mgr.registered_snapshot_count(), 0);
+        assert_eq!(r.mgr.oldest_xmin(), Xid(4));
+    }
+
+    #[test]
+    fn finish_without_xid_flushes_only_when_asked() {
+        let r = Rig::new();
+        r.mgr.finish_without_xid(Lsn::INVALID).unwrap();
+        let ins = r
+            .wal
+            .insert(
+                XactRecord {
+                    time_us: 1,
+                    rels: vec![],
+                }
+                .builder(XACT_COMMIT, Xid(3)),
+            )
+            .unwrap();
+        assert!(r.wal.flushed_lsn() < r.wal.insert_lsn());
+        r.mgr.finish_without_xid(ins.end).unwrap();
+        assert_eq!(r.wal.flushed_lsn(), r.wal.insert_lsn());
+        // No XID was involved: nothing in the running list or the clog.
+        assert!(r.mgr.procs().running_xids().is_empty());
+    }
+
+    #[test]
+    fn finish_without_xid_respects_the_skip_flush_knob() {
+        let r = Rig::with_knobs(DebugKnobs {
+            skip_commit_flush: true,
+            ..DebugKnobs::default()
+        });
+        let ins = r
+            .wal
+            .insert(
+                XactRecord {
+                    time_us: 1,
+                    rels: vec![],
+                }
+                .builder(XACT_COMMIT, Xid(3)),
+            )
+            .unwrap();
+        r.mgr.finish_without_xid(ins.end).unwrap();
+        assert!(r.wal.flushed_lsn() < r.wal.insert_lsn());
+    }
+
+    #[test]
+    fn failed_flush_in_finish_without_xid_is_panic() {
+        let r = Rig::new();
+        let ins = r
+            .wal
+            .insert(
+                XactRecord {
+                    time_us: 1,
+                    rels: vec![],
+                }
+                .builder(XACT_COMMIT, Xid(3)),
+            )
+            .unwrap();
+        r.sim.set_faults(FaultPlan {
+            rules: vec![FaultRule {
+                op: FaultOp::Sync,
+                path_prefix: Some("pg_wal".into()),
+                nth: None,
+                probability: None,
+                effect: FaultEffect::Error(std::io::ErrorKind::Other),
+            }],
+        });
+        let e = r.mgr.finish_without_xid(ins.end).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        r.sim.set_faults(FaultPlan::default());
+    }
+
+    #[test]
+    fn commit_and_abort_end_the_multixact_membership() {
+        use crate::txn::multixact::{LockTupleMode, MultiMember};
+        let r = Rig::new();
+        let (x1, g1) = r.begin(1);
+        let (x2, g2) = r.begin(2);
+        let mx = r.mgr.multixact();
+        mx.ensure_reserved().unwrap();
+        mx.create(&[
+            MultiMember {
+                xid: x1,
+                mode: LockTupleMode::Share,
+            },
+            MultiMember {
+                xid: x2,
+                mode: LockTupleMode::KeyShare,
+            },
+        ])
+        .unwrap();
+        assert_eq!(mx.len(), 1);
+        r.mgr.commit(x1, &[]).unwrap();
+        assert_eq!(mx.len(), 1, "one member is still running");
+        r.mgr.abort(x2, &[]).unwrap();
+        assert_eq!(mx.len(), 0, "all members ended");
+        drop((g1, g2));
+    }
+
+    #[test]
+    fn concurrent_writers_commit_in_parallel() {
+        let r = Rig::new();
+        let n = Arc::new(AtomicUsize::new(0));
+        let ids: Vec<BackendId> = (0..4).map(|s| r.backend(s)).collect();
+        let hs: Vec<_> = ids
+            .into_iter()
+            .map(|b| {
+                let m = Arc::clone(&r.mgr);
+                let n = Arc::clone(&n);
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        let (x, g) = m.assign_xid(b).unwrap();
+                        m.commit(x, &[]).unwrap();
+                        m.locks().release_all(b, LockScope::Transaction);
+                        drop(g);
+                        n.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        assert_eq!(n.load(Ordering::SeqCst), 80);
+        assert_eq!(Rig::records(&r.vfs).len(), 80);
+        assert!(r.mgr.procs().running_xids().is_empty());
+        assert_eq!(r.mgr.next_xid(), Xid(83));
+    }
+
+    #[test]
+    fn gate_and_barrier_state_is_tracked_for_rule_one() {
+        let r = Rig::new();
+        assert!(!track::gate_held());
+        let gate = r.mgr.commit_gate_exclusive().unwrap();
+        assert!(track::gate_held());
+        drop(gate);
+        assert!(!track::gate_held());
+        let (x, g) = r.begin(1);
+        r.mgr.commit(x, &[]).unwrap();
+        drop(g);
+        assert!(!track::gate_held(), "commit released the shared gate");
+        // A failed commit releases it too.
+        let e = r.mgr.commit(Xid(99), &[]).unwrap_err();
+        assert_eq!(e.severity, Severity::Panic);
+        assert!(!track::gate_held());
+    }
+
+    #[test]
+    fn restart_discards_prefetched_xids_with_new_constructor() {
+        let r = Rig::new();
+        let (x, g) = r.begin(1);
+        r.mgr.commit(x, &[]).unwrap();
+        drop(g);
+        let next = Xid(r.control.get().next_xid);
+        let m2 = Rig::manager(
+            &r.vfs,
+            &r.control,
+            &r.wal,
+            &r.locks,
+            next,
+            DebugKnobs::default(),
+        );
+        assert_eq!(m2.next_xid(), Xid(3 + XID_PREFETCH));
+        assert_eq!(m2.xid_counters().1, next, "the limit restarts at next_xid");
+    }
+
+    /// Whether backend 2 can take a `Share` lock on the XID lock of `x`
+    /// (the lock a waiter for the transaction asks for).
+    fn waiter_gets_xid_lock(r: &Rig, x: Xid) -> bool {
+        r.backend(2);
+        let got = r.locks.try_acquire(
+            BackendId(2),
+            LockTag::TransactionId(x),
+            LockMode::Share,
+            LockScope::Transaction,
+        );
+        if got {
+            r.locks.release_all(BackendId(2), LockScope::Transaction);
+        }
+        got
+    }
+
+    #[test]
+    fn commit_keeps_the_xid_lock_until_the_caller_releases_it() {
+        let r = Rig::new();
+        let (x, g) = r.begin(1);
+        r.mgr.commit(x, &[]).unwrap();
+        assert!(
+            !waiter_gets_xid_lock(&r, x),
+            "D38: the caller releases last"
+        );
+        r.locks.release_all(BackendId(1), LockScope::Transaction);
+        assert!(waiter_gets_xid_lock(&r, x));
+        drop(g);
+    }
+
+    #[test]
+    fn mutation_release_locks_before_commit_record_breaks_the_order() {
+        let r = Rig::with_knobs(DebugKnobs {
+            release_locks_before_commit_record: true,
+            ..DebugKnobs::default()
+        });
+        let (x, g) = r.begin(1);
+        let before = r.wal.insert_lsn();
+        // Make the commit fail at the WAL flush by an unregistered XID check
+        // is not possible here; instead observe the lock right after commit.
+        r.mgr.commit(x, &[]).unwrap();
+        assert!(
+            waiter_gets_xid_lock(&r, x),
+            "the mutation released the locks inside commit, without the caller"
+        );
+        assert!(r.wal.insert_lsn() > before);
+        drop(g);
+    }
+
+    #[test]
+    fn mutation_release_locks_before_commit_record_frees_the_waiter_while_running() {
+        // The waiter can get the XID lock while the clog still says
+        // "in progress" for the moment the release happens: the release is
+        // done before the record, so a commit that fails leaves no lock.
+        let r = Rig::with_knobs(DebugKnobs {
+            release_locks_before_commit_record: true,
+            ..DebugKnobs::default()
+        });
+        let (x, g) = r.begin(1);
+        // abort goes through the same path
+        r.mgr.abort(x, &[]).unwrap();
+        assert!(waiter_gets_xid_lock(&r, x));
+        drop(g);
+    }
+
+    #[test]
+    fn mutation_vacuum_ignore_registered_snapshots_lets_the_horizon_pass_them() {
+        for ignore in [false, true] {
+            let r = Rig::with_knobs(DebugKnobs {
+                vacuum_ignore_registered_snapshots: ignore,
+                ..DebugKnobs::default()
+            });
+            let snap = r.mgr.take_snapshot(None, 0); // xmin = next_xid (3)
+            let (x, g) = r.begin(1);
+            r.mgr.commit(x, &[]).unwrap();
+            r.locks.release_all(BackendId(1), LockScope::Transaction);
+            drop(g);
+            let horizon = r.mgr.oldest_xmin();
+            if ignore {
+                assert_eq!(horizon, r.mgr.next_xid(), "the snapshot is ignored");
+            } else {
+                assert_eq!(horizon, Xid(3), "the snapshot holds the horizon back");
+            }
+            drop(snap);
+        }
     }
 }

@@ -1,0 +1,457 @@
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET bytea_output = 'hex'
+
+# bytea の入力形式と出力形式（hex / escape）
+
+# 接頭辞: bytea_io_（テーブルは作らない）
+
+# hex 入力
+
+query T
+SELECT ('\x'::bytea)::text
+----
+\x
+
+query T
+SELECT ('\x00'::bytea)::text
+----
+\x00
+
+query T
+SELECT ('\xDEADBEEF'::bytea)::text
+----
+\xdeadbeef
+
+query T
+SELECT ('\xdeadbeef'::bytea)::text
+----
+\xdeadbeef
+
+query T
+SELECT ('\xDeAdBeEf'::bytea)::text
+----
+\xdeadbeef
+
+query T
+SELECT ('\x de ad be ef'::bytea)::text
+----
+\xdeadbeef
+
+query T
+SELECT ('\xde  ad'::bytea)::text
+----
+\xdead
+
+query T
+SELECT (E'\\x01\t02\n03'::bytea)::text
+----
+\x010203
+
+statement error (22023)
+SELECT ('\x0'::bytea)::text
+
+statement error (22023)
+SELECT ('\x123'::bytea)::text
+
+statement error (22023)
+SELECT ('\xg0'::bytea)::text
+
+statement error (22023)
+SELECT ('\xde ad b'::bytea)::text
+
+statement error (22023)
+SELECT ('\xd e'::bytea)::text
+
+query T
+SELECT ('\x0102030405060708090a0b0c0d0e0f1011121314'::bytea)::text
+----
+\x0102030405060708090a0b0c0d0e0f1011121314
+
+# 先頭が \x でない場合は escape 形式
+
+query T
+SELECT ('abc'::bytea)::text
+----
+\x616263
+
+query T
+SELECT (''::bytea)::text
+----
+\x
+
+query T
+SELECT ('a b'::bytea)::text
+----
+\x612062
+
+query T
+SELECT ('é'::bytea)::text
+----
+\xc3a9
+
+query T
+SELECT ('日本'::bytea)::text
+----
+\xe697a5e69cac
+
+# escape 入力
+
+query T
+SELECT (E'\\000'::bytea)::text
+----
+\x00
+
+query T
+SELECT (E'\\001\\002'::bytea)::text
+----
+\x0102
+
+query T
+SELECT (E'\\377'::bytea)::text
+----
+\xff
+
+query T
+SELECT (E'\\\\'::bytea)::text
+----
+\x5c
+
+query T
+SELECT (E'a\\\\b'::bytea)::text
+----
+\x615c62
+
+query T
+SELECT (E'\\101\\102'::bytea)::text
+----
+\x4142
+
+statement error (22P02)
+SELECT (E'\\400'::bytea)::text
+
+statement error (22P02)
+SELECT (E'\\1'::bytea)::text
+
+statement error (22P02)
+SELECT (E'\\12'::bytea)::text
+
+query T
+SELECT (E'\\x'::bytea)::text
+----
+\x
+
+statement error (22P02)
+SELECT (E'\\'::bytea)::text
+
+statement error (22P02)
+SELECT (E'abc\\'::bytea)::text
+
+statement error (22P02)
+SELECT (E'\\8'::bytea)::text
+
+query T
+SELECT (E'\\0000'::bytea)::text
+----
+\x0030
+
+query T
+SELECT (E'\\0001'::bytea)::text
+----
+\x0031
+
+query T
+SELECT ('\\'::bytea)::text
+----
+\x5c
+
+query T
+SELECT ('\\\\'::bytea)::text
+----
+\x5c5c
+
+# escape 出力
+
+statement ok
+SET bytea_output = 'escape'
+
+query T
+SELECT ('\x'::bytea)::text
+----
+(empty)
+
+query T
+SELECT ('\x00'::bytea)::text
+----
+\000
+
+query T
+SELECT ('\x41'::bytea)::text
+----
+A
+
+query T
+SELECT ('\x5c'::bytea)::text
+----
+\\
+
+query T
+SELECT ('\x7f'::bytea)::text
+----
+\177
+
+query T
+SELECT ('\x80'::bytea)::text
+----
+\200
+
+query T
+SELECT ('\xff'::bytea)::text
+----
+\377
+
+query T
+SELECT ('\x1f20'::bytea)::text
+----
+\037 
+
+query T
+SELECT ('\x61005c62'::bytea)::text
+----
+a\000\\b
+
+query T
+SELECT ('\x27'::bytea)::text
+----
+'
+
+query T
+SELECT ('\x22'::bytea)::text
+----
+"
+
+query T
+SELECT ('é'::bytea)::text
+----
+\303\251
+
+query T
+SELECT (convert_to('é', 'UTF8'))::text
+----
+\303\251
+
+query T
+SELECT ('\xc3a9'::bytea)::text
+----
+\303\251
+
+statement ok
+SET bytea_output = 'hex'
+
+query T
+SELECT (convert_to('é', 'UTF8'))::text
+----
+\xc3a9
+
+# 全 256 バイトの出力（hex / escape）
+
+query T
+SELECT ((SELECT md5(string_agg(chr(i), '' ORDER BY i)) FROM generate_series(1, 255) i))::text
+----
+0ce171571eda170f6edc1d4f9d6457e4
+
+query T
+SELECT ((SELECT string_agg(to_hex(get_byte(b, i)), ',' ORDER BY i) FROM (SELECT '\x00ff7f80'::bytea AS b) s, generate_series(0, 3) i))::text
+----
+0,ff,7f,80
+
+query T
+SELECT ((SELECT length(string_agg(set_byte('\x00'::bytea, 0, i)::text, '' ORDER BY i)) FROM generate_series(0, 255) i))::text
+----
+1024
+
+statement ok
+SET bytea_output = 'escape'
+
+query T
+SELECT ((SELECT md5(string_agg(set_byte('\x00'::bytea, 0, i)::text, '' ORDER BY i)) FROM generate_series(0, 255) i))::text
+----
+226436bdff571e4eea53cc65ad94d943
+
+query T
+SELECT ((SELECT length(string_agg(set_byte('\x00'::bytea, 0, i)::text, '' ORDER BY i)) FROM generate_series(0, 255) i))::text
+----
+740
+
+statement ok
+SET bytea_output = 'hex'
+
+query T
+SELECT ((SELECT md5(string_agg(set_byte('\x00'::bytea, 0, i)::text, '' ORDER BY i)) FROM generate_series(0, 255) i))::text
+----
+54e837db4dc1bda3afa186eebe1e8a2c
+
+# escape で出力して escape で読み戻すと元に戻る
+
+statement ok
+SET bytea_output = 'escape'
+
+query T
+SELECT ((SELECT bool_and(((set_byte('\x00'::bytea, 0, i)::text)::bytea) = set_byte('\x00'::bytea, 0, i)) FROM generate_series(0, 255) i))::text
+----
+true
+
+statement ok
+SET bytea_output = 'hex'
+
+# hex で出力して hex で読み戻すと元に戻る
+
+query T
+SELECT ((SELECT bool_and(((set_byte('\x00'::bytea, 0, i)::text)::bytea) = set_byte('\x00'::bytea, 0, i)) FROM generate_series(0, 255) i))::text
+----
+true
+
+# bytea_output
+
+statement error (22023)
+SET bytea_output = 'base64'
+
+query T
+SELECT (current_setting('bytea_output'))::text
+----
+hex
+
+statement ok
+SET bytea_output = 'escape'
+
+query T
+SELECT (current_setting('bytea_output'))::text
+----
+escape
+
+statement ok
+SET bytea_output = 'hex'
+
+# 型
+
+query T
+SELECT (pg_typeof('\x00'::bytea))::text
+----
+bytea
+
+query T
+SELECT (pg_typeof('\x00'::bytea || '\x01'::bytea))::text
+----
+bytea
+
+# bytea[] の入出力
+
+query T
+SELECT ('{}'::bytea[])::text
+----
+{}
+
+query T
+SELECT ('{"\\x00","\\xff"}'::bytea[])::text
+----
+{"\\x00","\\xff"}
+
+query T
+SELECT ('{"\\\\x00","\\\\xff"}'::bytea[])::text
+----
+{"\\x5c783030","\\x5c786666"}
+
+query T
+SELECT (ARRAY['\x00'::bytea, '\xdeadbeef'::bytea, NULL])::text
+----
+{"\\x00","\\xdeadbeef",NULL}
+
+query T
+SELECT (ARRAY['\x00'::bytea, '\xdeadbeef'::bytea]::text)::text
+----
+{"\\x00","\\xdeadbeef"}
+
+query T
+SELECT (ARRAY['\x61'::bytea])::text
+----
+{"\\x61"}
+
+statement ok
+SET bytea_output = 'escape'
+
+query T
+SELECT (ARRAY['\x615c62'::bytea, '\x20'::bytea, '\x'::bytea])::text
+----
+{"a\\\\b"," ",""}
+
+query T
+SELECT (ARRAY['a"b'::bytea])::text
+----
+{"a\"b"}
+
+statement ok
+SET bytea_output = 'hex'
+
+query T
+SELECT ((ARRAY['\x01'::bytea, '\x02'::bytea])[2])::text
+----
+\x02
+
+query T
+SELECT (array_length(ARRAY['\x01'::bytea, '\x02'::bytea], 1))::text
+----
+2
+
+# キャスト
+
+query T
+SELECT ('\x31'::bytea::text)::text
+----
+\x31
+
+query T
+SELECT ('abc'::text::bytea)::text
+----
+\x616263
+
+query T
+SELECT ('\x4142'::bytea::text)::text
+----
+\x4142
+
+statement error (42846)
+SELECT (1::bytea)::text
+
+statement error (42846)
+SELECT (1::int::bytea)::text
+
+statement error (42846)
+SELECT (true::bytea)::text
+
+statement error (42846)
+SELECT ('x'::bytea::int)::text
+
+query T
+SELECT (CAST('\x41' AS bytea))::text
+----
+\x41
+
+query T
+SELECT (bytea '\x41')::text
+----
+\x41
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET bytea_output
+

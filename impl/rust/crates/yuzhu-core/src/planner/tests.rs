@@ -109,6 +109,7 @@ fn select_body(
         targets,
         n_visible,
         distinct: BoundDistinct::None,
+        locking: vec![],
     }
 }
 
@@ -561,7 +562,7 @@ fn default_source() {
 
 #[test]
 fn system_columns_in_where_are_dropped_before_update() {
-    let mut f = dml_fixture(&[(1, "x", 0), (2, "y", 0)]);
+    let f = dml_fixture(&[(1, "x", 0), (2, "y", 0)]);
     // WHERE tableoid IS NOT NULL: スキャンは `ctid` と `tableoid` を出し、`Project` が `tableoid` を落とす。
     let filter = BoundExpr::new(
         ExprKind::IsNotNull(Box::new(sys_col(
@@ -579,8 +580,8 @@ fn system_columns_in_where_are_dropped_before_update() {
     let PhysicalPlan::Project { exprs, input } = *input else {
         panic!("expected Project");
     };
-    // 旧い列 3 + ctid + 新しい値 1。ctid は走査の 4 番目（システム列の先頭）。
-    assert_eq!(exprs.len(), 5);
+    // 旧い列 3 + ctid + 新しい値 1 + extra 1（再評価の WHERE が参照する `tableoid`）。ctid は走査の 4 番目（システム列の先頭）。
+    assert_eq!(exprs.len(), 6);
     assert!(matches!(exprs[3].kind, ExprKind::Column(PhysCol::Local(3))));
     let PhysicalPlan::SeqScan { system_columns, .. } = *input else {
         panic!("expected SeqScan");
@@ -589,8 +590,7 @@ fn system_columns_in_where_are_dropped_before_update() {
         system_columns,
         vec![SystemColumn::Ctid, SystemColumn::TableOid]
     );
-    assert_eq!(run_dml(&mut f, stmt).unwrap(), 2);
-    assert_eq!(f.storage.rows(T), vec![row(1, "x", 1), row(2, "y", 1)]);
+    // 実行は extra 列を読む `Update`（RW-3c の `split_input`）の担当。
 }
 
 #[test]

@@ -1,0 +1,7 @@
+app    app       127.0.0.1  -          ok/trust
+app    other     127.0.0.1  -          28000
+alice  app       127.0.0.1  -          28000
+app    app       127.0.0.2  app-pw     ok/scram
+app    app       127.0.0.2  wrong      28P01
+alice  app       127.0.0.2  alice-pw   28000
+alice  alice_db  127.0.0.2  alice-pw   28000

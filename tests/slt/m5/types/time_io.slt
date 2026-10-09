@@ -1,0 +1,380 @@
+# time の入出力・精度・範囲・キャスト・エラー
+# 接頭辞: types_time_io_
+
+statement ok
+DROP TABLE IF EXISTS types_time_io_t
+
+statement ok
+SET TIME ZONE 'UTC'
+
+statement ok
+SET DateStyle = 'ISO, MDY'
+
+statement ok
+SET IntervalStyle = 'postgres'
+
+query T
+SELECT (time '04:05:06')::text
+----
+04:05:06
+
+query T
+SELECT (time '04:05')::text
+----
+04:05:00
+
+query T
+SELECT (time '04:05:06.789')::text
+----
+04:05:06.789
+
+query T
+SELECT (time '04:05:06.123456')::text
+----
+04:05:06.123456
+
+query T
+SELECT (time '040506')::text
+----
+04:05:06
+
+query T
+SELECT (time '0405')::text
+----
+04:05:00
+
+query T
+SELECT (time '4:5:6')::text
+----
+04:05:06
+
+query T
+SELECT (time '04:05 PM')::text
+----
+16:05:00
+
+query T
+SELECT (time '04:05:06 AM')::text
+----
+04:05:06
+
+query T
+SELECT (time '12:00 AM')::text
+----
+00:00:00
+
+query T
+SELECT (time '12:00 PM')::text
+----
+12:00:00
+
+query T
+SELECT (time '12:30:45 am')::text
+----
+00:30:45
+
+query T
+SELECT (time '00:00:00')::text
+----
+00:00:00
+
+query T
+SELECT (time '23:59:59.999999')::text
+----
+23:59:59.999999
+
+query T
+SELECT (time '24:00:00')::text
+----
+24:00:00
+
+query T
+SELECT (time '24:00:00.000')::text
+----
+24:00:00
+
+query T
+SELECT (time 'allballs')::text
+----
+00:00:00
+
+statement error (22007)
+SELECT time 'midnight'
+
+query T
+SELECT (time '04:05:06.5')::text
+----
+04:05:06.5
+
+query T
+SELECT (time '04:05:06.0')::text
+----
+04:05:06
+
+query T
+SELECT (time '04:05:06.100')::text
+----
+04:05:06.1
+
+query T
+SELECT (time '04:05:06+09')::text
+----
+04:05:06
+
+statement error (22007)
+SELECT time '04:05:06 America/New_York'
+
+query T
+SELECT (time '2024-01-02 04:05:06')::text
+----
+04:05:06
+
+query T
+SELECT (time '2024-01-02 04:05:06+09')::text
+----
+04:05:06
+
+query T
+SELECT (time without time zone '04:05:06')::text
+----
+04:05:06
+
+query T
+SELECT ('04:05:06.789'::time(0))::text
+----
+04:05:07
+
+query T
+SELECT ('04:05:06.789'::time(1))::text
+----
+04:05:06.8
+
+query T
+SELECT ('04:05:06.789'::time(2))::text
+----
+04:05:06.79
+
+query T
+SELECT ('04:05:06.123456'::time(3))::text
+----
+04:05:06.123
+
+query T
+SELECT ('23:59:59.9999'::time(3))::text
+----
+24:00:00
+
+query T
+SELECT ('23:59:59.9999'::time(0))::text
+----
+24:00:00
+
+query T
+SELECT ('23:59:59.5'::time(0))::text
+----
+24:00:00
+
+query T
+SELECT (time(2) '04:05:06.789')::text
+----
+04:05:06.79
+
+query T
+SELECT (pg_typeof('04:05:06'::time))::text
+----
+time without time zone
+
+# time はテキストとキャスト
+
+query T
+SELECT ('04:05:06'::text::time)::text
+----
+04:05:06
+
+query T
+SELECT (time '04:05:06'::varchar)::text
+----
+04:05:06
+
+# キャスト
+
+query T
+SELECT (timestamp '2024-01-02 03:04:05.678'::time)::text
+----
+03:04:05.678
+
+query T
+SELECT (timestamp '2024-01-02 03:04:05.678'::time(1))::text
+----
+03:04:05.7
+
+query T
+SELECT (timestamptz '2024-01-02 03:04:05+00'::time)::text
+----
+03:04:05
+
+query T
+SELECT (timestamptz '2024-01-02 12:04:05+09'::time)::text
+----
+03:04:05
+
+query T
+SELECT (interval '03:04:05'::time)::text
+----
+03:04:05
+
+query T
+SELECT (interval '1 day 03:04:05'::time)::text
+----
+03:04:05
+
+query T
+SELECT (interval '-01:00:00'::time)::text
+----
+23:00:00
+
+query T
+SELECT (interval '25 hours'::time)::text
+----
+01:00:00
+
+query T
+SELECT (time '03:04:05'::interval)::text
+----
+03:04:05
+
+query T
+SELECT (time '24:00:00'::interval)::text
+----
+24:00:00
+
+# 比較
+
+query T
+SELECT (time '04:05:06' = time '04:05:06.000')::text
+----
+true
+
+query T
+SELECT (time '04:05:06' < time '04:05:07')::text
+----
+true
+
+query T
+SELECT (time '24:00:00' > time '23:59:59.999999')::text
+----
+true
+
+query T
+SELECT (time '00:00:00' < time '24:00:00')::text
+----
+true
+
+query T
+SELECT (time '12:00' = time '12:00 PM')::text
+----
+true
+
+query T
+SELECT (time '12:00' BETWEEN time '11:00' AND time '13:00')::text
+----
+true
+
+query T
+SELECT (time '00:00' IS DISTINCT FROM time '24:00')::text
+----
+true
+
+# 表
+
+statement ok
+CREATE TABLE types_time_io_t (id int, t time, t3 time(3), t0 time(0))
+
+statement ok
+INSERT INTO types_time_io_t VALUES (1, '04:05:06.789123', '04:05:06.789123', '04:05:06.789123')
+
+statement ok
+INSERT INTO types_time_io_t VALUES (2, '24:00:00', '24:00:00', '24:00:00')
+
+statement ok
+INSERT INTO types_time_io_t VALUES (3, NULL, NULL, NULL)
+
+statement ok
+INSERT INTO types_time_io_t VALUES (4, '00:00:00', '23:59:59.9996', '23:59:59.6')
+
+query ITTT
+SELECT id, t::text, t3::text, t0::text FROM types_time_io_t ORDER BY id
+----
+1	04:05:06.789123	04:05:06.789	04:05:07
+2	24:00:00	24:00:00	24:00:00
+3	NULL	NULL	NULL
+4	00:00:00	24:00:00	24:00:00
+
+query TTT
+SELECT format_type(atttypid, atttypmod), '', '' FROM pg_attribute WHERE attrelid = 'types_time_io_t'::regclass AND attnum > 1 ORDER BY attnum
+----
+time without time zone	(empty)	(empty)
+time(3) without time zone	(empty)	(empty)
+time(0) without time zone	(empty)	(empty)
+
+statement ok
+INSERT INTO types_time_io_t (id, t) VALUES (5, '12:00:00')
+
+query IT
+SELECT id, t::text FROM types_time_io_t WHERE t >= time '04:00' ORDER BY t, id
+----
+1	04:05:06.789123
+5	12:00:00
+2	24:00:00
+
+# エラー
+
+statement error (22007)
+SELECT time 'foo'
+
+statement error (22007)
+SELECT time ''
+
+statement error (22008)
+SELECT time '25:00:00'
+
+statement error (22008)
+SELECT time '24:00:01'
+
+statement error (22008)
+SELECT time '12:60:00'
+
+statement error (22008)
+SELECT time '12:00:61'
+
+statement error (22008)
+SELECT time '13:00 PM'
+
+statement error (22007)
+SELECT time '2024-01-02'
+
+query T
+SELECT ('12:00'::time(7))::text
+----
+12:00:00
+
+statement error (42601)
+SELECT '12:00'::time(-1)
+
+statement error (42846)
+SELECT 1::time
+
+statement error (42846)
+SELECT date '2024-01-01'::time
+
+statement ok
+RESET IntervalStyle
+
+statement ok
+RESET DateStyle
+
+statement ok
+RESET TIME ZONE
+
+statement ok
+DROP TABLE types_time_io_t

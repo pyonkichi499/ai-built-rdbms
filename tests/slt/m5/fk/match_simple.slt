@@ -1,0 +1,42 @@
+# FOREIGN KEY: MATCH SIMPLE（既定）。一部でも NULL なら検査されない
+# 接頭辞: fk_match_simple_
+
+statement ok
+DROP TABLE IF EXISTS fk_match_simple_c
+
+statement ok
+DROP TABLE IF EXISTS fk_match_simple_p
+
+statement ok
+CREATE TABLE fk_match_simple_p (a int, b int, PRIMARY KEY (a, b))
+
+statement ok
+INSERT INTO fk_match_simple_p VALUES (1, 1), (2, 2)
+
+statement ok
+CREATE TABLE fk_match_simple_c (n int PRIMARY KEY, a int, b int, FOREIGN KEY (a, b) REFERENCES fk_match_simple_p MATCH SIMPLE)
+
+statement ok
+INSERT INTO fk_match_simple_c VALUES (1, 1, 1), (2, NULL, NULL), (3, 1, NULL), (4, NULL, 99), (5, 77, NULL)
+
+statement error (?s)violates foreign key constraint "fk_match_simple_c_a_b_fkey".*Key \(a, b\)=\(1, 2\) is not present in table "fk_match_simple_p"\.
+INSERT INTO fk_match_simple_c VALUES (6, 1, 2)
+
+# UPDATE で一部を NULL にすると検査されない
+statement ok
+UPDATE fk_match_simple_c SET b = NULL WHERE n = 1
+
+# NULL を含む行は、親の削除を妨げない
+statement ok
+DELETE FROM fk_match_simple_p WHERE a = 1 AND b = 1
+
+query T
+SELECT confmatchtype FROM pg_constraint WHERE conname = 'fk_match_simple_c_a_b_fkey'
+----
+s
+
+statement ok
+DROP TABLE fk_match_simple_c
+
+statement ok
+DROP TABLE fk_match_simple_p

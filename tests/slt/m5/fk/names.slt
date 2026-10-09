@@ -1,0 +1,78 @@
+# FOREIGN KEY: 制約の自動命名
+# 接頭辞: fk_names_
+
+statement ok
+DROP TABLE IF EXISTS fk_names_c
+
+statement ok
+DROP TABLE IF EXISTS fk_names_m
+
+statement ok
+DROP TABLE IF EXISTS fk_names_p
+
+statement ok
+CREATE TABLE fk_names_p (id int PRIMARY KEY, k int UNIQUE)
+
+# 単一列: <表>_<列>_fkey
+statement ok
+CREATE TABLE fk_names_c (id int PRIMARY KEY, pid int REFERENCES fk_names_p, pid2 int REFERENCES fk_names_p (id), pk int REFERENCES fk_names_p (k))
+
+# 複数列: 列名を _ でつなぐ
+statement ok
+CREATE TABLE fk_names_m (a int, b int, UNIQUE (a, b), FOREIGN KEY (a, b) REFERENCES fk_names_m (a, b))
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_names_c'::regclass AND contype = 'f' ORDER BY conname
+----
+fk_names_c_pid2_fkey
+fk_names_c_pid_fkey
+fk_names_c_pk_fkey
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_names_m'::regclass AND contype = 'f'
+----
+fk_names_m_a_b_fkey
+
+# 同じ列に複数の FK: 2 つ目は fkey1、3 つ目は fkey2
+statement ok
+ALTER TABLE fk_names_c ADD FOREIGN KEY (pid) REFERENCES fk_names_p (id)
+
+statement ok
+ALTER TABLE fk_names_c ADD FOREIGN KEY (pid) REFERENCES fk_names_p (id)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_names_c'::regclass AND contype = 'f' AND conname LIKE 'fk_names_c_pid\_%' ORDER BY conname
+----
+fk_names_c_pid_fkey
+fk_names_c_pid_fkey1
+fk_names_c_pid_fkey2
+
+# 別の表の同名の制約（同じスキーマ）とも衝突を避ける
+statement ok
+ALTER TABLE fk_names_m ADD CONSTRAINT fk_names_c_id_fkey FOREIGN KEY (a, b) REFERENCES fk_names_m (a, b)
+
+statement ok
+ALTER TABLE fk_names_c ADD FOREIGN KEY (id) REFERENCES fk_names_p (id)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_names_c'::regclass AND contype = 'f' AND conname LIKE 'fk_names_c_id\_%'
+----
+fk_names_c_id_fkey1
+
+# 明示した名前はそのまま
+statement ok
+ALTER TABLE fk_names_c ADD CONSTRAINT "Fk_Names_Mixed" FOREIGN KEY (pk) REFERENCES fk_names_p (k)
+
+query T
+SELECT conname FROM pg_constraint WHERE conrelid = 'fk_names_c'::regclass AND conname = 'Fk_Names_Mixed'
+----
+Fk_Names_Mixed
+
+statement ok
+DROP TABLE fk_names_c
+
+statement ok
+DROP TABLE fk_names_m
+
+statement ok
+DROP TABLE fk_names_p

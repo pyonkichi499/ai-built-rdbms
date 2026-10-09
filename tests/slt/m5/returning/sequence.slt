@@ -1,0 +1,58 @@
+# RETURNING で採番した値を受け取る（ORM の使い方）
+
+statement ok
+DROP TABLE IF EXISTS returning_sequence_t
+
+statement ok
+CREATE TABLE returning_sequence_t (id serial PRIMARY KEY, name text NOT NULL, created boolean DEFAULT true)
+
+query I
+INSERT INTO returning_sequence_t (name) VALUES ('a') RETURNING id
+----
+1
+
+query IT rowsort
+INSERT INTO returning_sequence_t (name) VALUES ('b'), ('c') RETURNING id, name
+----
+2 b
+3 c
+
+query ITT
+INSERT INTO returning_sequence_t (name) VALUES ('d') RETURNING *
+----
+4 d t
+
+query I
+INSERT INTO returning_sequence_t (name) SELECT 'e' || n FROM generate_series(1, 3) n RETURNING id
+----
+5
+6
+7
+
+# 失敗した文でも採番は進む
+statement error (23502)
+INSERT INTO returning_sequence_t (name) VALUES (NULL) RETURNING id
+
+query I
+INSERT INTO returning_sequence_t (name) VALUES ('f') RETURNING id
+----
+9
+
+query I
+SELECT currval('returning_sequence_t_id_seq')
+----
+9
+
+query T
+INSERT INTO returning_sequence_t (name) VALUES ('g') RETURNING pg_typeof(id)
+----
+integer
+
+# 式の中で採番した列を使う
+query I
+INSERT INTO returning_sequence_t (name) VALUES ('h') RETURNING id + 0
+----
+11
+
+statement ok
+DROP TABLE returning_sequence_t

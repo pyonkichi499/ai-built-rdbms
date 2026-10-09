@@ -6,13 +6,12 @@
 
 use std::sync::Arc;
 
+use yuzhu_core::Cluster;
 use yuzhu_core::catalog::depend::{DropItem, DropKind, DropPlan, ObjectAddress};
 use yuzhu_core::catalog::store::DependFilter;
 use yuzhu_core::storage::{UniqueCheck, WriteCtx};
 use yuzhu_core::testing::user_relation_defs;
-use yuzhu_core::txn::WaitCtl;
 use yuzhu_core::types::{Datum, Tid};
-use yuzhu_core::{Cluster, InterruptFlag};
 
 use crate::workload::{Arm, Rng};
 use crate::{CaseSpec, Failure, LARGE_NTX, ModeSpec, SMALL_NTX, measure, run_case};
@@ -169,19 +168,12 @@ pub(crate) fn damage_catalog(
         return Ok(false);
     };
     let (db, _) = cluster
-        .connect("postgres", "postgres")
+        .connect_simple("postgres", "postgres")
         .map_err(|e| e.message)?;
     let tm = cluster.txn_manager();
-    let interrupts = InterruptFlag::default();
-    let (xid, guard) = tm
-        .begin_write(
-            u64::MAX - 1,
-            &WaitCtl {
-                lock_timeout: None,
-                interrupts: &interrupts,
-            },
-        )
-        .map_err(|e| e.message)?;
+    let backend = yuzhu_core::backend::BackendId(u64::MAX - 1);
+    cluster.locks().register_backend(backend, 1);
+    let (xid, guard) = tm.assign_xid(backend).map_err(|e| e.message)?;
     let w = WriteCtx { xid, cid: 0 };
     let snap = tm.snapshot(Some(xid), 0);
     let done = match d {
@@ -219,7 +211,11 @@ pub(crate) fn damage_catalog(
     };
     done.map_err(|e| e.message)?;
     tm.commit(xid, &[]).map_err(|e| e.message)?;
+    cluster
+        .locks()
+        .release_all(backend, yuzhu_core::txn::lock::LockScope::Transaction);
     drop(guard);
+    cluster.locks().unregister_backend(backend);
     Ok(true)
 }
 

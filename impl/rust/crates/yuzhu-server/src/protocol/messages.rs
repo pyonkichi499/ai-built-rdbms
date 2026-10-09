@@ -37,45 +37,13 @@ pub enum StartupPacket {
     },
 }
 
-/// Extended-query (and function-call) messages, which M1 does not support.
+/// Target of a Describe or Close message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ExtendedKind {
-    Parse,
-    Bind,
-    Describe,
-    Execute,
-    Close,
-    Flush,
-    FunctionCall,
-}
-
-impl ExtendedKind {
-    /// The message type byte.
-    pub fn tag(self) -> u8 {
-        match self {
-            Self::Parse => b'P',
-            Self::Bind => b'B',
-            Self::Describe => b'D',
-            Self::Execute => b'E',
-            Self::Close => b'C',
-            Self::Flush => b'H',
-            Self::FunctionCall => b'F',
-        }
-    }
-
-    /// Maps a message type byte to an extended-query kind.
-    pub fn from_tag(tag: u8) -> Option<Self> {
-        Some(match tag {
-            b'P' => Self::Parse,
-            b'B' => Self::Bind,
-            b'D' => Self::Describe,
-            b'E' => Self::Execute,
-            b'C' => Self::Close,
-            b'H' => Self::Flush,
-            b'F' => Self::FunctionCall,
-            _ => return None,
-        })
-    }
+pub enum DescribeTarget {
+    /// `S`: a prepared statement.
+    Statement,
+    /// `P`: a portal.
+    Portal,
 }
 
 /// A regular (typed) frontend message.
@@ -87,8 +55,37 @@ pub enum FrontendMessage {
     Terminate,
     /// `S`: Sync.
     Sync,
-    /// One of `P B D E C H F` (body discarded).
-    Extended(ExtendedKind),
+    /// `H`: Flush.
+    Flush,
+    /// `P`: Parse. `param_types` are the declared OIDs (0 = unspecified).
+    Parse {
+        name: String,
+        sql: String,
+        param_types: Vec<u32>,
+    },
+    /// `B`: Bind. Format codes are raw (`0` / `1` are checked by the caller);
+    /// `None` is a NULL parameter.
+    Bind {
+        portal: String,
+        stmt: String,
+        param_formats: Vec<i16>,
+        params: Vec<Option<Vec<u8>>>,
+        result_formats: Vec<i16>,
+    },
+    /// `D`: Describe.
+    Describe {
+        target: DescribeTarget,
+        name: String,
+    },
+    /// `C`: Close.
+    Close {
+        target: DescribeTarget,
+        name: String,
+    },
+    /// `E`: Execute. `max_rows <= 0` means all rows.
+    Execute { portal: String, max_rows: i32 },
+    /// `F`: FunctionCall (body discarded).
+    FunctionCall,
     /// `d`: CopyData (raw bytes of a `COPY FROM STDIN` stream).
     CopyData(Vec<u8>),
     /// `c`: CopyDone.
@@ -165,6 +162,30 @@ pub enum BackendMessage<'a> {
         format: u8,
         column_formats: &'a [i16],
     },
+    /// `1` ParseComplete.
+    ParseComplete,
+    /// `2` BindComplete.
+    BindComplete,
+    /// `3` CloseComplete.
+    CloseComplete,
+    /// `n` NoData.
+    NoData,
+    /// `s` PortalSuspended.
+    PortalSuspended,
+    /// `t` ParameterDescription (type OIDs).
+    ParameterDescription(&'a [u32]),
+    /// `D` DataRow with values already encoded in each column's format
+    /// (`None` is NULL).
+    DataRowRaw(&'a [Option<Vec<u8>>]),
+    /// `H` CopyOutResponse (same layout as `CopyInResponse`).
+    CopyOutResponse {
+        format: u8,
+        column_formats: &'a [i16],
+    },
+    /// `d` CopyData (COPY TO).
+    CopyData(&'a [u8]),
+    /// `c` CopyDone (COPY TO).
+    CopyDone,
     /// `E`ErrorResponse.
     ErrorResponse(ErrorFields<'a>),
     /// `N` NoticeResponse.

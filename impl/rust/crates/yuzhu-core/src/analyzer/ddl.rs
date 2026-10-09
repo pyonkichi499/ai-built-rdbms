@@ -36,8 +36,8 @@ pub(super) use crate::catalog::naming::make_object_name;
 /// PostgreSQL type names that yuzhu does not implement yet (0A000 rather
 /// than 42704 "does not exist").
 const KNOWN_UNSUPPORTED_TYPES: &[&str] = &[
-    "time", "timetz", "interval", "bytea", "json", "jsonb", "uuid", "money", "inet", "cidr",
-    "macaddr", "bit", "varbit", "xml", "point", "oid",
+    "timetz", "bytea", "json", "jsonb", "uuid", "money", "inet", "cidr", "macaddr", "bit",
+    "varbit", "xml", "point", "oid",
 ];
 
 /// 作れる名前空間は `public` だけ（`pg_catalog` は 42501、その他は 3F000）。
@@ -256,7 +256,11 @@ impl Analyzer<'_> {
         if tn.modifiers.is_empty() {
             return Ok(SqlType::of(t.oid));
         }
-        if !typmod::takes_typmod(t.oid) {
+        let is_datetime_typmod = matches!(
+            t.oid,
+            oid::TIME | oid::TIMESTAMP | oid::TIMESTAMPTZ | oid::INTERVAL
+        );
+        if !is_datetime_typmod && !typmod::takes_typmod(t.oid) {
             return Err(Error::syntax_at(
                 tn.span,
                 format!("type modifier is not allowed for type \"{name}\""),
@@ -276,7 +280,14 @@ impl Analyzer<'_> {
             };
             mods.push(super::expr::parse_int_literal(s).unwrap_or(i64::MAX));
         }
-        let typmod = typmod::typmod_in(t.oid, &mods).map_err(|e| e.with_span(tn.span))?;
+        let typmod = if is_datetime_typmod {
+            // `p > 6` の WARNING の積み先（通知の経路）が解析器に無いため、今は捨てる。
+            let mut notices = Vec::new();
+            crate::types::datetime::typmod_in(t.oid, &mods, &mut notices)
+        } else {
+            typmod::typmod_in(t.oid, &mods)
+        }
+        .map_err(|e| e.with_span(tn.span))?;
         Ok(SqlType::new(t.oid, typmod))
     }
 
@@ -697,6 +708,8 @@ impl Analyzer<'_> {
             if let Some((_, kind)) = found.filter(|(_, k)| *k != RelKind::Table) {
                 let hint = if kind == RelKind::Index {
                     "Use DROP INDEX to remove an index."
+                } else if kind == RelKind::Virtual {
+                    "Use DROP VIEW to remove a view."
                 } else {
                     "Use DROP SEQUENCE to remove a sequence."
                 };
@@ -1046,6 +1059,7 @@ fn relkind_plural(kind: RelKind) -> &'static str {
         RelKind::Table => "tables",
         RelKind::Index => "indexes",
         RelKind::Sequence => "sequences",
+        RelKind::Virtual => "views",
     }
 }
 

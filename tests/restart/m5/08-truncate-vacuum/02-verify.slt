@@ -1,0 +1,56 @@
+# フェーズ 2: a は TRUNCATE 後の内容、b と c は元の行が残る。書き込みも VACUUM も通る。
+
+statement ok
+SET lock_timeout = '5s'
+
+query IT
+SELECT id, v FROM crm5_08_a ORDER BY id
+----
+1 new1
+3 new3
+
+query IT
+SELECT id, v FROM crm5_08_b ORDER BY id
+----
+1 b1
+2 b2
+3 b3
+
+query IT
+SELECT id, v FROM crm5_08_c ORDER BY id
+----
+1 c1
+2 c2
+3 c3
+
+statement count 1
+INSERT INTO crm5_08_a VALUES (2, 'again')
+
+statement error (23505)
+INSERT INTO crm5_08_a VALUES (1, 'dup')
+
+statement count 3
+UPDATE crm5_08_b SET v = v || '!'
+
+statement ok
+VACUUM crm5_08_a
+
+statement ok
+VACUUM crm5_08_b
+
+statement ok
+TRUNCATE crm5_08_c
+
+query I
+SELECT count(*) FROM crm5_08_c
+----
+0
+
+statement ok
+DROP TABLE crm5_08_a
+
+statement ok
+DROP TABLE crm5_08_b
+
+statement ok
+DROP TABLE crm5_08_c
