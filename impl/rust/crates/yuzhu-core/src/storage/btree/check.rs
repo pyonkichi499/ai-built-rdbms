@@ -794,6 +794,9 @@ pub struct HeapCheck<'a> {
     pub rel: &'a RelHandle,
     pub own: Option<Xid>,
     pub check_unique_live: bool,
+    /// 真なら、ヒープにタプルのない索引項目を違反にしない。剪定（`m5/03` §5.2.3）が行ポインタを `LP_DEAD` にしても、
+    /// 索引項目は VACUUM が消すまで残るため（I16）。
+    pub allow_dangling: bool,
 }
 
 /// 構造の検査 + ヒープとの突き合わせ（I13）+（`check_unique_live` なら）生きている版のキーの重複なし。
@@ -865,7 +868,9 @@ pub fn check_against_heap(
             live_keys.push(key);
         }
     }
-    if let Some(tid) = entries.keys().min_by_key(|t| (t.block, t.offset)) {
+    if !hc.allow_dangling
+        && let Some(tid) = entries.keys().min_by_key(|t| (t.block, t.offset))
+    {
         return violation(
             None,
             "heap.dangling_entry",
@@ -1384,6 +1389,7 @@ mod tests {
             rel: &r,
             own: None,
             check_unique_live: unique_live,
+            allow_dangling: false,
         };
         match check_against_heap(t.pool(), &t.handle, &hc) {
             Ok(_) => None,

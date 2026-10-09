@@ -885,7 +885,7 @@ mod tests {
             ],
             apply: |_| {},
         };
-        if let Some(f) = mutation::detect(&m, &mutation::SEEDS[..2]) {
+        if let Some(f) = mutation::detect_points(&m, &mutation::SEEDS[..2], 6) {
             panic!("{f}");
         }
     }

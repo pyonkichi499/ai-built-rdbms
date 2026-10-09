@@ -981,6 +981,9 @@ impl Parser<'_> {
         }
         self.expect(&TokenKind::RParen)?;
         self.reject_indirection()?;
+        if self.peek_kind() == &TokenKind::LBracket {
+            return self.parse_subscript_inner(inner, true);
+        }
         Ok(inner)
     }
 

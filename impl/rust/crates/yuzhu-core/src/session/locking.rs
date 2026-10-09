@@ -37,12 +37,16 @@ impl Session {
         // Any statement but SET / SHOW / BEGIN / COMMIT / CHECKPOINT counts as
         // having used a snapshot (PostgreSQL 17, also for `SELECT 1`).
         self.txn_snapshot_taken = true;
-        let snap = cluster.txn_manager().snapshot(self.txn.xid, self.txn.cid);
+        // 登録つきのスナップショット（地平線を押さえ、文の間に剪定で版が消えないようにする。LK-D8）。
+        let registered = cluster
+            .txn_manager()
+            .take_snapshot(self.txn.xid, self.txn.cid);
+        let snap: &Snapshot = &registered;
         // 5.
         let search_path = self.settings.search_path();
         let catalog = StatementCatalog {
             db,
-            snapshot: &snap,
+            snapshot: snap,
             gen_at_snapshot: generation,
             bypass_cache: self.txn.catalog_dirty,
             search_path: &search_path,
@@ -81,7 +85,7 @@ impl Session {
             cluster,
             db,
             catalog: &catalog,
-            snapshot: &snap,
+            snapshot: snap,
             info: &info,
             runtime: &runtime,
             type_env: &type_env,
@@ -185,6 +189,10 @@ impl StmtEnv<'_> {
             type_env: self.type_env,
             mem_limit: self.planner.query_mem_limit,
             instr,
+            wait: Some(crate::txn::lock::WaitCtx {
+                backend: self.backend,
+                ctl: self.wait,
+            }),
         }
     }
 

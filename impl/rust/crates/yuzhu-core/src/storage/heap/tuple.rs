@@ -85,7 +85,7 @@ enum Kind {
     Timestamp,
     TimestampTz,
     Int2Vector,
-    /// Regular array types (not `int2[]`, which stays `Int2Vector` until the catalog migration).
+    /// Array types, `int2[]` included (`int2vector` stays `Int2Vector`).
     Array,
     /// Types that exist only for always-NULL columns.
     NullOnly,
@@ -114,7 +114,7 @@ fn kind_of(type_oid: u32) -> Result<Kind> {
         oid::DATE => Kind::Date,
         oid::TIMESTAMP => Kind::Timestamp,
         oid::TIMESTAMPTZ => Kind::TimestampTz,
-        oid::INT2VECTOR | oid::INT2_ARRAY => Kind::Int2Vector,
+        oid::INT2VECTOR => Kind::Int2Vector,
         oid::ACLITEM | oid::ANYARRAY | oid::ACLITEM_ARRAY => Kind::NullOnly,
         other if is_regular_array(other) => Kind::Array,
         other => {
@@ -126,8 +126,7 @@ fn kind_of(type_oid: u32) -> Result<Kind> {
 }
 
 fn is_regular_array(type_oid: u32) -> bool {
-    type_oid != oid::INT2_ARRAY
-        && typeinfo::is_array_type(type_oid)
+    typeinfo::is_array_type(type_oid)
         && typeinfo::element_type(type_oid).is_some_and(typeinfo::is_array_element_type)
 }
 
@@ -1127,7 +1126,7 @@ mod tests {
             Datum::Int2Vector(vec![1, -2, 3]),
             Datum::Oid(1259),
             Datum::Oid(23),
-            Datum::Int2Vector(vec![]),
+            Datum::Array(Box::new(crate::types::array::ArrayValue::from_int2s(&[]))),
         ];
         let mut rows = vec![full.clone()];
         // NULL in every single position, and all NULL.
@@ -1173,7 +1172,9 @@ mod tests {
             Datum::Int2Vector(vec![7]),
             Datum::Oid(8),
             Datum::Oid(9),
-            Datum::Int2Vector(vec![10, 11]),
+            Datum::Array(Box::new(crate::types::array::ArrayValue::from_int2s(&[
+                10, 11,
+            ]))),
         ];
         let mut buf = vec![0u8; 4];
         let mut any_var = false;

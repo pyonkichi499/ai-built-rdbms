@@ -345,16 +345,8 @@ impl Session {
             // The cluster may have been poisoned while we waited for the lock.
             Self::check_not_poisoned(&cluster)?;
         }
-        // 2. The shared storage barrier for the duration of the statement.
-        let barrier = mgr.statement_barrier()?;
-        if let Err(e) = Self::check_not_poisoned(&cluster) {
-            drop(barrier);
-            return Err(e);
-        }
-        buffer::track::barrier_acquired();
+        // 2. 文の実行は共有ストレージバリアを持たない（m5/01 LK-D23）。
         let result = self.run_under_barrier(stmt, &cluster, &db, read_only_write, out);
-        buffer::track::barrier_released();
-        drop(barrier);
         // The values this statement handed out are covered by the `SEQ_LOG`
         // records it wrote, success or not (`m4/08` §5.3).
         let lsn = self.seq_state.borrow_mut().end_statement();
@@ -634,6 +626,9 @@ pub(super) fn write_statement_tag(stmt: &Statement) -> Option<&'static str> {
         Statement::CreateSequence(_) => Some("CREATE SEQUENCE"),
         Statement::AlterSequence(_) => Some("ALTER SEQUENCE"),
         Statement::DropSequence(_) => Some("DROP SEQUENCE"),
+        Statement::CreateRole(_) => Some("CREATE ROLE"),
+        Statement::AlterRole(_) => Some("ALTER ROLE"),
+        Statement::DropRole(_) => Some("DROP ROLE"),
         Statement::Copy(c) if c.direction == crate::sql::ast::CopyDirection::From => {
             Some("COPY FROM")
         }

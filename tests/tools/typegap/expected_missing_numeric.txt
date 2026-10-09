@@ -84,12 +84,7 @@ proc	5022	pg_lsn_pli	型なし	pg_lsn / numrange / money は未実装の型
 proc	5023	numeric_pl_pg_lsn	不要	集約（AGGREGATES が持つ）または内部の補助
 proc	5024	pg_lsn_mii	型なし	pg_lsn / numrange / money は未実装の型
 proc	6103	pg_lsn	型なし	pg_lsn / numrange / money は未実装の型
-proc	6199	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
-proc	6200	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
 proc	6201	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
-proc	6202	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
-proc	6203	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
-proc	6204	extract	不要	内部の補助・typmod 強制・extract(numeric) は TD
 proc	6341	random	M6	書式言語・generate_series(numeric) は M6
 proc	780	hash_numeric_extended	不要	内部の補助・typmod 強制・extract(numeric) は TD
 amop	1998:1	1752	不要	hash / BRIN の演算子族（M4 に btree 以外のインデックスはない）

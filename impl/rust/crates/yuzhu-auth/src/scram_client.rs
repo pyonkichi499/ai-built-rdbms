@@ -12,6 +12,7 @@ pub struct ClientExchange {
     password: String,
     client_nonce: String,
     client_first_bare: String,
+    gs2_header: &'static str,
     server_signature: Option<[u8; KEY_LEN]>,
 }
 
@@ -38,13 +39,21 @@ impl ClientExchange {
             password: password.to_owned(),
             client_nonce: client_nonce.to_owned(),
             client_first_bare: format!("n={},r={client_nonce}", escape_username(username)),
+            gs2_header: "n,,",
             server_signature: None,
         }
     }
 
-    /// `n,,n=<user>,r=<nonce>`.
+    /// GS2 ヘッダを `y,,`（クライアントは対応するがサーバーが広告しなかった）にする。
+    #[must_use]
+    pub fn with_binding_flag_y(mut self) -> Self {
+        self.gs2_header = "y,,";
+        self
+    }
+
+    /// `n,,n=<user>,r=<nonce>`（`with_binding_flag_y` なら `y,,`）。
     pub fn client_first(&self) -> Vec<u8> {
-        format!("n,,{}", self.client_first_bare).into_bytes()
+        format!("{}{}", self.gs2_header, self.client_first_bare).into_bytes()
     }
 
     /// Process server-first-message and build client-final-message.
@@ -79,7 +88,7 @@ impl ClientExchange {
         let client_key = hmac_sha256(&salted, &[b"Client Key"]);
         let stored_key = sha256(&client_key);
         let server_key = hmac_sha256(&salted, &[b"Server Key"]);
-        let without_proof = format!("c=biws,r={nonce}");
+        let without_proof = format!("c={},r={nonce}", B64.encode(self.gs2_header));
         let auth_message = [
             self.client_first_bare.as_bytes(),
             b",",

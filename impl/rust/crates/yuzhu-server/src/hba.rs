@@ -584,9 +584,9 @@ host    all       all       all                   reject
         )
         .unwrap();
         assert_eq!(r.rules().len(), 2);
-        assert_eq!(r.rules()[0].line, 4);
+        assert_eq!(r.rules()[0].line, 3);
         assert_eq!(r.rules()[0].method, HbaMethod::Trust);
-        assert_eq!(r.rules()[1].line, 7);
+        assert_eq!(r.rules()[1].line, 6);
     }
 
     #[test]
@@ -838,7 +838,8 @@ host    all       all       all                   reject
             r.find(ip("192.168.2.1"), "d", "u"),
             Some(HbaMethod::Password)
         );
-        assert_eq!(r.find(ip("1.2.3.4"), "d", "u"), Some(HbaMethod::Password));
+        // First match wins: the /32 reject rule precedes the catch-all.
+        assert_eq!(r.find(ip("1.2.3.4"), "d", "u"), Some(HbaMethod::Reject));
         let r6 =
             HbaRules::parse("host all all ::/0 trust\nhost all all fe80::1/128 reject").unwrap();
         assert_eq!(r6.find(ip("fe80::1"), "d", "u"), Some(HbaMethod::Trust));

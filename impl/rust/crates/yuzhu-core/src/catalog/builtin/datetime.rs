@@ -9,14 +9,12 @@
 //! * `timestamptz ± interval`（OID 1327・1329・2554）は、セッションの `TimeZone` が要る（stable）。
 //!   `BuiltinOperator.func` は純粋な関数なので `needs_env`（呼ぶと内部エラー）を置いた。実行は
 //!   `INTERVAL_FUNCTIONS` の `FnKind::Env` の行（OID 1189・1190・2549。`OperatorMeta.proc_oid` と同じ）で行う。
-//!   演算子の呼び出しを「proc_oid の `FnKind::Env` 関数があればそちらを `TypeEnv` つきで呼ぶ」に
+//!   演算子の呼び出しを「`proc_oid` の `FnKind::Env` 関数があればそちらを `TypeEnv` つきで呼ぶ」に
 //!   するのは executor / analyzer の持ち主の仕事。
 //! * `sum(interval)` / `avg(interval)` は `AggKind` に変種（と `AggState`）が要る。
 //!   本体は `types::interval::{IntervalSum, IntervalAvg}`。`min` / `max` は `AggKind::Min` / `Max`。
 
 #![allow(clippy::wildcard_imports)]
-// 表の結合（mod.rs / core.rs）が済むまでは参照されない。
-#![allow(dead_code)]
 
 use super::*;
 use crate::types::datetime::fns as dtf;
@@ -24,7 +22,7 @@ use crate::types::interval as iv;
 
 /// interval に関わる演算子（`pg_operator`）。
 #[rustfmt::skip]
-pub static INTERVAL_OPERATORS: &[BuiltinOperator] = &[
+pub(super) static INTERVAL_OPERATORS: &[BuiltinOperator] = &[
     op(1330, "=", INTERVAL, INTERVAL, oid::BOOL, iv::interval_eq),
     op(1331, "<>", INTERVAL, INTERVAL, oid::BOOL, iv::interval_ne),
     op(1332, "<", INTERVAL, INTERVAL, oid::BOOL, iv::interval_lt),
@@ -52,7 +50,7 @@ pub static INTERVAL_OPERATORS: &[BuiltinOperator] = &[
 
 /// `INTERVAL_OPERATORS` のうち、`core.rs` の `OPERATOR_META` に無い行（1330〜1338、1583〜1585 は既存）。
 #[rustfmt::skip]
-pub static INTERVAL_OPERATOR_META: &[OperatorMeta] = &[
+pub(super) static INTERVAL_OPERATOR_META: &[OperatorMeta] = &[
     OperatorMeta { oid: 1076, proc_oid: 2071, com: 2551, negate: 0 },
     OperatorMeta { oid: 1077, proc_oid: 2072, com: 0, negate: 0 },
     OperatorMeta { oid: 1327, proc_oid: 1189, com: 2554, negate: 0 },
@@ -68,7 +66,7 @@ pub static INTERVAL_OPERATOR_META: &[OperatorMeta] = &[
 
 /// 利用者が呼べる interval の関数。`FnKind::Env` の 3 行（1189・1190・2549）は演算子の本体でもある。
 #[rustfmt::skip]
-pub static INTERVAL_FUNCTIONS: &[BuiltinFunction] = &[
+pub(super) static INTERVAL_FUNCTIONS: &[BuiltinFunction] = &[
     func(1175, "justify_hours", &[INTERVAL], INTERVAL, iv::interval_justify_hours),
     func(1295, "justify_days", &[INTERVAL], INTERVAL, iv::interval_justify_days),
     func(2711, "justify_interval", &[INTERVAL], INTERVAL, iv::interval_justify_interval),
@@ -99,7 +97,7 @@ const fn env_func(
 
 /// `INTERVAL_OPERATORS` と `INTERVAL_FUNCTIONS` が指す `pg_proc` の行で `core.rs` の `PROCS` に無いもの。
 #[rustfmt::skip]
-pub static INTERVAL_PROCS: &[BuiltinProc] = &[
+pub(super) static INTERVAL_PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 1175, name: "justify_hours", args: &[1186], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "interval_justify_hours" },
     BuiltinProc { oid: 1188, name: "timestamptz_mi", args: &[1184, 1184], result: 1186, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamp_mi" },
     BuiltinProc { oid: 1189, name: "timestamptz_pl_interval", args: &[1184, 1186], result: 1184, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "timestamptz_pl_interval" },
@@ -124,7 +122,7 @@ pub static INTERVAL_PROCS: &[BuiltinProc] = &[
 /// `min(interval)`（2144）と `max(interval)`（2128）。汎用の `Min` / `Max` が `cmp_datum` で動く。
 /// `sum(interval)`（2113）と `avg(interval)`（2106）は `AggKind` の変種が要る（ファイル先頭の注）。
 #[rustfmt::skip]
-pub static INTERVAL_AGGREGATES: &[BuiltinAggregate] = &[
+pub(super) static INTERVAL_AGGREGATES: &[BuiltinAggregate] = &[
     agg(2144, "min", &[INTERVAL], INTERVAL, AggKind::Min),
     agg(2128, "max", &[INTERVAL], INTERVAL, AggKind::Max),
 ];
@@ -146,7 +144,7 @@ use crate::types::time as tm;
 
 /// `pg_type` の `time`（1083）。配列型 `_time`（1183）の行は 05 章の配列の仕事。
 #[rustfmt::skip]
-pub static TIME_TYPES: &[BuiltinType] = &[
+pub(super) static TIME_TYPES: &[BuiltinType] = &[
     ty(1083, "time", 8, true, 'b', 'D', false, ',', 0, 0, 1183, ("time_in", 1143), ("time_out", 1144), 'd', 'p', 0),
 ];
 
@@ -154,7 +152,7 @@ const TIME: Oid = oid::TIME;
 
 /// time が絡む演算子（`pg_operator`）。
 #[rustfmt::skip]
-pub static TIME_OPERATORS: &[BuiltinOperator] = &[
+pub(super) static TIME_OPERATORS: &[BuiltinOperator] = &[
     op(1108, "=", TIME, TIME, oid::BOOL, tm::time_eq),
     op(1109, "<>", TIME, TIME, oid::BOOL, tm::time_ne),
     op(1110, "<", TIME, TIME, oid::BOOL, tm::time_lt),
@@ -171,7 +169,7 @@ pub static TIME_OPERATORS: &[BuiltinOperator] = &[
 
 /// `TIME_OPERATORS` の `OperatorMeta`（`oprcode`、`oprcom`、`oprnegate`）。
 #[rustfmt::skip]
-pub static TIME_OPERATOR_META: &[OperatorMeta] = &[
+pub(super) static TIME_OPERATOR_META: &[OperatorMeta] = &[
     OperatorMeta { oid: 1108, proc_oid: 1145, com: 1108, negate: 1109 },
     OperatorMeta { oid: 1109, proc_oid: 1106, com: 1109, negate: 1108 },
     OperatorMeta { oid: 1110, proc_oid: 1102, com: 1112, negate: 1113 },
@@ -188,7 +186,7 @@ pub static TIME_OPERATOR_META: &[OperatorMeta] = &[
 
 /// 利用者が呼べる time の関数。`FnKind::Env` の行はセッションの `TimeZone` が要る（stable）。
 #[rustfmt::skip]
-pub static TIME_FUNCTIONS: &[BuiltinFunction] = &[
+pub(super) static TIME_FUNCTIONS: &[BuiltinFunction] = &[
     func(1968, "time", &[TIME, oid::INT4], TIME, tm::time_scale),
     func(1370, "interval", &[TIME], INTERVAL, tm::time_to_interval),
     func(1419, "time", &[INTERVAL], TIME, tm::interval_to_time),
@@ -207,7 +205,7 @@ pub static TIME_FUNCTIONS: &[BuiltinFunction] = &[
 /// `timestamp / timestamptz → time` は代入、`time → interval` と `time → time` は暗黙。
 /// `text ↔ time` は I/O キャスト（TY-1 の枠組みが生成する）。
 #[rustfmt::skip]
-pub static TIME_CASTS: &[BuiltinCast] = &[
+pub(super) static TIME_CASTS: &[BuiltinCast] = &[
     cast_fn(TIME, TIME, CastContext::Implicit, tm::time_scale, 1968),
     cast_fn(TIME, INTERVAL, CastContext::Implicit, tm::time_to_interval, 1370),
     cast_fn(INTERVAL, TIME, CastContext::Assignment, tm::interval_to_time, 1419),
@@ -217,7 +215,7 @@ pub static TIME_CASTS: &[BuiltinCast] = &[
 
 /// `min(time)`（2139）と `max(time)`（2123）。汎用の `Min` / `Max` が `cmp_datum` で動く。
 #[rustfmt::skip]
-pub static TIME_AGGREGATES: &[BuiltinAggregate] = &[
+pub(super) static TIME_AGGREGATES: &[BuiltinAggregate] = &[
     agg(2139, "min", &[TIME], TIME, AggKind::Min),
     agg(2123, "max", &[TIME], TIME, AggKind::Max),
 ];
@@ -249,7 +247,7 @@ const fn time_proc(
 /// だが集約の行は `AGGREGATES` から作られる）ので、ここには入れない。`time_hash`（1688）と
 /// `time_hash_extended`（3409）、`in_range`（4137）、`overlaps`（1308〜1311）は作らない。
 #[rustfmt::skip]
-pub static TIME_PROCS: &[BuiltinProc] = &[
+pub(super) static TIME_PROCS: &[BuiltinProc] = &[
     time_proc(1143, "time_in", &[2275, 26, 23], TIME, 's', false, "time_in"),
     time_proc(1144, "time_out", &[TIME], 2275, 'i', false, "time_out"),
     time_proc(1145, "time_eq", &[TIME, TIME], oid::BOOL, 'i', true, "time_eq"),
@@ -301,7 +299,7 @@ fn unsupported_formatting(_args: &[Datum]) -> Result<Datum> {
 }
 
 #[rustfmt::skip]
-pub static TD3_FUNCTIONS: &[BuiltinFunction] = &[
+pub(super) static TD3_FUNCTIONS: &[BuiltinFunction] = &[
     // date_part / extract
     env_func(1171, "date_part", &[TEXT, TSTZ], F8, dtf::date_part_timestamptz),
     func(1172, "date_part", &[TEXT, IV], F8, dtf::date_part_interval),
@@ -373,7 +371,7 @@ const fn td3_proc(
 }
 
 #[rustfmt::skip]
-pub static TD3_PROCS: &[BuiltinProc] = &[
+pub(super) static TD3_PROCS: &[BuiltinProc] = &[
     td3_proc(1171, "date_part", &[TEXT, TSTZ], F8, 's', "timestamptz_part"),
     td3_proc(1172, "date_part", &[TEXT, IV], F8, 'i', "interval_part"),
     td3_proc(1384, "date_part", &[TEXT, oid::DATE], F8, 'i', "select pg_catalog.date_part($1, cast($2 as timestamp without time zone))"),
@@ -444,7 +442,11 @@ mod tests {
         for m in INTERVAL_OPERATOR_META {
             assert!(INTERVAL_OPERATORS.iter().any(|o| o.oid == m.oid));
             // core.rs の表と重ならない
-            assert!(super::super::OPERATOR_META.iter().all(|c| c.oid != m.oid));
+            assert!(
+                super::core::CORE_OPERATOR_META
+                    .iter()
+                    .all(|c| c.oid != m.oid)
+            );
         }
     }
 
@@ -454,7 +456,7 @@ mod tests {
         assert_eq!(oids.len(), INTERVAL_PROCS.len());
         for p in INTERVAL_PROCS {
             assert!(
-                super::super::PROCS.iter().all(|c| c.oid != p.oid),
+                super::core::PROCS.iter().all(|c| c.oid != p.oid),
                 "{}",
                 p.oid
             );
@@ -578,7 +580,7 @@ mod td3_tests {
             );
             // 他の表と OID が重ならない
             assert!(
-                super::super::PROCS.iter().all(|c| c.oid != f.oid),
+                super::core::PROCS.iter().all(|c| c.oid != f.oid),
                 "{}",
                 f.oid
             );
@@ -834,7 +836,7 @@ mod td4_tests {
         assert_eq!(proc_oids.len(), TIME_PROCS.len());
         for p in TIME_PROCS {
             assert!(
-                super::super::PROCS.iter().all(|c| c.oid != p.oid),
+                super::core::PROCS.iter().all(|c| c.oid != p.oid),
                 "{}",
                 p.oid
             );
@@ -845,7 +847,7 @@ mod td4_tests {
         assert_eq!(ops.len(), TIME_OPERATORS.len());
         for o in TIME_OPERATORS {
             assert!(
-                super::super::OPERATORS.iter().all(|c| c.oid != o.oid),
+                super::core::CORE_OPERATORS.iter().all(|c| c.oid != o.oid),
                 "{}",
                 o.oid
             );
@@ -855,7 +857,7 @@ mod td4_tests {
                 o.oid
             );
         }
-        assert!(super::super::TYPES.iter().all(|c| c.oid != 1083));
+        assert!(super::core::TYPES.iter().all(|c| c.oid != 1083));
     }
 
     #[test]

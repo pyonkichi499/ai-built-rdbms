@@ -32,8 +32,9 @@ pub(crate) struct Mutation {
 /// 既定のシード集合。
 pub(crate) const SEEDS: &[u64] = &[11, 12, 13, 14, 15, 16];
 
-/// 1 シードあたりに試す N の数（終わりまで走らせる N なしも必ず試す）。
-const POINTS_PER_SEED: u64 = 6;
+/// 1 シードあたりに試す N の数（終わりまで走らせる N なしも必ず試す）。M5 で I/O の数が変わり、
+/// 分割の途中のクラッシュを引く確率が下がったため 6 から増やした。
+const POINTS_PER_SEED: u64 = 24;
 
 pub(crate) fn mutations() -> Vec<Mutation> {
     vec![
@@ -112,6 +113,11 @@ pub(crate) fn mutations() -> Vec<Mutation> {
 /// 変異を仕込んだ試験を、シード・ワークロード・N・クラッシュのしかたを変えながら流し、
 /// 最初に見つかった違反を返す。
 pub(crate) fn detect(m: &Mutation, seeds: &[u64]) -> Option<Failure> {
+    detect_points(m, seeds, POINTS_PER_SEED)
+}
+
+/// `detect` の、1 シードあたりの N の数を指定する版（偽陽性の確認は少なくてよい）。
+pub(crate) fn detect_points(m: &Mutation, seeds: &[u64], points: u64) -> Option<Failure> {
     for &seed in seeds {
         for (wi, w) in m.workloads.iter().enumerate() {
             for ntx in [SMALL_NTX, LARGE_NTX] {
@@ -119,12 +125,12 @@ pub(crate) fn detect(m: &Mutation, seeds: &[u64]) -> Option<Failure> {
                 let total = measure(w, seed, ntx);
                 let mut rng = Rng::new(seed ^ (wi as u64) << 16 ^ u64::from(ntx));
                 for mode in m.modes {
-                    for point in 0..=POINTS_PER_SEED {
+                    for point in 0..=points {
                         let mut spec = CaseSpec::new(w, seed);
                         spec.ntx = ntx;
                         spec.mode = *mode;
                         // 最後の 1 回は障害なしで終わりまで走らせる。
-                        spec.arm = if point == POINTS_PER_SEED {
+                        spec.arm = if point == points {
                             Arm::None
                         } else {
                             Arm::CrashAt(rng.below(total + 1))
@@ -415,7 +421,7 @@ mod tests {
             ],
             apply: |_| {},
         };
-        if let Some(f) = detect(&m, &SEEDS[..2]) {
+        if let Some(f) = detect_points(&m, &SEEDS[..2], 6) {
             panic!("{f}");
         }
     }

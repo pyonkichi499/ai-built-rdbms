@@ -317,7 +317,7 @@ pub enum AggKind {
 }
 
 /// A row of `pg_proc` with `prokind = 'a'`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BuiltinAggregate {
     /// `pg_proc.oid`.
     pub oid: Oid,

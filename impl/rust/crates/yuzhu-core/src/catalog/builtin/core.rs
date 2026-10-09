@@ -9,7 +9,7 @@ use crate::types::numeric;
 /// (`m2.md` §1.3), the pseudo-types and composite types needed to close the
 /// references of the catalog rows, and the array types of §1.3.
 #[rustfmt::skip]
-pub static TYPES: &[BuiltinType] = &[
+pub(super) static TYPES: &[BuiltinType] = &[
     ty(16, "bool", 1, true, 'b', 'B', true, ',', 0, 0, 1000, ("boolin", 1242), ("boolout", 1243), 'c', 'p', 0),
     ty(18, "char", 1, true, 'b', 'Z', false, ',', 0, 0, 1002, ("charin", 1245), ("charout", 33), 'c', 'p', 0),
     ty(19, "name", 64, false, 'b', 'S', false, ',', 0, 18, 1003, ("namein", 34), ("nameout", 35), 'c', 'p', 950),
@@ -80,7 +80,7 @@ pub static TYPES: &[BuiltinType] = &[
 /// decided by the analyzer (`find_coercion_pathway`). Same-type length
 /// coercion (`varchar(n)`) is a separate `CoerceTypmod` step, not a row here.
 #[rustfmt::skip]
-pub static CASTS: &[BuiltinCast] = &[
+pub(super) static CORE_CASTS: &[BuiltinCast] = &[
     cast(oid::INT2, oid::INT4, CastContext::Implicit, CastMethod::Function(ops::to_int4), 313),
     cast(oid::INT2, oid::INT8, CastContext::Implicit, CastMethod::Function(ops::to_int8), 754),
     cast(oid::INT2, oid::FLOAT4, CastContext::Implicit, CastMethod::Function(ops::to_float4), 236),
@@ -192,7 +192,7 @@ pub static CASTS: &[BuiltinCast] = &[
 /// functions `$1::text || $2` in PostgreSQL: the analyzer converts the
 /// polymorphic argument to text explicitly, so their body is `textcat`.
 #[rustfmt::skip]
-pub static OPERATORS: &[BuiltinOperator] = &[
+pub(super) static CORE_OPERATORS: &[BuiltinOperator] = &[
     op(94, "=", oid::INT2, oid::INT2, oid::BOOL, ops::cmp_eq),
     op(519, "<>", oid::INT2, oid::INT2, oid::BOOL, ops::cmp_ne),
     op(95, "<", oid::INT2, oid::INT2, oid::BOOL, ops::cmp_lt),
@@ -301,12 +301,6 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(1096, "<=", DATE, DATE, oid::BOOL, ops::cmp_le),
     op(1097, ">", DATE, DATE, oid::BOOL, ops::cmp_gt),
     op(1098, ">=", DATE, DATE, oid::BOOL, ops::cmp_ge),
-    op(1330, "=", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
-    op(1331, "<>", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
-    op(1332, "<", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
-    op(1333, "<=", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
-    op(1334, ">", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
-    op(1335, ">=", INTERVAL, INTERVAL, oid::BOOL, ops::unsupported),
     op(550, "+", oid::INT2, oid::INT2, oid::INT2, ops::int2pl),
     op(554, "-", oid::INT2, oid::INT2, oid::INT2, ops::int2mi),
     op(526, "*", oid::INT2, oid::INT2, oid::INT2, ops::int2mul),
@@ -371,11 +365,6 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(2555, "+", oid::INT4, DATE, DATE, crate::types::datetime::integer_pl_date),
     op(1099, "-", DATE, DATE, oid::INT4, crate::types::datetime::date_mi),
     op(1101, "-", DATE, oid::INT4, DATE, crate::types::datetime::date_mii),
-    op(1337, "+", INTERVAL, INTERVAL, INTERVAL, ops::unsupported),
-    op(1338, "-", INTERVAL, INTERVAL, INTERVAL, ops::unsupported),
-    op(1583, "*", INTERVAL, oid::FLOAT8, INTERVAL, ops::unsupported),
-    op(1584, "*", oid::FLOAT8, INTERVAL, INTERVAL, ops::unsupported),
-    op(1585, "/", INTERVAL, oid::FLOAT8, INTERVAL, ops::unsupported),
     op(559, "-", 0, oid::INT2, oid::INT2, ops::int2um),
     op(558, "-", 0, oid::INT4, oid::INT4, ops::int4um),
     op(484, "-", 0, oid::INT8, oid::INT8, ops::int8um),
@@ -388,7 +377,6 @@ pub static OPERATORS: &[BuiltinOperator] = &[
     op(590, "@", 0, oid::FLOAT4, oid::FLOAT4, ops::float4abs),
     op(595, "@", 0, oid::FLOAT8, oid::FLOAT8, ops::float8abs),
     op(1763, "@", 0, NUMERIC, NUMERIC, ops::numeric_abs),
-    op(1336, "-", 0, INTERVAL, INTERVAL, ops::unsupported),
     op(1917, "+", 0, oid::INT2, oid::INT2, ops::identity),
     op(1918, "+", 0, oid::INT4, oid::INT4, ops::identity),
     op(1916, "+", 0, oid::INT8, oid::INT8, ops::identity),
@@ -582,7 +570,7 @@ pub fn operator_merge_hash(oid: Oid) -> (bool, bool) {
 /// `oprcode`, `oprcom` and `oprnegate` of every operator (PostgreSQL 17
 /// values), ordered by operator OID.
 #[rustfmt::skip]
-pub static OPERATOR_META: &[OperatorMeta] = &[
+pub(super) static CORE_OPERATOR_META: &[OperatorMeta] = &[
     OperatorMeta { oid: 15, proc_oid: 852, com: 416, negate: 36 },
     OperatorMeta { oid: 36, proc_oid: 853, com: 417, negate: 15 },
     OperatorMeta { oid: 37, proc_oid: 854, com: 419, negate: 82 },
@@ -894,7 +882,7 @@ pub static OPERATOR_META: &[OperatorMeta] = &[
 /// `current_schema()` are resolved here but replaced by the analyzer with
 /// a session value (built-ins cannot see the session).
 #[rustfmt::skip]
-pub static FUNCTIONS: &[BuiltinFunction] = &[
+pub(super) static FUNCTIONS: &[BuiltinFunction] = &[
     func(1394, "abs", &[oid::FLOAT4], oid::FLOAT4, ops::float4abs),
     func(1395, "abs", &[oid::FLOAT8], oid::FLOAT8, ops::float8abs),
     func(1396, "abs", &[oid::INT8], oid::INT8, ops::int8abs),
@@ -981,6 +969,8 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
     func(883, "substr", &[oid::TEXT, oid::INT4], oid::TEXT, funcs::substr_no_len),
     func(936, "substring", &[oid::TEXT, oid::INT4, oid::INT4], oid::TEXT, funcs::substr),
     func(937, "substring", &[oid::TEXT, oid::INT4], oid::TEXT, funcs::substr_no_len),
+    // 正規表現の部分文字列。候補（`substring($1 from $2)` の型推論）のために行だけ置く。捕獲を持たない正規表現エンジンでは未対応。
+    func(2073, "substring", &[oid::TEXT, oid::TEXT], oid::TEXT, ops::unsupported),
     func(3060, "left", &[oid::TEXT, oid::INT4], oid::TEXT, funcs::left),
     func(3061, "right", &[oid::TEXT, oid::INT4], oid::TEXT, funcs::right),
     func(2087, "replace", &[oid::TEXT, oid::TEXT, oid::TEXT], oid::TEXT, funcs::replace),
@@ -1091,7 +1081,7 @@ pub static FUNCTIONS: &[BuiltinFunction] = &[
 /// the access method handlers. Attribute values are those of PostgreSQL 17
 /// (`prolang` is always 12 and `prosupport` 0 in the catalog rows).
 #[rustfmt::skip]
-pub static PROCS: &[BuiltinProc] = &[
+pub(super) static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 3, name: "heap_tableam_handler", args: &[2281], result: 269, strict: true, volatility: 'v', parallel: 's', leakproof: false, cost: 1.0, prosrc: "heap_tableam_handler" },
     BuiltinProc { oid: 33, name: "charout", args: &[18], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "charout" },
     BuiltinProc { oid: 34, name: "namein", args: &[2275], result: 19, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "namein" },
@@ -1351,6 +1341,7 @@ pub static PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 885, name: "btrim", args: &[25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "btrim1" },
     BuiltinProc { oid: 936, name: "substring", args: &[25, 23, 23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_substr" },
     BuiltinProc { oid: 937, name: "substring", args: &[25, 23], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "text_substr_no_len" },
+    BuiltinProc { oid: 2073, name: "substring", args: &[25, 25], result: 25, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "textregexsubstr" },
     BuiltinProc { oid: 940, name: "mod", args: &[21, 21], result: 21, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int2mod" },
     BuiltinProc { oid: 941, name: "mod", args: &[23, 23], result: 23, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int4mod" },
     BuiltinProc { oid: 942, name: "int28mi", args: &[21, 20], result: 20, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "int28mi" },
@@ -1694,7 +1685,7 @@ pub static PROCS: &[BuiltinProc] = &[
 /// PG 側はすべて非 strict の `aggregate_dummy`。NULL 入力を飛ばす規則と、
 /// `min` / `max` の等しいときの代表（後に来た値。11 §7.1 C-4）は `AggState`（X2）の責務。
 #[rustfmt::skip]
-pub static AGGREGATES: &[BuiltinAggregate] = &[
+pub(super) static CORE_AGGREGATES: &[BuiltinAggregate] = &[
     agg(2803, "count", &[], oid::INT8, AggKind::CountStar),
     agg(2147, "count", &[ANY_OID], oid::INT8, AggKind::Count),
     agg(2109, "sum", &[oid::INT2], oid::INT8, AggKind::SumInt2),

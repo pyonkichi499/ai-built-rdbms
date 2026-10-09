@@ -143,7 +143,15 @@ pub fn check_catalog_store(store: &CatalogStore, snap: &Snapshot) -> Result<Vec<
             char_of(&r[c(oids::PG_CONSTRAINT, "contype")]),
         );
         let indid = oid_of(&r[c(oids::PG_CONSTRAINT, "conindid")]);
-        let rel = oid_of(&r[c(oids::PG_CONSTRAINT, "conrelid")]);
+        let rel = {
+            // FK の conindid は親の一意インデックス（親の制約が所有する）。
+            let col = if kind == b'f' {
+                "confrelid"
+            } else {
+                "conrelid"
+            };
+            oid_of(&r[c(oids::PG_CONSTRAINT, col)])
+        };
         if matches!(kind, b'p' | b'u') && indid == 0 {
             problems.push(format!(
                 "3: constraint {con} of type {} has no index",
@@ -173,6 +181,7 @@ pub fn check_catalog_store(store: &CatalogStore, snap: &Snapshot) -> Result<Vec<
         if indid == 0 {
             continue;
         }
+        let is_fk = char_of(&r[c(oids::PG_CONSTRAINT, "contype")]) == b'f';
         let internal = dep_rows
             .iter()
             .filter(|d| {
@@ -183,19 +192,21 @@ pub fn check_catalog_store(store: &CatalogStore, snap: &Snapshot) -> Result<Vec<
                     && char_of(&d[dep("deptype")]) == b'i'
             })
             .count();
-        if internal != 1 {
+        if !is_fk && internal != 1 {
             problems.push(format!(
                 "4: index {indid} has {internal} internal dependencies on constraint {con}"
             ));
         }
-        if let Datum::Int2Vector(key) = &r[c(oids::PG_CONSTRAINT, "conkey")] {
+        if let Some(key) = crate::types::array::array_view(&r[c(oids::PG_CONSTRAINT, "conkey")])
+            .and_then(|v| v.to_int2s().ok())
+        {
             let rel = oid_of(&r[c(oids::PG_CONSTRAINT, "conrelid")]);
             for attnum in key {
                 let has = dep_rows.iter().any(|d| {
                     oid_of(&d[dep("classid")]) == oids::PG_CONSTRAINT
                         && oid_of(&d[dep("objid")]) == con
                         && oid_of(&d[dep("refobjid")]) == rel
-                        && int_of(&d[dep("refobjsubid")]) == i64::from(*attnum)
+                        && int_of(&d[dep("refobjsubid")]) == i64::from(attnum)
                         && char_of(&d[dep("deptype")]) == b'a'
                 });
                 if !has {

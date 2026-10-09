@@ -977,7 +977,7 @@ fn order_limit_offset() {
         "select a as b from t order (+ b 1)"
     );
     unsupported("SELECT 1 FETCH FIRST 1 ROW WITH TIES");
-    unsupported("SELECT * FROM t FOR UPDATE");
+    unsupported("SELECT * FROM t TABLESAMPLE system (10)");
 }
 
 #[test]
@@ -1736,6 +1736,7 @@ fn array_syntax() {
         crate::sql::parser::parse_expr("ARRAY(SELECT 1)").unwrap(),
         Expr::ArraySubquery { .. }
     ));
-    syntax("SELECT ARRAY[1,2][1]", "[", 19);
-    syntax("SELECT a < ALL (1, 2) FROM t", ",", 20);
+    syntax("SELECT ARRAY[1,2][1]", "[", 18);
+    assert_eq!(e("(ARRAY[1,2])[1]"), "(subscript (array 1 2) 1)");
+    syntax("SELECT a < ALL (1, 2) FROM t", ",", 18);
 }

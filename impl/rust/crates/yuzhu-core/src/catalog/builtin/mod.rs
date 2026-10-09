@@ -18,7 +18,7 @@ mod runtime;
 mod text_misc;
 mod type_io;
 
-pub use self::core::{AGGREGATES, CASTS, OPERATOR_META, OPERATORS, operator_merge_hash};
+pub use self::core::operator_merge_hash;
 pub use self::runtime::format_type_name;
 #[allow(clippy::wildcard_imports)]
 use self::runtime::*;
@@ -35,6 +35,12 @@ use std::sync::LazyLock;
 /// 起動後に一度だけ組み立てる静的な表（`&'static [T]` のように使える）。`Copy` なので
 /// `for t in TYPES`・`.iter()`・`TYPES[i..]`・`.chain(PROCS)` がそのまま書ける。
 pub struct Table<T: 'static>(&'static LazyLock<Vec<T>>);
+
+impl<T: 'static> std::fmt::Debug for Table<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Table(len = {})", self.len())
+    }
+}
 
 impl<T: 'static> Clone for Table<T> {
     fn clone(&self) -> Self {
@@ -59,7 +65,7 @@ impl<T: 'static> IntoIterator for Table<T> {
     }
 }
 
-impl<'a, T: 'static> IntoIterator for &'a Table<T> {
+impl<T: 'static> IntoIterator for &Table<T> {
     type Item = &'static T;
     type IntoIter = std::slice::Iter<'static, T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -67,12 +73,56 @@ impl<'a, T: 'static> IntoIterator for &'a Table<T> {
     }
 }
 
+static CASTS_CELL: LazyLock<Vec<BuiltinCast>> = LazyLock::new(|| {
+    self::core::CORE_CASTS
+        .iter()
+        .chain(datetime::TIME_CASTS)
+        .cloned()
+        .collect()
+});
+static OPERATORS_CELL: LazyLock<Vec<BuiltinOperator>> = LazyLock::new(|| {
+    self::core::CORE_OPERATORS
+        .iter()
+        .chain(datetime::INTERVAL_OPERATORS)
+        .chain(datetime::TIME_OPERATORS)
+        .cloned()
+        .collect()
+});
+static OPERATOR_META_CELL: LazyLock<Vec<OperatorMeta>> = LazyLock::new(|| {
+    self::core::CORE_OPERATOR_META
+        .iter()
+        .chain(datetime::INTERVAL_OPERATOR_META)
+        .chain(datetime::TIME_OPERATOR_META)
+        .cloned()
+        .collect()
+});
+static AGGREGATES_CELL: LazyLock<Vec<BuiltinAggregate>> = LazyLock::new(|| {
+    self::core::CORE_AGGREGATES
+        .iter()
+        .chain(datetime::INTERVAL_AGGREGATES)
+        .chain(datetime::TIME_AGGREGATES)
+        .cloned()
+        .collect()
+});
+
+/// `pg_cast` の全行: `core.rs` の行 + `datetime::TIME_CASTS`。
+pub static CASTS: Table<BuiltinCast> = Table(&CASTS_CELL);
+/// `pg_operator` の全行: `core.rs` の行 + interval・time の演算子。
+pub static OPERATORS: Table<BuiltinOperator> = Table(&OPERATORS_CELL);
+/// 演算子の `oprcom` などの付加情報。
+pub static OPERATOR_META: Table<OperatorMeta> = Table(&OPERATOR_META_CELL);
+/// 集約関数の全行: `core.rs` の行 + interval・time の `min` / `max`。
+pub static AGGREGATES: Table<BuiltinAggregate> = Table(&AGGREGATES_CELL);
+
 static TYPES_CELL: LazyLock<Vec<BuiltinType>> = LazyLock::new(type_io::merged_types);
 static PROCS_CELL: LazyLock<Vec<BuiltinProc>> = LazyLock::new(|| {
     self::core::PROCS
         .iter()
         .chain(type_io::TYPE_IO_PROCS)
         .chain(numeric::PROCS)
+        .chain(datetime::INTERVAL_PROCS)
+        .chain(datetime::TIME_PROCS)
+        .chain(datetime::TD3_PROCS)
         .cloned()
         .collect()
 });
@@ -80,6 +130,9 @@ static FUNCTIONS_CELL: LazyLock<Vec<BuiltinFunction>> = LazyLock::new(|| {
     let mut v = self::core::FUNCTIONS.to_vec();
     v.extend_from_slice(numeric::FUNCTIONS);
     v.extend_from_slice(text_misc::FUNCTIONS);
+    v.extend_from_slice(datetime::INTERVAL_FUNCTIONS);
+    v.extend_from_slice(datetime::TIME_FUNCTIONS);
+    v.extend_from_slice(datetime::TD3_FUNCTIONS);
     let casts = cast_functions(&v);
     v.extend(casts);
     v
@@ -200,7 +253,7 @@ pub enum CastMethod {
 }
 
 /// A row of `pg_cast`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BuiltinCast {
     pub source: Oid,
     pub target: Oid,
@@ -215,7 +268,7 @@ pub struct BuiltinCast {
 }
 
 /// A row of `pg_operator`. Prefix operators have `left = None`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BuiltinOperator {
     pub oid: Oid,
     pub name: &'static str,
@@ -228,7 +281,7 @@ pub struct BuiltinOperator {
 /// The `pg_operator` attributes that the runtime does not need, one entry per
 /// operator of `OPERATORS` (same OID), kept apart so that `BuiltinOperator`
 /// stays as the analyzer and executor use it.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OperatorMeta {
     pub oid: Oid,
     /// `oprcode`: the `pg_proc` OID of the implementing function.
@@ -722,7 +775,8 @@ mod t3_tests {
             assert_eq!(f.name, "generate_series");
             assert!(proc_by_oid(o).is_some());
         }
-        assert_eq!(functions_named("generate_series").len(), 4);
+        // int4・int8・numeric・timestamp（TD3）。
+        assert_eq!(functions_named("generate_series").len(), 5);
     }
 }
 // ===== region: sequence (Q1) =====
@@ -1309,8 +1363,8 @@ mod agg_tests {
     use super::*;
 
     #[test]
-    fn has_44_rows_with_unique_oid_and_signature() {
-        assert_eq!(AGGREGATES.len(), 44);
+    fn has_48_rows_with_unique_oid_and_signature() {
+        assert_eq!(AGGREGATES.len(), 48);
         let oids: HashSet<_> = AGGREGATES.iter().map(|a| a.oid).collect();
         assert_eq!(oids.len(), AGGREGATES.len());
         let sigs: HashSet<_> = AGGREGATES.iter().map(|a| (a.name, a.args)).collect();
@@ -1322,7 +1376,7 @@ mod agg_tests {
         let n = |s: &str| aggregates_named(s).len();
         assert_eq!(
             (n("count"), n("sum"), n("avg"), n("min"), n("max")),
-            (2, 6, 6, 13, 13)
+            (2, 6, 6, 15, 15)
         );
         assert_eq!(
             (n("bool_and"), n("bool_or"), n("every"), n("nope")),

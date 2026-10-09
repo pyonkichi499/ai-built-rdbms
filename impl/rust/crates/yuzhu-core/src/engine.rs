@@ -285,15 +285,19 @@ impl Cluster {
         let stack = outcome.stack;
         // REDO may have seen XIDs past the value the stack was built with.
         stack.procs.raise_next_xid(outcome.next_xid);
+        let multixact = Arc::new(MultiXactTable::new(Arc::clone(&control)));
         let txn = TxnManager::new(
             Arc::clone(&stack.procs),
             Arc::clone(&stack.clog),
             Arc::clone(&control),
             Arc::clone(&stack.wal),
             Arc::clone(&locks),
-            Arc::new(MultiXactTable::new(Arc::clone(&control))),
+            Arc::clone(&multixact),
             opts.knobs,
         );
+        // ヒープに、行ロック・XID 待ち用のロックマネージャと、可視性判定（VACUUM・剪定）の環境を渡す。
+        stack.heap.set_lock_env(Arc::clone(&locks));
+        stack.heap.set_vacuum_env(stack.procs.clone(), multixact);
         let oids = OidAllocator::new(Arc::clone(&control));
         let storage: Arc<dyn TableStore> = stack.heap.clone();
         let shared = Arc::new(SharedCatalogStore::new(Arc::clone(&storage)));

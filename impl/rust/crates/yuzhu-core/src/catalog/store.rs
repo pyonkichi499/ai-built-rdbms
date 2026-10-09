@@ -2256,10 +2256,10 @@ pub(crate) mod fake_store {
                         a.type_oid
                     )));
                 }
-                // `int2[]` holds `Datum::Int2Vector` since M4 (conkey).
+                // Catalog array columns (`conkey` and so on) hold `Datum::Array`.
                 if !d.is_null()
                     && builtin::is_null_only_type(a.type_oid)
-                    && !matches!(d, Datum::Int2Vector(_))
+                    && !matches!(d, Datum::Array(_))
                 {
                     return Err(Error::not_supported("NULL-only type holds a value"));
                 }

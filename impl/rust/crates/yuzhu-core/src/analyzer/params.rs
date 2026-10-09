@@ -279,7 +279,7 @@ mod tests {
         }
     }
 
-    /// (SQL, 期待する型の一覧)。期待は PostgreSQL 17 の ParameterDescription。
+    /// (SQL, 期待する型の一覧)。期待は PostgreSQL 17 の `ParameterDescription`。
     const OK_CASES: &[(&str, &[Oid])] = &[
         ("SELECT * FROM t WHERE id = $1", &[INT8]),
         ("SELECT $1 = $2", &[TEXT, TEXT]),
@@ -590,14 +590,15 @@ mod tests {
         drop(b);
     }
 
-    /// `timestamp + $1` は interval になる。interval の演算子表が組み込み表に結合されるまでは確かめない。
+    /// `timestamp + $1` は interval になる。interval が使える型になる（`is_supported_type`）までは確かめない
+    /// （演算子表は結合済み。型の有効化は TD の残り）。
     #[test]
     fn timestamp_plus_param_is_interval_once_tables_are_merged() {
         let c = cat();
         let merged = crate::catalog::builtin::operators_named("+")
             .iter()
             .any(|o| o.left == Some(TIMESTAMP) && o.right == INTERVAL);
-        if merged {
+        if merged && crate::catalog::builtin::is_supported_type(INTERVAL) {
             ok(&c, "SELECT g + $1 FROM t", &[], &[INTERVAL]);
         }
     }

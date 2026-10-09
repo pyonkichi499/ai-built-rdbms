@@ -146,7 +146,7 @@ static ARRAY_TYPE_PROCS: LazyLock<Vec<TypeProcs>> = LazyLock::new(|| {
 
 /// `core.rs` の `TYPES` に無い基本型の行。結合後の `TYPES` と `array_type_rows()` の入力になる。
 #[rustfmt::skip]
-pub static EXTRA_TYPES: &[BuiltinType] = &[
+pub(super) static EXTRA_TYPES: &[BuiltinType] = &[
     ty(17,   "bytea",              -1, false, 'b', 'U', false, ',', 0, 0, 1001, ("byteain", 1244),   ("byteaout", 31),      'i', 'x', 0),
     ty(2950, "uuid",               16, false, 'b', 'U', false, ',', 0, 0, 2951, ("uuid_in", 2952),   ("uuid_out", 2953),    'c', 'p', 0),
     ty(2283, "anyelement",          4, true,  'p', 'P', false, ',', 0, 0, 0,    ("anyelement_in", 2312), ("anyelement_out", 2313), 'i', 'p', 0),
@@ -164,7 +164,10 @@ const ARRAY_OIDS: &[Oid] = &[
 
 /// 結合前の基本型の行（`core.rs` の静的な行 + [`EXTRA_TYPES`]）。
 fn base_type_rows() -> impl Iterator<Item = &'static BuiltinType> {
-    super::core::TYPES.iter().chain(EXTRA_TYPES)
+    super::core::TYPES
+        .iter()
+        .chain(EXTRA_TYPES)
+        .chain(super::datetime::TIME_TYPES)
 }
 
 static ARRAY_ROWS: LazyLock<Vec<BuiltinType>> = LazyLock::new(|| {
@@ -221,7 +224,7 @@ pub(super) fn merged_types() -> Vec<BuiltinType> {
 /// `pg_proc` の行で `core.rs` の `PROCS` に無いもの（recv / send / typmodin / typmodout / 配列 / bytea・uuid・
 /// ポリモーフィック型の入出力）。`tools/gen_procs.sh` で PG17 から生成した。
 #[rustfmt::skip]
-pub static TYPE_IO_PROCS: &[BuiltinProc] = &[
+pub(super) static TYPE_IO_PROCS: &[BuiltinProc] = &[
     BuiltinProc { oid: 31, name: "byteaout", args: &[17], result: 2275, strict: true, volatility: 'i', parallel: 's', leakproof: false, cost: 1.0, prosrc: "byteaout" },
     BuiltinProc { oid: 197, name: "pg_node_tree_recv", args: &[2281], result: 194, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_node_tree_recv" },
     BuiltinProc { oid: 198, name: "pg_node_tree_send", args: &[194], result: 17, strict: true, volatility: 's', parallel: 's', leakproof: false, cost: 1.0, prosrc: "pg_node_tree_send" },
@@ -329,7 +332,7 @@ mod tests {
 
     #[test]
     fn checklist_types_have_procs_and_rows() {
-        for t in TYPES.iter() {
+        for t in TYPES {
             // 3: 入出力関数の行
             for (name, o) in [(t.input, t.input_oid), (t.output, t.output_oid)] {
                 let p = proc_by_oid(o).unwrap_or_else(|| panic!("{}: no proc {o}", t.name));

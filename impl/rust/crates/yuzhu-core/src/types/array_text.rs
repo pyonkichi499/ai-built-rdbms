@@ -536,7 +536,7 @@ mod tests {
                 "Array value must start with \"{\" or dimension information.",
             ),
             ("{1,,2}", "Unexpected \",\" character."),
-            ("{1 2}", "Unexpected array element."),
+            ("{{1}2}", "Unexpected array element."),
             ("{1,}", "Unexpected \"}\" character."),
             (
                 "{{1,2},{3}}",

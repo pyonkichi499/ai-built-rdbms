@@ -193,8 +193,12 @@ pub(crate) fn compare_physical(runtime: &SimVfs, redone: &SimVfs, rel_seg_blocks
             }
             // 索引のページ: 項目をバイト単位で比べる（ヒントビットなどの実行時だけの差はない）。メタページは本体も。
             let is_index = special_len == BT_SPECIAL_SIZE;
-            if is_index && pa.max_offset() == 0 && pa.body() != pb.body() {
-                return Err(bad(&at, "the page body differs (meta page)".into()));
+            // メタページ（ブロック 0）は行ポインタではなく本体にメタ情報を持つ（pd_lower が本体の終わりを指す）。
+            if is_index && blkno == 0 {
+                if pa.body() != pb.body() {
+                    return Err(bad(&at, "the page body differs (meta page)".into()));
+                }
+                continue;
             }
             for off in 1..=pa.max_offset() {
                 let (ia, ib) = (
@@ -634,6 +638,7 @@ pub(crate) fn check_indexes_counted(cluster: &Arc<Cluster>) -> V<usize> {
                 rel: &rel,
                 own: None,
                 check_unique_live: true,
+                allow_dangling: true,
             };
             check_against_heap(pool, idx, &hc)
                 .map_err(|e| violation("I13", describe_check(e, idx)))?;

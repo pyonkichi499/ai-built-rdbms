@@ -282,11 +282,11 @@ fn bad_query_body_is_an_error_with_ready_for_query() {
 #[test]
 fn error_is_flushed_and_skips_until_sync() {
     let mut c = Raw::connect(start_server());
-    // Session の msg_* が 0A000 を返す間は、Parse は常に失敗する。
-    c.parse("", "SELECT 1");
+    // 構文エラーの Parse は失敗する。
+    c.parse("", "SELEC 1");
     let m = c.read_msg();
     assert_eq!(m.tag, b'E');
-    assert_eq!(m.sqlstate(), "0A000");
+    assert_eq!(m.sqlstate(), "42601");
     // 読み捨てられるメッセージ: Q、F、P、H、不正な本体の B。
     c.query("SELECT 1");
     c.send(b'F', b"");
@@ -304,7 +304,7 @@ fn error_is_flushed_and_skips_until_sync() {
 #[test]
 fn terminate_during_skip_closes_the_connection() {
     let mut c = Raw::connect(start_server());
-    c.parse("", "SELECT 1");
+    c.parse("", "SELEC 1");
     assert_eq!(c.read_msg().tag, b'E');
     c.send(b'X', b"");
     c.expect_eof();
@@ -375,16 +375,6 @@ fn unsupported_format_code_is_22023() {
     assert_eq!(tags(&msgs), "EZ", "{msgs:?}");
     assert_eq!(msgs[0].sqlstate(), "22023");
     assert_eq!(msgs[0].message(), "unsupported format code: 2");
-}
-
-/// E15 のスタブ時点の形: Execute が失敗しても、Sync の応答は ReadyForQuery だけで終わる。
-#[test]
-fn e15_sync_after_failed_execute_is_ready_for_query_only() {
-    let mut c = Raw::connect(start_server());
-    c.parse("", "SET application_name = 'x'");
-    c.sync();
-    let msgs = c.read_until_ready();
-    assert_eq!(tags(&msgs), "EZ", "{msgs:?}");
 }
 
 /// E15: `SET application_name` / `SET TimeZone` を Execute し、Sync で ParameterStatus、ReadyForQuery の順。

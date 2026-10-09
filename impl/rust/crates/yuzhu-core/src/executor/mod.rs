@@ -218,6 +218,8 @@ pub struct ExecEnv<'a> {
     pub mem_limit: usize,
     /// EXPLAIN ANALYZE の計測（C-10: `ExecEnv` が持つ）。
     pub instr: Option<&'a Rc<instrument::Instrumentation>>,
+    /// 行ロック・更新の待ち（`ExecCtx::wait` になる）。`None` なら待たない。
+    pub wait: Option<WaitCtx<'a>>,
 }
 
 impl std::fmt::Debug for ExecEnv<'_> {
@@ -250,6 +252,7 @@ impl<'a> ExecEnv<'a> {
             type_env,
             mem_limit: DEFAULT_QUERY_MEM_LIMIT,
             instr: None,
+            wait: None,
         }
     }
 }
@@ -343,7 +346,7 @@ impl<'a> ExecCtx<'a> {
             ctes: CteStates::new(query),
             type_env: env.type_env,
             instr: env.instr.cloned(),
-            wait: None,
+            wait: env.wait,
             xact_snapshot: None,
         }
     }

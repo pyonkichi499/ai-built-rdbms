@@ -12,7 +12,7 @@ use crate::types::numeric as nf;
 const NUMERIC: Oid = oid::NUMERIC;
 
 /// 呼べる関数（`FUNCTIONS` に結合される）。
-pub static FUNCTIONS: &[BuiltinFunction] = &[
+pub(super) static FUNCTIONS: &[BuiltinFunction] = &[
     func(5048, "gcd", &[NUMERIC, NUMERIC], NUMERIC, nf::numeric_gcd),
     func(5049, "lcm", &[NUMERIC, NUMERIC], NUMERIC, nf::numeric_lcm),
     func(
@@ -75,7 +75,7 @@ const fn proc_row(
 }
 
 /// `pg_proc` の行（PostgreSQL 17 の値）。
-pub static PROCS: &[BuiltinProc] = &[
+pub(super) static PROCS: &[BuiltinProc] = &[
     proc_row(5048, "gcd", &[NUMERIC, NUMERIC], NUMERIC, "numeric_gcd"),
     proc_row(5049, "lcm", &[NUMERIC, NUMERIC], NUMERIC, "numeric_lcm"),
     proc_row(

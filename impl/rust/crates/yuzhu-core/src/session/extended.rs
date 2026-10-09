@@ -810,16 +810,7 @@ impl Session {
     fn under_barrier<R>(&mut self, f: impl FnOnce(&mut Self) -> Result<R>) -> Result<R> {
         let cluster = self.cluster()?;
         Self::check_not_poisoned(&cluster)?;
-        let mgr = Arc::clone(cluster.txn_manager());
-        let barrier = mgr.statement_barrier()?;
-        if let Err(e) = Self::check_not_poisoned(&cluster) {
-            drop(barrier);
-            return Err(e);
-        }
-        buffer::track::barrier_acquired();
         let result = f(self);
-        buffer::track::barrier_released();
-        drop(barrier);
         let lsn = self.seq_state.borrow_mut().end_statement();
         self.txn.note_wal(lsn);
         self.flush_modstat();

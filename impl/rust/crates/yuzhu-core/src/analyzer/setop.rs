@@ -232,6 +232,19 @@ impl Analyzer<'_> {
         if ty.oid == common {
             return Ok(arm_column(i, ty, span));
         }
+        // unknown の `$n` は共通型に確定する（PG の `coerce_type` の param フック）。
+        if ty.oid == oid::UNKNOWN
+            && let BoundSetExpr::Select(sel) = &mut arm.body
+            && let Some(t) = sel.targets.get_mut(i)
+            && t.ty.oid == oid::UNKNOWN
+            && super::params::extern_param_index(t).is_some()
+        {
+            let c = self.coerce_extern_param(t.clone(), common)?;
+            let new_ty = c.ty;
+            arm.columns[i].ty = new_ty;
+            *t = c;
+            return Ok(arm_column(i, new_ty, span));
+        }
         if ty.oid == oid::UNKNOWN
             && let BoundSetExpr::Select(sel) = &mut arm.body
             && let Some(t) = sel.targets.get_mut(i)

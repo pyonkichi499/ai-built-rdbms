@@ -285,12 +285,23 @@ fn failed(user: &str) -> (String, String) {
     )
 }
 
+/// 先頭の行・列をテキストで返す（Simple Query。バイナリ結果形式に依らない）。
+fn text_value(c: &mut Client, sql: &str) -> String {
+    c.simple_query(sql)
+        .unwrap()
+        .into_iter()
+        .find_map(|m| match m {
+            postgres::SimpleQueryMessage::Row(r) => r.get(0).map(str::to_owned),
+            _ => None,
+        })
+        .expect("a row")
+}
+
 #[test]
 fn trust_connects() {
     let f = Fixture::start("host all all 127.0.0.1/32 trust\n");
     let mut c = connect(f.addr, "postgres", "postgres", None).unwrap();
-    let row = c.query_one("SELECT current_user", &[]).unwrap();
-    assert_eq!(row.get::<_, String>(0), "postgres");
+    assert_eq!(text_value(&mut c, "SELECT current_user"), "postgres");
     // A role that does not exist is rejected after AuthenticationOk.
     let mut raw = Raw::connect(f.addr);
     raw.startup("ghost", Some("postgres"));
@@ -310,18 +321,8 @@ fn trust_connects() {
 fn scram_success_for_the_superuser() {
     let f = Fixture::start(SCRAM_ALL);
     let mut c = f.admin();
-    assert_eq!(
-        c.query_one("SHOW is_superuser", &[])
-            .unwrap()
-            .get::<_, String>(0),
-        "on"
-    );
-    assert_eq!(
-        c.query_one("SELECT current_user", &[])
-            .unwrap()
-            .get::<_, String>(0),
-        "postgres"
-    );
+    assert_eq!(text_value(&mut c, "SHOW is_superuser"), "on");
+    assert_eq!(text_value(&mut c, "SELECT current_user"), "postgres");
 }
 
 #[test]
@@ -624,16 +625,13 @@ fn scram_protocol_errors() {
 fn channel_binding_flag_y_succeeds() {
     let f = Fixture::start(SCRAM_ALL);
     let mut raw = Raw::connect(f.addr);
-    let mut client = ClientExchange::new("postgres", ADMIN_PASSWORD).unwrap();
-    // `n,,` -> `y,,`; the c= attribute of the final message changes accordingly.
-    let cf = String::from_utf8(client.client_first()).unwrap();
-    let cf = cf.replacen("n,,", "y,,", 1);
-    let sf = scram_to_server_first(&mut raw, "postgres", cf.as_bytes());
-    // The proof covers client-first-bare only, so the client computes it as usual.
-    let fin = String::from_utf8(client.client_final(&sf).unwrap())
+    // `y,,` と、それに合わせた `c=eSws`（client-final-without-proof は AuthMessage に含まれる）。
+    let mut client = ClientExchange::new("postgres", ADMIN_PASSWORD)
         .unwrap()
-        .replacen("c=biws", "c=eSws", 1);
-    raw.send_p(fin.as_bytes());
+        .with_binding_flag_y();
+    let sf = scram_to_server_first(&mut raw, "postgres", &client.client_first());
+    let fin = client.client_final(&sf).unwrap();
+    raw.send_p(&fin);
     let (code, _) = raw.read_auth();
     assert_eq!(code, 12);
     assert_eq!(raw.read_auth().0, 0);
@@ -753,6 +751,8 @@ fn default_hba_loads_and_broken_files_are_refused() {
         ..Config::default()
     };
     drop(Server::bind(&config).unwrap());
+    // 正常終了せず drop しただけなので pid ファイルが残る。壊れたファイルの bind が作らないことを確かめるため消しておく。
+    std::fs::remove_file(dir.join("yuzhu.pid")).unwrap();
 
     // A broken file: `bind` fails before the cluster is opened (no pid file is left).
     std::fs::write(dir.join("yuzhu_hba.conf"), "host all all all bogus\n").unwrap();

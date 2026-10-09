@@ -392,7 +392,10 @@ pub fn constraint_row(s: &ConstraintRowSpec<'_>) -> Row {
             b = b.set("conbin", text(sql));
         }
     } else {
-        b = b.set("conkey", Datum::Int2Vector(s.columns.to_vec()));
+        b = b.set(
+            "conkey",
+            crate::catalog::store::store_fk::int2_array(s.columns),
+        );
     }
     b.build()
 }
@@ -1553,7 +1556,8 @@ mod tests {
         };
         // A type whose array type has a row keeps typarray, others get 0.
         assert_eq!(get(find(oid::OID), t, "typarray"), &Datum::Oid(1028));
-        assert_eq!(get(find(oid::BOOL), t, "typarray"), &Datum::Oid(0));
+        // bool の配列型（_bool = 1000）も行を持つ（TY-5）。
+        assert_eq!(get(find(oid::BOOL), t, "typarray"), &Datum::Oid(1000));
         assert_eq!(get(find(83), t, "typarray"), &Datum::Oid(0));
         assert_eq!(
             get(find(oid::OIDVECTOR), t, "typelem"),
@@ -1787,7 +1791,10 @@ mod tests_m4 {
         let p = constraint_row(&spec(ConstraintKind::PrimaryKey, &[1, 2]));
         assert_eq!(get(&p, c, "contype"), &Datum::Char(b'p'));
         assert_eq!(get(&p, c, "connoinherit"), &Datum::Bool(true));
-        assert_eq!(get(&p, c, "conkey"), &Datum::Int2Vector(vec![1, 2]));
+        assert_eq!(
+            get(&p, c, "conkey"),
+            &crate::catalog::store::store_fk::int2_array(&[1, 2])
+        );
         assert_eq!(get(&p, c, "conindid"), &Datum::Oid(3));
         let u = constraint_row(&spec(ConstraintKind::Unique, &[2]));
         assert_eq!(get(&u, c, "contype"), &Datum::Char(b'u'));

@@ -7,7 +7,7 @@
 //! the wait happens in [`wait_for_holders`], and the whole decision is taken
 //! again from the top (RW-D5).
 //!
-//! The environment for "who is running" and MultiXact lookups comes from
+//! The environment for "who is running" and `MultiXact` lookups comes from
 //! [`HeapStore::set_vacuum_env`], the lock manager from
 //! [`HeapStore::set_lock_env`]. Until the cluster has wired them (the assembly in
 //! `m5/01` §5.12), a store behaves like M4: "running" is derived from the caller's
@@ -33,8 +33,9 @@ use crate::storage::heap::wal::{
     HeapUpdateMain,
 };
 use crate::storage::heap::xmax::{
-    LockDecision, RawXmax, UpdateDecision, XmaxEnv, XmaxWrite, keys_changed, mode_from_bits,
-    plan_lock, plan_update, stamp_updater, xmax_is_lock_only, xmin_is_frozen,
+    LockDecision, RawXmax, UpdateDecision, XmaxEnv, XmaxState, XmaxWrite, decode_xmax,
+    keys_changed, mode_from_bits, plan_lock, plan_update, stamp_updater, xmax_is_lock_only,
+    xmin_is_frozen,
 };
 use crate::storage::page::LpFlags;
 use crate::storage::smgr::{BlockNumber, ForkNumber, RelFileLocator};
@@ -57,13 +58,13 @@ pub struct HeapStore {
     clog: Arc<Clog>,
     wal: Arc<Wal>,
     hio: HioCtx,
-    /// 実行中 XID の窓口と MultiXact 表。機会的 pruning（`m5/03` §5.2.3）、`env()`、行の更新競合の判定
+    /// 実行中 XID の窓口と `MultiXact` 表。機会的 pruning（`m5/03` §5.2.3）、`env()`、行の更新競合の判定
     /// （`m5/02` §5.1）に使う。`Cluster::open` が `set_vacuum_env` で渡す。
     /// 未設定の間は pruning せず、競合の判定は呼び出しの snapshot から導く（M4 の動作）。
     vacuum_env: OnceLock<(Arc<dyn RunningXids>, Arc<MultiXactTable>)>,
     /// タプルロックと XID の終了待ちに使う。`set_lock_env` で渡す。未設定なら待たない。
     locks: OnceLock<Arc<LockManager>>,
-    /// `vacuum_env` が未設定の間だけ使う空の MultiXact 表（ロックだけの xmax が無い前提）。
+    /// `vacuum_env` が未設定の間だけ使う空の `MultiXact` 表（ロックだけの xmax が無い前提）。
     fallback_multi: OnceLock<Arc<MultiXactTable>>,
 }
 
@@ -117,7 +118,7 @@ impl RunningXids for NoneRunning {
     }
 }
 
-/// 1 回の呼び出しが使う「誰が実行中か」と MultiXact 表。
+/// 1 回の呼び出しが使う「誰が実行中か」と `MultiXact` 表。
 #[derive(Clone, Copy)]
 struct RunEnv<'a> {
     procs: &'a dyn RunningXids,
@@ -159,7 +160,7 @@ impl HeapStore {
         self.hio.fsm()
     }
 
-    /// Hands over the running-XID registry and the MultiXact table (once). Until then
+    /// Hands over the running-XID registry and the `MultiXact` table (once). Until then
     /// no opportunistic pruning happens and [`env`](Self::env) fails. `false` if
     /// already set.
     pub fn set_vacuum_env(
@@ -253,6 +254,15 @@ impl HeapStore {
         match satisfies_update_env(&venv, hdr, snap, tid)? {
             TmResult::Ok => Ok(Gate::Go),
             TmResult::BeingModified { .. } => {
+                // 更新者（ロックだけでない xmax）が実行中なら、必ず終了を待つ。判定のあとで更新者が
+                // コミットしても `plan_update` に任せない（`alive` が偽になり、コミット済みの更新者の xmax を
+                // 上書きしてしまう）。待ったあとは `satisfies_update` からやり直す。
+                if let XmaxState::Updater { xid, .. } = decode_xmax(hdr)? {
+                    return Ok(Gate::Wait {
+                        xids: vec![xid],
+                        i_am_member: false,
+                    });
+                }
                 let running = |x: Xid| renv.procs.is_in_progress(x);
                 let xenv = XmaxEnv {
                     me: w.xid,
@@ -804,6 +814,7 @@ impl TableStore for HeapStore {
                 // The line pointer was reused: the chain broke.
                 return done(TmResult::Deleted { xmax: px });
             }
+            let mut being_modified = false;
             match satisfies_update_env(&venv, &hdr, snap, cur)? {
                 TmResult::Invisible => return done(gone()),
                 res @ (TmResult::SelfModified { .. } | TmResult::Deleted { .. }) => {
@@ -822,12 +833,24 @@ impl TableStore for HeapStore {
                     all_nonkey &= keyshare_nonkey;
                     continue;
                 }
-                TmResult::Ok | TmResult::BeingModified { .. } => {}
+                TmResult::Ok => {}
+                TmResult::BeingModified { .. } => {
+                    being_modified = true;
+                }
                 TmResult::WouldBlock => {
                     return Err(Error::internal("satisfies_update returned WouldBlock"));
                 }
             }
-            let stamped = match plan_lock(&hdr, mode, &xenv)? {
+            // 実行中だった更新者は、判定のあとでコミットしても `plan_lock` に任せず、必ず待つ
+            // （任せるとコミット済みの更新者の xmax を上書きする）。待ったあとは最初からやり直す。
+            let decision = match decode_xmax(&hdr)? {
+                XmaxState::Updater { xid, .. } if being_modified => LockDecision::Wait {
+                    xids: vec![xid],
+                    i_am_member: false,
+                },
+                _ => plan_lock(&hdr, mode, &xenv)?,
+            };
+            let stamped = match decision {
                 LockDecision::AlreadyHeld => hdr,
                 LockDecision::Write(write) => {
                     let held = mode_from_bits(write.infomask, write.infomask2)?;

@@ -5,7 +5,7 @@
 //! 見る: 旧行の先頭 `n_user_cols` 列を複製し、`assigned` の位置の値で置き換える → NOT NULL → CHECK
 //! （ヒープに触る前）→ `update_with_indexes`。`returning` が無ければ行を返さず、件数は `rows_affected`。
 //!
-//! 並行更新に当たったとき（RC）は EvalPlanQual の簡易版: 最新版をロックし、対象表の部分を最新版に差し替えた行で
+//! 並行更新に当たったとき（RC）は `EvalPlanQual` の簡易版: 最新版をロックし、対象表の部分を最新版に差し替えた行で
 //! `recheck.qual` と代入式（`recheck.new_values`）を評価し直して、やり直す。RR は 40001。
 
 use crate::error::{Error, Result};

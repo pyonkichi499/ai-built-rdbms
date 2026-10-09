@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn regular_arrays_round_trip_through_element_type() {
         let mut n = 0;
-        for t in builtin::TYPES.iter() {
+        for t in builtin::TYPES {
             if array_kind(t.oid) == Some(ArrayKind::Regular) {
                 let e = element_type(t.oid).unwrap();
                 assert_eq!(array_type_of(e), Some(t.oid), "{}", t.name);

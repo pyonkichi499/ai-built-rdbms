@@ -577,21 +577,12 @@ impl Session {
             return Err(Error::internal("session has a cluster but no database"));
         };
         Self::check_not_poisoned(&cluster)?;
-        let mgr = Arc::clone(cluster.txn_manager());
-        let barrier = mgr.statement_barrier()?;
-        if let Err(e) = Self::check_not_poisoned(&cluster) {
-            drop(barrier);
-            return Err(e);
-        }
-        buffer::track::barrier_acquired();
         let result = self.with_stmt_env(&cluster, &db, |txn, env| {
             let w = txn.write_ctx()?;
             let empty = PhysicalQuery::empty();
             let mut ctx = ExecCtx::new(env.exec_env(None), txn, &empty);
             f(&mut ctx, &w)
         });
-        buffer::track::barrier_released();
-        drop(barrier);
         let lsn = self.seq_state.borrow_mut().end_statement();
         self.txn.note_wal(lsn);
         Self::flush_deferred_unlinks(&cluster);

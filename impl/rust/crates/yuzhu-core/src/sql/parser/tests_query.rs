@@ -761,11 +761,6 @@ fn group_by_special_forms() {
 #[test]
 fn unchanged_rejections() {
     unsupported(
-        "SELECT * FROM t FOR UPDATE",
-        "FOR UPDATE/SHARE is not supported yet",
-        17,
-    );
-    unsupported(
         "SELECT * FROM t TABLESAMPLE system (10)",
         "TABLESAMPLE is not supported yet",
         17,

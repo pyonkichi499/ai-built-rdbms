@@ -1045,8 +1045,19 @@ mod tests {
         let oid = c.info_of("m5db_m").unwrap().row.oid;
         c.crash_after_commit = true;
         drop_database(&mut c, drop_b("m5db_m", false)).unwrap_err();
+        // クラッシュ後の c の VFS は I/O エラーを返すので、コミット時点の像を開き直して調べる。
         // コミット時点では既にディレクトリが無い（D32 を破っている）。
-        assert!(!c.vfs.exists(&crate::dbase::database_dir(oid)).unwrap());
+        let image = c.image_at_commit.take().unwrap();
+        let restarted = Ctl::open(
+            image,
+            options(DebugKnobs::default(), Duration::from_millis(150)),
+        );
+        assert!(
+            !restarted
+                .vfs
+                .exists(&crate::dbase::database_dir(oid))
+                .unwrap()
+        );
     }
 
     #[test]

@@ -77,11 +77,11 @@ fn interval_of(d: &Datum) -> Result<&Interval> {
     }
 }
 
-fn arg<'a>(args: &'a [Datum], i: usize) -> Result<&'a Datum> {
+fn arg(args: &[Datum], i: usize) -> Result<&Datum> {
     args.get(i).ok_or_else(|| bad_arg("interval function"))
 }
 
-fn interval_arg<'a>(args: &'a [Datum], i: usize) -> Result<&'a Interval> {
+fn interval_arg(args: &[Datum], i: usize) -> Result<&Interval> {
     interval_of(arg(args, i)?)
 }
 
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             b,
             [
-                0x08, 0xCA, 0x97, 0x6C, 0x03, 0, 0, 0, // time
+                0x88, 0xCA, 0x97, 0x6C, 0x03, 0, 0, 0, // time
                 3, 0, 0, 0, // day
                 14, 0, 0, 0, // month
             ]

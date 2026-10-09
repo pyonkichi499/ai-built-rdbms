@@ -10,7 +10,7 @@ use super::*;
 const BPCHAR: Oid = oid::BPCHAR;
 
 /// 呼べる関数（`FUNCTIONS` に結合される）。
-pub static FUNCTIONS: &[BuiltinFunction] = &[
+pub(super) static FUNCTIONS: &[BuiltinFunction] = &[
     func(
         1078,
         "bpcharcmp",

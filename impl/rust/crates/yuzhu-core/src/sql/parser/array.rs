@@ -50,10 +50,21 @@ impl Parser<'_> {
 
     /// 後置の `[i]` / `[l:u]`。カーソルは `[`。`ARRAY[..][1]` とリテラルへの添字は構文エラー（PG と同じ）。
     pub(super) fn parse_subscript(&mut self, base: Expr) -> Result<Expr> {
-        if matches!(
-            base,
-            Expr::ArrayConstructor { .. } | Expr::Literal { .. } | Expr::ArraySubquery { .. }
-        ) {
+        self.parse_subscript_inner(base, false)
+    }
+
+    /// `parenthesized` が真なら `(ARRAY[1,2])[1]` のように括弧つきの基底を許す。
+    pub(super) fn parse_subscript_inner(
+        &mut self,
+        base: Expr,
+        parenthesized: bool,
+    ) -> Result<Expr> {
+        if !parenthesized
+            && matches!(
+                base,
+                Expr::ArrayConstructor { .. } | Expr::Literal { .. } | Expr::ArraySubquery { .. }
+            )
+        {
             return Err(self.unexpected());
         }
         let start = base.span().start;

@@ -325,7 +325,7 @@ fn query_gets_exactly_one_ready_for_query() {
 fn extended_query_message_is_rejected_until_sync() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
-    c.send_msg(b'P', b"\0SELECT 1\0\0\0");
+    c.send_msg(b'P', b"\0SELEC 1\0\0\0");
     c.send_msg(b'B', b"\0\0\0\0\0\0\0\0");
     c.send_msg(b'D', b"P\0");
     c.send_msg(b'E', b"\0\0\0\0\0");
@@ -335,7 +335,7 @@ fn extended_query_message_is_rejected_until_sync() {
     let f = err.fields();
     assert_eq!(f[&b'S'], "ERROR");
     assert_eq!(f[&b'V'], "ERROR");
-    assert_eq!(f[&b'C'], "0A000");
+    assert_eq!(f[&b'C'], "42601");
     assert!(f.contains_key(&b'M'));
     let z = c.read_msg();
     assert_eq!((z.tag, z.body.as_slice()), (b'Z', b"I".as_slice()));
@@ -348,12 +348,12 @@ fn extended_query_message_is_rejected_until_sync() {
 fn extended_query_error_is_flushed_before_sync() {
     let addr = start_server(10);
     let (mut c, _) = Raw::handshake(addr);
-    c.send_msg(b'P', b"\0SELECT 1\0\0\0");
+    c.send_msg(b'P', b"\0SELEC 1\0\0\0");
     c.send_msg(b'H', b"");
     // The error must arrive without waiting for Sync.
     let err = c.read_msg();
     assert_eq!(err.tag, b'E');
-    assert_eq!(err.fields()[&b'C'], "0A000");
+    assert_eq!(err.fields()[&b'C'], "42601");
     c.send_msg(b'C', b"S\0");
     c.send_msg(b'S', b"");
     let z = c.read_msg();

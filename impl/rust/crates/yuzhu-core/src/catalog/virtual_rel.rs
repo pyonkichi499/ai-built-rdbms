@@ -439,7 +439,10 @@ mod tests {
 
     #[test]
     fn registry_finds_pg_locks_only_by_its_oid() {
-        assert_eq!(find(9811).map(|r| r.name()), Some("pg_locks"));
+        assert_eq!(
+            find(9811).map(super::VirtualRelation::name),
+            Some("pg_locks")
+        );
         assert!(find(1259).is_none());
     }
 
@@ -465,7 +468,7 @@ mod tests {
         let mut s = status("transactionid", false);
         s.database = None;
         s.relation = None;
-        s.transactionid = Some(Xid((7 << 32) | 1234));
+        s.transactionid = Some(Xid(0x7_0000_04D2));
         s.mode = "ShareLock";
         s.waited = Some(Duration::from_secs(2));
         let row = pg_locks_row(&s, 10_000_000);
@@ -513,7 +516,9 @@ mod tests {
     fn bootstrap_rows_describe_a_view_with_sixteen_attributes() {
         let rows = bootstrap_catalog_rows(5);
         assert_eq!(rows.class.len(), registry().len());
-        assert_eq!(rows.attribute.len(), 16 * registry().len());
+        // pg_locks（16 列）のほか pg_roles・pg_auth_members も仮想リレーションとして登録されている。
+        let columns: usize = registry().iter().map(|r| r.columns().len()).sum();
+        assert_eq!(rows.attribute.len(), columns);
         let class = &rows.class[0];
         assert_eq!(
             class[super::super::rows::column_index(oids::PG_CLASS, "oid")],
