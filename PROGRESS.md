@@ -126,3 +126,9 @@ pgbench / psql / COPY のクライアント互換。設計は `spec/design/m4/`�
 - 2026-10-09: `cargo build --workspace --all-targets` と `cargo clippy -D warnings`、`cargo fmt --check` は通る状態にした（配列式のアナライザ `analyzer/array_expr.rs`、`Session::open_select` / `run_select` を追加）。
 - `cargo test --workspace` は未達（約 48 件失敗: 型カタログ行・FK の DDL・パーサ・日時演算子 `timestamp - unknown` ほか）。M1〜M4 の slt / 回帰は未再確認。
 - 既知の残り: `(ARRAY[1,2])[1]` のパース（括弧つき添字）、`$n` パラメータ・バイナリ形式（XQ-3/4）、`int2vector`→`int2[]` キャスト。
+
+## M5 の途中経過 続報（2026-10-16 JST）
+
+- `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` は通る。`cargo test --workspace` は `stress s0_mixed` の 1 件のみ失敗（REPEATABLE READ 未実装の 0A000 が原因）。
+- 失敗したトランザクションブロックは ROLLBACK まで XID とロックを保持するようにした（デッドロックの被害者の挙動を PG に合わせた）。
+- 次の作業: REPEATABLE READ（isolation の `lost-update`・`write-skew-rr` も通す）、SAVEPOINT、`$n` パラメータとバイナリ形式、RETURNING、簡易削除。M1〜M4 の slt（`tests/run.sh`、yuzhu / pg 両方）は未再確認。
