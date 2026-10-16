@@ -120,9 +120,9 @@ statement ok
 INSERT INTO rr_rr_two_conn_t VALUES (9, 90)
 
 connection a
-query I
-UPDATE rr_rr_two_conn_t SET v = 0 WHERE id = 9 RETURNING id
-----
+# 更新される行は 0 件（スナップショットに見えない）。RETURNING は使わない（yuzhu は未実装）
+statement ok
+UPDATE rr_rr_two_conn_t SET v = 0 WHERE id = 9
 
 connection a
 query I

@@ -210,6 +210,8 @@ pub struct ExecEnv<'a> {
     pub storage: &'a dyn TableStore,
     pub indexes: &'a dyn IndexStore,
     pub snapshot: &'a Snapshot,
+    /// Repeatable Read のときだけ `Some`（`snapshot` と同じ写し。`ExecCtx::xact_snapshot` になる）。
+    pub xact_snapshot: Option<&'a Snapshot>,
     pub session: &'a SessionInfo,
     pub runtime: &'a dyn RuntimeInfo,
     pub interrupts: &'a InterruptFlag,
@@ -246,6 +248,7 @@ impl<'a> ExecEnv<'a> {
             storage,
             indexes: &NoIndexStore,
             snapshot,
+            xact_snapshot: None,
             session,
             runtime,
             interrupts,
@@ -347,7 +350,7 @@ impl<'a> ExecCtx<'a> {
             type_env: env.type_env,
             instr: env.instr.cloned(),
             wait: env.wait,
-            xact_snapshot: None,
+            xact_snapshot: env.xact_snapshot,
         }
     }
 

@@ -52,8 +52,8 @@ enum Kind {
     Millis,
     /// One of the listed lower-case values.
     Enum(&'static [&'static str]),
-    /// A transaction isolation level. `repeatable read` and `serializable`
-    /// are valid names but not supported yet (`0A000`).
+    /// A transaction isolation level. `serializable` is a valid name but not
+    /// supported (`0A000`).
     Isolation,
     /// A comma-separated list of identifiers (`search_path`).
     IdentList,
@@ -902,14 +902,15 @@ fn is_posix_zone(s: &str) -> bool {
     is_numeric_offset(offset) && dst.bytes().all(|b| b.is_ascii_alphabetic())
 }
 
-/// The isolation levels that can run. `REPEATABLE READ` and `SERIALIZABLE`
-/// are rejected with `0A000` until M5; `READ UNCOMMITTED` behaves as
-/// `READ COMMITTED` but is shown by name (as in PostgreSQL).
+/// The isolation levels that can run. `SERIALIZABLE` is rejected with `0A000`
+/// (`m5/02` RW-D17); `READ UNCOMMITTED` behaves as `READ COMMITTED` but is
+/// shown by name (as in PostgreSQL).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Isolation {
     #[default]
     ReadCommitted,
     ReadUncommitted,
+    RepeatableRead,
 }
 
 impl Isolation {
@@ -917,6 +918,17 @@ impl Isolation {
         match self {
             Isolation::ReadCommitted => "read committed",
             Isolation::ReadUncommitted => "read uncommitted",
+            Isolation::RepeatableRead => "repeatable read",
+        }
+    }
+
+    /// The level the transaction manager runs at.
+    pub fn level(self) -> crate::txn::IsolationLevel {
+        use crate::txn::IsolationLevel;
+        match self {
+            Isolation::ReadCommitted => IsolationLevel::ReadCommitted,
+            Isolation::ReadUncommitted => IsolationLevel::ReadUncommitted,
+            Isolation::RepeatableRead => IsolationLevel::RepeatableRead,
         }
     }
 
@@ -929,9 +941,10 @@ impl Isolation {
         match raw.to_ascii_lowercase().as_str() {
             "read committed" => Ok(Isolation::ReadCommitted),
             "read uncommitted" => Ok(Isolation::ReadUncommitted),
-            level @ ("repeatable read" | "serializable") => Err(Error::not_supported(format!(
-                "transaction isolation level \"{level}\" is not supported yet"
-            ))),
+            "repeatable read" => Ok(Isolation::RepeatableRead),
+            "serializable" => Err(Error::not_supported(
+                "SERIALIZABLE isolation level is not supported yet",
+            )),
             _ => Err(invalid_value(name, raw).with_hint(
                 "Available values: serializable, repeatable read, read committed, read uncommitted.",
             )),
@@ -2417,6 +2430,27 @@ pub fn split_ident_list(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolation_levels_parse_and_map() {
+        use crate::txn::IsolationLevel;
+        let rr = Isolation::parse("transaction_isolation", "Repeatable Read").unwrap();
+        assert_eq!(rr, Isolation::RepeatableRead);
+        assert_eq!(rr.as_str(), "repeatable read");
+        assert_eq!(rr.level(), IsolationLevel::RepeatableRead);
+        assert_eq!(
+            Isolation::ReadUncommitted.level(),
+            IsolationLevel::ReadUncommitted
+        );
+        let e = Isolation::parse("transaction_isolation", "serializable").unwrap_err();
+        assert_eq!(e.sqlstate, sqlstate::FEATURE_NOT_SUPPORTED);
+        assert_eq!(
+            e.message,
+            "SERIALIZABLE isolation level is not supported yet"
+        );
+        let e = Isolation::parse("transaction_isolation", "nonsense").unwrap_err();
+        assert_eq!(e.sqlstate.0, "22023");
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| (*x).to_owned()).collect()

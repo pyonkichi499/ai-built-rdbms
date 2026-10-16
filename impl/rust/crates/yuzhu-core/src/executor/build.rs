@@ -113,8 +113,15 @@ fn build_node(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> Boxe
         )),
         PhysicalPlan::Unique { .. } => unique::build_in(plan, env, rewindable),
         PhysicalPlan::Distinct { input } => Box::new(DistinctExec::new(child(input))),
-        // TODO(RW-3c): LockRowsExec に置き換える。それまでは行ロックを取らず入力をそのまま通す。
-        PhysicalPlan::LockRows { input, .. } => child(input),
+        PhysicalPlan::LockRows {
+            input,
+            marks,
+            recheck,
+        } => Box::new(crate::executor::nodes::lock_rows::LockRowsExec::new(
+            child(input),
+            marks.clone(),
+            recheck.clone(),
+        )),
         PhysicalPlan::Limit {
             input,
             limit,
@@ -181,13 +188,11 @@ fn build_node(plan: &PhysicalPlan, env: &BuildEnv<'_>, rewindable: bool) -> Boxe
             input,
             n_user_cols,
             returning,
-            ..
-        } => Box::new(DeleteExec::with_returning(
-            rel.clone(),
-            child(input),
-            *n_user_cols,
-            returning.clone(),
-        )),
+            recheck,
+        } => Box::new(
+            DeleteExec::with_returning(rel.clone(), child(input), *n_user_cols, returning.clone())
+                .with_recheck(recheck.clone()),
+        ),
     }
 }
 

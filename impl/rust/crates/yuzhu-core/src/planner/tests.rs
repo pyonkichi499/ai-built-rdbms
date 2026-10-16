@@ -680,12 +680,16 @@ fn self_modified_rows() {
     let d = BoundStatement::Delete(delete(None));
     let e = run_dml(&mut f, d.clone()).unwrap_err();
     assert_eq!(e.sqlstate, sqlstate::TRIGGERED_DATA_CHANGE_VIOLATION);
-    // Anything else is an internal error.
+    // Deleted by someone else meanwhile (Read Committed): the row is skipped.
     let mut f = dml_fixture(&[(1, "x", 0)]);
     f.storage.force_result(TmResult::Deleted {
         xmax: crate::txn::Xid(9),
     });
-    let e = run_dml(&mut f, d).unwrap_err();
+    assert_eq!(run_dml(&mut f, d).unwrap(), 0);
+    // Anything else is an internal error.
+    let mut f = dml_fixture(&[(1, "x", 0)]);
+    f.storage.force_result(TmResult::Invisible);
+    let e = run_dml(&mut f, BoundStatement::Delete(delete(None))).unwrap_err();
     assert_eq!(e.sqlstate, sqlstate::INTERNAL_ERROR);
 }
 

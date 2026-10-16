@@ -396,3 +396,48 @@ pub(super) fn mgr_commit(mgr: &TxnManager, xid: Xid, dropped: &[RelFileLocator])
 pub(super) fn mgr_abort(mgr: &TxnManager, xid: Xid, created: &[RelFileLocator]) -> Result<()> {
     mgr.abort(xid, created)
 }
+
+/// RW-D11: 文は「最初のスナップショットを取った」ことになるか。トランザクション制御、SET / RESET / SHOW、
+/// LOCK TABLE、CHECKPOINT だけが false（`SELECT 1` や DDL、EXPLAIN、PREPARE も true）。
+pub(super) fn statement_needs_snapshot(stmt: &Statement) -> bool {
+    !matches!(
+        stmt,
+        Statement::Transaction(_)
+            | Statement::Set(_)
+            | Statement::Reset(_)
+            | Statement::Show(_)
+            | Statement::LockTable(_)
+            | Statement::Checkpoint(_)
+    )
+}
+
+impl Session {
+    /// Extended Query の Parse が呼ぶ。スナップショットを要する文なら「最初のスナップショットを取った」印だけを立てる
+    /// （RW-D11、RW-K7: 実際のスナップショットは Bind / Execute が取る）。
+    pub(super) fn note_snapshot_use(&mut self, stmt: &Statement) {
+        if statement_needs_snapshot(stmt) {
+            self.txn_snapshot_taken = true;
+        }
+    }
+
+    /// 文の実行の手順 0'（RW-D10、`m5/02` §5.8）: スナップショットを要する文なら印を立て、Repeatable Read の
+    /// トランザクションでは最初のスナップショットを**リレーションロックの前に**取る。
+    /// 分離レベルは `SET TRANSACTION` で最初のスナップショットまで変えられるので、ここで確定する。
+    pub(super) fn begin_statement_snapshot(&mut self, stmt: &Statement) {
+        if !statement_needs_snapshot(stmt) {
+            return;
+        }
+        self.txn_snapshot_taken = true;
+        self.txn.isolation = self.chars.isolation.level();
+        if self.txn.isolation.uses_xact_snapshot()
+            && self.txn.xact_snapshot.is_none()
+            && let Some(cluster) = self.cluster.as_ref()
+        {
+            self.txn.xact_snapshot = Some(
+                cluster
+                    .txn_manager()
+                    .take_snapshot(self.txn.xid, self.txn.cid),
+            );
+        }
+    }
+}

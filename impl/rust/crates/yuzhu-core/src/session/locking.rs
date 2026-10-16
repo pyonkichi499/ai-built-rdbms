@@ -33,20 +33,24 @@ impl Session {
     ) -> Result<R> {
         // 3. The generation is read before the snapshot.
         let generation = db.cache.generation();
-        // 4.
-        // Any statement but SET / SHOW / BEGIN / COMMIT / CHECKPOINT counts as
-        // having used a snapshot (PostgreSQL 17, also for `SELECT 1`).
-        self.txn_snapshot_taken = true;
-        // 登録つきのスナップショット（地平線を押さえ、文の間に剪定で版が消えないようにする。LK-D8）。
+        // 4. カタログは常に文ごとの最新のスナップショット（RR でも。D12）。登録つき（地平線を押さえ、
+        // 文の間に剪定で版が消えないようにする。LK-D8）。
         let registered = cluster
             .txn_manager()
             .take_snapshot(self.txn.xid, self.txn.cid);
-        let snap: &Snapshot = &registered;
+        let cat_snap: &Snapshot = &registered;
+        // 行の可視性: RR は最初のスナップショット（`begin_statement_snapshot` が取る）の写し。登録は `xact_snapshot` が持つ。
+        let rr_snap: Option<Snapshot> = self
+            .txn
+            .xact_snapshot
+            .as_ref()
+            .map(|x| x.for_statement(self.txn.xid, self.txn.cid));
+        let snap: &Snapshot = rr_snap.as_ref().unwrap_or(cat_snap);
         // 5.
         let search_path = self.settings.search_path();
         let catalog = StatementCatalog {
             db,
-            snapshot: snap,
+            snapshot: cat_snap,
             gen_at_snapshot: generation,
             bypass_cache: self.txn.catalog_dirty,
             search_path: &search_path,
@@ -86,6 +90,7 @@ impl Session {
             db,
             catalog: &catalog,
             snapshot: snap,
+            xact_snapshot: rr_snap.as_ref(),
             info: &info,
             runtime: &runtime,
             type_env: &type_env,
@@ -124,6 +129,8 @@ pub(super) struct StmtEnv<'a> {
     pub(super) db: &'a Arc<DatabaseHandle>,
     pub(super) catalog: &'a dyn CatalogReader,
     pub(super) snapshot: &'a Snapshot,
+    /// Repeatable Read のときだけ `Some`（`snapshot` と同じもの。40001 の判定に使う）。
+    pub(super) xact_snapshot: Option<&'a Snapshot>,
     pub(super) info: &'a SessionInfo,
     pub(super) runtime: &'a SessionRuntime<'a>,
     pub(super) type_env: &'a TypeEnv<'a>,
@@ -183,6 +190,7 @@ impl StmtEnv<'_> {
             storage: &**self.cluster.storage(),
             indexes: &**self.cluster.indexes(),
             snapshot: self.snapshot,
+            xact_snapshot: self.xact_snapshot,
             session: self.info,
             runtime: self.runtime,
             interrupts: self.interrupts,

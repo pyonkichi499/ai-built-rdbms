@@ -1,6 +1,6 @@
 # 進捗と再開手順
 
-最終更新: 2026-10-07（M1〜M4 完了。次は M5）
+最終更新: 2026-10-16（M1〜M4 完了。M5 は REPEATABLE READ まで実装）
 
 ## 完了したこと
 
@@ -132,3 +132,11 @@ pgbench / psql / COPY のクライアント互換。設計は `spec/design/m4/`�
 - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` は通る。`cargo test --workspace` は `stress s0_mixed` の 1 件のみ失敗（REPEATABLE READ 未実装の 0A000 が原因）。
 - 失敗したトランザクションブロックは ROLLBACK まで XID とロックを保持するようにした（デッドロックの被害者の挙動を PG に合わせた）。
 - 次の作業: REPEATABLE READ（isolation の `lost-update`・`write-skew-rr` も通す）、SAVEPOINT、`$n` パラメータとバイナリ形式、RETURNING、簡易削除。M1〜M4 の slt（`tests/run.sh`、yuzhu / pg 両方）は未再確認。
+
+## M5: REPEATABLE READ（2026-10-16 JST）
+
+- `Isolation::RepeatableRead` を追加し、`BEGIN ISOLATION LEVEL REPEATABLE READ` / `SET TRANSACTION` / `default_transaction_isolation` / `SHOW` が通る。SERIALIZABLE は 0A000（`SERIALIZABLE isolation level is not supported yet`）。
+- 最初のスナップショットは、それを要する文（`statement_needs_snapshot`）のリレーションロックの前に取り（`begin_statement_snapshot`）、`xact_snapshot` としてトランザクション終了まで保つ。行の可視性は RR ではその写し、カタログは文ごとの最新。`COMMIT AND CHAIN` はスナップショットを引き継がない。Extended Query は Parse が印だけ（`note_snapshot_use`）、Bind の `open_select` と Execute が取る。
+- 付随して直したこと: `LockRows` を実行器に結線（`SELECT ... FOR UPDATE` が行ロックを取っていなかった）、ロック句つき SELECT の XID 割り当てと読み取り専用の 25006、`DeleteExec` の待ち・EvalPlanQual・RR の 40001（`Deleted` は RC で行を飛ばす）。詳細は QUESTIONS.md の M5-RR-Q1〜Q5。
+- 確認結果: `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test --workspace` すべて通過（yuzhu-core lib 2472 件、新規 `tests/repeatable_read.rs` 10 件、`stress s0_mixed` を含む）。`tests/slt/m1`〜`m4` と `m5/rr` は pg が 258 中 258 通過、yuzhu が 258 中 253 通過（残り 5 件は RETURNING・VACUUM FULL・search_path の権限・日時演算子・その後始末で、変更前の HEAD でも失敗する。変更前は 8 件失敗）。isolation（`--blocking-detection timeout`）は yuzhu が 26 中 17 通過、`lost-update`・`write-skew-rr`・`rr-update-conflict`・`epq-single`・`lock-strength-matrix` を含む。残りの失敗は QUESTIONS.md の末尾に列挙。
+- 未対応: `isolation` の既定の判定（`pg_isolation_test_session_is_blocked` を `$n` つきで準備する）は `$n` パラメータ未対応で動かない。SAVEPOINT、RETURNING、`$n` とバイナリ形式、簡易削除は M5 の残り。

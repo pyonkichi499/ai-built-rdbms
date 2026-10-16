@@ -417,6 +417,9 @@ impl Session {
             ));
         }
         let stmt = parsed.pop();
+        if let Some(s) = &stmt {
+            self.note_snapshot_use(s);
+        }
         let mut kind = stmt.as_ref().map_or(Kind::Empty, Kind::of);
         if self.state == TxState::Failed && !matches!(kind, Kind::TxExit | Kind::Empty) {
             return Err(in_failed());
@@ -824,23 +827,17 @@ impl Session {
     fn open_select(&mut self, stmt: &Arc<Statement>) -> Result<SelectRun> {
         let cluster = self.cluster()?;
         Self::check_not_poisoned(&cluster)?;
-        // リレーションのロックはスナップショットの前（Simple Query と同じ順序）。
+        // Repeatable Read の最初のスナップショットはロックの前（RW-D10）。RC の文のスナップショットはロックの後。
+        self.begin_statement_snapshot(stmt);
         self.lock_for_statement(stmt)?;
         Self::check_not_poisoned(&cluster)?;
         let procs = Arc::clone(cluster.txn_manager().procs());
-        let (snapshot, registered) = if self.txn.isolation.uses_xact_snapshot() {
-            let first = match self.txn.xact_snapshot.take() {
-                Some(s) => s,
-                None => procs.take_snapshot(self.txn.xid, self.txn.cid),
-            };
-            let snap = first.for_statement(self.txn.xid, self.txn.cid);
-            self.txn.xact_snapshot = Some(first);
-            (snap, None)
+        let (snapshot, registered) = if let Some(first) = &self.txn.xact_snapshot {
+            (first.for_statement(self.txn.xid, self.txn.cid), None)
         } else {
             let reg = procs.take_snapshot(self.txn.xid, self.txn.cid);
             ((*reg).clone(), Some(reg))
         };
-        self.txn_snapshot_taken = true;
         Ok(SelectRun {
             stmt: Arc::clone(stmt),
             snapshot,

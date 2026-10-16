@@ -1643,10 +1643,10 @@ mod tests {
     fn unsupported_isolation_levels_are_0a000() {
         let mut s = session();
         for q in [
-            "begin isolation level repeatable read",
+            "begin isolation level serializable",
             "start transaction isolation level serializable",
             "set default_transaction_isolation = 'serializable'",
-            "set session characteristics as transaction isolation level repeatable read",
+            "set session characteristics as transaction isolation level serializable",
         ] {
             assert_eq!(errors(&sql(&mut s, q)), vec!["0A000"], "{q}");
             assert_eq!(s.transaction_status(), TransactionStatus::Idle, "{q}");
@@ -1755,6 +1755,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn repeatable_read_levels_and_defaults() {
+        let (_tc, mut s) = cl();
+        sql(&mut s, "create table rr1 (a int)");
+        sql(&mut s, "begin isolation level repeatable read");
+        assert_eq!(val(&mut s, "show transaction_isolation"), "repeatable read");
+        sql(&mut s, "select * from rr1");
+        // Same level: fine. Another level: 25001 (before any 0A000 check).
+        assert!(
+            errors(&sql(
+                &mut s,
+                "set transaction isolation level repeatable read"
+            ))
+            .is_empty()
+        );
+        assert_eq!(
+            errors(&sql(&mut s, "set transaction isolation level serializable")),
+            vec!["25001"]
+        );
+        sql(&mut s, "rollback");
+        sql(
+            &mut s,
+            "set default_transaction_isolation = 'repeatable read'",
+        );
+        sql(&mut s, "begin");
+        assert_eq!(val(&mut s, "show transaction_isolation"), "repeatable read");
+        sql(&mut s, "commit");
+        sql(&mut s, "reset default_transaction_isolation");
+        sql(&mut s, "begin");
+        assert_eq!(val(&mut s, "show transaction_isolation"), "read committed");
+        sql(&mut s, "commit");
+    }
     #[test]
     fn isolation_and_read_write_changes_after_a_query() {
         let (_tc, mut s) = cl();

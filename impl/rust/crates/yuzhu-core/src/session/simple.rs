@@ -276,6 +276,7 @@ impl Session {
         stmt: &Statement,
         out: &mut Output,
     ) -> Result<ExecOutcome> {
+        self.begin_statement_snapshot(stmt);
         let tag = match stmt {
             Statement::Transaction(t) => self.exec_transaction(t, out)?,
             Statement::Set(s) => self.exec_set(s, out)?,
@@ -337,7 +338,13 @@ impl Session {
         self.lock_for_statement(stmt)?;
         Self::check_not_poisoned(&cluster)?;
         let mgr = Arc::clone(cluster.txn_manager());
-        if write_tag.is_some() && read_only_write.is_none() && self.txn.guard.is_none() {
+        // SELECT ... FOR UPDATE も行ロックのために XID を要する（読み取り専用はアナライザが 25006 にする）。
+        let locks_rows = matches!(stmt, Statement::Query(q) if !q.locking.is_empty());
+        if (write_tag.is_some() || locks_rows)
+            && read_only_write.is_none()
+            && !self.chars.read_only
+            && self.txn.guard.is_none()
+        {
             let (xid, guard) = mgr_begin_write(&mgr, self.id)?;
             self.txn.xid = Some(xid);
             self.txn.guard = Some(guard);
@@ -415,6 +422,12 @@ impl Session {
                 // PostgreSQL rejects at executor start: after analysis and planning.
                 if let Some(tag) = read_only_write {
                     return Err(read_only_error(tag));
+                }
+                if env.runtime.chars.read_only
+                    && let BoundStatement::Select(q) = &bound
+                    && let Some(e) = crate::analyzer::locking::read_only_lock_error(q)
+                {
+                    return Err(e);
                 }
                 let returns_rows = bound.returns_rows();
                 out.columns = returns_rows.then(|| column_descs(&query.output, env.catalog));

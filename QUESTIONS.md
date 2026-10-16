@@ -339,3 +339,14 @@
 6. **FROM の括弧つき結合のパース。** 曖昧なときは副問い合わせを先に試し、失敗したら巻き戻して括弧つき結合を試す。
 7. **接続スレッドのスタックを 64MB にし、`check_stack_depth` の予算を 16MB にした。** プランナの再帰にも `check_stack_depth` を入れ、`MAX_PLAN_DEPTH` は 100,000 に上げた（実質はスタック予算で制限）。パーサの `MAX_NESTING_DEPTH` は 1000 から 5000 に上げた（6000 項の連鎖は 54001）。PG が受け付ける深さとの完全な一致は目指していない。
 8. **`yuzhu-numeric` の `approx_constant` の clippy 指摘は `std::f64::consts::LOG10_E` / `LOG10_2` に置き換えた。** 推定計算に使う定数で、桁がごくわずか変わるだけ。
+
+## M5: REPEATABLE READ の結線で決めたこと（2026-10-16 JST。推奨案で進めた）
+
+- **M5-RR-Q1 `txn.isolation` は最初のスナップショットを要する文の直前に `chars.isolation` から確定する。** `SET TRANSACTION` は最初のスナップショットまで分離レベルを変えられるため。LOCK TABLE / SET / SHOW だけの間は未確定のまま（RW-D11）。M3-Q23 の「RR は 0A000 より 25001 が先」は RR が受理されるようになったので、SERIALIZABLE（0A000）だけに残る。
+- **M5-RR-Q2 カタログ用スナップショットは RR でも文ごとに取り直す。** 行の可視性だけ `xact_snapshot` の写し（D12）。`StmtEnv.xact_snapshot` を `ExecEnv` 経由で `ExecCtx.xact_snapshot`（40001 の判定）に渡す。
+- **M5-RR-Q3 Extended Query は Parse で印だけ（`note_snapshot_use`）、Bind の `open_select` と Execute（`exec_statement`）が最初のスナップショットを取る**（RW-K7）。
+- **M5-RR-Q4 結線の途中で見つかった未配線を一緒に直した**（RR の 40001 を成立させるのに必要だったため）。
+  - `LockRows` ノードが `build.rs` で素通しの TODO だった（`SELECT ... FOR UPDATE` が行ロックを取らなかった）。`LockRowsExec` を結び、ロック句つきの SELECT にも XID を割り当てる。読み取り専用は 25006（`read_only_lock_error` を `run_bound` で呼ぶ）。
+  - `DeleteExec` は待ちも EvalPlanQual も RR の 40001 も無く、並行更新に当たると XX000 だった。`delete_row`（待ち・FK の after_delete）を使い、RC は最新版をロックして `recheck` を評価し直し、RR は 40001 にする。`Deleted`（相手が先に削除）は RC では行を飛ばす（以前は XX000。planner の単体テスト `self_modified_rows` の期待を直した）。
+- **M5-RR-Q5 `tests/slt/m5/rr/rr_two_conn.slt` の `UPDATE ... RETURNING id`（0 行）は RETURNING 未実装のため `statement ok` の UPDATE に変えた。** pg でも結果は同じ。RETURNING 実装後に戻してもよい。
+- **残っている失敗（RR の対象外）**: `isolation` の `deadlock-*` `for-update-nowait-skip` `lock-table-queue` `idle-session-lock-release`（timeout 判定の揺れ、RETURNING、ALTER ADD COLUMN）、`unique-wait` `index-unique-wait`（一意検査の待ちが未配線）、`fk-parent-delete-race`（FK の DDL）、`vacuum-line-pointer-reuse`。`slt/m5/rowlock` の `for_key_share`（KD-1）、`for_update_errors` `for_update_limit_order`（サブクエリ内の FOR UPDATE）。`--blocking-detection pg`（既定）は `$n` パラメータ未対応で動かないので `timeout` で実行した。
