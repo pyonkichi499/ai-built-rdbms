@@ -5,6 +5,7 @@
 
 use crate::deparse::ident::quote_identifier;
 use crate::types::Oid;
+use std::fmt::Write as _;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum FkAction {
@@ -138,7 +139,7 @@ pub fn fk_constraint_def(fk: &ForeignKeyDef, names: &dyn FkNames) -> String {
         if matches!(fk.on_delete, FkAction::SetNull | FkAction::SetDefault)
             && !fk.set_cols.is_empty()
         {
-            s.push_str(&format!(" ({})", cols(fk.child, &fk.set_cols)));
+            let _ = write!(s, " ({})", cols(fk.child, &fk.set_cols));
         }
     }
     s

@@ -130,7 +130,6 @@ mod tests {
     use std::hash::DefaultHasher;
 
     use super::*;
-    use crate::types::array::{ArrayDim, ArrayValue};
 
     fn h(d: &Datum) -> u64 {
         let mut s = DefaultHasher::new();

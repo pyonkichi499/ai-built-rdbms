@@ -68,9 +68,9 @@ fn run(seed: u64, crash_at: Option<u64>, mode: CrashMode) -> Outcome {
         trace.extend(s.trace().iter().map(|t| (t.name.clone(), t.event.clone())));
         s.abandon();
     }
-    let ops = tc.vfs.op_count();
-    let (vfs, opts) = tc.crash(mode);
-    let tc = TestCluster::start_on(vfs, opts).expect("recovery");
+    let op_total = tc.vfs.op_count();
+    let (crashed_vfs, opts) = tc.crash(mode);
+    let tc = TestCluster::start_on(crashed_vfs, opts).expect("recovery");
     let out = tc
         .sql(DB, "SELECT bal FROM acct ORDER BY id")
         .expect("session");
@@ -81,7 +81,7 @@ fn run(seed: u64, crash_at: Option<u64>, mode: CrashMode) -> Outcome {
         .map(|r| r[0].as_deref().unwrap().parse().unwrap())
         .collect();
     Outcome {
-        ops,
+        ops: op_total,
         trace,
         balances,
     }
@@ -153,10 +153,13 @@ fn deadlock_victim_is_the_short_timeout_and_the_winner_commits() {
         n == "a" && matches!(e, TraceEvent::Done { sqlstate: Some(s) } if s == "40P01")
     });
     if !victim {
-        eprintln!(
-            "SKIPPED: row-lock waits are not implemented yet: {:?}",
-            o.trace
-        );
+        #[allow(clippy::print_stderr)] // テスト専用: 未実装でスキップしたことを実行ログに残す。
+        {
+            eprintln!(
+                "SKIPPED: row-lock waits are not implemented yet: {:?}",
+                o.trace
+            );
+        }
         assert!(std::env::var_os("YUZHU_REQUIRE_ROW_WAITS").is_none());
         return;
     }

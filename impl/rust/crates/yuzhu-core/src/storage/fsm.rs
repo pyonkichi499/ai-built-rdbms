@@ -26,6 +26,11 @@ pub const FSM_SLOTS_PER_PAGE: usize = 8160;
 /// FSM に載るブロック数の上限（`8160 * 8160`）。
 pub const FSM_MAX_BLOCKS: u64 = 66_585_600;
 
+/// FSM のブロック番号・葉の添字を `BlockNumber` にする。`FSM_MAX_BLOCKS` が上限なので必ず収まる。
+fn to_block(n: usize) -> BlockNumber {
+    BlockNumber::try_from(n).expect("FSM index fits in BlockNumber")
+}
+
 /// `search` が 1 回で根を直しながら試す最大回数。
 const SEARCH_ATTEMPTS: usize = 3;
 /// `next_slot` の位置（u16 LE）。
@@ -92,7 +97,7 @@ impl FreeSpaceMap {
             Ok(v) => Ok(Some(v)),
             Err(e) if e.severity == Severity::Panic => Err(e),
             Err(e) => {
-                eprintln!("WARNING:  free space map {what} failed: {e}");
+                crate::util::warn(&format!("free space map {what} failed: {e}"));
                 Ok(None)
             }
         }
@@ -101,12 +106,11 @@ impl FreeSpaceMap {
     /// FSM のファイルと、ブロック `0..need` を用意する。競合して多めに伸びてもよい。
     fn ensure(&self, rel: RelFileLocator, need: BlockNumber) -> Result<()> {
         let smgr = self.pool.smgr();
-        if !smgr.exists(rel, ForkNumber::Fsm)? {
-            if let Err(e) = smgr.create(rel, ForkNumber::Fsm)
-                && !smgr.exists(rel, ForkNumber::Fsm)?
-            {
-                return Err(e);
-            }
+        if !smgr.exists(rel, ForkNumber::Fsm)?
+            && let Err(e) = smgr.create(rel, ForkNumber::Fsm)
+            && !smgr.exists(rel, ForkNumber::Fsm)?
+        {
+            return Err(e);
         }
         while smgr.nblocks(rel, ForkNumber::Fsm)? < need {
             drop(self.pool.extend(rel, ForkNumber::Fsm)?);
@@ -137,7 +141,7 @@ impl FreeSpaceMap {
                     None => return Ok(None),
                 }
             };
-            let leaf_block = 1 + i as BlockNumber;
+            let leaf_block = 1 + to_block(i);
             let Some(leaf) = self.read(rel, leaf_block)? else {
                 Self::set_root_entry(&root, i, 0)?;
                 continue;
@@ -158,7 +162,7 @@ impl FreeSpaceMap {
                 // 負荷の分散用のヒント。ラッチが取れなければ省く。
                 Self::hint_next(&leaf, j + 1)?;
                 Self::hint_next(&root, i)?;
-                return Ok(Some((i * FSM_SLOTS_PER_PAGE + j) as BlockNumber));
+                return Ok(Some(to_block(i * FSM_SLOTS_PER_PAGE + j)));
             }
             // 根が古い。葉の最大に直して探し直す。
             Self::set_root_entry(&root, i, max)?;
@@ -217,7 +221,7 @@ impl FreeSpaceMap {
             .chunk_by(|a, b| a.0 as usize / FSM_SLOTS_PER_PAGE == b.0 as usize / FSM_SLOTS_PER_PAGE)
         {
             let l = group[0].0 as usize / FSM_SLOTS_PER_PAGE;
-            let leaf_block = 1 + l as BlockNumber;
+            let leaf_block = 1 + to_block(l);
             self.ensure(rel, leaf_block + 1)?;
             let Some(leaf) = self
                 .pool
@@ -265,7 +269,7 @@ impl FreeSpaceMap {
         let mut root_from = l0;
         if r != 0 {
             root_from = l0 + 1;
-            if let Some(leaf) = self.read(rel, 1 + l0 as BlockNumber)? {
+            if let Some(leaf) = self.read(rel, 1 + to_block(l0))? {
                 let max = {
                     let mut g = leaf.write()?;
                     if g.page().fsm_kind() == Some(FsmPageKind::Leaf) {
@@ -290,7 +294,7 @@ impl FreeSpaceMap {
                 g.page_mut_hint().fsm_data_mut()[root_from..].fill(0);
             }
         }
-        let keep = 1 + nblocks.div_ceil(FSM_SLOTS_PER_PAGE as BlockNumber);
+        let keep = 1 + nblocks.div_ceil(to_block(FSM_SLOTS_PER_PAGE));
         self.pool
             .drop_relation_buffers_from(rel, ForkNumber::Fsm, keep)?;
         smgr.truncate(rel, ForkNumber::Fsm, keep)
@@ -301,7 +305,7 @@ impl FreeSpaceMap {
         if u64::from(blk) >= FSM_MAX_BLOCKS {
             return Ok(0);
         }
-        let leaf = 1 + (blk as usize / FSM_SLOTS_PER_PAGE) as BlockNumber;
+        let leaf = 1 + to_block(blk as usize / FSM_SLOTS_PER_PAGE);
         let Some(buf) = self.read(rel, leaf)? else {
             return Ok(0);
         };
@@ -402,10 +406,14 @@ mod tests {
         assert_eq!(fsm.search(rel, 1500).unwrap(), Some(9000));
         assert_eq!(fsm.search(rel, 900).unwrap(), Some(8160));
         assert_eq!(ts.smgr().nblocks(rel, ForkNumber::Fsm).unwrap(), 3);
-        fsm.record(rel, FSM_MAX_BLOCKS as BlockNumber, 8000)
+        fsm.record(rel, BlockNumber::try_from(FSM_MAX_BLOCKS).unwrap(), 8000)
             .unwrap();
         fsm.record(rel, u32::MAX, 8000).unwrap();
-        assert_eq!(fsm.category(rel, FSM_MAX_BLOCKS as BlockNumber).unwrap(), 0);
+        assert_eq!(
+            fsm.category(rel, BlockNumber::try_from(FSM_MAX_BLOCKS).unwrap())
+                .unwrap(),
+            0
+        );
         assert_eq!(ts.smgr().nblocks(rel, ForkNumber::Fsm).unwrap(), 3);
         ts.assert_clean();
     }

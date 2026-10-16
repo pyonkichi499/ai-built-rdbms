@@ -102,7 +102,6 @@ fn main() -> ExitCode {
         wal_segment_size: args.wal_segment_size << 20,
         auth_host,
         superuser_password,
-        ..InitdbOptions::default()
     };
     match initdb(vfs, &opts) {
         Ok(()) => {

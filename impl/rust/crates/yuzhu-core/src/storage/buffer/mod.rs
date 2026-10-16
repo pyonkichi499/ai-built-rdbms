@@ -325,10 +325,10 @@ impl BufferPool {
                     let trusted = self.knobs.fsm_trust_corrupt
                         && matches!(pe, super::page::PageError::ChecksumMismatch { .. });
                     if !trusted {
-                        eprintln!(
-                            "WARNING:  invalid page in block {} of relation {path}; treating as empty",
+                        crate::util::warn(&format!(
+                            "invalid page in block {} of relation {path}; treating as empty",
                             tag.block
-                        );
+                        ));
                         latch.0.fill(0);
                     }
                 }

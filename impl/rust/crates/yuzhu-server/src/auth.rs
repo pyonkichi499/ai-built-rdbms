@@ -41,6 +41,7 @@ impl RoleDirectory for Cluster {
 }
 
 /// A cluster together with the clock the server uses (tests inject a `ManualClock`).
+#[derive(Debug)]
 pub struct ClusterDirectory<'a> {
     pub cluster: &'a Cluster,
     pub clock: &'a dyn Clock,
@@ -63,6 +64,16 @@ pub struct AuthContext<'a> {
     pub user: &'a str,
     pub database: &'a str,
     pub client_addr: IpAddr,
+}
+
+impl std::fmt::Debug for AuthContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthContext")
+            .field("user", &self.user)
+            .field("database", &self.database)
+            .field("client_addr", &self.client_addr)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A FATAL for the client. `log_detail` goes to the server log only.

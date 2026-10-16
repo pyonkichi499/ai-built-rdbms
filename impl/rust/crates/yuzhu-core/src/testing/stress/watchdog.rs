@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use super::Shared;
 
 /// 停止要求から、ワーカーが戻るまで待つ最長の時間。
-pub const HANG_GRACE: Duration = Duration::from_secs(60);
+pub(super) const HANG_GRACE: Duration = Duration::from_secs(60);
 
 pub(super) fn run(shared: &Shared<'_>, watchdog: Duration, on_hang: &dyn Fn()) {
     let tick = (watchdog / 10).clamp(Duration::from_millis(5), Duration::from_millis(100));
@@ -22,9 +22,9 @@ pub(super) fn run(shared: &Shared<'_>, watchdog: Duration, on_hang: &dyn Fn()) {
         if let Some(t) = fired_at {
             if t.elapsed() > HANG_GRACE {
                 on_hang();
-                eprintln!(
+                super::say(&format!(
                     "stress: workers did not stop within {HANG_GRACE:?} of the watchdog; aborting the process"
-                );
+                ));
                 std::process::abort();
             }
             continue;

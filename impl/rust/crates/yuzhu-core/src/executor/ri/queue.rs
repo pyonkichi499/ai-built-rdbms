@@ -304,7 +304,7 @@ mod tests {
             Err(Error::internal("unused"))
         }
         fn latest_snapshot(&self, _own: Option<Xid>, _curcid: CommandId) -> RegisteredSnapshot {
-            unimplemented!("not used in queue tests")
+            panic!("not used in queue tests")
         }
     }
 

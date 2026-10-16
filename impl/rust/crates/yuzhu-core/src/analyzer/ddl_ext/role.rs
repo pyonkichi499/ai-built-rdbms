@@ -8,6 +8,7 @@ use crate::sql::ast::{
 };
 
 /// `CREATE ROLE` の束縛結果。既定値は適用済み。
+#[allow(clippy::struct_excessive_bools)] // pg_authid の属性列に 1 対 1 で対応する。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundCreateRole {
     pub name: String,
@@ -125,11 +126,10 @@ fn collect_options(options: &[RoleOptionItem]) -> Result<RoleChanges> {
             }
             RoleOption::Password(p) => set(&mut c.password, p.clone(), span)?,
             RoleOption::ValidUntil(s) => set(&mut c.valid_until, s.clone(), span)?,
-            RoleOption::Sysid(_) => {}
+            RoleOption::Sysid(_) | RoleOption::UnencryptedPassword => {}
             RoleOption::InRole(_) | RoleOption::Role(_) | RoleOption::Admin(_) => {
                 return Err(not_supported("role membership", span));
             }
-            RoleOption::UnencryptedPassword => {}
         }
     }
     Ok(c)

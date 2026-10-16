@@ -22,7 +22,7 @@ fn err_code(s: &mut Scheduler<'_>, a: ActorId, sql: &str) -> String {
 fn blocks(s: &mut Scheduler<'_>, a: ActorId, sql: &str) {
     match s.submit(a, sql).expect("no hang") {
         StepOutcome::Blocked => {}
-        other => panic!("{sql}: expected to block, got {other:?}"),
+        other @ StepOutcome::Done(_) => panic!("{sql}: expected to block, got {other:?}"),
     }
 }
 

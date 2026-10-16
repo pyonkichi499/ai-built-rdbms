@@ -88,7 +88,7 @@ pub trait StressConn: Send {
         params: &[Option<&str>],
     ) -> Result<QueryResult, StressError>;
     fn backend_pid(&self) -> i32;
-    /// CancelRequest 相当。
+    /// `CancelRequest` 相当。
     fn cancel(&self) -> Result<(), StressError>;
 }
 

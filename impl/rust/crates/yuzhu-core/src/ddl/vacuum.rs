@@ -460,10 +460,11 @@ mod tests {
     #[test]
     fn no_targets_means_every_table_in_oid_order() {
         let (mut ctl, mut rec) = setup();
-        let all = ctl.h.db.catalog.list_vacuum_relations(&{
-            let s = ctl.h.tc.cluster.txn_manager().snapshot(None, 0);
-            s
-        });
+        let all = ctl
+            .h
+            .db
+            .catalog
+            .list_vacuum_relations(&ctl.h.tc.cluster.txn_manager().snapshot(None, 0));
         let all = all.unwrap();
         assert!(all.len() > 5);
         run_vacuum(&mut ctl, &bound(true, vec![], vec![]), &mut rec).unwrap();

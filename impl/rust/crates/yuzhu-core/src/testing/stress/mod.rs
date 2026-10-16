@@ -74,7 +74,9 @@ impl StressConfig {
                 .map_or(1, |d| {
                     u64::try_from(d.as_nanos() & 0xFFFF_FFFF).unwrap_or(1)
                 });
-            eprintln!("stress: YUZHU_STRESS_SEED={t} (chosen from the clock)");
+            say(&format!(
+                "stress: YUZHU_STRESS_SEED={t} (chosen from the clock)"
+            ));
             t
         });
         StressConfig {
@@ -215,7 +217,7 @@ impl StressFailure {
         }
         match std::fs::write(&path, self.render()) {
             Ok(()) => self.log_path = Some(path),
-            Err(e) => eprintln!("stress: cannot write {}: {e}", path.display()),
+            Err(e) => say(&format!("stress: cannot write {}: {e}", path.display())),
         }
     }
 }
@@ -378,12 +380,23 @@ impl StressConn for RecordingConn {
     }
 }
 
+/// stderr に 1 行出す。ストレステスト専用（失敗ログの場所とシードを実行ログに残す）。
+#[allow(clippy::print_stderr)]
+pub(super) fn say(msg: &str) {
+    eprintln!("{msg}");
+}
+
 fn isolation_for(mix: IsolationMix, tid: usize) -> IsolationLevel {
     match mix {
         IsolationMix::Rc => IsolationLevel::ReadCommitted,
         IsolationMix::Rr => IsolationLevel::RepeatableRead,
-        IsolationMix::Mixed if tid % 2 == 0 => IsolationLevel::ReadCommitted,
-        IsolationMix::Mixed => IsolationLevel::RepeatableRead,
+        IsolationMix::Mixed => {
+            if tid.is_multiple_of(2) {
+                IsolationLevel::ReadCommitted
+            } else {
+                IsolationLevel::RepeatableRead
+            }
+        }
     }
 }
 
@@ -497,6 +510,8 @@ fn connect_recording(
 /// # Errors
 ///
 /// 不変条件の違反、許容しない SQLSTATE、ウォッチドッグ、主張の不成立（失敗ログも書く）。
+#[allow(clippy::too_many_lines)] // 10 章 §5.4 の手順（番号付き）を 1 関数で追えるようにしている。
+#[allow(clippy::result_large_err)] // StressFailure は失敗ログの材料を全部持つ。失敗時にしか作らない。
 pub fn run_workload(
     target: &dyn StressTarget,
     w: &dyn Workload,
@@ -524,7 +539,7 @@ pub fn run_workload(
                 log_path: None,
             };
             f.write_log();
-            eprintln!("{f}");
+            say(&f.to_string());
             f
         };
     let fail_now = |invariant: &str, observed: String| {
@@ -545,14 +560,9 @@ pub fn run_workload(
 
     // スレッドごとの接続（接続の失敗はここで止める）。
     let mut conns = Vec::with_capacity(cfg.threads);
-    for tid in 0..cfg.threads {
-        let c = connect_recording(
-            target,
-            &rings[tid],
-            u16::try_from(tid).unwrap_or(u16::MAX),
-            start,
-        )
-        .map_err(|e| fail_now("connect", format!("thread {tid}: {e}")))?;
+    for (tid, ring) in rings.iter().enumerate().take(cfg.threads) {
+        let c = connect_recording(target, ring, u16::try_from(tid).unwrap_or(u16::MAX), start)
+            .map_err(|e| fail_now("connect", format!("thread {tid}: {e}")))?;
         conns.push(c);
     }
     let mut checker_conn = connect_recording(
@@ -1038,6 +1048,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)] // テスト内の短い名前。
     fn retry_replays_the_same_random_sequence() {
         // やり直しの 2 回目は、1 回目と同じ乱数の列から始まる。
         let seen = Arc::new(Mutex::new(Vec::<(usize, u64, bool)>::new()));

@@ -245,14 +245,14 @@ pub fn numeric_width_bucket(args: &[Datum]) -> Result<Datum> {
         } else if op >= b2 {
             count.checked_add(1).ok_or_else(int4_out_of_range)?
         } else {
-            bucket_inner(op.checked_sub(lo)?, hi.checked_sub(lo)?, count)?
+            bucket_inner(&op.checked_sub(lo)?, &hi.checked_sub(lo)?, count)?
         }
     } else if op > b1 {
         0
     } else if op <= b2 {
         count.checked_add(1).ok_or_else(int4_out_of_range)?
     } else {
-        bucket_inner(b1.checked_sub(op)?, b1.checked_sub(b2)?, count)?
+        bucket_inner(&b1.checked_sub(op)?, &b1.checked_sub(b2)?, count)?
     };
     Ok(Datum::Int4(result))
 }
@@ -309,10 +309,10 @@ pub fn float8_width_bucket(args: &[Datum]) -> Result<Datum> {
 }
 
 /// `floor(count * num / den) + 1`。
-fn bucket_inner(num: Numeric, den: Numeric, count: i32) -> Result<i32> {
+fn bucket_inner(num: &Numeric, den: &Numeric, count: i32) -> Result<i32> {
     let q = num
         .checked_mul(&Numeric::from(count))?
-        .checked_div(&den)?
+        .checked_div(den)?
         .floor()?;
     q.to_i32()?.checked_add(1).ok_or_else(int4_out_of_range)
 }
@@ -881,10 +881,7 @@ mod gap_tests {
         }
         // typmod は recv で適用される
         let b = numeric_send(&"1.2345".parse().unwrap());
-        assert_eq!(
-            s(numeric_recv(&b, (6 << 16) + 2 + 4).map_err(|e| e)),
-            "1.23"
-        );
+        assert_eq!(s(numeric_recv(&b, (6 << 16) + 2 + 4)), "1.23");
         assert_eq!(
             numeric_recv(&b[..3], -1).unwrap_err().sqlstate.code(),
             "08P01"

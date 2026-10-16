@@ -343,9 +343,15 @@ mod tests {
     fn images_numeric_scale_differs() {
         let (a, b) = (num("1.0"), num("1.00"));
         assert_eq!(cmp_datum(&a, &b), Ordering::Equal);
-        assert!(!images_equal(&[a.clone()], &[b.clone()]));
-        assert!(keys_equal(&[a.clone()], &[b]));
-        assert!(images_equal(&[a.clone()], &[a]));
+        assert!(!images_equal(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b)
+        ));
+        assert!(keys_equal(std::slice::from_ref(&a), &[b]));
+        assert!(images_equal(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&a)
+        ));
     }
 
     #[test]

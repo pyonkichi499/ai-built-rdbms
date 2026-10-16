@@ -14,6 +14,9 @@ use crate::txn::Snapshot;
 use crate::types::array::{ArrayValue, array_view};
 use crate::types::{Datum, Oid, Row};
 
+/// `(foreign_keys, referenced_by)`。
+pub type ForeignKeyLists = (Vec<Arc<ForeignKeyDef>>, Vec<Arc<ForeignKeyDef>>);
+
 /// `int2[]`（下限 1）の `Datum`。
 pub fn int2_array(v: &[i16]) -> Datum {
     Datum::Array(Box::new(ArrayValue::from_int2s(v)))
@@ -214,11 +217,7 @@ impl CatalogStore {
     }
 
     /// `TableDef` に載せる 2 つの一覧: `(foreign_keys, referenced_by)`。自己参照は両方に入る。
-    pub fn load_foreign_keys(
-        &self,
-        snap: &Snapshot,
-        table: Oid,
-    ) -> Result<(Vec<Arc<ForeignKeyDef>>, Vec<Arc<ForeignKeyDef>>)> {
+    pub fn load_foreign_keys(&self, snap: &Snapshot, table: Oid) -> Result<ForeignKeyLists> {
         let all = self.scan_foreign_keys(snap, |f| f.child == table || f.parent == table)?;
         let out = all.iter().filter(|f| f.child == table).cloned().collect();
         let incoming = all.iter().filter(|f| f.parent == table).cloned().collect();

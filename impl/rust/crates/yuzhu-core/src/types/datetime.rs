@@ -338,10 +338,14 @@ pub fn binary_recv(buf: &mut RecvBuf<'_>, ty: SqlType) -> Result<Datum> {
 #[cfg(test)]
 mod binary_tests {
     use super::*;
+    use std::fmt::Write as _;
     use yuzhu_datetime::Interval;
 
     fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
+        b.iter().fold(String::new(), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
     }
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -349,8 +353,8 @@ mod binary_tests {
             .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
             .collect()
     }
-    fn send(d: Datum, o: u32) -> String {
-        hex(&binary_send(&d, SqlType::of(o)).unwrap())
+    fn send(d: &Datum, o: u32) -> String {
+        hex(&binary_send(d, SqlType::of(o)).unwrap())
     }
     fn recv(h: &str, o: u32) -> Result<Datum> {
         let b = unhex(h);
@@ -359,39 +363,39 @@ mod binary_tests {
 
     #[test]
     fn send_fixed_values() {
-        assert_eq!(send(Datum::Date(Date(8767)), oid::DATE), "0000223f");
-        assert_eq!(send(Datum::Date(Date(-10957)), oid::DATE), "ffffd533");
-        assert_eq!(send(Datum::Date(Date(-2451507)), oid::DATE), "ffda97cd");
-        assert_eq!(send(Datum::Date(Date(i32::MAX)), oid::DATE), "7fffffff");
-        assert_eq!(send(Datum::Date(Date(i32::MIN)), oid::DATE), "80000000");
+        assert_eq!(send(&Datum::Date(Date(8767)), oid::DATE), "0000223f");
+        assert_eq!(send(&Datum::Date(Date(-10957)), oid::DATE), "ffffd533");
+        assert_eq!(send(&Datum::Date(Date(-2_451_507)), oid::DATE), "ffda97cd");
+        assert_eq!(send(&Datum::Date(Date(i32::MAX)), oid::DATE), "7fffffff");
+        assert_eq!(send(&Datum::Date(Date(i32::MIN)), oid::DATE), "80000000");
         assert_eq!(
-            send(Datum::Time(14_706_789_000), oid::TIME),
+            send(&Datum::Time(14_706_789_000), oid::TIME),
             "000000036c97ca88"
         );
         assert_eq!(
-            send(Datum::Time(86_400_000_000), oid::TIME),
+            send(&Datum::Time(86_400_000_000), oid::TIME),
             "000000141dd76000"
         );
         assert_eq!(
-            send(Datum::Timestamp(Timestamp(0)), oid::TIMESTAMP),
+            send(&Datum::Timestamp(Timestamp(0)), oid::TIMESTAMP),
             "0000000000000000"
         );
         assert_eq!(
             send(
-                Datum::Timestamp(Timestamp(-946_684_800_000_000)),
+                &Datum::Timestamp(Timestamp(-946_684_800_000_000)),
                 oid::TIMESTAMP
             ),
             "fffca2fec4c82000"
         );
         assert_eq!(
             send(
-                Datum::TimestampTz(TimestampTz(0x0002b0ec85204f35)),
+                &Datum::TimestampTz(TimestampTz(0x0002_b0ec_8520_4f35)),
                 oid::TIMESTAMPTZ
             ),
             "0002b0ec85204f35"
         );
         assert_eq!(
-            send(Datum::Timestamp(Timestamp(i64::MAX)), oid::TIMESTAMP),
+            send(&Datum::Timestamp(Timestamp(i64::MAX)), oid::TIMESTAMP),
             "7fffffffffffffff"
         );
         let iv = Interval {
@@ -400,7 +404,7 @@ mod binary_tests {
             micros: 14_706_789_000,
         };
         assert_eq!(
-            send(Datum::Interval(iv), oid::INTERVAL),
+            send(&Datum::Interval(iv), oid::INTERVAL),
             "000000036c97ca8800000003".to_owned() + "0000000e"
         );
         let iv = Interval {
@@ -409,7 +413,7 @@ mod binary_tests {
             micros: -3_600_000_000,
         };
         assert_eq!(
-            send(Datum::Interval(iv), oid::INTERVAL),
+            send(&Datum::Interval(iv), oid::INTERVAL),
             "ffffffff296c5c00ffffffff00000000"
         );
     }
@@ -427,7 +431,7 @@ mod binary_tests {
             ("ffffffff296c5c00ffffffff00000000", oid::INTERVAL),
         ] {
             let d = recv(h, o).unwrap();
-            assert_eq!(send(d, o), h);
+            assert_eq!(send(&d, o), h);
         }
     }
 

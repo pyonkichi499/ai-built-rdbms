@@ -262,7 +262,7 @@ impl World {
         )
     }
 
-    fn tuple_tag(&self, tid: Tid) -> LockTag {
+    fn tuple_tag(tid: Tid) -> LockTag {
         LockTag::Tuple {
             db: 5,
             rel: 16384,
@@ -288,7 +288,6 @@ impl World {
 fn lock_modes_are_written_and_strengthened_by_the_same_xid() {
     let w = World::new(false);
     let t = w.insert(1);
-    w.commit_setup();
     let x = w.begin(10);
     for (mode, expect) in [
         (LockTupleMode::KeyShare, LockTupleMode::KeyShare),
@@ -356,7 +355,7 @@ fn delete_waits_for_a_committed_updater_and_reports_updated() {
         // The waiter holds the tuple lock, and holds no latch: the page is usable.
         assert!(
             w.locks
-                .holds(BackendId(b), w.tuple_tag(t), LockMode::Exclusive)
+                .holds(BackendId(b), World::tuple_tag(t), LockMode::Exclusive)
         );
         w.insert(2);
         w.commit(a);
@@ -370,7 +369,7 @@ fn delete_waits_for_a_committed_updater_and_reports_updated() {
     });
     assert!(
         !w.locks
-            .holds(BackendId(b), w.tuple_tag(t), LockMode::Exclusive)
+            .holds(BackendId(b), World::tuple_tag(t), LockMode::Exclusive)
     );
     assert_eq!(w.ts.pool().pinned_frames(), 0);
 }
@@ -452,7 +451,7 @@ fn skip_and_error_policies_do_not_wait() {
         assert_eq!(out.result, TmResult::WouldBlock);
         assert!(
             !w.locks
-                .holds(BackendId(b), w.tuple_tag(t), LockMode::Exclusive)
+                .holds(BackendId(b), World::tuple_tag(t), LockMode::Exclusive)
         );
     }
 }
@@ -470,7 +469,7 @@ fn lock_timeout_releases_the_tuple_lock() {
     assert_eq!(err.sqlstate, crate::error::sqlstate::LOCK_NOT_AVAILABLE);
     assert!(
         !w.locks
-            .holds(BackendId(b), w.tuple_tag(t), LockMode::Exclusive)
+            .holds(BackendId(b), World::tuple_tag(t), LockMode::Exclusive)
     );
     assert_eq!(w.ts.pool().pinned_frames(), 0);
 }
@@ -487,7 +486,7 @@ fn third_waiter_queues_on_the_tuple_lock() {
         let hb = s.spawn(|| w.delete(b, t, None).unwrap());
         w.wait_blocked(b);
         let hc = s.spawn(|| w.delete(c, t, None).unwrap());
-        assert_eq!(w.wait_blocked(c), w.tuple_tag(t));
+        assert_eq!(w.wait_blocked(c), World::tuple_tag(t));
         w.commit(a);
         assert_eq!(hb.join().unwrap(), TmResult::Deleted { xmax: Xid(a) });
         assert_eq!(hc.join().unwrap(), TmResult::Deleted { xmax: Xid(a) });
@@ -602,9 +601,4 @@ fn expect_simple_messages() {
         m(TmResult::Invisible, SimpleHeapOp::Delete),
         "attempted to delete invisible tuple"
     );
-}
-
-impl World {
-    /// Rows are inserted by xid 3 (already committed in `new`).
-    fn commit_setup(&self) {}
 }

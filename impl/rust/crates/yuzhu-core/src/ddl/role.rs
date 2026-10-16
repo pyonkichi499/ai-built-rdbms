@@ -257,6 +257,7 @@ fn only_password(c: &RoleChanges) -> bool {
 }
 
 /// `ALTER ROLE`。
+#[allow(clippy::too_many_lines)] // PostgreSQL の AlterRole の手順（番号付き）を 1 関数で追えるようにしている。
 pub fn alter_role(ctx: &mut DdlCtx<'_>, b: &BoundAlterRole) -> Result<String> {
     // 1・2. パスワードと VALID UNTIL（ロックの外）。
     let (pw, valid_until) = match &b.action {
@@ -399,7 +400,7 @@ fn check_alter_privileges(me: &AuthidRow, target: &AuthidRow, c: &RoleChanges) -
     if c.create_db == Some(true) && !has_createdb(me) {
         return Err(lacks_attr("alter", "CREATEDB"));
     }
-    if !has_createrole(me) && !(target.oid == me.oid && only_password(c)) {
+    if !has_createrole(me) && (target.oid != me.oid || !only_password(c)) {
         return Err(denied(
             "alter",
             format!(

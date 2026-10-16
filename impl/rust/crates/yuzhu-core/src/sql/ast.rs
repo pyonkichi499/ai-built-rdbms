@@ -869,6 +869,7 @@ pub struct AlterTable {
     pub span: Span,
 }
 
+#[allow(clippy::large_enum_variant)] // 構文木は一度作って読むだけで、Box を挟むと利用側が煩雑になる。
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlterTableAction {
     /// `ADD [CONSTRAINT n] PRIMARY KEY | UNIQUE | CHECK | FOREIGN KEY ...`.

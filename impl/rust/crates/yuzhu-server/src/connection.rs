@@ -513,6 +513,7 @@ enum Startup {
     Close,
 }
 
+#[allow(clippy::too_many_lines)] // 接続 1 本の流れ（起動パケット→認証→セッション）を 1 関数で追えるようにしている。
 fn handle_connection(
     stream: TcpStream,
     shared: &Shared,

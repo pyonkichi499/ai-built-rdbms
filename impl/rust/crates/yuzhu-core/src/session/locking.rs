@@ -997,6 +997,7 @@ impl Collector {
     }
 
     /// 式の中の副問い合わせの表を集める（AccessShare。FOR 句の影響を受けない）。
+    #[allow(clippy::too_many_lines)] // Expr の全バリアントを 1 つの match で網羅する。
     fn expr(&mut self, e: &ast::Expr) {
         use ast::Expr as E;
         match e {
@@ -1063,12 +1064,7 @@ impl Collector {
                 self.expr(expr);
                 self.query(query);
             }
-            E::Row { items, .. } => {
-                for i in items {
-                    self.expr(i);
-                }
-            }
-            E::Exists { query, .. } | E::Subquery { query, .. } => self.query(query),
+
             E::Like {
                 expr,
                 pattern,
@@ -1079,17 +1075,17 @@ impl Collector {
                 self.expr(pattern);
                 self.opt_expr(escape.as_deref());
             }
-            E::MinMax { args, .. } | E::Coalesce { args, .. } => {
-                for a in args {
+            E::MinMax { args: items, .. }
+            | E::Coalesce { args: items, .. }
+            | E::ArrayConstructor { elems: items, .. }
+            | E::Row { items, .. } => {
+                for a in items {
                     self.expr(a);
                 }
             }
-            E::ArrayConstructor { elems, .. } => {
-                for a in elems {
-                    self.expr(a);
-                }
-            }
-            E::ArraySubquery { query, .. } => self.query(query),
+            E::Exists { query, .. }
+            | E::Subquery { query, .. }
+            | E::ArraySubquery { query, .. } => self.query(query),
             E::Subscript {
                 expr, lower, upper, ..
             } => {

@@ -4,6 +4,8 @@
 //! `array_out` の移植。要素の入力は読み進めながら行う（`{1,a,` は構文エラーより先に要素の
 //! `22P02` になる）。M5 は 1 次元だけ作るので、構文の検査が済んだ後で 2 次元以上は `0A000`。
 
+use std::fmt::Write as _;
+
 use super::array::{ArrayDim, ArrayValue, M5_MAX_NDIM, MAX_ARRAY_SIZE, MAXDIM};
 use super::typeinfo::{array_kind, element_type};
 use super::{Datum, Oid, SqlType, TypeEnv, io, typmod};
@@ -160,7 +162,7 @@ impl Parser<'_, '_> {
                 ));
             }
             let len = i64::from(ub) - i64::from(lb) + 1;
-            if len > MAX_ARRAY_SIZE as i64 {
+            if len > i64::try_from(MAX_ARRAY_SIZE).unwrap_or(i64::MAX) {
                 return Err(Error::new(
                     sqlstate::PROGRAM_LIMIT_EXCEEDED,
                     format!("array size exceeds the maximum allowed ({MAX_ARRAY_SIZE})"),
@@ -400,7 +402,7 @@ pub fn array_out(a: &ArrayValue, env: &TypeEnv<'_>) -> Result<String> {
     if a.dims.iter().any(|d| d.lbound != 1) {
         for d in &a.dims {
             let ub = i64::from(d.lbound) + i64::from(d.len) - 1;
-            out.push_str(&format!("[{}:{ub}]", d.lbound));
+            let _ = write!(out, "[{}:{ub}]", d.lbound);
         }
         out.push('=');
     }

@@ -208,21 +208,20 @@ impl HeapStore {
                 multi,
             });
         }
-        let multi = match self.fallback_multi.get() {
-            Some(m) => m,
-            None => {
-                let vfs: Arc<dyn Vfs> = Arc::new(SimVfs::new(0));
-                let control = Arc::new(ControlFileHandle::create(
-                    &vfs,
-                    &ControlData::initial(1, 2, 131_072),
-                )?);
-                let _ = self
-                    .fallback_multi
-                    .set(Arc::new(MultiXactTable::new(control)));
-                self.fallback_multi
-                    .get()
-                    .ok_or_else(|| Error::internal("MultiXact stand-in vanished"))?
-            }
+        let multi = if let Some(m) = self.fallback_multi.get() {
+            m
+        } else {
+            let vfs: Arc<dyn Vfs> = Arc::new(SimVfs::new(0));
+            let control = Arc::new(ControlFileHandle::create(
+                &vfs,
+                &ControlData::initial(1, 2, 131_072),
+            )?);
+            let _ = self
+                .fallback_multi
+                .set(Arc::new(MultiXactTable::new(control)));
+            self.fallback_multi
+                .get()
+                .ok_or_else(|| Error::internal("MultiXact stand-in vanished"))?
         };
         Ok(RunEnv {
             procs: fallback,
@@ -572,6 +571,7 @@ impl TableStore for HeapStore {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // PostgreSQL heap_update の分岐を 1 関数で追えるようにしている。
     fn update(
         &self,
         rel: &RelHandle,
@@ -750,6 +750,7 @@ impl TableStore for HeapStore {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // PostgreSQL heap_lock_tuple の分岐を 1 関数で追えるようにしている。
     fn lock_tuple(
         &self,
         rel: &RelHandle,

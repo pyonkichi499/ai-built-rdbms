@@ -16,7 +16,7 @@ use crate::catalog::fk::ForeignKeyDef;
 use crate::catalog::naming::{choose_index_column_names, choose_index_name};
 use crate::catalog::schema::oids;
 use crate::catalog::store::{ClassPatch, NewConstraint, NewIndex};
-use crate::catalog::{CatalogReader, CheckDef, IndexConstraintRef, IndexDef, TableDef};
+use crate::catalog::{CheckDef, IndexConstraintRef, IndexDef, TableDef};
 use crate::error::{Error, Result, Severity, sqlstate};
 use crate::storage::RelHandle;
 use crate::types::Oid;
@@ -782,6 +782,7 @@ mod tests {
 mod fk_tests {
     use super::*;
     use crate::analyzer::query::{BoundCreateTable, BoundDdl};
+    use crate::catalog::CatalogReader;
     use crate::catalog::fk::{FkAction, FkEqOps, FkMatch, FkNames, fk_constraint_def};
     use crate::catalog::schema::oids;
     use crate::ddl::testkit::{Harness, col, create_table_ddl, drop_ddl, key};

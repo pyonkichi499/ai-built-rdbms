@@ -196,7 +196,7 @@ fn logical_lines(text: &str) -> Vec<(usize, String)> {
     out
 }
 
-fn single<'a>(f: &'a Field) -> Option<&'a Token> {
+fn single(f: &Field) -> Option<&Token> {
     (f.len() == 1).then(|| &f[0])
 }
 
@@ -671,6 +671,7 @@ host    all       all       all                   reject
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // 期待するメッセージの一覧表。
     fn error_messages() {
         let cases: &[(&str, usize, &str)] = &[
             (

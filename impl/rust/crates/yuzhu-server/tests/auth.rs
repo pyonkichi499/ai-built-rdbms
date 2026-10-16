@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
@@ -39,8 +39,8 @@ fn temp_dir() -> PathBuf {
     std::env::temp_dir().join(format!("yz-au2-{}-{n}", std::process::id()))
 }
 
-fn init(dir: &PathBuf, auth: InitAuth, password: Option<&str>) -> yuzhu_core::Result<()> {
-    let vfs = Arc::new(LocalVfs::new(dir.clone()));
+fn init(dir: &Path, auth: InitAuth, password: Option<&str>) -> yuzhu_core::Result<()> {
+    let vfs = Arc::new(LocalVfs::new(dir.to_path_buf()));
     initdb(
         vfs,
         &InitdbOptions {
@@ -270,9 +270,9 @@ fn salt_and_iterations(server_first: &[u8]) -> (String, String) {
     let mut iters = String::new();
     for part in text.split(',') {
         if let Some(v) = part.strip_prefix("s=") {
-            salt = v.to_owned();
+            v.clone_into(&mut salt);
         } else if let Some(v) = part.strip_prefix("i=") {
-            iters = v.to_owned();
+            v.clone_into(&mut iters);
         }
     }
     (salt, iters)
@@ -491,14 +491,12 @@ fn ipv6_rules_apply_to_ipv6_peers() {
         listen: "::1".parse().unwrap(),
         ..Config::default()
     };
-    let server = match Server::bind(&config) {
-        Ok(s) => s.with_hba(HbaRules::parse("host all all ::1/128 reject\n").unwrap()),
-        Err(_) => {
-            // No IPv6 loopback in this environment.
-            let _ = std::fs::remove_dir_all(&dir);
-            return;
-        }
+    let Ok(server) = Server::bind(&config) else {
+        // No IPv6 loopback in this environment.
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
     };
+    let server = server.with_hba(HbaRules::parse("host all all ::1/128 reject\n").unwrap());
     let f = Fixture::run(dir, server);
     let (code, msg) = db_error(connect(f.addr, "postgres", "postgres", None));
     assert_eq!(code, "28000");
@@ -525,6 +523,7 @@ fn sameuser_and_default_database() {
 
 #[test]
 fn scram_protocol_errors() {
+    #![allow(clippy::many_single_char_names)] // プロトコルの記法に合わせた短い名前。
     let f = Fixture::start(SCRAM_ALL);
     let cf = |user: &str| ClientExchange::new(user, "x").unwrap().client_first();
     let start = |raw: &mut Raw| {

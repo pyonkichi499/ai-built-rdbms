@@ -26,6 +26,7 @@ pub const PG_EPOCH_UNIX_MICROS: i64 = 946_684_800_000_000;
 const MAX_OID_ATTEMPTS: u32 = 1_000_000;
 
 /// `pg_authid` の 1 行（12 列すべて）。
+#[allow(clippy::struct_excessive_bools)] // pg_authid の列に 1 対 1 で対応する。
 #[derive(Clone, PartialEq, Eq)]
 pub struct AuthidRow {
     pub oid: Oid,

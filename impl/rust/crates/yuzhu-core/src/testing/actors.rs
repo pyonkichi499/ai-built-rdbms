@@ -697,6 +697,7 @@ mod tests {
 
     /// Row-lock waits (RW-3) may not be wired yet; then the conflicting UPDATE completes at once.
     /// Such tests are skipped with a message unless `YUZHU_REQUIRE_ROW_WAITS` is set.
+    #[allow(clippy::print_stderr)] // テスト専用: 未実装でスキップしたことを実行ログに残す。
     fn blocked_or_skip(o: &StepOutcome) -> bool {
         if matches!(o, StepOutcome::Blocked) {
             return true;
@@ -710,6 +711,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)] // アクター名 a, b, c をそのまま使う。
     fn two_actors_wait_and_settle() {
         let tc = tc();
         setup(&tc);
@@ -743,6 +745,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)] // アクター名 a, b, c をそのまま使う。
     fn three_actors_queue_up_in_order() {
         let tc = tc();
         setup(&tc);

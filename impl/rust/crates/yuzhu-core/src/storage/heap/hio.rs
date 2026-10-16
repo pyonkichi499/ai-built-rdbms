@@ -139,7 +139,7 @@ pub struct HioCtx {
     clog: Arc<Clog>,
     fsm: Arc<FreeSpaceMap>,
     hints: InsertHints,
-    /// The running-XID registry and MultiXact table, set once by `HeapStore::set_vacuum_env`.
+    /// The running-XID registry and `MultiXact` table, set once by `HeapStore::set_vacuum_env`.
     /// Until then no pruning is attempted.
     env: OnceLock<VacuumEnv>,
 }
@@ -218,7 +218,7 @@ impl HioCtx {
         if let Err(e) = self.fsm.record(rel, blk, free_space) {
             // Only a Severity::Panic gets here; the insert goes on and the poisoned
             // pool stops the next operation.
-            eprintln!("WARNING:  could not record free space of block {blk}: {e}");
+            crate::util::warn(&format!("could not record free space of block {blk}: {e}"));
         }
     }
 

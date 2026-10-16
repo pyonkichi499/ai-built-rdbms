@@ -11,7 +11,7 @@ use crate::analyzer::ddl_ext::database::{
     BoundAlterDatabase, BoundCreateDatabase, BoundDropDatabase,
 };
 use crate::catalog::roles::lock_role_shared;
-use crate::catalog::store_db::{DatabaseFlagUpdate, DatabaseInfo, NewDatabase};
+use crate::catalog::store_db::{DatabaseInfo, NewDatabase};
 use crate::dbase::{
     BusyKind, CreatedDirGuard, DbaseParts, HeldLock, lock_database_exclusive, log_create_file_copy,
     log_drop, name_lock_tag, remove_database_dir,
@@ -445,7 +445,6 @@ pub fn drop_database(ctl: &mut dyn TxnControl, b: BoundDropDatabase) -> Result<S
     }
     // 12. 接続のキャッシュから外す。
     ctx.cluster.forget_database(oid);
-    drop(ctx);
     // 13. ロックを解放する（lock → name_lock の順）。
     drop(plan);
     Ok("DROP DATABASE".to_owned())
@@ -500,6 +499,7 @@ mod tests {
     use crate::bootstrap::{InitdbOptions, initdb};
     use crate::catalog::reader::StatementCatalog;
     use crate::catalog::store::RoleRow;
+    use crate::catalog::store_db::DatabaseFlagUpdate;
     use crate::ddl::role::PasswordPolicy;
     use crate::debug_knobs::DebugKnobs;
     use crate::engine::{Cluster, ClusterOptions, DatabaseHandle};

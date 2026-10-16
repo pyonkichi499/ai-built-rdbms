@@ -237,7 +237,7 @@ pub fn binary_recv(buf: &mut RecvBuf<'_>, ty: SqlType) -> Result<Datum> {
         oid::INT4 => Datum::Int4(buf.i32()?),
         oid::INT8 => Datum::Int8(buf.i64()?),
         oid::FLOAT4 => Datum::Float4(f32::from_bits(buf.u32()?)),
-        oid::FLOAT8 => Datum::Float8(f64::from_bits(buf.i64()? as u64)),
+        oid::FLOAT8 => Datum::Float8(f64::from_bits(buf.i64()?.cast_unsigned())),
         oid::TEXT | oid::VARCHAR | oid::UNKNOWN | oid::PG_NODE_TREE => Datum::Text(recv_text(buf)?),
         oid::NAME => {
             let s = recv_text(buf)?;

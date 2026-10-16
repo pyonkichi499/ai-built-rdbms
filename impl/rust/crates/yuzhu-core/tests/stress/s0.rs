@@ -123,7 +123,10 @@ fn run(mix: IsolationMix, allowed: &'static [&'static str]) {
     cfg.threads = cfg.threads.min(8);
     match run_workload(&target, &S0, &cfg) {
         Ok(r) => {
-            eprintln!("s0 {mix:?}: {r:?}");
+            #[allow(clippy::print_stderr)] // テスト専用: 実行結果の要約を残す。
+            {
+                eprintln!("s0 {mix:?}: {r:?}");
+            }
             assert!(r.committed > 0);
         }
         Err(f) => panic!("{f}"),

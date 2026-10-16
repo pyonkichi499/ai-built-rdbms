@@ -293,11 +293,7 @@ impl Parser<'_> {
                 }
                 Ok(RoleOption::InRole(self.parse_role_name_list()?))
             }
-            "role" if create => {
-                self.advance();
-                Ok(RoleOption::Role(self.parse_role_name_list()?))
-            }
-            "user" if create => {
+            "role" | "user" if create => {
                 self.advance();
                 Ok(RoleOption::Role(self.parse_role_name_list()?))
             }

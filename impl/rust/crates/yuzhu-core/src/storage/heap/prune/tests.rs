@@ -107,7 +107,7 @@ impl World {
         }
     }
 
-    /// A MultiXact of exclusive lockers `xids`.
+    /// A `MultiXact` of exclusive lockers `xids`.
     fn multixact(&self, xids: &[u64]) -> u64 {
         let members: Vec<MultiMember> = xids
             .iter()

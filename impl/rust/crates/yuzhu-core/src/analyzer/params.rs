@@ -549,6 +549,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::many_single_char_names)] // PostgreSQL の記法に合わせた短い名前。
     fn hooks_one_by_one() {
         let c = cat();
         let stmt = |sql: &str| crate::sql::parse(sql).unwrap().remove(0);
