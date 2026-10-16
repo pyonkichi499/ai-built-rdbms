@@ -151,10 +151,9 @@ impl Session {
             TxState::Implicit => {
                 self.rollback_transaction();
             }
-            TxState::Block => {
-                self.rollback_transaction();
-                self.state = TxState::Failed;
-            }
+            // As in PostgreSQL, a failed block keeps its XID and locks until
+            // ROLLBACK, so others stay blocked behind it (deadlock victims too).
+            TxState::Block => self.state = TxState::Failed,
             TxState::Idle | TxState::Failed => {}
         }
         if let Some(sql) = sql {

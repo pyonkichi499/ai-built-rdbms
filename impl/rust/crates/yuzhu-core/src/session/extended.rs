@@ -974,10 +974,8 @@ impl Session {
         match self.state {
             TxState::Implicit => self.rollback_transaction(),
             TxState::Block => {
-                let kept = std::mem::take(&mut self.ext.portals);
-                self.rollback_transaction();
+                // The XID and locks stay until ROLLBACK (as in PostgreSQL).
                 self.state = TxState::Failed;
-                self.ext.portals = kept;
                 // 実行器とスナップショットは手放す（ポータル自体はトランザクションの終わりまで残る）。
                 for p in self.ext.portals.values_mut() {
                     if matches!(p.run, PortalRun::Select(_)) {
